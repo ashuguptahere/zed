@@ -78,7 +78,15 @@ Source is `src/`, one responsibility per module:
 | `key.zig`     | Decoding raw input bytes into `Key` events (text, arrows, navigation). |
 | `unicode.zig` | UTF-8 decoding, codepoint boundaries, display width. |
 | `buffer.zig`  | The document: line storage, load/save, UTF-8-aware edits. |
-| `editor.zig`  | State, modal input dispatch, viewport, rendering. |
+| `motion.zig`  | Pure cursor motions, word/WORD rules, find-char, `%`, text objects. |
+| `register.zig`| Vim registers (named/unnamed, linewise flag) for yank/delete/paste. |
+| `undo.zig`    | Undo/redo as capped buffer snapshots. |
+| `search.zig`  | Literal substring search (`/ ? n N * #`). |
+| `editor.zig`  | State, the vim command interpreter, viewport, rendering. |
+
+The pure, error-prone logic (motions, search) lives in its own unit-tested
+modules; `editor.zig` is the stateful orchestrator (mode machine, operators,
+registers, undo, visual, macros, marks, dot-repeat, rendering).
 
 Data flow: `term` reads bytes → `key` decodes them → `editor` mutates `buffer`
 and renders a frame back through `term`. `unicode` is shared by `buffer` and
@@ -107,12 +115,28 @@ dependencies.)
 
 ## Editor usage
 
-Modal, vi-like. Normal mode: `h j k l` move, `0`/`$` line ends, `gg`/`G`
-top/bottom, `i`/`a`/`o`/`O` insert, `x` delete, `:` command line. Command line:
-`:w` write, `:q` quit (blocked if unsaved), `:wq`/`:x` write-and-quit, `:q!`
-force quit, `:w <name>` write to a path. Insert mode: type to edit, `Esc` to
-return to normal mode. Tabs are stored verbatim and rendered at `tab_width`
-(currently 4) in `editor.zig`.
+Modal, vi-like, with a comprehensive vim keymap. A command is `[count]` then
+either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
+
+- **Motions:** `h j k l`, `w W b B e E`, `0 ^ $`, `gg G {n}G`, `f F t T` + `; ,`,
+  `%`, `H M L`, `Ctrl-d/u/f/b`, arrows/Home/End/PageUp/Down.
+- **Operators:** `d` `c` `y`, `> <` (indent), doubled `dd cc yy >> <<`; `D C Y`,
+  `x X s S`, `r` `~` `J`. `cw`/`cW` act like `ce`/`cE`.
+- **Text objects:** `iw aw iW aW`, `i( i[ i{ i< i" i' i\`` and `a…` variants
+  (plus `b`/`B` aliases), e.g. `ciw`, `di"`, `da(`.
+- **Registers/paste:** `"a` selects a register; `p`/`P` paste (linewise/charwise).
+- **Undo:** `u`, redo `Ctrl-r`. **Repeat:** `.` repeats the last change.
+- **Visual:** `v` (char), `V` (line); move to extend, `o` swaps ends, then
+  `d c y x > <`.
+- **Search:** `/pat` `?pat`, `n N`, `*` `#`. Literal (not regex), wraps.
+- **Marks/macros:** `m{a-z}`, `` `{a-z} ``, `'{a-z}`; `q{a-z}…q` records, `@{a-z}`
+  / `{n}@a` replays.
+- **Insert:** `i I a A o O` (and `c`/`s`/`R`-style entries), `Esc` to normal.
+- **Command line:** `:w` write, `:q` quit (blocked if unsaved), `:wq`/`:x`,
+  `:q!`, `:w <name>`, `:{number}` goto line, `:$`; `ZZ`/`ZQ`.
+
+Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
+`editor.zig`.
 
 ## Zig 0.16 notes (the std API moved a lot here)
 
@@ -136,4 +160,7 @@ return to normal mode. Tabs are stored verbatim and rendered at `tab_width`
   step if profiling shows it's needed.
 - A resize landing in the tiny window between the resize check and entering
   `poll` is noticed on the next keypress (a self-pipe would close the race).
-- Undo/redo, search, syntax highlighting, multiple buffers — not yet built.
+- Vim gaps: blockwise visual (`Ctrl-v`), regex and `:%s` substitution,
+  autoindent, and the trickier dot-repeat/macro interactions are not (fully)
+  implemented. `*`/search are literal, not regex.
+- Syntax highlighting, multiple buffers/windows, and config files — not yet built.

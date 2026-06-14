@@ -14,11 +14,18 @@ idle**.
 
 ## Features
 
-- Modal editing: normal / insert / command modes
-- Movement: `h j k l`, `0` `$`, `gg` `G`, arrows, Home/End, PageUp/Down
-- Editing: insert (`i` `a` `o` `O`), delete (`x`, Backspace, Delete), line
-  split/join
-- Commands: `:w`, `:q`, `:wq`/`:x`, `:q!`, `:w <name>`
+- Modal editing: normal / insert / visual / command modes
+- A comprehensive **vim keymap**:
+  - Motions: `h j k l`, `w W b B e E`, `0 ^ $`, `gg G {n}G`, `f F t T` + `; ,`,
+    `%`, `H M L`, `Ctrl-d/u/f/b`, arrows
+  - Counts and operators: `d c y`, `> <`, doubled `dd cc yy`, `D C Y x X s S`,
+    `r ~ J`, e.g. `3dw`, `d2j`, `ci"`, `da(`, `diw`
+  - Registers and paste: `"a`, `p` / `P` (linewise & charwise)
+  - Undo `u`, redo `Ctrl-r`, repeat `.`
+  - Visual `v` / `V` with `d c y x > <`
+  - Search `/ ? n N * #` (literal, wraps)
+  - Marks `m` `` ` `` `'` and macros `q…q` / `@`
+- Commands: `:w`, `:q`, `:wq`/`:x`, `:q!`, `:w <name>`, `:{number}`, `ZZ`/`ZQ`
 - UTF-8 throughout, with correct display width for wide (CJK) and zero-width
   (combining) characters, and tab expansion
 - Line numbers, a status bar, horizontal/vertical scrolling, live window resize
@@ -46,21 +53,13 @@ zed file.txt        # open a file (created on save if missing)
 zed --log zed.log file.txt   # open with diagnostics written to zed.log
 ```
 
-Normal mode keys:
-
-| Key            | Action |
-|----------------|--------|
-| `h j k l`      | Move left / down / up / right |
-| `0` `$`        | Start / end of line |
-| `gg` `G`       | First / last line |
-| `i` `a`        | Insert before / after the cursor |
-| `o` `O`        | Open a line below / above |
-| `x`            | Delete the character under the cursor |
-| `:`            | Command line |
+Keys are vim-style — `h j k l` move, `dd`/`dw`/`ciw`/`yyp` edit, `v`/`V` select,
+`/` searches, `u`/`Ctrl-r` undo/redo, `.` repeats, `q`/`@` record/replay macros.
+The full keymap is in [`CLAUDE.md`](CLAUDE.md#editor-usage).
 
 Command line: `:w` write, `:q` quit, `:wq` / `:x` write and quit, `:q!` quit
-without saving, `:w <name>` write to a path. Press `Esc` to leave insert or
-command mode.
+without saving, `:w <name>` write to a path, `:{number}` go to a line. Press
+`Esc` to leave insert, visual or command mode.
 
 ## Project layout
 

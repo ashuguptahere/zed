@@ -85,5 +85,9 @@ test {
     _ = @import("cli.zig");
     _ = @import("term.zig");
     _ = @import("log.zig");
+    _ = @import("motion.zig");
+    _ = @import("register.zig");
+    _ = @import("undo.zig");
+    _ = @import("search.zig");
     _ = @import("editor.zig");
 }

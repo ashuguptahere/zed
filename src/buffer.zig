@@ -188,6 +188,54 @@ pub const Buffer = struct {
         return .{ .row = row - 1, .col = new_col };
     }
 
+    /// Replace the whole document with freshly-parsed `data`, keeping the path.
+    /// Used by undo/redo to restore a snapshot.
+    pub fn replaceContents(self: *Buffer, data: []const u8) !void {
+        const tmp = try fromBytes(self.gpa, data);
+        for (self.lines.items) |*l| l.deinit(self.gpa);
+        self.lines.deinit(self.gpa);
+        self.lines = tmp.lines; // take ownership; tmp.path is null
+        self.final_newline = tmp.final_newline;
+    }
+
+    /// Insert raw bytes into a line at a byte offset.
+    pub fn insertBytes(self: *Buffer, row: usize, col: usize, bytes: []const u8) !void {
+        try self.lines.items[row].insertSlice(self.gpa, col, bytes);
+        self.dirty = true;
+    }
+
+    /// Remove bytes [start, end) from a line.
+    pub fn deleteInLine(self: *Buffer, row: usize, start: usize, end: usize) !void {
+        if (end <= start) return;
+        try self.lines.items[row].replaceRange(self.gpa, start, end - start, &[_]u8{});
+        self.dirty = true;
+    }
+
+    /// Replace a line's entire content.
+    pub fn setLine(self: *Buffer, row: usize, bytes: []const u8) !void {
+        const target = &self.lines.items[row];
+        target.clearRetainingCapacity();
+        try target.appendSlice(self.gpa, bytes);
+        self.dirty = true;
+    }
+
+    /// Insert a new line (copying `bytes`) at index `at`.
+    pub fn insertLineAt(self: *Buffer, at: usize, bytes: []const u8) !void {
+        var new_line: Line = .empty;
+        errdefer new_line.deinit(self.gpa);
+        try new_line.appendSlice(self.gpa, bytes);
+        try self.lines.insert(self.gpa, at, new_line);
+        self.dirty = true;
+    }
+
+    /// Remove line `at`, always leaving at least one (empty) line.
+    pub fn removeLineAt(self: *Buffer, at: usize) void {
+        var removed = self.lines.orderedRemove(at);
+        removed.deinit(self.gpa);
+        if (self.lines.items.len == 0) self.lines.append(self.gpa, .empty) catch {};
+        self.dirty = true;
+    }
+
     fn appendCopy(gpa: Allocator, lines: *std.ArrayList(Line), bytes: []const u8) !void {
         var l: Line = .empty;
         errdefer l.deinit(gpa);
