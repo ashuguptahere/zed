@@ -165,7 +165,9 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   caret; `Esc` collapses back to one.
 - **Pickers (which-key leader = `Space`):** pressing `Space` shows a which-key
   popup; `Space f` fuzzy file finder, `Space /` (or `Space s`) global literal
-  content search, `Space w` write, `Space q` quit. In a picker: type to filter,
+  content search, `Space d` go to definition, `Space r` rename, `Space a` code
+  action, `Space k` hover (the LSP entries mirror `gd`/`gr`/`ga`/`K`), `Space w`
+  write, `Space q` quit. In a picker: type to filter,
   `Ctrl-n`/`Ctrl-p` or arrows to move, `Enter` to open, `Esc` to cancel.
   Opening a file is blocked while the current buffer has unsaved changes.
   Note the three search scopes: `/` searches the current buffer, `Space /`

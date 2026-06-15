@@ -660,6 +660,10 @@ pub const Editor = struct {
                 if (k == .char) switch (k.char) {
                     'f' => self.openFilePicker(),
                     '/', 's' => self.openGrepPicker(),
+                    'd' => self.lspDefinition(), // go to definition
+                    'r' => self.enterRename(), // rename symbol
+                    'a' => self.lspCodeAction(), // code action
+                    'k' => self.lspHover(), // hover
                     'w' => _ = try self.write(""),
                     'q' => self.doQuit(),
                     else => {},
@@ -3042,7 +3046,10 @@ pub const Editor = struct {
     const leader_keys = [_]WhichKey{
         .{ .key = "f", .desc = "find file" },
         .{ .key = "s", .desc = "search in files" },
-        .{ .key = "/", .desc = "search in files" },
+        .{ .key = "d", .desc = "go to definition" },
+        .{ .key = "r", .desc = "rename symbol" },
+        .{ .key = "a", .desc = "code action" },
+        .{ .key = "k", .desc = "hover" },
         .{ .key = "w", .desc = "write (save)" },
         .{ .key = "q", .desc = "quit" },
     };
