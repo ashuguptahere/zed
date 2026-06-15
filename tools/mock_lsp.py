@@ -70,13 +70,15 @@ while True:
             {"label": "mockOther", "insertText": "mockOther"},
         ]}})
     elif method == "textDocument/signatureHelp":
-        # Parameter labels as [start, end) UTF-16 offsets into the signature
-        # label (exercises the client's offset->byte conversion).
+        # Two overloads to exercise cycling. Parameter labels are [start, end)
+        # UTF-16 offsets into each signature label (exercises offset->byte).
         send({"jsonrpc": "2.0", "id": m["id"], "result": {
-            "signatures": [{
-                "label": "mockFn(a: int, b: int)",
-                "parameters": [{"label": [7, 13]}, {"label": [15, 21]}],
-            }],
+            "signatures": [
+                {"label": "mockFn(a: int, b: int)",
+                 "parameters": [{"label": [7, 13]}, {"label": [15, 21]}]},
+                {"label": "mockFn(a: str)",
+                 "parameters": [{"label": [7, 13]}]},
+            ],
             "activeSignature": 0,
             "activeParameter": 0,
         }})

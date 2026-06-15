@@ -56,7 +56,8 @@ pub const Client = struct {
     def_target: ?Location, // pending goto-definition result
     completions: std.ArrayList(Completion), // last completion result
     comp_ready: bool, // a completion response just arrived (editor should consume)
-    signature: ?Signature, // active signature-help content (null = none)
+    signatures: std.ArrayList(Signature), // all overloads from the last response
+    sig_active: usize, // index of the displayed overload (server-suggested, then cycled)
     sig_ready: bool, // a signatureHelp response just arrived (editor should consume)
 
     pub fn start(
@@ -98,7 +99,8 @@ pub const Client = struct {
             .def_target = null,
             .completions = .empty,
             .comp_ready = false,
-            .signature = null,
+            .signatures = .empty,
+            .sig_active = 0,
             .sig_ready = false,
         };
 
@@ -126,7 +128,8 @@ pub const Client = struct {
         self.diags.deinit(self.gpa);
         self.clearCompletions();
         self.completions.deinit(self.gpa);
-        self.clearSignature();
+        self.clearSignatures();
+        self.signatures.deinit(self.gpa);
         if (self.hover_text) |t| self.gpa.free(t);
         if (self.def_target) |d| self.gpa.free(d.uri);
     }
@@ -144,9 +147,10 @@ pub const Client = struct {
         self.completions.clearRetainingCapacity();
     }
 
-    fn clearSignature(self: *Client) void {
-        if (self.signature) |s| self.gpa.free(s.label);
-        self.signature = null;
+    fn clearSignatures(self: *Client) void {
+        for (self.signatures.items) |s| self.gpa.free(s.label);
+        self.signatures.clearRetainingCapacity();
+        self.sig_active = 0;
     }
 
     // --- outgoing ----------------------------------------------------------
@@ -393,50 +397,29 @@ pub const Client = struct {
         self.comp_ready = true;
     }
 
-    /// Parse a `SignatureHelp`: take the active signature's label and locate the
-    /// active parameter's byte range within it. `sig_ready` is set regardless so
-    /// the editor knows to (re)open or close the popup.
+    /// Parse a `SignatureHelp`: keep every overload (with each one's active
+    /// parameter located within its own label) plus the server-suggested active
+    /// index. `sig_ready` is set regardless so the editor (re)opens or closes
+    /// the popup.
     fn handleSignature(self: *Client, result: std.json.Value) void {
-        self.clearSignature();
+        self.clearSignatures();
         self.sig_ready = true;
         const sigs = getField(result, "signatures") orelse return;
         if (sigs != .array or sigs.array.items.len == 0) return;
+        const top_active_param = asInt(getField(result, "activeParameter"));
 
-        const active_sig: usize = blk: {
-            const n = asInt(getField(result, "activeSignature")) orelse 0;
-            const idx: usize = if (n >= 0) @intCast(n) else 0;
-            break :blk if (idx < sigs.array.items.len) idx else 0;
-        };
-        const sig = sigs.array.items[active_sig];
-        const label = asStr(getField(sig, "label")) orelse return;
-        const owned = self.gpa.dupe(u8, label) catch return;
-
-        // Locate the active parameter's byte range within the label, if any.
-        var pstart: usize = 0;
-        var pend: usize = 0;
-        active: {
-            const params = getField(sig, "parameters") orelse break :active;
-            if (params != .array or params.array.items.len == 0) break :active;
-            // A signature-level activeParameter (3.16+) overrides the top-level one.
-            const ap_val = asInt(getField(sig, "activeParameter")) orelse asInt(getField(result, "activeParameter")) orelse 0;
-            const ap: usize = if (ap_val >= 0) @intCast(ap_val) else 0;
-            if (ap >= params.array.items.len) break :active;
-            const plabel = getField(params.array.items[ap], "label") orelse break :active;
-            switch (plabel) {
-                // A literal substring of the signature label.
-                .string => |s| if (std.mem.indexOf(u8, owned, s)) |off| {
-                    pstart = off;
-                    pend = off + s.len;
-                },
-                // A [startUtf16, endUtf16) pair of offsets into the label.
-                .array => |a| if (a.items.len >= 2 and a.items[0] == .integer and a.items[1] == .integer) {
-                    pstart = utf16ToByte(owned, @intCast(@max(a.items[0].integer, 0)));
-                    pend = utf16ToByte(owned, @intCast(@max(a.items[1].integer, 0)));
-                },
-                else => {},
-            }
+        for (sigs.array.items) |sig| {
+            const label = asStr(getField(sig, "label")) orelse continue;
+            const owned = self.gpa.dupe(u8, label) catch continue;
+            const r = paramRange(sig, owned, top_active_param);
+            self.signatures.append(self.gpa, .{ .label = owned, .active_start = r.start, .active_end = r.end }) catch {
+                self.gpa.free(owned);
+            };
         }
-        self.signature = .{ .label = owned, .active_start = pstart, .active_end = pend };
+        const n = self.signatures.items.len;
+        if (n == 0) return;
+        const idx = asInt(getField(result, "activeSignature")) orelse 0;
+        self.sig_active = if (idx >= 0 and @as(usize, @intCast(idx)) < n) @intCast(idx) else 0;
     }
 
     fn updateDiagnostics(self: *Client, params: std.json.Value) void {
@@ -558,6 +541,33 @@ fn utf16ToByte(s: []const u8, units: usize) usize {
         i += d.len;
     }
     return i;
+}
+
+const ParamRange = struct { start: usize, end: usize };
+
+/// Byte range of the active parameter within a signature's label, or {0,0} if
+/// there is none. Handles both label forms LSP allows: a literal substring of
+/// the label, and a [startUtf16, endUtf16) pair of offsets into it.
+fn paramRange(sig: std.json.Value, label: []const u8, top_active_param: ?i64) ParamRange {
+    const none: ParamRange = .{ .start = 0, .end = 0 };
+    const params = getField(sig, "parameters") orelse return none;
+    if (params != .array or params.array.items.len == 0) return none;
+    // A signature-level activeParameter (3.16+) overrides the top-level one.
+    const ap_val = asInt(getField(sig, "activeParameter")) orelse top_active_param orelse 0;
+    const ap: usize = if (ap_val >= 0) @intCast(ap_val) else 0;
+    if (ap >= params.array.items.len) return none;
+    const plabel = getField(params.array.items[ap], "label") orelse return none;
+    switch (plabel) {
+        .string => |s| if (std.mem.indexOf(u8, label, s)) |off| return .{ .start = off, .end = off + s.len },
+        .array => |a| if (a.items.len >= 2 and a.items[0] == .integer and a.items[1] == .integer) {
+            return .{
+                .start = utf16ToByte(label, @intCast(@max(a.items[0].integer, 0))),
+                .end = utf16ToByte(label, @intCast(@max(a.items[1].integer, 0))),
+            };
+        },
+        else => {},
+    }
+    return none;
 }
 
 fn getField(v: std.json.Value, key: []const u8) ?std.json.Value {

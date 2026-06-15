@@ -178,9 +178,9 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   `Ctrl-n` in insert mode requests completion (popup: `Ctrl-n`/`Ctrl-p` or
   arrows to move, `Tab`/`Enter` to accept, `Esc` to dismiss). Typing `(` or `,`
   in insert mode requests signature help, shown as a one-line popup above the
-  cursor with the active parameter emphasized (dismissed with `Esc`). Edits are
-  sent as incremental `didChange` ranges when the server advertises it, else
-  full-document.
+  cursor with the active parameter emphasized (`Ctrl-p` cycles overloads, with
+  an `(i/n)` counter; dismissed with `Esc`). Edits are sent as incremental
+  `didChange` ranges when the server advertises it, else full-document.
   Best-effort: no server installed simply means no LSP. Its stdout is polled
   alongside the terminal, so an idle editor still uses no CPU.
 
@@ -235,8 +235,8 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
 - LSP does diagnostics/hover/goto/completion/signature help with incremental
   (or full) document sync; no snippets/`textEdit` completions, rename or
   cross-file definition jumps yet (definition jumps stay within the open file).
-  Signature help triggers on `(`/`,` and shows the active signature only (no
-  overload cycling).
+  Signature help triggers on `(`/`,`; `Ctrl-p` cycles overloads when the server
+  returns several.
 - Tree-sitter highlighting is wired for Zig, C, Python, JSON, JavaScript, TypeScript, Rust,
   Go, HTML and Markdown (the vendored grammars); other files use the lexer. Parsing is incremental (the prior
   tree is reused via a prefix/suffix diff) and the highlight query runs only over the

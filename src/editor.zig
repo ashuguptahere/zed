@@ -1370,6 +1370,9 @@ pub const Editor = struct {
         // While the completion popup is open it claims navigation/accept keys;
         // text edits fall through and then re-filter the list.
         if (self.comp_open and try self.completionIntercept(k)) return;
+        // The signature popup only claims its overload-cycling key (Ctrl-p);
+        // everything else falls through so typing/completion still work.
+        if (self.sig_open and self.signatureIntercept(k)) return;
 
         if (self.extra.items.len > 0) {
             switch (k) {
@@ -1431,6 +1434,24 @@ pub const Editor = struct {
                 return false;
             },
         }
+    }
+
+    /// While the signature popup is open (and completion is not), `Ctrl-p`
+    /// cycles to the previous overload, wrapping. Other keys fall through so
+    /// typing arguments and requesting completion keep working.
+    fn signatureIntercept(self: *Editor, k: key.Key) bool {
+        return switch (k) {
+            .ctrl => |c| c == 'p' and self.sigCycle(),
+            else => false,
+        };
+    }
+
+    fn sigCycle(self: *Editor) bool {
+        const c = if (self.lsp) |*cl| cl else return false;
+        const n = c.signatures.items.len;
+        if (n <= 1) return false;
+        c.sig_active = (c.sig_active + n - 1) % n; // previous overload, wrapping
+        return true;
     }
 
     fn insertKeyOne(self: *Editor, k: key.Key) !void {
@@ -2567,7 +2588,7 @@ pub const Editor = struct {
         if (client.sig_ready) {
             client.sig_ready = false;
             // Show it while inserting; an empty result just closes the popup.
-            self.sig_open = self.mode == .insert and client.signature != null;
+            self.sig_open = self.mode == .insert and client.signatures.items.len > 0;
         }
     }
 
@@ -2896,7 +2917,9 @@ pub const Editor = struct {
     fn renderSignature(self: *Editor, gutter: usize) !void {
         const th = theme.current;
         const client = if (self.lsp) |*c| c else return;
-        const sig = client.signature orelse return;
+        const sigs = client.signatures.items;
+        if (sigs.len == 0) return;
+        const sig = sigs[client.sig_active];
         const label = sig.label[0 .. std.mem.indexOfScalar(u8, sig.label, '\n') orelse sig.label.len];
         if (label.len == 0) return;
 
@@ -2924,6 +2947,16 @@ pub const Editor = struct {
             try self.emit(label[i .. i + d.len]);
             used += w;
             i += d.len;
+        }
+        // An "(i/n)" counter, dim, when there is more than one overload to cycle.
+        if (sigs.len > 1) {
+            var cb: [32]u8 = undefined;
+            const counter = std.fmt.bufPrint(&cb, " ({d}/{d})", .{ client.sig_active + 1, sigs.len }) catch "";
+            if (used + counter.len < avail) {
+                try self.setFg(th.fg_dim);
+                try self.emit(counter);
+                used += counter.len;
+            }
         }
         try self.setFg(th.status_seg_fg);
         if (used < avail) try self.emit(" ");

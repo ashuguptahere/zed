@@ -3,7 +3,8 @@
 
 Runs zed with --lsp pointing at tools/mock_lsp.py and checks the rendered output
 for diagnostics (count/sign/message), hover, incremental didChange, completion
-(popup + accept) and signature help (popup + active-parameter highlight).
+(popup + accept) and signature help (popup + active-parameter highlight +
+overload cycling).
 """
 import os, pty, select, sys, time, fcntl, termios, struct, re
 
@@ -87,13 +88,16 @@ check("completion popup shows candidate", b"mockComplete" in out)
 check("accepted completion written to file", "mockComplete\n" in text)
 
 # Signature help: typing "(" requests it and a one-line popup shows the
-# signature with the active parameter emphasized in theme.builtin.
+# signature with the active parameter emphasized in theme.builtin. The server
+# returns two overloads; Ctrl-p cycles to the previous one (wrapping).
 BUILTIN = b"\x1b[38;2;224;175;104m"  # theme.builtin colour (active parameter)
-out, _ = run([(b"omockFn(", 1.0)])
-# The active parameter is wrapped in colour escapes, so strip ANSI for the label.
-check("signature popup shows label", b"mockFn(a: int, b: int)" in ANSI.sub(b"", out))
+out, _ = run([(b"omockFn(", 0.9), (b"\x10", 0.6)])  # type "(", then Ctrl-p
+plain = ANSI.sub(b"", out)  # the active parameter is wrapped in colour escapes
+check("signature popup shows label", b"mockFn(a: int, b: int)" in plain)
 # The active parameter (offsets [7,13) -> "a: int") is the highlighted run.
 check("active parameter highlighted", BUILTIN + b"a: int" in out)
+check("overload counter shown", b"(1/2)" in plain)
+check("Ctrl-p cycles to other overload", b"mockFn(a: str)" in plain and b"(2/2)" in plain)
 
 print()
 print("ALL PASS" if fails == 0 else f"{fails} FAILURE(S)")
