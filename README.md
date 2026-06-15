@@ -26,6 +26,9 @@ idle**.
   - Search `/ ? n N * #` (literal, wraps)
   - Marks `m` `` ` `` `'` and macros `q…q` / `@`
   - Built-ins (no plugins): auto-pairs, comment toggle (`gcc` / `gc{motion}`)
+  - Multiple cursors: `Ctrl-n` / `Ctrl-p` add carets below/above; edits apply to all
+  - Pickers via a `Space` which-key menu: `Space f` fuzzy file finder,
+    `Space /` global search
 - Commands: `:w`, `:q`, `:wq`/`:x`, `:q!`, `:w <name>`, `:{number}`, `ZZ`/`ZQ`
 - AstroNvim/Helix-style look: Tokyo Night true-colour theme, syntax
   highlighting, a powerline statusline (mode block, separators, segments),

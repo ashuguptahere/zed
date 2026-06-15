@@ -91,5 +91,6 @@ test {
     _ = @import("search.zig");
     _ = @import("theme.zig");
     _ = @import("syntax.zig");
+    _ = @import("fuzzy.zig");
     _ = @import("editor.zig");
 }

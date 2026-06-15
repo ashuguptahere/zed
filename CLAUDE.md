@@ -87,7 +87,8 @@ Source is `src/`, one responsibility per module:
 | `search.zig`  | Literal substring search (`/ ? n N * #`). |
 | `theme.zig`   | Colour palette (Tokyo Night) and 24-bit SGR helpers. |
 | `syntax.zig`  | Dependency-free per-line lexer producing per-byte styles. |
-| `editor.zig`  | State, the vim command interpreter, viewport, themed rendering. |
+| `fuzzy.zig`   | Subsequence scorer for the pickers. |
+| `editor.zig`  | State, the vim command interpreter, multiple cursors, pickers, viewport, themed rendering. |
 
 The pure, error-prone logic (motions, search) lives in its own unit-tested
 modules; `editor.zig` is the stateful orchestrator (mode machine, operators,
@@ -139,6 +140,13 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 - **Insert:** `i I a A o O` (and `c`/`s` entries), `Esc` to normal. Auto-pairs:
   typing an opener inserts its closer; typing the closer steps over it.
 - **Built-ins (no plugins):** `gcc` / `gc{motion}` comment toggling, auto-pairs.
+- **Multiple cursors:** `Ctrl-n` / `Ctrl-p` add a caret on the line below/above
+  (one per line); movement, `x`, and `i`/`a`/`I`/`A` + typing apply to every
+  caret; `Esc` collapses back to one.
+- **Pickers (which-key leader = `Space`):** `Space f` fuzzy file finder,
+  `Space /` (or `Space s`) global literal search. In a picker: type to filter,
+  `Ctrl-n`/`Ctrl-p` or arrows to move, `Enter` to open, `Esc` to cancel.
+  Opening a file is blocked while the current buffer has unsaved changes.
 - **Command line:** `:w` write, `:q` quit (blocked if unsaved), `:wq`/`:x`,
   `:q!`, `:w <name>`, `:{number}` goto line, `:$`; `ZZ`/`ZQ`.
 
@@ -182,7 +190,10 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   implemented. `*`/search are literal, not regex.
 - Highlighting is a per-line lexer (no cross-line block comments; a handful of
   languages). Tree-sitter is the upgrade path now that deps are allowed.
-- Helix features still to build: multiple cursors, fuzzy file/global-search
-  pickers, a which-key popup, surround (`ys`/`cs`/`ds`), and LSP. Statusline
-  separators assume a nerd font.
+- Multi-cursor is one-caret-per-line (column editing); it does not do
+  per-caret line splits/joins or arbitrary selection-based multi-edit.
+- Pickers are single-buffer (opening replaces the buffer) and global search is
+  literal, not regex. Statusline separators assume a nerd font.
+- Helix features still to build: surround (`ys`/`cs`/`ds`), blockwise visual
+  (`Ctrl-v`), LSP, and tree-sitter highlighting (deps now allowed).
 - Multiple buffers/windows and config files — not yet built.

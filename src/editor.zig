@@ -23,6 +23,7 @@ const undo = @import("undo.zig");
 const search = @import("search.zig");
 const theme = @import("theme.zig");
 const syntax = @import("syntax.zig");
+const fuzzy = @import("fuzzy.zig");
 const ansi = term.ansi;
 const Allocator = std.mem.Allocator;
 const Pos = buffer.Pos;
@@ -42,6 +43,7 @@ pub const Mode = enum {
     visual,
     visual_line,
     command,
+    picker,
 
     fn label(self: Mode) []const u8 {
         return switch (self) {
@@ -50,9 +52,13 @@ pub const Mode = enum {
             .visual => "VISUAL",
             .visual_line => "V-LINE",
             .command => "COMMAND",
+            .picker => "PICKER",
         };
     }
 };
+
+const PickerKind = enum { files, grep };
+const PickItem = struct { display: []u8, path: []u8, line: usize };
 
 const Operator = enum { none, delete, change, yank, indent_right, indent_left, comment };
 
@@ -74,6 +80,7 @@ const Await = enum {
     object_around, // operator a{obj}
     macro_record, // q{reg}
     macro_play, // @{reg}
+    space_leader, // <space> menu (which-key)
 };
 
 const CmdKind = enum { ex, search_forward, search_backward };
@@ -127,6 +134,9 @@ pub const Editor = struct {
     // visual
     vstart: Pos,
 
+    // multiple cursors (one per line; primary stays cy/cx). Empty = single cursor.
+    extra: std.ArrayList(Pos),
+
     // search
     last_search: std.ArrayList(u8),
     last_search_forward: bool,
@@ -134,6 +144,15 @@ pub const Editor = struct {
     // command/search line
     cmd: std.ArrayList(u8),
     cmd_kind: CmdKind,
+
+    // picker (fuzzy file finder / global search)
+    picker_kind: PickerKind,
+    picker_items: std.ArrayList(PickItem),
+    picker_files: std.ArrayList([]u8),
+    picker_filtered: std.ArrayList(usize),
+    picker_query: std.ArrayList(u8),
+    picker_sel: usize,
+    picker_scroll: usize,
 
     // macros
     recording: ?u8,
@@ -179,10 +198,18 @@ pub const Editor = struct {
             .history = undo.History.init(gpa),
             .marks = [_]?Pos{null} ** 26,
             .vstart = .{ .row = 0, .col = 0 },
+            .extra = .empty,
             .last_search = .empty,
             .last_search_forward = true,
             .cmd = .empty,
             .cmd_kind = .ex,
+            .picker_kind = .files,
+            .picker_items = .empty,
+            .picker_files = .empty,
+            .picker_filtered = .empty,
+            .picker_query = .empty,
+            .picker_sel = 0,
+            .picker_scroll = 0,
             .recording = null,
             .macro_buf = .empty,
             .replay_depth = 0,
@@ -212,6 +239,12 @@ pub const Editor = struct {
         self.frame.deinit(self.gpa);
         self.status.deinit(self.gpa);
         self.style_buf.deinit(self.gpa);
+        self.extra.deinit(self.gpa);
+        self.freePicker();
+        self.picker_items.deinit(self.gpa);
+        self.picker_files.deinit(self.gpa);
+        self.picker_filtered.deinit(self.gpa);
+        self.picker_query.deinit(self.gpa);
         self.buf.deinit();
     }
 
@@ -297,7 +330,7 @@ pub const Editor = struct {
         }
         switch (self.mode) {
             .normal, .insert, .visual, .visual_line => self.dot_temp.appendSlice(self.gpa, raw) catch {},
-            .command => {},
+            .command, .picker => {},
         }
     }
 
@@ -321,6 +354,7 @@ pub const Editor = struct {
             .insert => try self.insertKey(k),
             .visual, .visual_line => try self.visualKey(k),
             .command => try self.commandKey(k),
+            .picker => try self.pickerKey(k),
         }
         self.clampCursor();
     }
@@ -330,6 +364,10 @@ pub const Editor = struct {
     fn normalKey(self: *Editor, k: key.Key) !void {
         if (self.await_arg != .none) return self.awaitKey(k);
         if (self.operator != .none) return self.operatorPendingKey(k);
+        if (self.extra.items.len > 0) {
+            if (try self.multiNormal(k)) return;
+            self.clearExtra(); // non-multi command: collapse to one cursor
+        }
 
         switch (k) {
             .char => |c| try self.normalChar(c),
@@ -357,7 +395,8 @@ pub const Editor = struct {
         switch (c) {
             // motions
             'h' => self.doMotion(self.repeatMotion(.left)),
-            'l', ' ' => self.doMotion(self.repeatMotion(.right)),
+            'l' => self.doMotion(self.repeatMotion(.right)),
+            ' ' => self.await_arg = .space_leader, // which-key leader
             'j' => self.doMotion(self.vertical(false, self.eff())),
             'k' => self.doMotion(self.vertical(true, self.eff())),
             '0' => self.doMotion(.{ .pos = .{ .row = self.cy, .col = 0 }, .kind = .exclusive, .col_mode = .exact }),
@@ -436,6 +475,8 @@ pub const Editor = struct {
     fn normalCtrl(self: *Editor, c: u8) void {
         switch (c) {
             'r' => self.redoChange(),
+            'n' => self.addCursor(true), // add a cursor on the line below
+            'p' => self.addCursor(false), // add a cursor on the line above
             'f' => self.pageMove(false),
             'b' => self.pageMove(true),
             'd' => {
@@ -517,6 +558,14 @@ pub const Editor = struct {
                 const n = self.eff();
                 self.resetPending();
                 try self.playMacro(reg, n);
+            },
+            .space_leader => {
+                self.resetPending();
+                if (k == .char) switch (k.char) {
+                    'f' => self.openFilePicker(),
+                    '/', 's' => self.openGrepPicker(),
+                    else => {},
+                };
             },
             .none => {},
         }
@@ -1108,6 +1157,25 @@ pub const Editor = struct {
     }
 
     fn insertKey(self: *Editor, k: key.Key) !void {
+        if (self.extra.items.len > 0) {
+            switch (k) {
+                .escape => {
+                    self.clearExtra();
+                    return self.insertKeyOne(k);
+                },
+                .enter => {
+                    self.clearExtra(); // a line split collapses to one cursor
+                    return self.insertKeyOne(k);
+                },
+                .char, .tab, .backspace, .delete => return self.multiInsert(k),
+                .up, .down, .left, .right, .home, .end => return self.multiInsertMove(k),
+                else => return self.insertKeyOne(k),
+            }
+        }
+        return self.insertKeyOne(k);
+    }
+
+    fn insertKeyOne(self: *Editor, k: key.Key) !void {
         if (self.moveKey(k)) return;
         switch (k) {
             .escape => {
@@ -1299,6 +1367,248 @@ pub const Editor = struct {
         self.resetPending();
     }
 
+    // === multiple cursors ==================================================
+
+    const Place = enum { at, after, home, end };
+
+    fn clearExtra(self: *Editor) void {
+        self.extra.clearRetainingCapacity();
+    }
+
+    fn addCursor(self: *Editor, below: bool) void {
+        var extreme = self.cy;
+        for (self.extra.items) |e| extreme = if (below) @max(extreme, e.row) else @min(extreme, e.row);
+        if (below) {
+            if (extreme + 1 >= self.buf.lineCount()) return;
+        } else {
+            if (extreme == 0) return;
+        }
+        const nr = if (below) extreme + 1 else extreme - 1;
+        if (nr == self.cy) return;
+        for (self.extra.items) |e| if (e.row == nr) return;
+        const col = byteAtDisplayCol(self.buf.line(nr), self.goal_col);
+        self.extra.append(self.gpa, .{ .row = nr, .col = col }) catch return;
+        self.setStatus("{d} cursors", .{self.extra.items.len + 1});
+        self.resetPending();
+    }
+
+    fn dedupeByLine(self: *Editor) void {
+        var i: usize = 0;
+        while (i < self.extra.items.len) {
+            const e = self.extra.items[i];
+            var dup = e.row == self.cy;
+            if (!dup) {
+                var j: usize = 0;
+                while (j < i) : (j += 1) {
+                    if (self.extra.items[j].row == e.row) {
+                        dup = true;
+                        break;
+                    }
+                }
+            }
+            if (dup) _ = self.extra.orderedRemove(i) else i += 1;
+        }
+        for (self.extra.items) |*e| {
+            const l = self.buf.line(e.row);
+            if (e.col > l.len) e.col = l.len;
+        }
+    }
+
+    /// Returns true if the key was handled across all cursors.
+    fn multiNormal(self: *Editor, k: key.Key) !bool {
+        switch (k) {
+            .escape => {
+                self.clearExtra();
+                self.resetPending();
+                return true;
+            },
+            .ctrl => |c| switch (c) {
+                'n' => {
+                    self.addCursor(true);
+                    return true;
+                },
+                'p' => {
+                    self.addCursor(false);
+                    return true;
+                },
+                else => return false,
+            },
+            .char => |c| switch (c) {
+                'h', 'l', 'j', 'k', '0', '$', 'w', 'b', 'e', 'W', 'B', 'E' => {
+                    self.multiMove(@intCast(c));
+                    return true;
+                },
+                'x' => {
+                    try self.multiX();
+                    return true;
+                },
+                'i' => {
+                    try self.enterInsertMulti(.at);
+                    return true;
+                },
+                'a' => {
+                    try self.enterInsertMulti(.after);
+                    return true;
+                },
+                'I' => {
+                    try self.enterInsertMulti(.home);
+                    return true;
+                },
+                'A' => {
+                    try self.enterInsertMulti(.end);
+                    return true;
+                },
+                else => return false,
+            },
+            .left => {
+                self.multiMove('h');
+                return true;
+            },
+            .right => {
+                self.multiMove('l');
+                return true;
+            },
+            .up => {
+                self.multiMove('k');
+                return true;
+            },
+            .down => {
+                self.multiMove('j');
+                return true;
+            },
+            .home => {
+                self.multiMove('0');
+                return true;
+            },
+            .end => {
+                self.multiMove('$');
+                return true;
+            },
+            else => return false,
+        }
+    }
+
+    fn multiMove(self: *Editor, c: u8) void {
+        self.setCursor(self.movedCaret(self.cursor(), c));
+        for (self.extra.items) |*e| e.* = self.movedCaret(e.*, c);
+        self.dedupeByLine();
+        self.resetPending();
+    }
+
+    fn movedCaret(self: *Editor, p: Pos, c: u8) Pos {
+        const line = self.buf.line(p.row);
+        return switch (c) {
+            'h' => .{ .row = p.row, .col = unicode.prevBoundary(line, p.col) },
+            'l' => .{ .row = p.row, .col = if (p.col < line.len) unicode.nextBoundary(line, p.col) else p.col },
+            '0' => .{ .row = p.row, .col = 0 },
+            '$' => .{ .row = p.row, .col = line.len },
+            'w' => motion.wordForward(&self.buf, p, false),
+            'W' => motion.wordForward(&self.buf, p, true),
+            'b' => motion.wordBackward(&self.buf, p, false),
+            'B' => motion.wordBackward(&self.buf, p, true),
+            'e' => motion.wordEnd(&self.buf, p, false),
+            'E' => motion.wordEnd(&self.buf, p, true),
+            'j' => self.vertCaret(p, true),
+            'k' => self.vertCaret(p, false),
+            else => p,
+        };
+    }
+
+    fn vertCaret(self: *Editor, p: Pos, down: bool) Pos {
+        if (down) {
+            if (p.row + 1 >= self.buf.lineCount()) return p;
+        } else {
+            if (p.row == 0) return p;
+        }
+        const nr = if (down) p.row + 1 else p.row - 1;
+        const goal = displayCol(self.buf.line(p.row), p.col);
+        return .{ .row = nr, .col = byteAtDisplayCol(self.buf.line(nr), goal) };
+    }
+
+    fn multiX(self: *Editor) !void {
+        self.pushUndo();
+        if (self.cx < self.curLine().len) try self.buf.deleteForward(self.cy, self.cx);
+        for (self.extra.items) |*e| {
+            if (e.col < self.buf.line(e.row).len) try self.buf.deleteForward(e.row, e.col);
+            const nl = self.buf.line(e.row);
+            if (e.col > nl.len) e.col = nl.len;
+        }
+        self.clampCursor();
+        self.updateGoal();
+        self.resetPending();
+    }
+
+    fn enterInsertMulti(self: *Editor, place: Place) !void {
+        self.pushUndo();
+        self.cx = self.insertCol(self.cy, self.cx, place);
+        for (self.extra.items) |*e| e.col = self.insertCol(e.row, e.col, place);
+        self.mode = .insert;
+        self.updateGoal();
+        self.resetPending();
+    }
+
+    fn insertCol(self: *Editor, row: usize, col: usize, place: Place) usize {
+        const line = self.buf.line(row);
+        return switch (place) {
+            .at => @min(col, line.len),
+            .after => if (col < line.len) unicode.nextBoundary(line, col) else col,
+            .home => motion.firstNonBlank(line),
+            .end => line.len,
+        };
+    }
+
+    fn multiInsert(self: *Editor, k: key.Key) !void {
+        try self.insertAtCaret(k);
+        for (self.extra.items) |*e| {
+            const sy = self.cy;
+            const sx = self.cx;
+            self.cy = e.row;
+            self.cx = e.col;
+            try self.insertAtCaret(k);
+            e.* = .{ .row = self.cy, .col = self.cx };
+            self.cy = sy;
+            self.cx = sx;
+        }
+        self.dedupeByLine();
+        self.updateGoal();
+    }
+
+    /// A within-line insert edit for one caret (never changes the line count,
+    /// so cursors on other lines stay valid).
+    fn insertAtCaret(self: *Editor, k: key.Key) !void {
+        switch (k) {
+            .char => |c| self.cx = try self.buf.insertCodepoint(self.cy, self.cx, c),
+            .tab => self.cx = try self.buf.insertCodepoint(self.cy, self.cx, '\t'),
+            .backspace => if (self.cx > 0) {
+                const p = try self.buf.deleteBackward(self.cy, self.cx);
+                self.cx = p.col;
+            },
+            .delete => if (self.cx < self.curLine().len) try self.buf.deleteForward(self.cy, self.cx),
+            else => {},
+        }
+    }
+
+    fn multiInsertMove(self: *Editor, k: key.Key) !void {
+        const c: u8 = switch (k) {
+            .left => 'h',
+            .right => 'l',
+            .up => 'k',
+            .down => 'j',
+            .home => '0',
+            .end => '$',
+            else => 0,
+        };
+        if (c == 0) return;
+        self.setCursor(self.movedCaret(self.cursor(), c));
+        for (self.extra.items) |*e| e.* = self.movedCaret(e.*, c);
+        self.dedupeByLine();
+    }
+
+    fn extraColAt(self: *Editor, row: usize) ?usize {
+        for (self.extra.items) |e| if (e.row == row) return e.col;
+        return null;
+    }
+
     // === search ============================================================
 
     fn runSearch(self: *Editor, query: []const u8, forward: bool) void {
@@ -1336,6 +1646,264 @@ pub const Editor = struct {
         }
         self.runSearch(word, forward);
         self.resetPending();
+    }
+
+    // === picker (file finder / global search) ==============================
+
+    fn openFilePicker(self: *Editor) void {
+        self.freePicker();
+        self.picker_kind = .files;
+        self.picker_sel = 0;
+        self.picker_scroll = 0;
+        self.walkInto(.files);
+        self.refilter();
+        self.mode = .picker;
+    }
+
+    fn openGrepPicker(self: *Editor) void {
+        self.freePicker();
+        self.picker_kind = .grep;
+        self.picker_sel = 0;
+        self.picker_scroll = 0;
+        self.walkInto(.grep);
+        self.mode = .picker;
+        self.refilter();
+    }
+
+    fn freePicker(self: *Editor) void {
+        for (self.picker_items.items) |it| {
+            self.gpa.free(it.display);
+            self.gpa.free(it.path);
+        }
+        self.picker_items.clearRetainingCapacity();
+        for (self.picker_files.items) |f| self.gpa.free(f);
+        self.picker_files.clearRetainingCapacity();
+        self.picker_filtered.clearRetainingCapacity();
+        self.picker_query.clearRetainingCapacity();
+    }
+
+    fn closePicker(self: *Editor) void {
+        self.freePicker();
+        self.mode = .normal;
+    }
+
+    /// Collect candidate files under the cwd, skipping build/VCS directories.
+    fn walkInto(self: *Editor, kind: PickerKind) void {
+        var dir = std.Io.Dir.cwd().openDir(self.io, ".", .{ .iterate = true }) catch return;
+        defer dir.close(self.io);
+        var w = dir.walkSelectively(self.gpa) catch return;
+        defer w.deinit();
+        while (true) {
+            const maybe = w.next(self.io) catch break;
+            const entry = maybe orelse break;
+            if (entry.kind == .directory) {
+                if (!ignoredDir(entry.basename)) w.enter(self.io, entry) catch {};
+                continue;
+            }
+            if (entry.kind != .file) continue;
+            const count = if (kind == .files) self.picker_items.items.len else self.picker_files.items.len;
+            if (count >= 5000) break;
+            const p = self.gpa.dupe(u8, entry.path) catch continue;
+            if (kind == .files) {
+                const disp = self.gpa.dupe(u8, entry.path) catch {
+                    self.gpa.free(p);
+                    continue;
+                };
+                self.picker_items.append(self.gpa, .{ .display = disp, .path = p, .line = 0 }) catch {
+                    self.gpa.free(p);
+                    self.gpa.free(disp);
+                };
+            } else {
+                self.picker_files.append(self.gpa, p) catch self.gpa.free(p);
+            }
+        }
+    }
+
+    fn onQueryChange(self: *Editor) void {
+        self.picker_sel = 0;
+        self.picker_scroll = 0;
+        self.refilter();
+    }
+
+    fn refilter(self: *Editor) void {
+        self.picker_filtered.clearRetainingCapacity();
+        if (self.picker_kind == .grep) {
+            self.regrep();
+            var i: usize = 0;
+            while (i < self.picker_items.items.len) : (i += 1) self.picker_filtered.append(self.gpa, i) catch {};
+            self.clampSel();
+            return;
+        }
+        const q = self.picker_query.items;
+        if (q.len == 0) {
+            var i: usize = 0;
+            while (i < self.picker_items.items.len) : (i += 1) self.picker_filtered.append(self.gpa, i) catch {};
+        } else {
+            var scored: std.ArrayList(Scored) = .empty;
+            defer scored.deinit(self.gpa);
+            for (self.picker_items.items, 0..) |it, i| {
+                if (fuzzy.score(it.path, q)) |s| scored.append(self.gpa, .{ .idx = i, .score = s }) catch {};
+            }
+            std.mem.sort(Scored, scored.items, {}, scoredLess);
+            for (scored.items) |s| self.picker_filtered.append(self.gpa, s.idx) catch {};
+        }
+        self.clampSel();
+    }
+
+    fn regrep(self: *Editor) void {
+        for (self.picker_items.items) |it| {
+            self.gpa.free(it.display);
+            self.gpa.free(it.path);
+        }
+        self.picker_items.clearRetainingCapacity();
+        const q = self.picker_query.items;
+        if (q.len == 0) return;
+        for (self.picker_files.items) |fpath| {
+            if (self.picker_items.items.len >= 500) break;
+            const data = std.Io.Dir.cwd().readFileAlloc(self.io, fpath, self.gpa, .limited(1 << 20)) catch continue;
+            defer self.gpa.free(data);
+            var line_no: usize = 1;
+            var it = std.mem.splitScalar(u8, data, '\n');
+            while (it.next()) |ln| : (line_no += 1) {
+                if (self.picker_items.items.len >= 500) break;
+                if (std.mem.indexOf(u8, ln, q) == null) continue;
+                var s = ln;
+                while (s.len > 0 and (s[0] == ' ' or s[0] == '\t')) s = s[1..];
+                const text = s[0..@min(s.len, 120)];
+                const disp = std.fmt.allocPrint(self.gpa, "{s}:{d}: {s}", .{ fpath, line_no, text }) catch continue;
+                const pp = self.gpa.dupe(u8, fpath) catch {
+                    self.gpa.free(disp);
+                    continue;
+                };
+                self.picker_items.append(self.gpa, .{ .display = disp, .path = pp, .line = line_no }) catch {
+                    self.gpa.free(disp);
+                    self.gpa.free(pp);
+                };
+            }
+        }
+    }
+
+    fn clampSel(self: *Editor) void {
+        if (self.picker_sel >= self.picker_filtered.items.len)
+            self.picker_sel = if (self.picker_filtered.items.len == 0) 0 else self.picker_filtered.items.len - 1;
+    }
+
+    fn selDelta(self: *Editor, down: bool) void {
+        if (self.picker_filtered.items.len == 0) return;
+        if (down) {
+            if (self.picker_sel + 1 < self.picker_filtered.items.len) self.picker_sel += 1;
+        } else {
+            if (self.picker_sel > 0) self.picker_sel -= 1;
+        }
+    }
+
+    fn pickerKey(self: *Editor, k: key.Key) !void {
+        switch (k) {
+            .escape => self.closePicker(),
+            .enter => try self.pickerOpen(),
+            .backspace => {
+                if (self.picker_query.items.len > 0) {
+                    self.picker_query.items.len = unicode.prevBoundary(self.picker_query.items, self.picker_query.items.len);
+                    self.onQueryChange();
+                }
+            },
+            .char => |c| {
+                var enc: [4]u8 = undefined;
+                const n = std.unicode.utf8Encode(c, &enc) catch return;
+                try self.picker_query.appendSlice(self.gpa, enc[0..n]);
+                self.onQueryChange();
+            },
+            .up => self.selDelta(false),
+            .down => self.selDelta(true),
+            .ctrl => |c| switch (c) {
+                'p' => self.selDelta(false),
+                'n' => self.selDelta(true),
+                'c' => self.closePicker(),
+                else => {},
+            },
+            else => {},
+        }
+    }
+
+    fn pickerOpen(self: *Editor) !void {
+        if (self.picker_filtered.items.len == 0) {
+            self.closePicker();
+            return;
+        }
+        const it = self.picker_items.items[self.picker_filtered.items[self.picker_sel]];
+        const path = self.gpa.dupe(u8, it.path) catch return;
+        defer self.gpa.free(path);
+        const line = if (it.line > 0) it.line - 1 else 0;
+        self.closePicker();
+        self.openFile(path, line);
+    }
+
+    fn openFile(self: *Editor, path: []const u8, line: usize) void {
+        if (self.buf.dirty) {
+            self.setStatus("unsaved changes — :w before opening another file", .{});
+            return;
+        }
+        const nb = buffer.Buffer.load(self.gpa, self.io, path) catch {
+            self.setStatus("cannot open {s}", .{path});
+            return;
+        };
+        self.buf.deinit();
+        self.buf = nb;
+        self.lang = syntax.detect(self.buf.path);
+        self.history.deinit();
+        self.history = undo.History.init(self.gpa);
+        self.clearExtra();
+        self.cy = @min(line, self.buf.lineCount() - 1);
+        self.cx = 0;
+        self.top = 0;
+        self.left = 0;
+        self.goal_col = 0;
+        self.setStatus("opened {s}", .{self.buf.path orelse ""});
+    }
+
+    fn renderPickerBody(self: *Editor) !void {
+        const th = theme.current;
+        const cols: usize = self.win.cols;
+        const rows: usize = self.win.rows;
+        const visible = if (rows > 1) rows - 1 else 1;
+
+        if (self.picker_sel < self.picker_scroll) self.picker_scroll = self.picker_sel;
+        if (self.picker_sel >= self.picker_scroll + visible) self.picker_scroll = self.picker_sel - visible + 1;
+
+        // Prompt line.
+        const klabel = if (self.picker_kind == .files) " FILES " else " SEARCH ";
+        try self.setBg(th.mode_command);
+        try self.setFg(th.bg);
+        try self.emit(klabel);
+        try self.setBg(th.bg);
+        try self.setFg(th.fg);
+        try self.emit(" ");
+        try self.emit(self.picker_query.items);
+        try self.emit(ansi.clear_line_right);
+        try self.emit("\r\n");
+
+        // Results.
+        var shown: usize = 0;
+        while (shown < visible) : (shown += 1) {
+            const fi = self.picker_scroll + shown;
+            const selected = fi == self.picker_sel and fi < self.picker_filtered.items.len;
+            try self.setBg(if (selected) th.cursorline else th.bg);
+            if (fi < self.picker_filtered.items.len) {
+                const it = self.picker_items.items[self.picker_filtered.items[fi]];
+                try self.setFg(if (selected) th.mode_normal else th.fg_dim);
+                try self.emit(if (selected) "\u{25B6} " else "  ");
+                try self.setFg(if (selected) th.fg else th.fg_dim);
+                const maxw = if (cols > 2) cols - 2 else 0;
+                try self.emit(it.display[0..@min(it.display.len, maxw)]);
+            }
+            try self.setBg(if (selected) th.cursorline else th.bg);
+            try self.emit(ansi.clear_line_right);
+            if (shown + 1 < visible) try self.emit("\r\n");
+        }
+
+        const promptw = klabel.len + 1;
+        try self.emitFmt("\x1b[{d};{d}H", .{ 1, promptw + unicode.displayWidth(self.picker_query.items) + 1 });
+        try self.emit(ansi.show_cursor);
     }
 
     // === command line ======================================================
@@ -1601,6 +2169,13 @@ pub const Editor = struct {
         try self.emit(ansi.cursor_home);
         try self.emit(ansi.reset_attrs);
 
+        if (self.mode == .picker) {
+            try self.renderPickerBody();
+            try self.term.write(self.frame.items);
+            sp.lap("render");
+            return;
+        }
+
         const rows = self.textRows();
         const gutter = self.gutterWidth();
         const cols = self.textCols();
@@ -1649,6 +2224,7 @@ pub const Editor = struct {
         if (self.style_buf.items.len == line.len) syntax.highlight(self.lang, line, self.style_buf.items);
 
         const sel = self.selectionRange(row);
+        const ecol = self.extraColAt(row);
         const first_nb = motion.firstNonBlank(line);
         const indent_cols = displayCol(line, first_nb);
 
@@ -1668,8 +2244,9 @@ pub const Editor = struct {
             if (start + w <= left) continue;
             if (start >= right) break;
 
+            const is_extra = if (ecol) |ec| byte == ec else false;
             const selected = if (sel) |s| (byte >= s.lo and byte < s.hi) else false;
-            try self.setBg(if (selected) th.selection else row_bg);
+            try self.setBg(if (is_extra) th.mode_normal else if (selected) th.selection else row_bg);
 
             if (d.cp == '\t' or d.cp == ' ' or start < left or start + w > right) {
                 var c = if (start < left) left else start;
@@ -1683,8 +2260,18 @@ pub const Editor = struct {
                 }
             } else {
                 const stl = if (byte < self.style_buf.items.len) self.style_buf.items[byte] else .normal;
-                try self.setFg(self.styleColor(stl));
+                try self.setFg(if (is_extra) th.bg else self.styleColor(stl));
                 try self.emit(bytes);
+            }
+        }
+        // A secondary cursor sitting at end-of-line has no char to invert.
+        if (ecol) |ec| {
+            if (ec == line.len) {
+                const eol = displayCol(line, line.len);
+                if (eol >= left and eol < right) {
+                    try self.setBg(th.mode_normal);
+                    try self.emit(" ");
+                }
             }
         }
     }
@@ -1747,6 +2334,17 @@ pub const Editor = struct {
         const th = theme.current;
         const cols: usize = self.win.cols;
 
+        // which-key leader menu.
+        if (self.await_arg == .space_leader) {
+            try self.setBg(th.status_bg);
+            try self.setFg(th.mode_command);
+            const menu = " SPACE   f find file    / search    Esc cancel";
+            const show = @min(menu.len, cols);
+            try self.emit(menu[0..show]);
+            try self.emitSpaces(cols - show);
+            return;
+        }
+
         // Command / search line: a simple prompt across the bar.
         if (self.mode == .command) {
             try self.setBg(th.status_bg);
@@ -1800,7 +2398,12 @@ pub const Editor = struct {
 
         // Middle: status message, else the in-progress command (showcmd).
         var mb: [256]u8 = undefined;
-        const middle = if (self.status.items.len > 0) self.status.items else self.pendingKeys(&mb);
+        const middle = if (self.status.items.len > 0)
+            self.status.items
+        else if (self.extra.items.len > 0)
+            (std.fmt.bufPrint(&mb, "{d} cursors", .{self.extra.items.len + 1}) catch "")
+        else
+            self.pendingKeys(&mb);
         const mid_w = if (cols > left_w + right_w) cols - left_w - right_w else 0;
         try self.setBg(th.status_bg);
         try self.setFg(th.fg_dim);
@@ -1828,7 +2431,7 @@ pub const Editor = struct {
             .normal => th.mode_normal,
             .insert => th.mode_insert,
             .visual, .visual_line => th.mode_visual,
-            .command => th.mode_command,
+            .command, .picker => th.mode_command,
         };
     }
 
@@ -1952,6 +2555,18 @@ fn isPair(open: u21, close: u21) bool {
 fn lastColumn(line: []const u8) usize {
     if (line.len == 0) return 0;
     return unicode.prevBoundary(line, line.len);
+}
+
+const Scored = struct { idx: usize, score: i32 };
+
+fn scoredLess(_: void, a: Scored, b: Scored) bool {
+    return a.score > b.score; // higher score first
+}
+
+fn ignoredDir(name: []const u8) bool {
+    const ignore = [_][]const u8{ ".git", "zig-cache", ".zig-cache", "zig-out", "node_modules", "target", ".cache" };
+    for (ignore) |g| if (std.mem.eql(u8, name, g)) return true;
+    return name.len > 0 and name[0] == '.'; // hidden directories
 }
 
 fn langName(l: syntax.Language) []const u8 {
