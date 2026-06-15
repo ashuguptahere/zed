@@ -36,13 +36,13 @@ def send(obj):
     sys.stdout.buffer.write(data)
     sys.stdout.buffer.flush()
 
-def diagnostics():
+def diag(message, line, severity=1):
     send({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {
         "uri": "x",
         "diagnostics": [{
-            "range": {"start": {"line": 1, "character": 0}, "end": {"line": 1, "character": 3}},
-            "severity": 1,
-            "message": "mock error",
+            "range": {"start": {"line": line, "character": 0}, "end": {"line": line, "character": 1}},
+            "severity": severity,
+            "message": message,
         }],
     }})
 
@@ -52,9 +52,22 @@ while True:
         break
     method = m.get("method")
     if method == "initialize":
-        send({"jsonrpc": "2.0", "id": m["id"], "result": {"capabilities": {}}})
-    elif method in ("textDocument/didOpen", "textDocument/didChange"):
-        diagnostics()
+        send({"jsonrpc": "2.0", "id": m["id"], "result": {"capabilities": {
+            "textDocumentSync": 2,            # 2 = incremental
+            "completionProvider": {},
+        }}})
+    elif method == "textDocument/didOpen":
+        diag("mock error", 1)
+    elif method == "textDocument/didChange":
+        # Report which sync kind we received, so the test can verify incremental.
+        changes = m["params"]["contentChanges"]
+        kind = "INCREMENTAL" if (changes and "range" in changes[0]) else "FULL"
+        diag(kind, 0, severity=2)
+    elif method == "textDocument/completion":
+        send({"jsonrpc": "2.0", "id": m["id"], "result": {"items": [
+            {"label": "mockComplete", "insertText": "mockComplete"},
+            {"label": "mockOther", "insertText": "mockOther"},
+        ]}})
     elif method == "textDocument/hover":
         send({"jsonrpc": "2.0", "id": m["id"], "result": {"contents": "mock hover"}})
     elif method == "textDocument/definition":

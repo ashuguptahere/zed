@@ -203,7 +203,11 @@ pub const Editor = struct {
     // language server
     lsp_cmd: ?[]const u8, // override command, else a per-language default
     lsp: ?lsp.Client,
-    lsp_sent: std.ArrayList(u8), // last content sent, to avoid redundant didChange
+    lsp_rev: u64, // buffer revision last sent via didChange
+    // completion popup (insert mode)
+    comp_open: bool,
+    comp_filtered: std.ArrayList(usize), // indices into lsp.completions matching the prefix
+    comp_sel: usize,
 
     quit: bool,
     inbuf: [256]u8,
@@ -271,7 +275,10 @@ pub const Editor = struct {
             .ts_q_rows = 0,
             .lsp_cmd = lsp_cmd,
             .lsp = null,
-            .lsp_sent = .empty,
+            .lsp_rev = 0,
+            .comp_open = false,
+            .comp_filtered = .empty,
+            .comp_sel = 0,
             .quit = false,
             .inbuf = undefined,
         };
@@ -294,7 +301,7 @@ pub const Editor = struct {
         self.ts_styles.deinit(self.gpa);
         self.ts_line_starts.deinit(self.gpa);
         if (self.lsp) |*c| c.deinit();
-        self.lsp_sent.deinit(self.gpa);
+        self.comp_filtered.deinit(self.gpa);
         self.extra.deinit(self.gpa);
         self.freePicker();
         self.picker_items.deinit(self.gpa);
@@ -1358,22 +1365,70 @@ pub const Editor = struct {
     }
 
     fn insertKey(self: *Editor, k: key.Key) !void {
+        // While the completion popup is open it claims navigation/accept keys;
+        // text edits fall through and then re-filter the list.
+        if (self.comp_open and try self.completionIntercept(k)) return;
+
         if (self.extra.items.len > 0) {
             switch (k) {
                 .escape => {
                     self.clearExtra();
-                    return self.insertKeyOne(k);
+                    try self.insertKeyOne(k);
                 },
                 .enter => {
                     self.clearExtra(); // a line split collapses to one cursor
-                    return self.insertKeyOne(k);
+                    try self.insertKeyOne(k);
                 },
-                .char, .tab, .backspace, .delete => return self.multiInsert(k),
-                .up, .down, .left, .right, .home, .end => return self.multiInsertMove(k),
-                else => return self.insertKeyOne(k),
+                .char, .tab, .backspace, .delete => try self.multiInsert(k),
+                .up, .down, .left, .right, .home, .end => try self.multiInsertMove(k),
+                else => try self.insertKeyOne(k),
             }
+        } else {
+            try self.insertKeyOne(k);
         }
-        return self.insertKeyOne(k);
+        if (self.comp_open) self.filterCompletions();
+    }
+
+    /// Returns true if the key was consumed by the open completion popup.
+    /// Text-editing keys return false so they edit, then `insertKey` re-filters.
+    fn completionIntercept(self: *Editor, k: key.Key) !bool {
+        switch (k) {
+            .ctrl => |c| switch (c) {
+                'n' => {
+                    self.compMove(true);
+                    return true;
+                },
+                'p' => {
+                    self.compMove(false);
+                    return true;
+                },
+                else => {
+                    self.comp_open = false;
+                    return false;
+                },
+            },
+            .down => {
+                self.compMove(true);
+                return true;
+            },
+            .up => {
+                self.compMove(false);
+                return true;
+            },
+            .tab, .enter => {
+                self.acceptCompletion();
+                return true;
+            },
+            .escape => {
+                self.comp_open = false;
+                return true; // dismiss only; stay in insert mode
+            },
+            .char, .backspace, .delete => return false, // edit, then re-filter
+            else => {
+                self.comp_open = false;
+                return false;
+            },
+        }
     }
 
     fn insertKeyOne(self: *Editor, k: key.Key) !void {
@@ -1381,6 +1436,7 @@ pub const Editor = struct {
         switch (k) {
             .escape => {
                 self.mode = .normal;
+                self.comp_open = false;
                 if (self.cx > 0) self.cx = unicode.prevBoundary(self.curLine(), self.cx);
                 self.updateGoal();
             },
@@ -1397,6 +1453,7 @@ pub const Editor = struct {
                 self.updateGoal();
             },
             .char => |c| try self.insertChar(c),
+            .ctrl => |c| if (c == 'n') self.lspCompletion(), // request completion
             else => {},
         }
     }
@@ -2461,25 +2518,24 @@ pub const Editor = struct {
 
         self.lsp = lsp.Client.start(self.gpa, self.io, argv_store[0..argc], cwd, uri_buf.items, langId(self.lang), content);
         if (self.lsp != null) {
-            self.lsp_sent.clearRetainingCapacity();
-            self.lsp_sent.appendSlice(self.gpa, content) catch {};
+            self.lsp_rev = self.buf.revision;
             self.setStatus("language server started", .{});
         }
     }
 
-    /// Tell the server about edits, but only when the content actually changed.
+    /// Tell the server about edits, but only when the content actually changed
+    /// (the client picks incremental vs. full based on the server's capability).
     fn syncLsp(self: *Editor) void {
         var client = if (self.lsp) |*c| c else return;
-        if (!client.alive or !self.buf.dirty) return;
+        if (!client.alive or self.buf.revision == self.lsp_rev) return;
         const content = self.buf.toBytes(self.gpa) catch return;
         defer self.gpa.free(content);
-        if (std.mem.eql(u8, content, self.lsp_sent.items)) return;
         client.didChange(content);
-        self.lsp_sent.clearRetainingCapacity();
-        self.lsp_sent.appendSlice(self.gpa, content) catch {};
+        self.lsp_rev = self.buf.revision;
     }
 
-    /// Act on hover / goto-definition responses pushed by the server.
+    /// Act on responses pushed by the server: hover, goto-definition, and a
+    /// completion list (which opens the popup).
     fn consumeLspResults(self: *Editor) !void {
         var client = if (self.lsp) |*c| c else return;
         if (client.takeHover()) |text| {
@@ -2489,12 +2545,17 @@ pub const Editor = struct {
         }
         if (client.takeDefinition()) |loc| {
             defer self.gpa.free(loc.uri);
-            const local = std.mem.startsWith(u8, loc.uri, "file://") and self.lsp != null;
-            _ = local;
             self.cy = @min(loc.line, self.buf.lineCount() - 1);
-            self.cx = byteAtDisplayCol(self.curLine(), 0);
             self.cx = @min(loc.col, self.curLine().len);
             self.updateGoal();
+        }
+        if (client.comp_ready) {
+            client.comp_ready = false;
+            if (self.mode == .insert and client.completions.items.len > 0) {
+                self.comp_open = true;
+                self.comp_sel = 0;
+                self.filterCompletions();
+            }
         }
     }
 
@@ -2518,6 +2579,63 @@ pub const Editor = struct {
 
     fn lspDefinition(self: *Editor) void {
         if (self.lsp) |*c| c.requestDefinition(self.cy, self.charCol());
+    }
+
+    fn lspCompletion(self: *Editor) void {
+        if (self.lsp) |*c| c.requestCompletion(self.cy, self.charCol());
+    }
+
+    /// The identifier run immediately before the cursor (what completion filters
+    /// on and what `acceptCompletion` replaces).
+    fn completionPrefix(self: *Editor) []const u8 {
+        const line = self.curLine();
+        var start = self.cx;
+        while (start > 0) {
+            const p = unicode.prevBoundary(line, start);
+            if (!isIdentCp(unicode.decode(line[p..]).cp)) break;
+            start = p;
+        }
+        return line[start..self.cx];
+    }
+
+    fn compMove(self: *Editor, down: bool) void {
+        const n = self.comp_filtered.items.len;
+        if (n == 0) return;
+        if (down) {
+            if (self.comp_sel + 1 < n) self.comp_sel += 1;
+        } else if (self.comp_sel > 0) self.comp_sel -= 1;
+    }
+
+    /// Rebuild the visible completion list from the prefix under the cursor;
+    /// closes the popup if nothing matches.
+    fn filterCompletions(self: *Editor) void {
+        self.comp_filtered.clearRetainingCapacity();
+        const client = if (self.lsp) |*c| c else {
+            self.comp_open = false;
+            return;
+        };
+        const prefix = self.completionPrefix();
+        for (client.completions.items, 0..) |it, i| {
+            if (prefix.len == 0 or startsWithCI(it.label, prefix)) self.comp_filtered.append(self.gpa, i) catch {};
+        }
+        if (self.comp_filtered.items.len == 0) {
+            self.comp_open = false;
+        } else if (self.comp_sel >= self.comp_filtered.items.len) {
+            self.comp_sel = self.comp_filtered.items.len - 1;
+        }
+    }
+
+    /// Replace the prefix under the cursor with the selected completion.
+    fn acceptCompletion(self: *Editor) void {
+        defer self.comp_open = false;
+        const client = if (self.lsp) |*c| c else return;
+        if (self.comp_sel >= self.comp_filtered.items.len) return;
+        const item = client.completions.items[self.comp_filtered.items[self.comp_sel]];
+        const start = self.cx - self.completionPrefix().len;
+        self.buf.deleteInLine(self.cy, start, self.cx) catch {};
+        self.buf.insertBytes(self.cy, start, item.insert) catch {};
+        self.cx = start + item.insert.len;
+        self.updateGoal();
     }
 
     fn undoChange(self: *Editor) void {
@@ -2707,6 +2825,7 @@ pub const Editor = struct {
 
         try self.renderStatus();
         if (self.await_arg == .space_leader) try self.renderWhichKey();
+        if (self.comp_open) try self.renderCompletion(gutter);
         try self.emit(ansi.reset_attrs);
         try self.placeCursor(gutter);
         try self.emit(ansi.show_cursor);
@@ -2748,6 +2867,50 @@ pub const Editor = struct {
             try self.emit(it.desc);
             const used = 2 + it.key.len + 2 + it.desc.len;
             if (used < width) try self.emitSpaces(width - used);
+        }
+    }
+
+    /// Completion popup, anchored under the cursor (or above if near the bottom).
+    fn renderCompletion(self: *Editor, gutter: usize) !void {
+        const th = theme.current;
+        const client = if (self.lsp) |*c| c else return;
+        const items = self.comp_filtered.items;
+        if (items.len == 0) return;
+
+        const rows = self.textRows();
+        const max_h: usize = 8;
+        const height = @min(items.len, max_h);
+
+        // Scroll the window so the selection is visible.
+        const first = if (self.comp_sel >= height) self.comp_sel - height + 1 else 0;
+
+        // Longest visible label sets the box width (capped).
+        var width: usize = 10;
+        var vi: usize = 0;
+        while (vi < height and first + vi < items.len) : (vi += 1) {
+            const label = client.completions.items[items[first + vi]].label;
+            width = @max(width, @min(label.len + 2, 40));
+        }
+
+        const cur_row = (self.cy - self.top) + 1; // 1-based screen row of cursor
+        const cur_col = gutter + (displayCol(self.curLine(), self.cx) - self.left) + 1;
+        // Below the cursor if it fits, else above.
+        const start_row = if (cur_row + height < rows) cur_row + 1 else (if (cur_row > height) cur_row - height else 1);
+        const col = @max(@as(usize, 1), cur_col);
+
+        var b: [16]u8 = undefined;
+        var i: usize = 0;
+        while (i < height) : (i += 1) {
+            const idx = first + i;
+            const selected = idx == self.comp_sel;
+            try self.emit(try std.fmt.bufPrint(&b, "\x1b[{d};{d}H", .{ start_row + i, col }));
+            try self.setBg(if (selected) th.selection else th.status_seg_bg);
+            try self.setFg(if (selected) th.fg else th.status_seg_fg);
+            const label = client.completions.items[items[idx]].label;
+            try self.emit(" ");
+            const shown = @min(label.len, width - 1);
+            try self.emit(label[0..shown]);
+            if (shown + 1 < width) try self.emitSpaces(width - shown - 1);
         }
     }
 
@@ -3139,6 +3302,22 @@ fn markIndex(k: key.Key) ?usize {
     const b = charByte(k) orelse return null;
     if (b >= 'a' and b <= 'z') return b - 'a';
     return null;
+}
+
+fn isIdentCp(cp: u21) bool {
+    return cp == '_' or (cp >= '0' and cp <= '9') or (cp >= 'a' and cp <= 'z') or (cp >= 'A' and cp <= 'Z') or cp >= 0x80;
+}
+
+fn startsWithCI(haystack: []const u8, prefix: []const u8) bool {
+    if (prefix.len > haystack.len) return false;
+    for (prefix, 0..) |c, i| {
+        if (lowerAscii(haystack[i]) != lowerAscii(c)) return false;
+    }
+    return true;
+}
+
+fn lowerAscii(c: u8) u8 {
+    return if (c >= 'A' and c <= 'Z') c - 'A' + 'a' else c;
 }
 
 fn toggleAscii(cp: u21) u21 {

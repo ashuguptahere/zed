@@ -11,6 +11,7 @@
 
 const std = @import("std");
 const posix = std.posix;
+const unicode = @import("unicode.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Diagnostic = struct {
@@ -20,6 +21,8 @@ pub const Diagnostic = struct {
 };
 
 pub const Location = struct { uri: []u8, line: usize, col: usize };
+
+pub const Completion = struct { label: []u8, insert: []u8 };
 
 pub const Client = struct {
     gpa: Allocator,
@@ -36,10 +39,15 @@ pub const Client = struct {
     diags: std.ArrayList(Diagnostic),
 
     init_done: bool,
+    incremental: bool, // server supports incremental textDocument/didChange
+    doc: std.ArrayList(u8), // mirror of the open document, for diffing changes
     hover_id: i64,
     def_id: i64,
+    comp_id: i64,
     hover_text: ?[]u8, // pending hover result for the editor to show
     def_target: ?Location, // pending goto-definition result
+    completions: std.ArrayList(Completion), // last completion result
+    comp_ready: bool, // a completion response just arrived (editor should consume)
 
     pub fn start(
         gpa: Allocator,
@@ -70,10 +78,15 @@ pub const Client = struct {
             .read_buf = .empty,
             .diags = .empty,
             .init_done = false,
+            .incremental = false,
+            .doc = .empty,
             .hover_id = -1,
             .def_id = -1,
+            .comp_id = -1,
             .hover_text = null,
             .def_target = null,
+            .completions = .empty,
+            .comp_ready = false,
         };
 
         self.sendInitialize(root);
@@ -95,8 +108,11 @@ pub const Client = struct {
         self.child.kill(self.io);
         self.gpa.free(self.uri);
         self.read_buf.deinit(self.gpa);
+        self.doc.deinit(self.gpa);
         self.clearDiags();
         self.diags.deinit(self.gpa);
+        self.clearCompletions();
+        self.completions.deinit(self.gpa);
         if (self.hover_text) |t| self.gpa.free(t);
         if (self.def_target) |d| self.gpa.free(d.uri);
     }
@@ -106,6 +122,14 @@ pub const Client = struct {
         self.diags.clearRetainingCapacity();
     }
 
+    fn clearCompletions(self: *Client) void {
+        for (self.completions.items) |it| {
+            self.gpa.free(it.label);
+            self.gpa.free(it.insert);
+        }
+        self.completions.clearRetainingCapacity();
+    }
+
     // --- outgoing ----------------------------------------------------------
 
     fn sendInitialize(self: *Client, root: []const u8) void {
@@ -113,7 +137,7 @@ pub const Client = struct {
         defer body.deinit(self.gpa);
         body.appendSlice(self.gpa, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"processId\":null,\"rootUri\":\"file://") catch return;
         appendEscaped(&body, self.gpa, root) catch return;
-        body.appendSlice(self.gpa, "\",\"capabilities\":{\"textDocument\":{\"publishDiagnostics\":{},\"hover\":{},\"definition\":{}}}}}") catch return;
+        body.appendSlice(self.gpa, "\",\"capabilities\":{\"textDocument\":{\"publishDiagnostics\":{},\"hover\":{},\"definition\":{},\"completion\":{}}}}}") catch return;
         self.writeMessage(body.items);
     }
 
@@ -129,22 +153,73 @@ pub const Client = struct {
         appendEscaped(&body, a, content) catch return;
         body.appendSlice(a, "\"}}}") catch return;
         self.writeMessage(body.items);
+        self.rememberDoc(content);
     }
 
+    /// Notify the server of an edit. Sends an incremental change (just the
+    /// edited range) when the server supports it, else the full document.
     pub fn didChange(self: *Client, content: []const u8) void {
         if (!self.alive) return;
         self.version += 1;
+        if (self.incremental) self.sendDidChangeIncremental(content) else self.sendDidChangeFull(content);
+        self.rememberDoc(content);
+    }
+
+    fn sendDidChangeFull(self: *Client, content: []const u8) void {
         var body: std.ArrayList(u8) = .empty;
         defer body.deinit(self.gpa);
         const a = self.gpa;
-        body.appendSlice(a, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didChange\",\"params\":{\"textDocument\":{\"uri\":\"") catch return;
-        appendEscaped(&body, a, self.uri) catch return;
-        var nb: [32]u8 = undefined;
-        body.appendSlice(a, std.fmt.bufPrint(&nb, "\",\"version\":{d}", .{self.version}) catch return) catch return;
-        body.appendSlice(a, "},\"contentChanges\":[{\"text\":\"") catch return;
+        self.changeHeader(&body) catch return;
+        body.appendSlice(a, "\"text\":\"") catch return;
         appendEscaped(&body, a, content) catch return;
         body.appendSlice(a, "\"}]}}") catch return;
         self.writeMessage(body.items);
+    }
+
+    fn sendDidChangeIncremental(self: *Client, content: []const u8) void {
+        const old = self.doc.items;
+        // Common prefix/suffix -> a single changed range [start, old_end).
+        const min = @min(old.len, content.len);
+        var p: usize = 0;
+        while (p < min and old[p] == content[p]) p += 1;
+        var s: usize = 0;
+        while (s < min - p and old[old.len - 1 - s] == content[content.len - 1 - s]) s += 1;
+        const old_end = old.len - s;
+        const new_text = content[p .. content.len - s];
+
+        const start_pos = utf16Pos(old, p);
+        const end_pos = utf16Pos(old, old_end);
+
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(self.gpa);
+        const a = self.gpa;
+        self.changeHeader(&body) catch return;
+        var nb: [128]u8 = undefined;
+        body.appendSlice(a, std.fmt.bufPrint(&nb, "\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}},\"text\":\"", .{ start_pos.line, start_pos.character, end_pos.line, end_pos.character }) catch return) catch return;
+        appendEscaped(&body, a, new_text) catch return;
+        body.appendSlice(a, "\"}]}}") catch return;
+        self.writeMessage(body.items);
+    }
+
+    /// Writes the didChange envelope up to (but not including) the first
+    /// contentChange's fields: `...{"uri":...,"version":N},"contentChanges":[{`
+    fn changeHeader(self: *Client, body: *std.ArrayList(u8)) !void {
+        const a = self.gpa;
+        try body.appendSlice(a, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didChange\",\"params\":{\"textDocument\":{\"uri\":\"");
+        try appendEscaped(body, a, self.uri);
+        var nb: [32]u8 = undefined;
+        try body.appendSlice(a, std.fmt.bufPrint(&nb, "\",\"version\":{d}", .{self.version}) catch return);
+        try body.appendSlice(a, "},\"contentChanges\":[{");
+    }
+
+    fn rememberDoc(self: *Client, content: []const u8) void {
+        self.doc.clearRetainingCapacity();
+        self.doc.appendSlice(self.gpa, content) catch self.doc.clearRetainingCapacity();
+    }
+
+    pub fn requestCompletion(self: *Client, line: usize, col: usize) void {
+        self.comp_id = self.nextId();
+        self.sendPositionRequest(self.comp_id, "textDocument/completion", line, col);
     }
 
     pub fn requestHover(self: *Client, line: usize, col: usize) void {
@@ -242,13 +317,55 @@ pub const Client = struct {
             return;
         }
         const id = if (obj.get("id")) |v| (if (v == .integer) v.integer else return) else return;
+        const result_opt = obj.get("result");
         if (id == 1) { // response to our `initialize`
             self.init_done = true;
+            if (result_opt) |r| self.parseServerCaps(r);
             return;
         }
-        const result = obj.get("result") orelse return;
+        const result = result_opt orelse return;
         if (id == self.hover_id) self.handleHover(result);
         if (id == self.def_id) self.handleDefinition(result);
+        if (id == self.comp_id) self.handleCompletion(result);
+    }
+
+    /// Read the server's `textDocumentSync` to decide full vs. incremental
+    /// change notifications (it may be an integer or `{change: int}`).
+    fn parseServerCaps(self: *Client, result: std.json.Value) void {
+        const caps = getField(result, "capabilities") orelse return;
+        const sync = getField(caps, "textDocumentSync") orelse return;
+        const change: i64 = switch (sync) {
+            .integer => |i| i,
+            .object => asInt(getField(sync, "change")) orelse 0,
+            else => 0,
+        };
+        self.incremental = (change == 2);
+    }
+
+    fn handleCompletion(self: *Client, result: std.json.Value) void {
+        self.clearCompletions();
+        // result is a CompletionList {items: [...]}, a bare array, or null.
+        const items = switch (result) {
+            .array => result,
+            .object => getField(result, "items") orelse return,
+            else => return,
+        };
+        if (items != .array) return;
+        for (items.array.items) |it| {
+            if (self.completions.items.len >= 400) break;
+            const label = asStr(getField(it, "label")) orelse continue;
+            const insert = asStr(getField(it, "insertText")) orelse label;
+            const l = self.gpa.dupe(u8, label) catch continue;
+            const ins = self.gpa.dupe(u8, insert) catch {
+                self.gpa.free(l);
+                continue;
+            };
+            self.completions.append(self.gpa, .{ .label = l, .insert = ins }) catch {
+                self.gpa.free(l);
+                self.gpa.free(ins);
+            };
+        }
+        self.comp_ready = true;
     }
 
     fn updateDiagnostics(self: *Client, params: std.json.Value) void {
@@ -337,6 +454,26 @@ pub const Client = struct {
 };
 
 // --- helpers ---------------------------------------------------------------
+
+/// Byte offset -> LSP position (0-based line; character in UTF-16 code units,
+/// which is what LSP uses — exact for BMP text, correct surrogate width above).
+fn utf16Pos(content: []const u8, byte: usize) struct { line: u32, character: u32 } {
+    var line: u32 = 0;
+    var col: u32 = 0;
+    var i: usize = 0;
+    while (i < byte and i < content.len) {
+        if (content[i] == '\n') {
+            line += 1;
+            col = 0;
+            i += 1;
+            continue;
+        }
+        const d = unicode.decode(content[i..]);
+        col += if (d.cp > 0xFFFF) 2 else 1;
+        i += d.len;
+    }
+    return .{ .line = line, .character = col };
+}
 
 fn getField(v: std.json.Value, key: []const u8) ?std.json.Value {
     if (v != .object) return null;
