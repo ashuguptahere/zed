@@ -46,6 +46,7 @@ def diag(message, line, severity=1):
         }],
     }})
 
+doc_uri = None
 while True:
     m = read_msg()
     if m is None:
@@ -58,6 +59,7 @@ while True:
             "signatureHelpProvider": {"triggerCharacters": ["(", ","]},
         }}})
     elif method == "textDocument/didOpen":
+        doc_uri = m["params"]["textDocument"]["uri"]
         diag("mock error", 1)
     elif method == "textDocument/didChange":
         # Report which sync kind we received, so the test can verify incremental.
@@ -104,6 +106,16 @@ while True:
             ]}}},
             {"title": "Run mock command", "command": "mock.run"},
         ]})
+    elif method == "workspace/executeCommand":
+        # Drive an edit through a server-initiated applyEdit (line 1: "b" -> "B"),
+        # then answer the command itself.
+        if m["params"].get("command") == "mock.run" and doc_uri:
+            send({"jsonrpc": "2.0", "id": 999, "method": "workspace/applyEdit", "params": {"edit": {"changes": {doc_uri: [
+                {"range": {"start": {"line": 1, "character": 6},
+                           "end": {"line": 1, "character": 7}},
+                 "newText": "B"},
+            ]}}}})
+        send({"jsonrpc": "2.0", "id": m["id"], "result": None})
     elif method == "textDocument/hover":
         send({"jsonrpc": "2.0", "id": m["id"], "result": {"contents": "mock hover"}})
     elif method == "textDocument/definition":

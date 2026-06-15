@@ -2686,6 +2686,11 @@ pub const Editor = struct {
                 if (client.code_actions.items.len > 0) self.openCodeActionPicker() else self.setStatus("no code actions", .{});
             }
         }
+        if (client.apply_ready) {
+            client.apply_ready = false;
+            _ = try self.applyEdits(client.server_edits.items); // workspace/applyEdit
+            client.clearServerEdits();
+        }
     }
 
     /// Codepoint column of the cursor (an approximation of the UTF-16 column
@@ -2725,15 +2730,20 @@ pub const Editor = struct {
         client.requestCodeAction(self.cy, 0, self.cy, cols); // the whole current line
     }
 
-    /// Apply the picked code action: its inline edits, or a note that it is
-    /// command-based (which the editor doesn't execute).
+    /// Apply the picked code action: its inline edits, then run its command (if
+    /// any) via executeCommand — the server's resulting workspace/applyEdit is
+    /// handled asynchronously.
     fn applyCodeAction(self: *Editor, idx: usize) !void {
         const client = if (self.lsp) |*c| c else return;
         if (idx >= client.code_actions.items.len) return;
         const action = client.code_actions.items[idx];
-        if (action.edits.len == 0) return self.setStatus("'{s}' needs a command (unsupported)", .{action.title});
-        const n = try self.applyEdits(action.edits);
-        self.setStatus("applied: {s} ({d} edit(s))", .{ action.title, n });
+        if (action.edits.len > 0) _ = try self.applyEdits(action.edits);
+        if (action.command) |cmd| client.executeCommand(cmd, action.arguments);
+        if (action.edits.len == 0 and action.command == null) {
+            self.setStatus("'{s}': nothing to apply", .{action.title});
+        } else {
+            self.setStatus("applied: {s}", .{action.title});
+        }
     }
 
     /// Apply a rename's edits to the buffer.

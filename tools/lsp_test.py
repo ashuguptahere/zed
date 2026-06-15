@@ -5,7 +5,7 @@ Runs zed with --lsp pointing at tools/mock_lsp.py and checks the rendered output
 for diagnostics (count/sign/message), hover, incremental didChange, completion
 (popup + accept), signature help (popup + active-parameter highlight + overload
 cycling), rename (prompt + applied edits) and code actions (picker + applied
-edit).
+inline edit + executeCommand/applyEdit).
 """
 import os, pty, select, sys, time, fcntl, termios, struct, re
 
@@ -119,6 +119,12 @@ plain = ANSI.sub(b"", out)
 check("code action picker labelled", b"ACTIONS" in plain)
 check("code action titles listed", b"Rename a to A" in plain and b"Run mock command" in plain)
 check("code action edit applied to buffer", "const A = 1;" in text)
+
+# Command-based action: select the second action (Ctrl-n then Enter). It runs
+# executeCommand, the server replies with a workspace/applyEdit, and the editor
+# applies it (line 1: "b" -> "B") and answers the request.
+out, text = run([(b"ga", 0.8), (b"\x0e", 0.3), (b"\r", 1.0)], final=b"\x1b:wq\r")
+check("executeCommand applyEdit applied to buffer", "const B = 2;" in text)
 
 print()
 print("ALL PASS" if fails == 0 else f"{fails} FAILURE(S)")

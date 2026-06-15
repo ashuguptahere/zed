@@ -242,10 +242,11 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   the open file (the editor is single-buffer): rename and code actions apply
   only the WorkspaceEdit entries for the current URI, and only single-line edits.
   Code actions are requested for the current line with an empty diagnostics
-  context (diagnostic ranges aren't stored), and command-based actions (no inline
-  `edit`) are listed but not executed — there's no `workspace/executeCommand` /
-  `applyEdit`. Signature help triggers on `(`/`,`; `Ctrl-p` cycles overloads when
-  the server returns several.
+  context (diagnostic ranges aren't stored); command-based actions run via
+  `workspace/executeCommand`, and a server-initiated `workspace/applyEdit` is
+  applied (and answered) — its single-line, current-file edits, like the rest.
+  Signature help triggers on `(`/`,`; `Ctrl-p` cycles overloads when the server
+  returns several.
 - Tree-sitter highlighting is wired for Zig, C, Python, JSON, JavaScript, TypeScript, Rust,
   Go, HTML and Markdown (the vendored grammars); other files use the lexer. Parsing is incremental (the prior
   tree is reused via a prefix/suffix diff) and the highlight query runs only over the

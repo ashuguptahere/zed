@@ -41,12 +41,14 @@ pub const TextEdit = struct {
     text: []u8,
 };
 
-/// A code action offered by the server. `edits` are the WorkspaceEdit entries
-/// for the open file; an empty slice means the action is command-based (which
-/// the editor does not execute) rather than a direct edit.
+/// A code action offered by the server. `edits` are the inline WorkspaceEdit
+/// entries for the open file; `command`/`arguments` (when present) are run via
+/// `workspace/executeCommand`. An action may carry either, both, or neither.
 pub const CodeAction = struct {
     title: []u8,
     edits: []TextEdit,
+    command: ?[]u8 = null, // command id for executeCommand
+    arguments: ?[]u8 = null, // serialized JSON arguments array
 };
 
 pub const Client = struct {
@@ -83,6 +85,8 @@ pub const Client = struct {
     ca_id: i64,
     code_actions: std.ArrayList(CodeAction), // last code-action result
     ca_ready: bool, // a codeAction response just arrived (editor should consume)
+    server_edits: std.ArrayList(TextEdit), // edits from a workspace/applyEdit request
+    apply_ready: bool, // a workspace/applyEdit just arrived (editor should apply)
 
     pub fn start(
         gpa: Allocator,
@@ -132,6 +136,8 @@ pub const Client = struct {
             .ca_id = -1,
             .code_actions = .empty,
             .ca_ready = false,
+            .server_edits = .empty,
+            .apply_ready = false,
         };
 
         self.sendInitialize(root);
@@ -164,6 +170,8 @@ pub const Client = struct {
         self.edits.deinit(self.gpa);
         self.clearCodeActions();
         self.code_actions.deinit(self.gpa);
+        self.clearServerEdits();
+        self.server_edits.deinit(self.gpa);
         if (self.hover_text) |t| self.gpa.free(t);
         if (self.def_target) |d| self.gpa.free(d.uri);
     }
@@ -197,8 +205,15 @@ pub const Client = struct {
             self.gpa.free(a.title);
             for (a.edits) |e| self.gpa.free(e.text);
             self.gpa.free(a.edits);
+            if (a.command) |c| self.gpa.free(c);
+            if (a.arguments) |args| self.gpa.free(args);
         }
         self.code_actions.clearRetainingCapacity();
+    }
+
+    pub fn clearServerEdits(self: *Client) void {
+        for (self.server_edits.items) |e| self.gpa.free(e.text);
+        self.server_edits.clearRetainingCapacity();
     }
 
     // --- outgoing ----------------------------------------------------------
@@ -324,6 +339,26 @@ pub const Client = struct {
         self.writeMessage(body.items);
     }
 
+    /// Run a code action's command. The server typically responds by sending a
+    /// `workspace/applyEdit` request (handled in `handleMessage`); the command
+    /// response itself is usually null and we don't track it.
+    pub fn executeCommand(self: *Client, command: []const u8, arguments_json: ?[]const u8) void {
+        if (!self.alive) return;
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(self.gpa);
+        const a = self.gpa;
+        var nb: [160]u8 = undefined;
+        body.appendSlice(a, std.fmt.bufPrint(&nb, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":\"workspace/executeCommand\",\"params\":{{\"command\":\"", .{self.nextId()}) catch return) catch return;
+        appendEscaped(&body, a, command) catch return;
+        body.appendSlice(a, "\"") catch return;
+        if (arguments_json) |args| {
+            body.appendSlice(a, ",\"arguments\":") catch return;
+            body.appendSlice(a, args) catch return;
+        }
+        body.appendSlice(a, "}}") catch return;
+        self.writeMessage(body.items);
+    }
+
     pub fn requestRename(self: *Client, line: usize, col: usize, new_name: []const u8) void {
         if (!self.alive) return;
         self.rename_id = self.nextId();
@@ -418,8 +453,11 @@ pub const Client = struct {
         const obj = parsed.value.object;
 
         if (obj.get("method")) |m| {
-            if (m == .string and std.mem.eql(u8, m.string, "textDocument/publishDiagnostics")) {
+            if (m != .string) return;
+            if (std.mem.eql(u8, m.string, "textDocument/publishDiagnostics")) {
                 if (obj.get("params")) |p| self.updateDiagnostics(p);
+            } else if (std.mem.eql(u8, m.string, "workspace/applyEdit")) {
+                self.handleApplyEdit(obj);
             }
             return;
         }
@@ -513,8 +551,9 @@ pub const Client = struct {
     }
 
     /// A code-action result is an array of `CodeAction | Command`; keep each
-    /// one's title and (for the open file) its inline `edit`. Command-based
-    /// actions, which have no `edit`, are kept with an empty edit list.
+    /// one's title, its inline `edit` (for the open file), and its `command`
+    /// (executed via executeCommand). A bare `Command` has `command` as a
+    /// string; a `CodeAction.command` is a nested object.
     fn handleCodeAction(self: *Client, result: std.json.Value) void {
         self.clearCodeActions();
         self.ca_ready = true;
@@ -522,6 +561,7 @@ pub const Client = struct {
         for (result.array.items) |a| {
             const title = asStr(getField(a, "title")) orelse continue;
             const owned_title = self.gpa.dupe(u8, title) catch continue;
+
             var tmp: std.ArrayList(TextEdit) = .empty;
             if (getField(a, "edit")) |edit| self.parseWorkspaceEdit(edit, &tmp);
             const edits = tmp.toOwnedSlice(self.gpa) catch {
@@ -530,12 +570,66 @@ pub const Client = struct {
                 self.gpa.free(owned_title);
                 continue;
             };
-            self.code_actions.append(self.gpa, .{ .title = owned_title, .edits = edits }) catch {
+
+            // Locate the command id and arguments (bare Command vs CodeAction.command).
+            var cmd_str: ?[]const u8 = null;
+            var args_val: ?std.json.Value = null;
+            if (getField(a, "command")) |c| switch (c) {
+                .string => |s| {
+                    cmd_str = s;
+                    args_val = getField(a, "arguments");
+                },
+                .object => {
+                    cmd_str = asStr(getField(c, "command"));
+                    args_val = getField(c, "arguments");
+                },
+                else => {},
+            };
+            const command = if (cmd_str) |s| (self.gpa.dupe(u8, s) catch null) else null;
+            const arguments = if (args_val) |v| self.serializeJson(v) else null;
+
+            self.code_actions.append(self.gpa, .{
+                .title = owned_title,
+                .edits = edits,
+                .command = command,
+                .arguments = arguments,
+            }) catch {
                 for (edits) |e| self.gpa.free(e.text);
                 self.gpa.free(edits);
                 self.gpa.free(owned_title);
+                if (command) |c| self.gpa.free(c);
+                if (arguments) |args| self.gpa.free(args);
             };
         }
+    }
+
+    /// Apply a server-initiated `workspace/applyEdit` request: stash the edits
+    /// for the editor to apply and answer `{applied: true}` (the edit goes to
+    /// the open file as usual). The request id is echoed in the response.
+    fn handleApplyEdit(self: *Client, obj: std.json.ObjectMap) void {
+        if (obj.get("params")) |p| {
+            if (getField(p, "edit")) |edit| self.parseWorkspaceEdit(edit, &self.server_edits);
+        }
+        self.apply_ready = true;
+        if (obj.get("id")) |id_val| {
+            var body: std.ArrayList(u8) = .empty;
+            defer body.deinit(self.gpa);
+            const a = self.gpa;
+            body.appendSlice(a, "{\"jsonrpc\":\"2.0\",\"id\":") catch return;
+            appendIdValue(&body, a, id_val) catch return;
+            body.appendSlice(a, ",\"result\":{\"applied\":true}}") catch return;
+            self.writeMessage(body.items);
+        }
+    }
+
+    /// Serialize a JSON value back to text (for forwarding command arguments).
+    fn serializeJson(self: *Client, v: std.json.Value) ?[]u8 {
+        var out: std.ArrayList(u8) = .empty;
+        appendJson(&out, self.gpa, v) catch {
+            out.deinit(self.gpa);
+            return null;
+        };
+        return out.toOwnedSlice(self.gpa) catch null;
     }
 
     /// Append the current-file `TextEdit`s of a `WorkspaceEdit` (the `changes`
@@ -772,6 +866,67 @@ fn appendEscaped(list: *std.ArrayList(u8), gpa: Allocator, s: []const u8) !void 
             try list.appendSlice(gpa, std.fmt.bufPrint(&b, "\\u{x:0>4}", .{c}) catch return);
         } else try list.append(gpa, c),
     };
+}
+
+/// Append a JSON-RPC id verbatim (numbers stay numbers, strings stay quoted).
+fn appendIdValue(list: *std.ArrayList(u8), gpa: Allocator, id: std.json.Value) !void {
+    switch (id) {
+        .integer => |i| {
+            var b: [32]u8 = undefined;
+            try list.appendSlice(gpa, std.fmt.bufPrint(&b, "{d}", .{i}) catch return);
+        },
+        .string => |s| {
+            try list.append(gpa, '"');
+            try appendEscaped(list, gpa, s);
+            try list.append(gpa, '"');
+        },
+        else => try list.appendSlice(gpa, "null"),
+    }
+}
+
+/// Serialize a parsed JSON value back to compact JSON text.
+fn appendJson(list: *std.ArrayList(u8), gpa: Allocator, v: std.json.Value) !void {
+    switch (v) {
+        .null => try list.appendSlice(gpa, "null"),
+        .bool => |b| try list.appendSlice(gpa, if (b) "true" else "false"),
+        .integer => |i| {
+            var b: [32]u8 = undefined;
+            try list.appendSlice(gpa, std.fmt.bufPrint(&b, "{d}", .{i}) catch return);
+        },
+        .float => |f| {
+            var b: [32]u8 = undefined;
+            try list.appendSlice(gpa, std.fmt.bufPrint(&b, "{d}", .{f}) catch return);
+        },
+        .number_string => |s| try list.appendSlice(gpa, s),
+        .string => |s| {
+            try list.append(gpa, '"');
+            try appendEscaped(list, gpa, s);
+            try list.append(gpa, '"');
+        },
+        .array => |arr| {
+            try list.append(gpa, '[');
+            for (arr.items, 0..) |item, i| {
+                if (i > 0) try list.append(gpa, ',');
+                try appendJson(list, gpa, item);
+            }
+            try list.append(gpa, ']');
+        },
+        .object => |obj| {
+            try list.append(gpa, '{');
+            var it = obj.iterator();
+            var first = true;
+            while (it.next()) |entry| {
+                if (!first) try list.append(gpa, ',');
+                first = false;
+                try list.append(gpa, '"');
+                try appendEscaped(list, gpa, entry.key_ptr.*);
+                try list.append(gpa, '"');
+                try list.append(gpa, ':');
+                try appendJson(list, gpa, entry.value_ptr.*);
+            }
+            try list.append(gpa, '}');
+        },
+    }
 }
 
 fn writeAllFd(fd: posix.fd_t, bytes: []const u8) bool {
