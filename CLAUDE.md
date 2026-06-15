@@ -184,7 +184,8 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   (prompts on the command line, pre-filled with the identifier; the returned
   edits for the current file are applied as one undoable change), `ga` lists
   code actions for the current line in a picker and applies the chosen one's
-  inline edit. `Ctrl-n` in insert mode requests completion (popup: `Ctrl-n`/`Ctrl-p` or
+  inline edit, and `]d`/`[d` jump to the next/previous diagnostic line
+  (wrapping; `[count]` repeats). `Ctrl-n` in insert mode requests completion (popup: `Ctrl-n`/`Ctrl-p` or
   arrows to move, `Tab`/`Enter` to accept, `Esc` to dismiss). Typing `(` or `,`
   in insert mode requests signature help, shown as a one-line popup above the
   cursor with the active parameter emphasized (`Ctrl-p` cycles overloads, with

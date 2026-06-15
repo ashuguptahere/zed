@@ -1,7 +1,7 @@
-//! LSP client against the mock server: diagnostics, hover (normal + insert),
-//! incremental didChange, completion, signature help (+ overload cycling),
-//! rename, and code actions (inline edit + executeCommand/applyEdit).
-//! Port of tools/lsp_test.py, driving the built mock_lsp binary.
+//! LSP client against the mock server: diagnostics (+ ]d/[d navigation), hover
+//! (normal + insert), incremental didChange, completion, signature help (+
+//! overload cycling), rename, and code actions (inline edit +
+//! executeCommand/applyEdit). Drives the built mock_lsp binary.
 
 const std = @import("std");
 const h = @import("../harness.zig");
@@ -69,10 +69,25 @@ pub fn run(ctx: *h.Ctx) !void {
             .{ .keys = "K", .ms = 800 },
         }, quit);
         defer r.deinit(ctx.gpa);
-        ctx.check("diagnostic count in statusline", r.outHas("E:1 W:0"));
+        ctx.check("diagnostic count in statusline", r.outHas("E:1 W:1"));
         ctx.check("error sign rendered (red dot)", r.outHas(RED) and r.outHas(DOT));
         ctx.check("diagnostic message shown on its line", r.outHas("mock error"));
         ctx.check("hover result shown", r.outHas("mock hover"));
+    }
+
+    // Diagnostic navigation: ]d jumps to the next diagnostic line, [d to the
+    // previous (wrapping). The landed line's message shows in the statusline.
+    {
+        const r = drive(ctx, &.{ .{ .keys = "]d", .ms = 400 }, .{ .keys = "]d", .ms = 400 } }, quit);
+        defer r.deinit(ctx.gpa);
+        // From line 0: first ]d -> line 1 (mock error), second -> line 2 (mock warn).
+        ctx.check("]d jumps to next diagnostic", r.outHas("mock warn"));
+    }
+    {
+        const r = drive(ctx, &.{ .{ .keys = "G", .ms = 400 }, .{ .keys = "[d", .ms = 400 } }, quit);
+        defer r.deinit(ctx.gpa);
+        // G -> last line (mock warn); [d -> previous diagnostic (line 1, mock error).
+        ctx.check("[d jumps to previous diagnostic", r.outHas("mock error"));
     }
 
     // Hover in insert mode (Ctrl-k).

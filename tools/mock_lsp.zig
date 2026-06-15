@@ -33,7 +33,12 @@ pub fn main(init: std.process.Init) !void {
                 if (doc_uri.len > 0) gpa.free(doc_uri);
                 doc_uri = gpa.dupe(u8, u) catch &.{};
             }
-            diag(gpa, "mock error", 1, 1);
+            // Two diagnostics (line 1 error, line 2 warning) so ]d / [d have
+            // somewhere to jump between.
+            send(gpa, "{{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{{\"uri\":\"x\",\"diagnostics\":[" ++
+                "{{\"range\":{{\"start\":{{\"line\":1,\"character\":0}},\"end\":{{\"line\":1,\"character\":1}}}},\"severity\":1,\"message\":\"mock error\"}}," ++
+                "{{\"range\":{{\"start\":{{\"line\":2,\"character\":0}},\"end\":{{\"line\":2,\"character\":1}}}},\"severity\":2,\"message\":\"mock warn\"}}" ++
+                "]}}}}", .{});
         } else if (eql(method, "textDocument/didChange")) {
             const kind = if (changeHasRange(obj)) "INCREMENTAL" else "FULL";
             diag(gpa, kind, 0, 2);

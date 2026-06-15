@@ -81,6 +81,8 @@ const Await = enum {
     register, // "{a-z}
     g_prefix, // g then ...
     z_prefix, // Z then Z/Q
+    bracket_next, // ] then d (next diagnostic)
+    bracket_prev, // [ then d (previous diagnostic)
     object_inner, // operator i{obj}
     object_around, // operator a{obj}
     macro_record, // q{reg}
@@ -503,6 +505,8 @@ pub const Editor = struct {
             ';' => self.repeatFind(false),
             ',' => self.repeatFind(true),
             'g' => self.await_arg = .g_prefix,
+            ']' => self.await_arg = .bracket_next, // ]d: next diagnostic
+            '[' => self.await_arg = .bracket_prev, // [d: previous diagnostic
             // operators
             'd' => self.operator = .delete,
             'c' => self.operator = .change,
@@ -635,6 +639,10 @@ pub const Editor = struct {
                 } else if (k == .char and k.char == 'Q') {
                     self.quit = true;
                 }
+                self.resetPending();
+            },
+            .bracket_next, .bracket_prev => {
+                if (k == .char and k.char == 'd') self.gotoDiagnostic(a == .bracket_next);
                 self.resetPending();
             },
             .object_inner, .object_around => try self.applyTextObject(a == .object_around, k),
@@ -2716,6 +2724,24 @@ pub const Editor = struct {
 
     fn lspDefinition(self: *Editor) void {
         if (self.lsp) |*c| c.requestDefinition(self.cy, self.charCol());
+    }
+
+    /// Jump to the next/previous diagnostic line (]d / [d), wrapping. `[count]`
+    /// repeats. The landed line's message shows via the statusline (lspMiddle).
+    fn gotoDiagnostic(self: *Editor, forward: bool) void {
+        const client = if (self.lsp) |*c| c else return self.setStatus("no language server", .{});
+        var line: ?usize = null;
+        var from = self.cy;
+        var n = self.eff();
+        while (n > 0) : (n -= 1) {
+            const next = client.nextDiagLine(from, forward) orelse break;
+            line = next;
+            from = next;
+        }
+        const target = line orelse return self.setStatus("no diagnostics", .{});
+        self.cy = @min(target, self.buf.lineCount() - 1);
+        self.cx = motion.firstNonBlank(self.curLine());
+        self.updateGoal();
     }
 
     /// Send the rename request with the name typed on the command line.

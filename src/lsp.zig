@@ -740,6 +740,23 @@ pub const Client = struct {
         return .{ .errors = e, .warnings = w };
     }
 
+    /// The nearest diagnostic line strictly after (forward) or before `from`,
+    /// wrapping around the document. Null when there are no diagnostics.
+    pub fn nextDiagLine(self: *const Client, from: usize, forward: bool) ?usize {
+        var near: ?usize = null; // closest in the requested direction
+        var wrap: ?usize = null; // extreme line, used when nothing is past `from`
+        for (self.diags.items) |d| {
+            if (forward) {
+                if (d.line > from and (near == null or d.line < near.?)) near = d.line;
+                if (wrap == null or d.line < wrap.?) wrap = d.line;
+            } else {
+                if (d.line < from and (near == null or d.line > near.?)) near = d.line;
+                if (wrap == null or d.line > wrap.?) wrap = d.line;
+            }
+        }
+        return near orelse wrap;
+    }
+
     /// Take the pending hover text (caller owns it and must free with gpa).
     pub fn takeHover(self: *Client) ?[]u8 {
         const t = self.hover_text;
