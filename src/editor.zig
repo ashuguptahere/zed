@@ -2643,8 +2643,9 @@ pub const Editor = struct {
         defer self.gpa.free(content);
 
         self.lsp = lsp.Client.start(self.gpa, self.io, argv_store[0..argc], cwd, uri_buf.items, langId(self.lang), content);
-        if (self.lsp != null) {
+        if (self.lsp) |*c| {
             self.lsp_rev = self.buf.revision;
+            c.requestInlayHints(self.buf.lineCount());
             self.setStatus("language server started", .{});
         }
     }
@@ -2657,6 +2658,7 @@ pub const Editor = struct {
         const content = self.buf.toBytes(self.gpa) catch return;
         defer self.gpa.free(content);
         client.didChange(content);
+        client.requestInlayHints(self.buf.lineCount()); // refresh hints for the new text
         self.lsp_rev = self.buf.revision;
     }
 
@@ -2724,6 +2726,20 @@ pub const Editor = struct {
 
     fn lspDefinition(self: *Editor) void {
         if (self.lsp) |*c| c.requestDefinition(self.cy, self.charCol());
+    }
+
+    /// Display width of inlay hints on `row` rendered to the left of byte
+    /// `upto` — added to the cursor's screen column so it tracks the virtual
+    /// text.
+    fn inlayCols(self: *Editor, row: usize, upto: usize) usize {
+        const client = if (self.lsp) |*c| c else return 0;
+        const line = self.buf.line(row);
+        var sum: usize = 0;
+        for (client.inlay_hints.items) |hint| {
+            if (hint.line != row) continue;
+            if (byteAtCharCol(line, hint.col) <= upto) sum += unicode.displayWidth(hint.text);
+        }
+        return sum;
     }
 
     /// Jump to the next/previous diagnostic line (]d / [d), wrapping. `[count]`
@@ -3010,7 +3026,7 @@ pub const Editor = struct {
         if (self.cy >= self.top + rows) self.top = self.cy - rows + 1;
 
         const cols = self.textCols();
-        const cur = displayCol(self.curLine(), self.cx);
+        const cur = displayCol(self.curLine(), self.cx) + self.inlayCols(self.cy, self.cx);
         if (cur < self.left) self.left = cur;
         if (cur >= self.left + cols) self.left = cur - cols + 1;
     }
@@ -3266,6 +3282,29 @@ pub const Editor = struct {
         const first_nb = motion.firstNonBlank(line);
         const indent_cols = displayCol(line, first_nb);
 
+        // Inlay hints on this row: byte offset within the line + virtual text,
+        // sorted by position so they can be emitted as the byte-walk reaches them.
+        var hbyte: [32]usize = undefined;
+        var htext: [32][]const u8 = undefined;
+        var hint_n: usize = 0;
+        if (self.lsp) |*client| {
+            for (client.inlay_hints.items) |hint| {
+                if (hint.line != row or hint_n >= hbyte.len) continue;
+                hbyte[hint_n] = byteAtCharCol(line, hint.col);
+                htext[hint_n] = hint.text;
+                hint_n += 1;
+            }
+            var a: usize = 1;
+            while (a < hint_n) : (a += 1) { // insertion sort (lists are tiny)
+                var b = a;
+                while (b > 0 and hbyte[b - 1] > hbyte[b]) : (b -= 1) {
+                    std.mem.swap(usize, &hbyte[b - 1], &hbyte[b]);
+                    std.mem.swap([]const u8, &htext[b - 1], &htext[b]);
+                }
+            }
+        }
+        var hi: usize = 0;
+
         // Search-match ranges on this line (for highlighting).
         var mstarts: [64]usize = undefined;
         var mcount: usize = 0;
@@ -3286,6 +3325,10 @@ pub const Editor = struct {
         var dc: usize = 0;
         var i: usize = 0;
         while (i < line.len) {
+            // Inlay hints positioned before the char at byte i (advances dc so
+            // the line still clips correctly at the screen edge).
+            while (hi < hint_n and hbyte[hi] == i) : (hi += 1)
+                try self.emitInlayText(htext[hi], &dc, left, right, row_bg);
             const d = unicode.decode(line[i..]);
             const w = cellWidth(d.cp, dc);
             const start = dc;
@@ -3319,6 +3362,10 @@ pub const Editor = struct {
                 try self.emit(bytes);
             }
         }
+        // Inlay hints anchored at end-of-line (e.g. return-type hints).
+        while (hi < hint_n) : (hi += 1)
+            try self.emitInlayText(htext[hi], &dc, left, right, row_bg);
+
         // A secondary cursor sitting at end-of-line has no char to invert.
         if (ecol) |ec| {
             if (ec == line.len) {
@@ -3328,6 +3375,26 @@ pub const Editor = struct {
                     try self.emit(" ");
                 }
             }
+        }
+    }
+
+    /// Emit inlay-hint virtual text (dim), one codepoint at a time, advancing
+    /// the rendered column `dc` and clipping to the visible window [left, right).
+    fn emitInlayText(self: *Editor, text: []const u8, dc: *usize, left: usize, right: usize, row_bg: Color) !void {
+        const th = theme.current;
+        try self.setBg(row_bg);
+        try self.setFg(th.comment);
+        var j: usize = 0;
+        while (j < text.len) {
+            const d = unicode.decode(text[j..]);
+            const w = cellWidth(d.cp, dc.*);
+            const start = dc.*;
+            dc.* += w;
+            const bytes = text[j .. j + d.len];
+            j += d.len;
+            if (start + w <= left) continue;
+            if (start >= right) break;
+            try self.emit(bytes);
         }
     }
 
@@ -3532,7 +3599,7 @@ pub const Editor = struct {
             col = self.cmdPrompt().len + 1 + unicode.displayWidth(self.cmd.items);
         } else {
             row = (self.cy - self.top) + 1;
-            const cur = displayCol(self.curLine(), self.cx);
+            const cur = displayCol(self.curLine(), self.cx) + self.inlayCols(self.cy, self.cx);
             col = gutter + (cur - self.left) + 1;
         }
         try self.emitFmt("\x1b[{d};{d}H", .{ row, col });

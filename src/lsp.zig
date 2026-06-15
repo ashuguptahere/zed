@@ -51,6 +51,14 @@ pub const CodeAction = struct {
     arguments: ?[]u8 = null, // serialized JSON arguments array
 };
 
+/// Virtual text the server wants shown inline at (line, col). `col` is a UTF-16
+/// character offset; `text` is the (flattened) label.
+pub const InlayHint = struct {
+    line: u32,
+    col: u32,
+    text: []u8,
+};
+
 pub const Client = struct {
     gpa: Allocator,
     io: std.Io,
@@ -87,6 +95,8 @@ pub const Client = struct {
     ca_ready: bool, // a codeAction response just arrived (editor should consume)
     server_edits: std.ArrayList(TextEdit), // edits from a workspace/applyEdit request
     apply_ready: bool, // a workspace/applyEdit just arrived (editor should apply)
+    hint_id: i64,
+    inlay_hints: std.ArrayList(InlayHint), // virtual text for the open document
 
     pub fn start(
         gpa: Allocator,
@@ -138,6 +148,8 @@ pub const Client = struct {
             .ca_ready = false,
             .server_edits = .empty,
             .apply_ready = false,
+            .hint_id = -1,
+            .inlay_hints = .empty,
         };
 
         self.sendInitialize(root);
@@ -172,6 +184,8 @@ pub const Client = struct {
         self.code_actions.deinit(self.gpa);
         self.clearServerEdits();
         self.server_edits.deinit(self.gpa);
+        self.clearInlayHints();
+        self.inlay_hints.deinit(self.gpa);
         if (self.hover_text) |t| self.gpa.free(t);
         if (self.def_target) |d| self.gpa.free(d.uri);
     }
@@ -216,6 +230,11 @@ pub const Client = struct {
         self.server_edits.clearRetainingCapacity();
     }
 
+    fn clearInlayHints(self: *Client) void {
+        for (self.inlay_hints.items) |hint| self.gpa.free(hint.text);
+        self.inlay_hints.clearRetainingCapacity();
+    }
+
     // --- outgoing ----------------------------------------------------------
 
     fn sendInitialize(self: *Client, root: []const u8) void {
@@ -223,7 +242,7 @@ pub const Client = struct {
         defer body.deinit(self.gpa);
         body.appendSlice(self.gpa, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"processId\":null,\"rootUri\":\"file://") catch return;
         appendEscaped(&body, self.gpa, root) catch return;
-        body.appendSlice(self.gpa, "\",\"capabilities\":{\"textDocument\":{\"publishDiagnostics\":{},\"hover\":{},\"definition\":{},\"completion\":{},\"signatureHelp\":{},\"rename\":{},\"codeAction\":{}}}}}") catch return;
+        body.appendSlice(self.gpa, "\",\"capabilities\":{\"textDocument\":{\"publishDiagnostics\":{},\"hover\":{},\"definition\":{},\"completion\":{},\"signatureHelp\":{},\"rename\":{},\"codeAction\":{},\"inlayHint\":{}}}}}") catch return;
         self.writeMessage(body.items);
     }
 
@@ -359,6 +378,20 @@ pub const Client = struct {
         self.writeMessage(body.items);
     }
 
+    /// Request inlay hints for the whole document [0,0]-[end_line,0].
+    pub fn requestInlayHints(self: *Client, end_line: usize) void {
+        if (!self.alive) return;
+        self.hint_id = self.nextId();
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(self.gpa);
+        const a = self.gpa;
+        var nb: [160]u8 = undefined;
+        body.appendSlice(a, std.fmt.bufPrint(&nb, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":\"textDocument/inlayHint\",\"params\":{{\"textDocument\":{{\"uri\":\"", .{self.hint_id}) catch return) catch return;
+        appendEscaped(&body, a, self.uri) catch return;
+        body.appendSlice(a, std.fmt.bufPrint(&nb, "\"}},\"range\":{{\"start\":{{\"line\":0,\"character\":0}},\"end\":{{\"line\":{d},\"character\":0}}}}}}}}", .{end_line}) catch return) catch return;
+        self.writeMessage(body.items);
+    }
+
     pub fn requestRename(self: *Client, line: usize, col: usize, new_name: []const u8) void {
         if (!self.alive) return;
         self.rename_id = self.nextId();
@@ -475,6 +508,7 @@ pub const Client = struct {
         if (id == self.sig_id) self.handleSignature(result);
         if (id == self.rename_id) self.handleRename(result);
         if (id == self.ca_id) self.handleCodeAction(result);
+        if (id == self.hint_id) self.handleInlayHints(result);
     }
 
     /// Read the server's `textDocumentSync` to decide full vs. incremental
@@ -600,6 +634,22 @@ pub const Client = struct {
                 if (command) |c| self.gpa.free(c);
                 if (arguments) |args| self.gpa.free(args);
             };
+        }
+    }
+
+    /// Parse an `InlayHint[]` result: each hint's position and (flattened)
+    /// label. Replaces the stored hints; the editor reads them while rendering.
+    fn handleInlayHints(self: *Client, result: std.json.Value) void {
+        self.clearInlayHints();
+        if (result != .array) return;
+        for (result.array.items) |hint| {
+            const pos = getField(hint, "position") orelse continue;
+            const text = inlayLabel(self.gpa, getField(hint, "label")) orelse continue;
+            self.inlay_hints.append(self.gpa, .{
+                .line = u32From(getField(pos, "line")),
+                .col = u32From(getField(pos, "character")),
+                .text = text,
+            }) catch self.gpa.free(text);
         }
     }
 
@@ -852,6 +902,27 @@ fn asInt(v: ?std.json.Value) ?i64 {
 fn u32From(v: ?std.json.Value) u32 {
     const i = asInt(v) orelse 0;
     return if (i > 0) @intCast(i) else 0;
+}
+
+/// Flatten an inlay-hint label (a string, or an array of `{value}` parts) into
+/// an owned string (caller frees), or null when there is nothing to show.
+fn inlayLabel(gpa: Allocator, label: ?std.json.Value) ?[]u8 {
+    const l = label orelse return null;
+    switch (l) {
+        .string => |s| return gpa.dupe(u8, s) catch null,
+        .array => |arr| {
+            var buf: std.ArrayList(u8) = .empty;
+            for (arr.items) |part| {
+                const v = asStr(getField(part, "value")) orelse continue;
+                buf.appendSlice(gpa, v) catch {
+                    buf.deinit(gpa);
+                    return null;
+                };
+            }
+            return buf.toOwnedSlice(gpa) catch null;
+        },
+        else => return null,
+    }
 }
 
 fn asStr(v: ?std.json.Value) ?[]const u8 {

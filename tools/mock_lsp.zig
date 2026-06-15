@@ -51,6 +51,11 @@ pub fn main(init: std.process.Init) !void {
                 "{{\"label\":\"mockFn(a: int, b: int)\",\"parameters\":[{{\"label\":[7,13]}},{{\"label\":[15,21]}}]}}," ++
                 "{{\"label\":\"mockFn(a: str)\",\"parameters\":[{{\"label\":[7,13]}}]}}]," ++
                 "\"activeSignature\":0,\"activeParameter\":0}}}}", .{id orelse 0});
+        } else if (eql(method, "textDocument/inlayHint")) {
+            // A type hint after "a" on line 0 (char 7), label as parts to
+            // exercise the client's label flattening: ": " + "i32" -> ": i32".
+            send(gpa, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":[{{\"position\":{{\"line\":0,\"character\":7}}," ++
+                "\"label\":[{{\"value\":\": \"}},{{\"value\":\"i32\"}}],\"kind\":1}}]}}", .{id orelse 0});
         } else if (eql(method, "textDocument/hover")) {
             send(gpa, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{{\"contents\":\"mock hover\"}}}}", .{id orelse 0});
         } else if (eql(method, "textDocument/definition")) {

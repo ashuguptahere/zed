@@ -1,6 +1,6 @@
 //! LSP client against the mock server: diagnostics (+ ]d/[d navigation), hover
-//! (normal + insert), incremental didChange, completion, signature help (+
-//! overload cycling), rename, and code actions (inline edit +
+//! (normal + insert), inlay hints, incremental didChange, completion, signature
+//! help (+ overload cycling), rename, and code actions (inline edit +
 //! executeCommand/applyEdit). Drives the built mock_lsp binary.
 
 const std = @import("std");
@@ -95,6 +95,14 @@ pub fn run(ctx: *h.Ctx) !void {
         const r = drive(ctx, &.{ .{ .keys = "i", .ms = 300 }, .{ .keys = "\x0b", .ms = 800 } }, quit);
         defer r.deinit(ctx.gpa);
         ctx.check("insert-mode hover shown", r.outHas("mock hover"));
+    }
+
+    // Inlay hints: the mock returns a ": i32" type hint after "a" on line 0,
+    // rendered inline as dim virtual text (not part of the buffer).
+    {
+        const r = drive(ctx, &.{}, quit);
+        defer r.deinit(ctx.gpa);
+        ctx.check("inlay hint rendered inline", r.plainHas(": i32"));
     }
 
     // Incremental sync: an edit on line 0 makes the mock echo "INCREMENTAL".
