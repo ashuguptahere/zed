@@ -26,6 +26,7 @@ const syntax = @import("syntax.zig");
 const fuzzy = @import("fuzzy.zig");
 const git = @import("git.zig");
 const lsp = @import("lsp.zig");
+const treesitter = @import("treesitter.zig");
 const ansi = term.ansi;
 const Allocator = std.mem.Allocator;
 const Pos = buffer.Pos;
@@ -188,6 +189,12 @@ pub const Editor = struct {
     cur_fg: ?Color,
     cur_bg: ?Color,
 
+    // tree-sitter highlighting (whole-document styles; lexer fallback when null)
+    ts: ?treesitter.Highlighter,
+    ts_styles: std.ArrayList(syntax.Style),
+    ts_line_starts: std.ArrayList(usize),
+    ts_rev: u64,
+
     // language server
     lsp_cmd: ?[]const u8, // override command, else a per-language default
     lsp: ?lsp.Client,
@@ -249,6 +256,10 @@ pub const Editor = struct {
             .git_signs = git.Signs.init(gpa),
             .cur_fg = null,
             .cur_bg = null,
+            .ts = null,
+            .ts_styles = .empty,
+            .ts_line_starts = .empty,
+            .ts_rev = 0,
             .lsp_cmd = lsp_cmd,
             .lsp = null,
             .lsp_sent = .empty,
@@ -270,6 +281,9 @@ pub const Editor = struct {
         self.status.deinit(self.gpa);
         self.style_buf.deinit(self.gpa);
         self.git_signs.deinit();
+        if (self.ts) |*t| t.deinit();
+        self.ts_styles.deinit(self.gpa);
+        self.ts_line_starts.deinit(self.gpa);
         if (self.lsp) |*c| c.deinit();
         self.lsp_sent.deinit(self.gpa);
         self.extra.deinit(self.gpa);
@@ -288,6 +302,8 @@ pub const Editor = struct {
         self.win = self.term.size();
         self.refreshGit();
         self.setStatus("zed {s} — :q to quit, i to insert", .{@import("cli.zig").version});
+
+        self.startTs();
 
         // Paint the file before starting the language server, whose handshake
         // can block briefly.
@@ -2132,6 +2148,8 @@ pub const Editor = struct {
         self.buf.deinit();
         self.buf = nb;
         self.lang = syntax.detect(self.buf.path);
+        if (self.ts) |*t| t.deinit();
+        self.startTs();
         self.history.deinit();
         self.history = undo.History.init(self.gpa);
         self.clearExtra();
@@ -2336,6 +2354,32 @@ pub const Editor = struct {
         } else {
             self.git_signs.clearRetainingCapacity();
         }
+    }
+
+    // === tree-sitter highlighting ==========================================
+
+    fn startTs(self: *Editor) void {
+        self.ts = treesitter.Highlighter.init(self.gpa, self.lang);
+        if (self.ts != null) self.tsReparse();
+    }
+
+    /// Reparse the whole document and rebuild the per-byte style array and the
+    /// per-line byte offsets used to index it.
+    fn tsReparse(self: *Editor) void {
+        var h = if (self.ts) |*x| x else return;
+        const content = self.buf.toBytes(self.gpa) catch return;
+        defer self.gpa.free(content);
+
+        self.ts_styles.resize(self.gpa, content.len) catch return;
+        h.highlight(content, self.ts_styles.items);
+
+        self.ts_line_starts.clearRetainingCapacity();
+        var off: usize = 0;
+        for (self.buf.lines.items) |ln| {
+            self.ts_line_starts.append(self.gpa, off) catch {};
+            off += ln.items.len + 1; // + newline
+        }
+        self.ts_rev = self.buf.revision;
     }
 
     // === language server ===================================================
@@ -2590,6 +2634,7 @@ pub const Editor = struct {
     fn render(self: *Editor) !void {
         var sp = log.Span.start();
         const th = theme.current;
+        if (self.ts != null and self.ts_rev != self.buf.revision) self.tsReparse();
         self.frame.clearRetainingCapacity();
         self.cur_fg = null;
         self.cur_bg = null;
@@ -2714,7 +2759,17 @@ pub const Editor = struct {
     fn emitLine(self: *Editor, row: usize, line: []const u8, cols: usize, row_bg: Color) !void {
         const th = theme.current;
         self.style_buf.resize(self.gpa, line.len) catch {};
-        if (self.style_buf.items.len == line.len) syntax.highlight(self.lang, line, self.style_buf.items);
+        if (self.style_buf.items.len == line.len) {
+            if (self.ts != null and row < self.ts_line_starts.items.len) {
+                // Tree-sitter: copy this line's slice out of the whole-doc styles.
+                const lstart = self.ts_line_starts.items[row];
+                for (self.style_buf.items, 0..) |*s, i| {
+                    s.* = if (lstart + i < self.ts_styles.items.len) self.ts_styles.items[lstart + i] else .normal;
+                }
+            } else {
+                syntax.highlight(self.lang, line, self.style_buf.items);
+            }
+        }
 
         const sel = self.selectionRange(row);
         const ecol = self.extraColAt(row);

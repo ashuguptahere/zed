@@ -94,5 +94,6 @@ test {
     _ = @import("fuzzy.zig");
     _ = @import("git.zig");
     _ = @import("lsp.zig");
+    _ = @import("treesitter.zig");
     _ = @import("editor.zig");
 }

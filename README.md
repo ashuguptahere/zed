@@ -1,8 +1,9 @@
 # zed
 
-A fast, terminal-based, modal code editor written in **pure Zig** — no
-third-party dependencies, just the standard library. Inspired by `nvim` and
-`helix`.
+A fast, terminal-based, modal code editor written in **Zig**, inspired by
+`nvim` and `helix`. No Zig package dependencies — just the standard library,
+plus a vendored tree-sitter runtime + grammar (C, compiled by the build) for
+structural syntax highlighting.
 
 > `zed` here means **zig-editor**.
 
@@ -34,9 +35,10 @@ idle**.
     gutter/statusline, `K` hover, `gd` goto-definition
 - Commands: `:w`, `:q`, `:wq`/`:x`, `:q!`, `:w <name>`, `:{number}`, `ZZ`/`ZQ`
 - AstroNvim/Helix-style look: Tokyo Night true-colour theme, syntax
-  highlighting, a powerline statusline (mode block, separators, segments),
-  relative+absolute line numbers, cursorline, indent guides, and a git change
-  gutter (add/change/delete signs) (a nerd font is recommended for the glyphs)
+  highlighting (tree-sitter for Zig, a built-in lexer otherwise), a powerline
+  statusline (mode block, separators, segments), relative+absolute line numbers,
+  cursorline, indent guides, and a git change gutter (add/change/delete signs)
+  (a nerd font is recommended for the glyphs)
 - UTF-8 throughout, with correct display width for wide (CJK) and zero-width
   (combining) characters, and tab expansion
 - Line numbers, a status bar, horizontal/vertical scrolling, live window resize

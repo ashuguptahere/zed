@@ -21,12 +21,12 @@ work", they win.
 
 ## Project rules
 
-- **Minimal dependencies.** Prefer the standard library. External Zig packages
-  are *permitted* (e.g. for tree-sitter syntax or an LSP client) but each one
-  must earn its place — keep the dependency surface as small as possible and
-  vendor through Zig's own package manager (`build.zig.zon`). The editor still
-  has zero dependencies today; highlighting is a built-in lexer (`syntax.zig`),
-  with tree-sitter as the documented upgrade path.
+- **Minimal dependencies.** Prefer the standard library; no Zig *package*
+  dependencies. The one native dependency is the tree-sitter runtime + grammar,
+  **vendored** as C under `vendor/` and compiled by `build.zig` (it links libc).
+  This earns its place by giving real structural highlighting; adding more must
+  clear the same bar. The LSP client is pure Zig (std only), and the per-line
+  lexer (`syntax.zig`) remains the fallback for languages without a grammar.
 - **Idiomatic, modern Zig.** Follow current Zig conventions for the toolchain in
   `build.zig.zon` (`minimum_zig_version`). No legacy/deprecated APIs.
 - **Fast to compile and fast to run.** Keep build times low; prefer plain data
@@ -90,7 +90,12 @@ Source is `src/`, one responsibility per module:
 | `fuzzy.zig`   | Subsequence scorer for the pickers. |
 | `git.zig`     | Git change signs for the gutter (parses `git diff -U0`). |
 | `lsp.zig`     | Minimal LSP client: JSON-RPC over a server's stdio (diagnostics, hover, goto). |
-| `editor.zig`  | State, the vim command interpreter, multiple cursors, pickers, LSP, viewport, themed rendering. |
+| `treesitter.zig` | Tree-sitter highlighting via the vendored C runtime + grammar (FFI + `highlights.scm` query). |
+| `editor.zig`  | State, the vim command interpreter, multiple cursors, pickers, LSP, tree-sitter, viewport, themed rendering. |
+
+Vendored C lives under `vendor/` (`tree-sitter/` runtime, `tree-sitter-zig/`
+grammar + `highlights.scm`); `build.zig` compiles `lib.c` and the grammar's
+`parser.c` with `-D_GNU_SOURCE` and links libc.
 
 The pure, error-prone logic (motions, search) lives in its own unit-tested
 modules; `editor.zig` is the stateful orchestrator (mode machine, operators,
@@ -110,7 +115,8 @@ zig build test                  # unit tests (pure logic; no tty needed)
 ```
 
 `zig build` also installs the man page to `zig-out/share/man/man1/zed.1`
-(source: `doc/zed.1`); view it with `man ./doc/zed.1`.
+(source: `doc/zed.1`); view it with `man ./doc/zed.1`. The first build compiles
+the vendored tree-sitter C (~6s extra cold; cached afterwards).
 
 Interactive behaviour can't be unit-tested without a terminal, so integration
 checks live in `tools/` and drive the editor through a pseudo-terminal:
@@ -173,7 +179,8 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 The renderer aims for an AstroNvim/Helix look: a Tokyo Night true-colour theme
 (`theme.zig`), a powerline statusline (coloured mode block, separators,
 file/filetype/position/percent segments — a nerd font is recommended for the
-glyphs), syntax highlighting (`syntax.zig`), relative+absolute line numbers, a
+glyphs), syntax highlighting (tree-sitter for Zig via `treesitter.zig`, the
+`syntax.zig` lexer otherwise), relative+absolute line numbers, a
 cursorline, indent guides, and a git change gutter (add/change/delete signs
 from `git diff`, recomputed on load and save). All colour is emitted as 24-bit
 SGR; the frame is still built once and written in a single syscall, and
@@ -217,7 +224,8 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   block `A` on lines shorter than the block does not pad with spaces.
 - LSP is full-document sync with diagnostics/hover/goto; no completion,
   signature help, rename or cross-file definition jumps yet.
-- Tree-sitter highlighting is still the lexer (`syntax.zig`). Upstream
-  tree-sitter's `build.zig.zon` isn't 0.16-compatible, so it needs vendoring
-  the runtime C + a grammar's generated `parser.c` and linking libc via FFI —
-  a dedicated follow-up. Multiple buffers/windows and config files — not yet built.
+- Tree-sitter highlighting is wired for Zig only (the one vendored grammar);
+  other languages use the lexer. Parsing is whole-document on each change (not
+  incremental yet), and query predicates (`#match?`/`#eq?`) are not evaluated.
+  Adding a grammar = vendor its `parser.c` + `highlights.scm` and extend
+  `treesitter.zig`. Multiple buffers/windows and config files — not yet built.

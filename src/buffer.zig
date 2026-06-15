@@ -26,6 +26,9 @@ pub const Buffer = struct {
     lines: std.ArrayList(Line),
     path: ?[]u8,
     dirty: bool,
+    /// Bumped on every content mutation; lets observers (LSP, tree-sitter)
+    /// cheaply detect when a resync is needed.
+    revision: u64,
     /// Whether the on-disk file ends with a trailing newline; preserved on save.
     final_newline: bool,
 
@@ -34,7 +37,7 @@ pub const Buffer = struct {
         try lines.append(gpa, .empty);
         // New buffers follow the POSIX convention: once they hold content they
         // are saved with a trailing newline. A still-empty buffer writes 0 bytes.
-        return .{ .gpa = gpa, .lines = lines, .path = null, .dirty = false, .final_newline = true };
+        return .{ .gpa = gpa, .lines = lines, .path = null, .dirty = false, .revision = 0, .final_newline = true };
     }
 
     pub fn deinit(self: *Buffer) void {
@@ -72,7 +75,7 @@ pub const Buffer = struct {
         }
         if (lines.items.len == 0) try lines.append(gpa, .empty);
 
-        return .{ .gpa = gpa, .lines = lines, .path = null, .dirty = false, .final_newline = final_newline };
+        return .{ .gpa = gpa, .lines = lines, .path = null, .dirty = false, .revision = 0, .final_newline = final_newline };
     }
 
     /// Load `path` into a new buffer. A missing file yields an empty buffer
@@ -139,6 +142,7 @@ pub const Buffer = struct {
         const n = std.unicode.utf8Encode(cp, &enc) catch return col;
         try self.lines.items[row].insertSlice(self.gpa, col, enc[0..n]);
         self.dirty = true;
+        self.revision +%= 1;
         return col + n;
     }
 
@@ -151,6 +155,7 @@ pub const Buffer = struct {
         try self.lines.insert(self.gpa, row + 1, new_line);
         self.lines.items[row].items.len = col; // truncate, keep capacity
         self.dirty = true;
+        self.revision +%= 1;
     }
 
     /// Delete the codepoint at (row, col). At end-of-line, join the next line.
@@ -160,11 +165,13 @@ pub const Buffer = struct {
             const len = unicode.decode(cur.items[col..]).len;
             try cur.replaceRange(self.gpa, col, len, &[_]u8{});
             self.dirty = true;
+            self.revision +%= 1;
         } else if (row + 1 < self.lines.items.len) {
             var next = self.lines.orderedRemove(row + 1);
             defer next.deinit(self.gpa);
             try self.lines.items[row].appendSlice(self.gpa, next.items);
             self.dirty = true;
+            self.revision +%= 1;
         }
     }
 
@@ -176,6 +183,7 @@ pub const Buffer = struct {
             const prev = unicode.prevBoundary(cur.items, col);
             try cur.replaceRange(self.gpa, prev, col - prev, &[_]u8{});
             self.dirty = true;
+            self.revision +%= 1;
             return .{ .row = row, .col = prev };
         }
         if (row == 0) return .{ .row = 0, .col = 0 };
@@ -185,6 +193,7 @@ pub const Buffer = struct {
         const new_col = prev.items.len;
         try prev.appendSlice(self.gpa, cur.items);
         self.dirty = true;
+        self.revision +%= 1;
         return .{ .row = row - 1, .col = new_col };
     }
 
@@ -196,12 +205,14 @@ pub const Buffer = struct {
         self.lines.deinit(self.gpa);
         self.lines = tmp.lines; // take ownership; tmp.path is null
         self.final_newline = tmp.final_newline;
+        self.revision +%= 1;
     }
 
     /// Insert raw bytes into a line at a byte offset.
     pub fn insertBytes(self: *Buffer, row: usize, col: usize, bytes: []const u8) !void {
         try self.lines.items[row].insertSlice(self.gpa, col, bytes);
         self.dirty = true;
+        self.revision +%= 1;
     }
 
     /// Remove bytes [start, end) from a line.
@@ -209,6 +220,7 @@ pub const Buffer = struct {
         if (end <= start) return;
         try self.lines.items[row].replaceRange(self.gpa, start, end - start, &[_]u8{});
         self.dirty = true;
+        self.revision +%= 1;
     }
 
     /// Replace a line's entire content.
@@ -217,6 +229,7 @@ pub const Buffer = struct {
         target.clearRetainingCapacity();
         try target.appendSlice(self.gpa, bytes);
         self.dirty = true;
+        self.revision +%= 1;
     }
 
     /// Insert a new line (copying `bytes`) at index `at`.
@@ -226,6 +239,7 @@ pub const Buffer = struct {
         try new_line.appendSlice(self.gpa, bytes);
         try self.lines.insert(self.gpa, at, new_line);
         self.dirty = true;
+        self.revision +%= 1;
     }
 
     /// Remove line `at`, always leaving at least one (empty) line.
@@ -234,6 +248,7 @@ pub const Buffer = struct {
         removed.deinit(self.gpa);
         if (self.lines.items.len == 0) self.lines.append(self.gpa, .empty) catch {};
         self.dirty = true;
+        self.revision +%= 1;
     }
 
     fn appendCopy(gpa: Allocator, lines: *std.ArrayList(Line), bytes: []const u8) !void {
