@@ -25,7 +25,12 @@ idle**.
   - Visual `v` / `V` with `d c y x > <`
   - Search `/ ? n N * #` (literal, wraps)
   - Marks `m` `` ` `` `'` and macros `q…q` / `@`
+  - Built-ins (no plugins): auto-pairs, comment toggle (`gcc` / `gc{motion}`)
 - Commands: `:w`, `:q`, `:wq`/`:x`, `:q!`, `:w <name>`, `:{number}`, `ZZ`/`ZQ`
+- AstroNvim/Helix-style look: Tokyo Night true-colour theme, syntax
+  highlighting, a powerline statusline (mode block, separators, segments),
+  relative+absolute line numbers, cursorline, and indent guides
+  (a nerd font is recommended for the statusline glyphs)
 - UTF-8 throughout, with correct display width for wide (CJK) and zero-width
   (combining) characters, and tab expansion
 - Line numbers, a status bar, horizontal/vertical scrolling, live window resize

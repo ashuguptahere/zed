@@ -21,9 +21,17 @@ const motion = @import("motion.zig");
 const register = @import("register.zig");
 const undo = @import("undo.zig");
 const search = @import("search.zig");
+const theme = @import("theme.zig");
+const syntax = @import("syntax.zig");
 const ansi = term.ansi;
 const Allocator = std.mem.Allocator;
 const Pos = buffer.Pos;
+const Color = theme.Color;
+
+// Powerline separators and the indent-guide glyph (nerd font recommended).
+const sep_right = "\u{E0B0}";
+const sep_left = "\u{E0B2}";
+const indent_glyph = "\u{2502}";
 
 /// Spaces a tab advances to. Tabs are stored verbatim and expanded on render.
 const tab_width = 4;
@@ -46,7 +54,7 @@ pub const Mode = enum {
     }
 };
 
-const Operator = enum { none, delete, change, yank, indent_right, indent_left };
+const Operator = enum { none, delete, change, yank, indent_right, indent_left, comment };
 
 /// What the next key supplies an argument for.
 const Await = enum {
@@ -141,6 +149,10 @@ pub const Editor = struct {
     // rendering / io
     frame: std.ArrayList(u8),
     status: std.ArrayList(u8),
+    lang: syntax.Language,
+    style_buf: std.ArrayList(syntax.Style),
+    cur_fg: ?Color,
+    cur_bg: ?Color,
     quit: bool,
     inbuf: [256]u8,
 
@@ -180,6 +192,10 @@ pub const Editor = struct {
             .in_dot = false,
             .frame = .empty,
             .status = .empty,
+            .lang = syntax.detect(buf.path),
+            .style_buf = .empty,
+            .cur_fg = null,
+            .cur_bg = null,
             .quit = false,
             .inbuf = undefined,
         };
@@ -195,6 +211,7 @@ pub const Editor = struct {
         self.dot_temp.deinit(self.gpa);
         self.frame.deinit(self.gpa);
         self.status.deinit(self.gpa);
+        self.style_buf.deinit(self.gpa);
         self.buf.deinit();
     }
 
@@ -470,6 +487,8 @@ pub const Editor = struct {
             .g_prefix => {
                 if (k == .char and k.char == 'g')
                     self.doMotion(self.gotoLineMotion(if (self.count > 0) self.count - 1 else 0))
+                else if (k == .char and k.char == 'c')
+                    self.operator = .comment // gc{motion} / gcc
                 else
                     self.resetPending();
             },
@@ -544,6 +563,7 @@ pub const Editor = struct {
             .yank => c == 'y',
             .indent_right => c == '>',
             .indent_left => c == '<',
+            .comment => c == 'c', // gcc
             .none => false,
         };
     }
@@ -720,6 +740,7 @@ pub const Editor = struct {
         switch (op) {
             .indent_right => return self.indent(span, true),
             .indent_left => return self.indent(span, false),
+            .comment => return self.toggleComment(span),
             else => {},
         }
         const text = self.extract(span) catch return;
@@ -818,6 +839,52 @@ pub const Editor = struct {
         self.cx = motion.firstNonBlank(self.curLine());
         self.updateGoal();
         self.resetPending();
+    }
+
+    fn toggleComment(self: *Editor, span: Span) void {
+        const top = if (span.lines) span.top else @min(span.start.row, span.end.row);
+        const bot = if (span.lines) span.bot else @max(span.start.row, span.end.row);
+        const leader = self.commentLeader();
+        self.pushUndo();
+
+        // Comment unless every non-blank line in the range is already commented.
+        var all_commented = true;
+        var any = false;
+        var r = top;
+        while (r <= bot) : (r += 1) {
+            const line = self.buf.line(r);
+            const fnb = motion.firstNonBlank(line);
+            if (fnb >= line.len) continue; // blank line: ignore
+            any = true;
+            if (!std.mem.startsWith(u8, line[fnb..], leader)) all_commented = false;
+        }
+        const uncomment = any and all_commented;
+
+        r = top;
+        while (r <= bot) : (r += 1) {
+            const line = self.buf.line(r);
+            const fnb = motion.firstNonBlank(line);
+            if (fnb >= line.len) continue;
+            if (uncomment) {
+                var rm = leader.len;
+                // Also remove the single space many leaders carry, if present.
+                if (fnb + rm < line.len and line[fnb + rm] == ' ') rm += 1;
+                self.buf.deleteInLine(r, fnb, fnb + rm) catch {};
+            } else {
+                self.buf.insertBytes(r, fnb, leader) catch {};
+            }
+        }
+        self.cy = top;
+        self.cx = motion.firstNonBlank(self.curLine());
+        self.updateGoal();
+        self.resetPending();
+    }
+
+    fn commentLeader(self: *Editor) []const u8 {
+        return switch (self.lang) {
+            .python => "# ",
+            else => "// ",
+        };
     }
 
     // === immediate edits ===================================================
@@ -1054,23 +1121,57 @@ pub const Editor = struct {
                 self.cx = 0;
                 self.goal_col = 0;
             },
-            .backspace => {
-                const p = try self.buf.deleteBackward(self.cy, self.cx);
-                self.cy = p.row;
-                self.cx = p.col;
-                self.updateGoal();
-            },
+            .backspace => try self.insertBackspace(),
             .delete => try self.buf.deleteForward(self.cy, self.cx),
             .tab => {
                 self.cx = try self.buf.insertCodepoint(self.cy, self.cx, '\t');
                 self.updateGoal();
             },
-            .char => |c| {
-                self.cx = try self.buf.insertCodepoint(self.cy, self.cx, c);
-                self.updateGoal();
-            },
+            .char => |c| try self.insertChar(c),
             else => {},
         }
+    }
+
+    /// Insert a codepoint with auto-pairing: opening brackets/quotes insert
+    /// their closer, and typing a closer in front of one just steps over it.
+    fn insertChar(self: *Editor, c: u21) !void {
+        const line = self.curLine();
+        const next: ?u21 = if (self.cx < line.len) unicode.decode(line[self.cx..]).cp else null;
+
+        if ((isCloser(c) or isQuote(c)) and next != null and next.? == c) {
+            self.cx = unicode.nextBoundary(self.curLine(), self.cx);
+            self.updateGoal();
+            return;
+        }
+        const close: ?u21 = if (closerFor(c)) |cl| cl else if (isQuote(c)) c else null;
+        if (close) |cl| {
+            self.cx = try self.buf.insertCodepoint(self.cy, self.cx, c);
+            _ = try self.buf.insertCodepoint(self.cy, self.cx, cl);
+            self.updateGoal();
+            return;
+        }
+        self.cx = try self.buf.insertCodepoint(self.cy, self.cx, c);
+        self.updateGoal();
+    }
+
+    fn insertBackspace(self: *Editor) !void {
+        const line = self.curLine();
+        if (self.cx > 0 and self.cx < line.len) {
+            const before = unicode.decode(line[unicode.prevBoundary(line, self.cx)..]).cp;
+            const after = unicode.decode(line[self.cx..]).cp;
+            if (isPair(before, after)) {
+                try self.buf.deleteForward(self.cy, self.cx); // closer
+                const p = try self.buf.deleteBackward(self.cy, self.cx); // opener
+                self.cy = p.row;
+                self.cx = p.col;
+                self.updateGoal();
+                return;
+            }
+        }
+        const p = try self.buf.deleteBackward(self.cy, self.cx);
+        self.cy = p.row;
+        self.cx = p.col;
+        self.updateGoal();
     }
 
     fn moveKey(self: *Editor, k: key.Key) bool {
@@ -1492,9 +1593,13 @@ pub const Editor = struct {
 
     fn render(self: *Editor) !void {
         var sp = log.Span.start();
+        const th = theme.current;
         self.frame.clearRetainingCapacity();
+        self.cur_fg = null;
+        self.cur_bg = null;
         try self.emit(ansi.hide_cursor);
         try self.emit(ansi.cursor_home);
+        try self.emit(ansi.reset_attrs);
 
         const rows = self.textRows();
         const gutter = self.gutterWidth();
@@ -1503,42 +1608,54 @@ pub const Editor = struct {
         var r: usize = 0;
         while (r < rows) : (r += 1) {
             const file_row = self.top + r;
+            const is_cur = file_row == self.cy;
+            const row_bg = if (is_cur) th.cursorline else th.bg;
+            try self.setBg(row_bg);
             if (file_row < self.buf.lineCount()) {
-                try self.emitGutter(file_row + 1, gutter);
-                try self.emitLine(file_row, self.buf.line(file_row), cols);
+                try self.emitGutter(file_row, gutter, is_cur);
+                try self.emitLine(file_row, self.buf.line(file_row), cols, row_bg);
             } else {
-                try self.emit(ansi.dim);
+                try self.setFg(th.fg_dim);
                 try self.emit("~");
-                try self.emit(ansi.reset_attrs);
             }
+            try self.setBg(row_bg);
             try self.emit(ansi.clear_line_right);
             try self.emit("\r\n");
         }
 
         try self.renderStatus();
+        try self.emit(ansi.reset_attrs);
         try self.placeCursor(gutter);
         try self.emit(ansi.show_cursor);
         try self.term.write(self.frame.items);
         sp.lap("render");
     }
 
-    fn emitGutter(self: *Editor, num: usize, gutter: usize) !void {
+    fn emitGutter(self: *Editor, file_row: usize, gutter: usize, is_cur: bool) !void {
+        const th = theme.current;
+        // Absolute number on the current line, relative distance elsewhere.
+        const num = if (is_cur) file_row + 1 else if (file_row > self.cy) file_row - self.cy else self.cy - file_row;
         var nb: [20]u8 = undefined;
         const ns = std.fmt.bufPrint(&nb, "{d}", .{num}) catch unreachable;
-        try self.emit(ansi.dim);
+        try self.setFg(if (is_cur) th.gutter_active else th.gutter);
         try self.emitSpaces(gutter - 1 - ns.len);
         try self.emit(ns);
-        try self.emit(ansi.reset_attrs);
         try self.emit(" ");
     }
 
-    fn emitLine(self: *Editor, row: usize, line: []const u8, cols: usize) !void {
+    fn emitLine(self: *Editor, row: usize, line: []const u8, cols: usize, row_bg: Color) !void {
+        const th = theme.current;
+        self.style_buf.resize(self.gpa, line.len) catch {};
+        if (self.style_buf.items.len == line.len) syntax.highlight(self.lang, line, self.style_buf.items);
+
         const sel = self.selectionRange(row);
+        const first_nb = motion.firstNonBlank(line);
+        const indent_cols = displayCol(line, first_nb);
+
         const left = self.left;
         const right = left + cols;
         var dc: usize = 0;
         var i: usize = 0;
-        var in_sel = false;
         while (i < line.len) {
             const d = unicode.decode(line[i..]);
             const w = cellWidth(d.cp, dc);
@@ -1551,23 +1668,60 @@ pub const Editor = struct {
             if (start + w <= left) continue;
             if (start >= right) break;
 
-            const want_sel = if (sel) |s| (byte >= s.lo and byte < s.hi) else false;
-            if (want_sel and !in_sel) {
-                try self.emit(ansi.reverse_video);
-                in_sel = true;
-            } else if (!want_sel and in_sel) {
-                try self.emit(ansi.reset_attrs);
-                in_sel = false;
-            }
+            const selected = if (sel) |s| (byte >= s.lo and byte < s.hi) else false;
+            try self.setBg(if (selected) th.selection else row_bg);
 
-            if (d.cp == '\t' or start < left or start + w > right) {
+            if (d.cp == '\t' or d.cp == ' ' or start < left or start + w > right) {
                 var c = if (start < left) left else start;
-                while (c < start + w and c < right) : (c += 1) try self.emit(" ");
+                while (c < start + w and c < right) : (c += 1) {
+                    if (byte < first_nb and c % tab_width == 0 and c < indent_cols) {
+                        try self.setFg(th.indent_guide);
+                        try self.emit(indent_glyph);
+                    } else {
+                        try self.emit(" ");
+                    }
+                }
             } else {
+                const stl = if (byte < self.style_buf.items.len) self.style_buf.items[byte] else .normal;
+                try self.setFg(self.styleColor(stl));
                 try self.emit(bytes);
             }
         }
-        if (in_sel) try self.emit(ansi.reset_attrs);
+    }
+
+    fn styleColor(_: *Editor, s: syntax.Style) Color {
+        const th = theme.current;
+        return switch (s) {
+            .normal => th.fg,
+            .comment => th.comment,
+            .keyword => th.keyword,
+            .type_ => th.type_,
+            .builtin => th.builtin,
+            .function => th.function,
+            .string_ => th.string_,
+            .char_ => th.char_,
+            .number => th.number,
+            .operator => th.operator,
+            .preproc => th.preproc,
+        };
+    }
+
+    fn setFg(self: *Editor, c: Color) !void {
+        if (self.cur_fg) |f| {
+            if (f.r == c.r and f.g == c.g and f.b == c.b) return;
+        }
+        var b: [24]u8 = undefined;
+        try self.emit(c.fg(&b));
+        self.cur_fg = c;
+    }
+
+    fn setBg(self: *Editor, c: Color) !void {
+        if (self.cur_bg) |f| {
+            if (f.r == c.r and f.g == c.g and f.b == c.b) return;
+        }
+        var b: [24]u8 = undefined;
+        try self.emit(c.bg(&b));
+        self.cur_bg = c;
     }
 
     const SelRange = struct { lo: usize, hi: usize };
@@ -1590,10 +1744,13 @@ pub const Editor = struct {
     }
 
     fn renderStatus(self: *Editor) !void {
+        const th = theme.current;
         const cols: usize = self.win.cols;
-        try self.emit(ansi.reverse_video);
 
+        // Command / search line: a simple prompt across the bar.
         if (self.mode == .command) {
+            try self.setBg(th.status_bg);
+            try self.setFg(th.fg);
             const prompt: []const u8 = switch (self.cmd_kind) {
                 .ex => ":",
                 .search_forward => "/",
@@ -1603,35 +1760,100 @@ pub const Editor = struct {
             const shown = @min(self.cmd.items.len, if (cols > 0) cols - 1 else 0);
             try self.emit(self.cmd.items[0..shown]);
             try self.emitSpaces(cols - 1 - shown);
-            try self.emit(ansi.reset_attrs);
             return;
         }
 
-        var lb: [320]u8 = undefined;
+        const accent = self.modeColor();
+        const label = self.mode.label();
+
+        // Left: [ MODE ] file
+        try self.setBg(accent);
+        try self.setFg(th.bg);
+        try self.emitFmt(" {s} ", .{label});
+        try self.setBg(th.status_seg_bg);
+        try self.setFg(accent);
+        try self.emit(sep_right);
+
+        var fb: [320]u8 = undefined;
         const fname = self.buf.path orelse "[No Name]";
-        const dirty = if (self.buf.dirty) " [+]" else "";
-        const msg = self.status.items;
-        const sep = if (msg.len > 0) "  —  " else "";
-        const rec = if (self.recording != null) " REC" else "";
-        const left = std.fmt.bufPrint(&lb, " {s}{s}  {s}{s}{s}{s}", .{
-            self.mode.label(), rec, fname, dirty, sep, msg,
+        const dirty = if (self.buf.dirty) " \u{25CF}" else "";
+        const fileseg = std.fmt.bufPrint(&fb, " {s}{s} ", .{ fname, dirty }) catch " ";
+        try self.setBg(th.status_seg_bg);
+        try self.setFg(th.status_seg_fg);
+        try self.emit(fileseg);
+        try self.setBg(th.status_bg);
+        try self.setFg(th.status_seg_bg);
+        try self.emit(sep_right);
+
+        const left_w = (label.len + 2) + 1 + unicode.displayWidth(fileseg) + 1;
+
+        // Right: filetype + position | percentage
+        var rb: [96]u8 = undefined;
+        const rseg = std.fmt.bufPrint(&rb, " {s}  Ln {d}, Col {d} ", .{
+            langName(self.lang), self.cy + 1, displayCol(self.curLine(), self.cx) + 1,
         }) catch " ";
+        var pb: [16]u8 = undefined;
+        const lines = self.buf.lineCount();
+        const pct: usize = if (lines <= 1) 100 else (self.cy * 100) / (lines - 1);
+        const pctseg = std.fmt.bufPrint(&pb, " {d}% ", .{pct}) catch " ";
+        const right_w = 1 + rseg.len + 1 + pctseg.len;
 
-        var rb: [80]u8 = undefined;
-        const col_disp = displayCol(self.curLine(), self.cx) + 1;
-        const right = std.fmt.bufPrint(&rb, "Ln {d}, Col {d} ", .{ self.cy + 1, col_disp }) catch "";
+        // Middle: status message, else the in-progress command (showcmd).
+        var mb: [256]u8 = undefined;
+        const middle = if (self.status.items.len > 0) self.status.items else self.pendingKeys(&mb);
+        const mid_w = if (cols > left_w + right_w) cols - left_w - right_w else 0;
+        try self.setBg(th.status_bg);
+        try self.setFg(th.fg_dim);
+        const mshow = @min(middle.len, mid_w);
+        try self.emit(middle[0..mshow]);
+        try self.emitSpaces(mid_w - mshow);
 
-        var used: usize = 0;
-        const lshow = @min(left.len, cols);
-        try self.emit(left[0..lshow]);
-        used += lshow;
-        if (used + right.len <= cols) {
-            try self.emitSpaces(cols - used - right.len);
-            try self.emit(right);
-        } else {
-            try self.emitSpaces(cols - used);
+        try self.setBg(th.status_bg);
+        try self.setFg(th.status_seg_bg);
+        try self.emit(sep_left);
+        try self.setBg(th.status_seg_bg);
+        try self.setFg(th.status_seg_fg);
+        try self.emit(rseg);
+        try self.setBg(th.status_seg_bg);
+        try self.setFg(accent);
+        try self.emit(sep_left);
+        try self.setBg(accent);
+        try self.setFg(th.bg);
+        try self.emit(pctseg);
+    }
+
+    fn modeColor(self: *Editor) Color {
+        const th = theme.current;
+        return switch (self.mode) {
+            .normal => th.mode_normal,
+            .insert => th.mode_insert,
+            .visual, .visual_line => th.mode_visual,
+            .command => th.mode_command,
+        };
+    }
+
+    fn pendingKeys(self: *Editor, buf: []u8) []const u8 {
+        var i: usize = 0;
+        if (self.recording) |reg| i += (std.fmt.bufPrint(buf[i..], "REC @{c}  ", .{reg}) catch return buf[0..i]).len;
+        if (self.pending_register) |reg| i += (std.fmt.bufPrint(buf[i..], "\"{c}", .{reg}) catch return buf[0..i]).len;
+        if (self.count > 0) i += (std.fmt.bufPrint(buf[i..], "{d}", .{self.count}) catch return buf[0..i]).len;
+        const opc: ?u8 = switch (self.operator) {
+            .delete => 'd',
+            .change => 'c',
+            .yank => 'y',
+            .indent_right => '>',
+            .indent_left => '<',
+            .comment => 'g',
+            .none => null,
+        };
+        if (opc) |c| {
+            if (i < buf.len) {
+                buf[i] = c;
+                i += 1;
+            }
         }
-        try self.emit(ansi.reset_attrs);
+        if (self.count2 > 0) i += (std.fmt.bufPrint(buf[i..], "{d}", .{self.count2}) catch return buf[0..i]).len;
+        return buf[0..i];
     }
 
     fn placeCursor(self: *Editor, gutter: usize) !void {
@@ -1705,9 +1927,42 @@ fn toggleAscii(cp: u21) u21 {
     return cp;
 }
 
+fn isQuote(cp: u21) bool {
+    return cp == '"' or cp == '\'' or cp == '`';
+}
+
+fn isCloser(cp: u21) bool {
+    return cp == ')' or cp == ']' or cp == '}';
+}
+
+fn closerFor(cp: u21) ?u21 {
+    return switch (cp) {
+        '(' => ')',
+        '[' => ']',
+        '{' => '}',
+        else => null,
+    };
+}
+
+fn isPair(open: u21, close: u21) bool {
+    if (closerFor(open)) |c| return c == close;
+    return isQuote(open) and open == close;
+}
+
 fn lastColumn(line: []const u8) usize {
     if (line.len == 0) return 0;
     return unicode.prevBoundary(line, line.len);
+}
+
+fn langName(l: syntax.Language) []const u8 {
+    return switch (l) {
+        .zig => "zig",
+        .c => "c",
+        .python => "python",
+        .javascript => "js",
+        .json => "json",
+        .none => "text",
+    };
 }
 
 fn trimTrailingNewline(s: []const u8) []const u8 {

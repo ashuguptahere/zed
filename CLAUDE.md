@@ -21,9 +21,12 @@ work", they win.
 
 ## Project rules
 
-- **Zig only, no third-party dependencies.** The standard library plus Zig's own
-  package management is the entire toolbox. Do not add external packages. Keep
-  the dependency surface as small as possible.
+- **Minimal dependencies.** Prefer the standard library. External Zig packages
+  are *permitted* (e.g. for tree-sitter syntax or an LSP client) but each one
+  must earn its place — keep the dependency surface as small as possible and
+  vendor through Zig's own package manager (`build.zig.zon`). The editor still
+  has zero dependencies today; highlighting is a built-in lexer (`syntax.zig`),
+  with tree-sitter as the documented upgrade path.
 - **Idiomatic, modern Zig.** Follow current Zig conventions for the toolchain in
   `build.zig.zon` (`minimum_zig_version`). No legacy/deprecated APIs.
 - **Fast to compile and fast to run.** Keep build times low; prefer plain data
@@ -82,7 +85,9 @@ Source is `src/`, one responsibility per module:
 | `register.zig`| Vim registers (named/unnamed, linewise flag) for yank/delete/paste. |
 | `undo.zig`    | Undo/redo as capped buffer snapshots. |
 | `search.zig`  | Literal substring search (`/ ? n N * #`). |
-| `editor.zig`  | State, the vim command interpreter, viewport, rendering. |
+| `theme.zig`   | Colour palette (Tokyo Night) and 24-bit SGR helpers. |
+| `syntax.zig`  | Dependency-free per-line lexer producing per-byte styles. |
+| `editor.zig`  | State, the vim command interpreter, viewport, themed rendering. |
 
 The pure, error-prone logic (motions, search) lives in its own unit-tested
 modules; `editor.zig` is the stateful orchestrator (mode machine, operators,
@@ -131,9 +136,21 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 - **Search:** `/pat` `?pat`, `n N`, `*` `#`. Literal (not regex), wraps.
 - **Marks/macros:** `m{a-z}`, `` `{a-z} ``, `'{a-z}`; `q{a-z}…q` records, `@{a-z}`
   / `{n}@a` replays.
-- **Insert:** `i I a A o O` (and `c`/`s`/`R`-style entries), `Esc` to normal.
+- **Insert:** `i I a A o O` (and `c`/`s` entries), `Esc` to normal. Auto-pairs:
+  typing an opener inserts its closer; typing the closer steps over it.
+- **Built-ins (no plugins):** `gcc` / `gc{motion}` comment toggling, auto-pairs.
 - **Command line:** `:w` write, `:q` quit (blocked if unsaved), `:wq`/`:x`,
   `:q!`, `:w <name>`, `:{number}` goto line, `:$`; `ZZ`/`ZQ`.
+
+## Appearance
+
+The renderer aims for an AstroNvim/Helix look: a Tokyo Night true-colour theme
+(`theme.zig`), a powerline statusline (coloured mode block, separators,
+file/filetype/position/percent segments — a nerd font is recommended for the
+glyphs), syntax highlighting (`syntax.zig`), relative+absolute line numbers, a
+cursorline, and indent guides. All colour is emitted as 24-bit SGR; the frame is
+still built once and written in a single syscall, and rendering still only
+happens on change.
 
 Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
 `editor.zig`.
@@ -163,4 +180,9 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
 - Vim gaps: blockwise visual (`Ctrl-v`), regex and `:%s` substitution,
   autoindent, and the trickier dot-repeat/macro interactions are not (fully)
   implemented. `*`/search are literal, not regex.
-- Syntax highlighting, multiple buffers/windows, and config files — not yet built.
+- Highlighting is a per-line lexer (no cross-line block comments; a handful of
+  languages). Tree-sitter is the upgrade path now that deps are allowed.
+- Helix features still to build: multiple cursors, fuzzy file/global-search
+  pickers, a which-key popup, surround (`ys`/`cs`/`ds`), and LSP. Statusline
+  separators assume a nerd font.
+- Multiple buffers/windows and config files — not yet built.
