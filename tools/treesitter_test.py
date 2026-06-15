@@ -26,16 +26,16 @@ TALL = ("pub fn f() void {\n"
         + "".join(f"    const a{i} = {i};\n" for i in range(40))
         + "    const s =\n        \\\\deep\n    ;\n    _ = s;\n}\n")
 
-def capture(keys=(), content=ZIG):
+def capture(keys=(), content=ZIG, name="sample.zig"):
     d = tempfile.mkdtemp(prefix="zedts")  # not a git repo
-    path = os.path.join(d, "sample.zig")
+    path = os.path.join(d, name)
     with open(path, "w") as f:
         f.write(content)
     pid, fd = pty.fork()
     if pid == 0:
         os.chdir(d)
         os.environ["TERM"] = "xterm-256color"
-        os.execv(ZED, [ZED, "sample.zig"])
+        os.execv(ZED, [ZED, name])
         os._exit(127)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
     out = bytearray()
@@ -88,6 +88,12 @@ check("incremental: existing string still highlighted", STRING in out)
 # off-screen at first; after scrolling to it (G), the re-query must highlight it.
 out = capture(keys=[b"G"], content=TALL)
 check("scroll re-queries: off-screen string highlighted after G", STRING in out)
+
+# A TypeScript file goes through the new .typescript language variant
+# (detect -> startTs -> grammar). A type annotation is highlighted as a type.
+TYPE = b"\x1b[38;2;42;195;222m"  # theme.type_ (cyan)
+out = capture(content="function f(a: number): string { return \"x\"; }\n", name="sample.ts")
+check("typescript file highlights (type + string)", TYPE in out and STRING in out)
 
 print()
 print("ALL PASS" if fails == 0 else f"{fails} FAILURE(S)")

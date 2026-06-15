@@ -22,7 +22,7 @@ pub const Style = enum {
     preproc,
 };
 
-pub const Language = enum { none, zig, c, python, javascript, json };
+pub const Language = enum { none, zig, c, python, javascript, typescript, json };
 
 /// Pick a language from a file path's extension.
 pub fn detect(path: ?[]const u8) Language {
@@ -34,7 +34,8 @@ pub fn detect(path: ?[]const u8) Language {
         .{ "c", Language.c },     .{ "h", Language.c },
         .{ "cpp", Language.c },   .{ "cc", Language.c }, .{ "hpp", Language.c },
         .{ "py", Language.python },
-        .{ "js", Language.javascript }, .{ "ts", Language.javascript },
+        .{ "js", Language.javascript },   .{ "jsx", Language.javascript },   .{ "mjs", Language.javascript },
+        .{ "ts", Language.typescript },   .{ "tsx", Language.typescript },
         .{ "json", Language.json },
     };
     inline for (map) |entry| {
@@ -217,9 +218,9 @@ fn specFor(lang: Language) Spec {
             .line_comment = "#",
             .single_quote_string = true,
         },
-        .javascript => .{
-            .keywords = &.{ "var", "let", "const", "function", "return", "if", "else", "for", "while", "switch", "case", "break", "continue", "new", "class", "extends", "import", "export", "from", "default", "try", "catch", "finally", "throw", "typeof", "instanceof", "in", "of", "async", "await", "yield", "this" },
-            .types = &.{ "Number", "String", "Boolean", "Object", "Array", "Promise" },
+        .javascript, .typescript => .{
+            .keywords = &.{ "var", "let", "const", "function", "return", "if", "else", "for", "while", "switch", "case", "break", "continue", "new", "class", "extends", "import", "export", "from", "default", "try", "catch", "finally", "throw", "typeof", "instanceof", "in", "of", "async", "await", "yield", "this", "interface", "type", "enum", "namespace", "implements", "readonly", "public", "private", "protected", "abstract", "as", "declare" },
+            .types = &.{ "Number", "String", "Boolean", "Object", "Array", "Promise", "number", "string", "boolean", "any", "void", "unknown", "never" },
             .constants = &.{ "true", "false", "null", "undefined", "NaN" },
             .line_comment = "//",
             .single_quote_string = true,
@@ -236,6 +237,9 @@ const testing = std.testing;
 test "detect language" {
     try testing.expectEqual(Language.zig, detect("src/main.zig"));
     try testing.expectEqual(Language.python, detect("a/b.py"));
+    try testing.expectEqual(Language.javascript, detect("app.js"));
+    try testing.expectEqual(Language.typescript, detect("app.ts"));
+    try testing.expectEqual(Language.typescript, detect("ui.tsx"));
     try testing.expectEqual(Language.none, detect("README"));
 }
 

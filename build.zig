@@ -20,23 +20,24 @@ pub fn build(b: *std.Build) void {
         .file = b.path("vendor/tree-sitter/src/lib.c"),
         .flags = &.{ "-std=c11", "-D_GNU_SOURCE" },
     });
-    // Each grammar: its include dir, generated parser.c (+ optional C scanner),
-    // and its highlights query embedded via @embedFile.
-    const Grammar = struct { name: []const u8, scanner: bool };
+    // Each grammar: the dir holding its generated parser.c (+ optional C
+    // scanner and tree_sitter/ headers), and its highlights query embedded via
+    // @embedFile. `src` is explicit because tree-sitter-typescript keeps its
+    // grammar under typescript/ with a sibling common/scanner.h.
+    const Grammar = struct { name: []const u8, src: []const u8, scanner: bool, highlights: []const u8 };
     const grammars = [_]Grammar{
-        .{ .name = "zig", .scanner = false },
-        .{ .name = "c", .scanner = false },
-        .{ .name = "python", .scanner = true },
-        .{ .name = "json", .scanner = false },
+        .{ .name = "zig", .src = "vendor/tree-sitter-zig/src", .scanner = false, .highlights = "vendor/tree-sitter-zig/highlights.scm" },
+        .{ .name = "c", .src = "vendor/tree-sitter-c/src", .scanner = false, .highlights = "vendor/tree-sitter-c/highlights.scm" },
+        .{ .name = "python", .src = "vendor/tree-sitter-python/src", .scanner = true, .highlights = "vendor/tree-sitter-python/highlights.scm" },
+        .{ .name = "json", .src = "vendor/tree-sitter-json/src", .scanner = false, .highlights = "vendor/tree-sitter-json/highlights.scm" },
+        .{ .name = "javascript", .src = "vendor/tree-sitter-javascript/src", .scanner = true, .highlights = "vendor/tree-sitter-javascript/highlights.scm" },
+        .{ .name = "typescript", .src = "vendor/tree-sitter-typescript/typescript/src", .scanner = true, .highlights = "vendor/tree-sitter-typescript/highlights.scm" },
     };
     inline for (grammars) |g| {
-        const dir = "vendor/tree-sitter-" ++ g.name;
-        exe_mod.addIncludePath(b.path(dir ++ "/src"));
-        exe_mod.addCSourceFile(.{ .file = b.path(dir ++ "/src/parser.c"), .flags = &.{"-D_GNU_SOURCE"} });
-        if (g.scanner) exe_mod.addCSourceFile(.{ .file = b.path(dir ++ "/src/scanner.c"), .flags = &.{"-D_GNU_SOURCE"} });
-        exe_mod.addAnonymousImport("ts_highlights_" ++ g.name, .{
-            .root_source_file = b.path(dir ++ "/highlights.scm"),
-        });
+        exe_mod.addIncludePath(b.path(g.src));
+        exe_mod.addCSourceFile(.{ .file = b.path(g.src ++ "/parser.c"), .flags = &.{"-D_GNU_SOURCE"} });
+        if (g.scanner) exe_mod.addCSourceFile(.{ .file = b.path(g.src ++ "/scanner.c"), .flags = &.{"-D_GNU_SOURCE"} });
+        exe_mod.addAnonymousImport("ts_highlights_" ++ g.name, .{ .root_source_file = b.path(g.highlights) });
     }
 
     const exe = b.addExecutable(.{ .name = "zed", .root_module = exe_mod });

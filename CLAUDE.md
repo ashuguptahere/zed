@@ -94,10 +94,12 @@ Source is `src/`, one responsibility per module:
 | `editor.zig`  | State, the vim command interpreter, multiple cursors, pickers, LSP, tree-sitter, viewport, themed rendering. |
 
 Vendored C lives under `vendor/` (`tree-sitter/` runtime, plus `tree-sitter-zig`,
-`-c`, `-python`, `-json` grammars, each with `parser.c`, an optional `scanner.c`,
-and `highlights.scm`); `build.zig` compiles them with `-D_GNU_SOURCE` and links
-libc. Adding a grammar is one entry in the `grammars` list in `build.zig` plus a
-case in `treesitter.zig`.
+`-c`, `-python`, `-json`, `-javascript`, `-typescript` grammars, each with
+`parser.c`, an optional `scanner.c`, and `highlights.scm`); `build.zig` compiles
+them with `-D_GNU_SOURCE` and links libc. Adding a grammar is one entry in the
+`grammars` list in `build.zig` plus a case in `treesitter.zig` (TypeScript keeps
+its grammar under `typescript/` with a sibling `common/scanner.h`, and its query
+layers on JavaScript's).
 
 The pure, error-prone logic (motions, search) lives in its own unit-tested
 modules; `editor.zig` is the stateful orchestrator (mode machine, operators,
@@ -181,7 +183,7 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 The renderer aims for an AstroNvim/Helix look: a Tokyo Night true-colour theme
 (`theme.zig`), a powerline statusline (coloured mode block, separators,
 file/filetype/position/percent segments — a nerd font is recommended for the
-glyphs), syntax highlighting (tree-sitter for Zig/C/Python/JSON via
+glyphs), syntax highlighting (tree-sitter for Zig/C/Python/JSON/JS/TS via
 `treesitter.zig`, the `syntax.zig` lexer otherwise), relative+absolute line numbers, a
 cursorline, indent guides, and a git change gutter (add/change/delete signs
 from `git diff`, recomputed on load and save). All colour is emitted as 24-bit
@@ -226,8 +228,8 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   block `A` on lines shorter than the block does not pad with spaces.
 - LSP is full-document sync with diagnostics/hover/goto; no completion,
   signature help, rename or cross-file definition jumps yet.
-- Tree-sitter highlighting is wired for Zig, C, Python and JSON (the vendored
-  grammars); other languages use the lexer. Parsing is incremental (the prior
+- Tree-sitter highlighting is wired for Zig, C, Python, JSON, JavaScript and
+  TypeScript (the vendored grammars); other files use the lexer. Parsing is incremental (the prior
   tree is reused via a prefix/suffix diff) and the highlight query runs only over the
   visible byte range (re-run on edit or scroll), so per-keystroke work is
   O(screen) not O(document). Query predicates (`#match?`/`#eq?`) are not

@@ -3208,6 +3208,7 @@ fn langName(l: syntax.Language) []const u8 {
         .c => "c",
         .python => "python",
         .javascript => "js",
+        .typescript => "ts",
         .json => "json",
         .none => "text",
     };
@@ -3220,6 +3221,7 @@ fn langId(l: syntax.Language) []const u8 {
         .c => "c",
         .python => "python",
         .javascript => "javascript",
+        .typescript => "typescript",
         .json => "json",
         .none => "plaintext",
     };
@@ -3231,7 +3233,7 @@ fn defaultServer(l: syntax.Language) ?[]const []const u8 {
         .zig => &.{"zls"},
         .c => &.{"clangd"},
         .python => &.{"pylsp"},
-        .javascript => &.{ "typescript-language-server", "--stdio" },
+        .javascript, .typescript => &.{ "typescript-language-server", "--stdio" },
         else => null,
     };
 }
