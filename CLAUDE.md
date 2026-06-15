@@ -89,7 +89,7 @@ Source is `src/`, one responsibility per module:
 | `syntax.zig`  | Dependency-free per-line lexer producing per-byte styles. |
 | `fuzzy.zig`   | Subsequence scorer for the pickers. |
 | `git.zig`     | Git change signs for the gutter (parses `git diff -U0`). |
-| `lsp.zig`     | Minimal LSP client: JSON-RPC over a server's stdio (diagnostics, hover, goto, completion; incremental or full doc sync per the server's capabilities). |
+| `lsp.zig`     | Minimal LSP client: JSON-RPC over a server's stdio (diagnostics, hover, goto, completion, signature help; incremental or full doc sync per the server's capabilities). |
 | `treesitter.zig` | Tree-sitter highlighting via the vendored C runtime + grammar (incremental parse, visible-range `highlights.scm` query). |
 | `editor.zig`  | State, the vim command interpreter, multiple cursors, pickers, LSP, tree-sitter, viewport, themed rendering. |
 
@@ -176,8 +176,11 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   `typescript-language-server`), or any command via `--lsp`. Diagnostics show as
   gutter signs + a statusline message/count; `K` hovers, `gd` goes to definition,
   `Ctrl-n` in insert mode requests completion (popup: `Ctrl-n`/`Ctrl-p` or
-  arrows to move, `Tab`/`Enter` to accept, `Esc` to dismiss). Edits are sent as
-  incremental `didChange` ranges when the server advertises it, else full-document.
+  arrows to move, `Tab`/`Enter` to accept, `Esc` to dismiss). Typing `(` or `,`
+  in insert mode requests signature help, shown as a one-line popup above the
+  cursor with the active parameter emphasized (dismissed with `Esc`). Edits are
+  sent as incremental `didChange` ranges when the server advertises it, else
+  full-document.
   Best-effort: no server installed simply means no LSP. Its stdout is polled
   alongside the terminal, so an idle editor still uses no CPU.
 
@@ -229,9 +232,11 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   literal, not regex. Statusline separators assume a nerd font.
 - Block paste of a blockwise yank is charwise (not a true rectangular paste);
   block `A` on lines shorter than the block does not pad with spaces.
-- LSP does diagnostics/hover/goto/completion with incremental (or full)
-  document sync; no signature help, snippets/`textEdit` completions, rename or
+- LSP does diagnostics/hover/goto/completion/signature help with incremental
+  (or full) document sync; no snippets/`textEdit` completions, rename or
   cross-file definition jumps yet (definition jumps stay within the open file).
+  Signature help triggers on `(`/`,` and shows the active signature only (no
+  overload cycling).
 - Tree-sitter highlighting is wired for Zig, C, Python, JSON, JavaScript, TypeScript, Rust,
   Go, HTML and Markdown (the vendored grammars); other files use the lexer. Parsing is incremental (the prior
   tree is reused via a prefix/suffix diff) and the highlight query runs only over the

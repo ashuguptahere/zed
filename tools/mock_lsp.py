@@ -55,6 +55,7 @@ while True:
         send({"jsonrpc": "2.0", "id": m["id"], "result": {"capabilities": {
             "textDocumentSync": 2,            # 2 = incremental
             "completionProvider": {},
+            "signatureHelpProvider": {"triggerCharacters": ["(", ","]},
         }}})
     elif method == "textDocument/didOpen":
         diag("mock error", 1)
@@ -68,6 +69,17 @@ while True:
             {"label": "mockComplete", "insertText": "mockComplete"},
             {"label": "mockOther", "insertText": "mockOther"},
         ]}})
+    elif method == "textDocument/signatureHelp":
+        # Parameter labels as [start, end) UTF-16 offsets into the signature
+        # label (exercises the client's offset->byte conversion).
+        send({"jsonrpc": "2.0", "id": m["id"], "result": {
+            "signatures": [{
+                "label": "mockFn(a: int, b: int)",
+                "parameters": [{"label": [7, 13]}, {"label": [15, 21]}],
+            }],
+            "activeSignature": 0,
+            "activeParameter": 0,
+        }})
     elif method == "textDocument/hover":
         send({"jsonrpc": "2.0", "id": m["id"], "result": {"contents": "mock hover"}})
     elif method == "textDocument/definition":

@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Verify the LSP client against the mock server: diagnostics, hover, goto.
+"""Verify the LSP client against the mock server.
 
 Runs zed with --lsp pointing at tools/mock_lsp.py and checks the rendered output
-for the diagnostic count/sign, the diagnostic message, and a hover result.
+for diagnostics (count/sign/message), hover, incremental didChange, completion
+(popup + accept) and signature help (popup + active-parameter highlight).
 """
-import os, pty, select, sys, time, fcntl, termios, struct
+import os, pty, select, sys, time, fcntl, termios, struct, re
+
+ANSI = re.compile(rb"\x1b\[[0-9;]*[A-Za-z]")  # strip CSI escapes (colour, cursor)
 
 ZED = os.path.abspath(sys.argv[1])
 MOCK = os.path.abspath(os.path.join(os.path.dirname(__file__), "mock_lsp.py"))
@@ -82,6 +85,15 @@ out, text = run([(b"omock", 0.4), (b"\x0e", 0.9), (b"\t", 0.4), (b"\x1b", 0.3)],
                 final=b"\x1b:wq\r")
 check("completion popup shows candidate", b"mockComplete" in out)
 check("accepted completion written to file", "mockComplete\n" in text)
+
+# Signature help: typing "(" requests it and a one-line popup shows the
+# signature with the active parameter emphasized in theme.builtin.
+BUILTIN = b"\x1b[38;2;224;175;104m"  # theme.builtin colour (active parameter)
+out, _ = run([(b"omockFn(", 1.0)])
+# The active parameter is wrapped in colour escapes, so strip ANSI for the label.
+check("signature popup shows label", b"mockFn(a: int, b: int)" in ANSI.sub(b"", out))
+# The active parameter (offsets [7,13) -> "a: int") is the highlighted run.
+check("active parameter highlighted", BUILTIN + b"a: int" in out)
 
 print()
 print("ALL PASS" if fails == 0 else f"{fails} FAILURE(S)")

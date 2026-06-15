@@ -2,9 +2,10 @@
 //!
 //! Spawns a language server, speaks JSON-RPC over its stdio with Content-Length
 //! framing, and surfaces what the editor needs: diagnostics (pushed by the
-//! server), plus hover and goto-definition on request. It is best-effort — if
-//! the server binary is missing or the handshake times out, the client simply
-//! reports itself as not started and the editor carries on.
+//! server), plus hover, goto-definition, completion and signature help on
+//! request. It is best-effort — if the server binary is missing or the
+//! handshake times out, the client simply reports itself as not started and the
+//! editor carries on.
 //!
 //! The server's stdout fd is exposed so the editor can poll it alongside the
 //! terminal; incoming messages are processed without blocking the UI.
@@ -23,6 +24,12 @@ pub const Diagnostic = struct {
 pub const Location = struct { uri: []u8, line: usize, col: usize };
 
 pub const Completion = struct { label: []u8, insert: []u8 };
+
+pub const Signature = struct {
+    label: []u8,
+    active_start: usize, // byte range of the active parameter within `label`
+    active_end: usize, // == active_start when there is no active parameter
+};
 
 pub const Client = struct {
     gpa: Allocator,
@@ -44,10 +51,13 @@ pub const Client = struct {
     hover_id: i64,
     def_id: i64,
     comp_id: i64,
+    sig_id: i64,
     hover_text: ?[]u8, // pending hover result for the editor to show
     def_target: ?Location, // pending goto-definition result
     completions: std.ArrayList(Completion), // last completion result
     comp_ready: bool, // a completion response just arrived (editor should consume)
+    signature: ?Signature, // active signature-help content (null = none)
+    sig_ready: bool, // a signatureHelp response just arrived (editor should consume)
 
     pub fn start(
         gpa: Allocator,
@@ -83,10 +93,13 @@ pub const Client = struct {
             .hover_id = -1,
             .def_id = -1,
             .comp_id = -1,
+            .sig_id = -1,
             .hover_text = null,
             .def_target = null,
             .completions = .empty,
             .comp_ready = false,
+            .signature = null,
+            .sig_ready = false,
         };
 
         self.sendInitialize(root);
@@ -113,6 +126,7 @@ pub const Client = struct {
         self.diags.deinit(self.gpa);
         self.clearCompletions();
         self.completions.deinit(self.gpa);
+        self.clearSignature();
         if (self.hover_text) |t| self.gpa.free(t);
         if (self.def_target) |d| self.gpa.free(d.uri);
     }
@@ -130,6 +144,11 @@ pub const Client = struct {
         self.completions.clearRetainingCapacity();
     }
 
+    fn clearSignature(self: *Client) void {
+        if (self.signature) |s| self.gpa.free(s.label);
+        self.signature = null;
+    }
+
     // --- outgoing ----------------------------------------------------------
 
     fn sendInitialize(self: *Client, root: []const u8) void {
@@ -137,7 +156,7 @@ pub const Client = struct {
         defer body.deinit(self.gpa);
         body.appendSlice(self.gpa, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"processId\":null,\"rootUri\":\"file://") catch return;
         appendEscaped(&body, self.gpa, root) catch return;
-        body.appendSlice(self.gpa, "\",\"capabilities\":{\"textDocument\":{\"publishDiagnostics\":{},\"hover\":{},\"definition\":{},\"completion\":{}}}}}") catch return;
+        body.appendSlice(self.gpa, "\",\"capabilities\":{\"textDocument\":{\"publishDiagnostics\":{},\"hover\":{},\"definition\":{},\"completion\":{},\"signatureHelp\":{}}}}}") catch return;
         self.writeMessage(body.items);
     }
 
@@ -220,6 +239,11 @@ pub const Client = struct {
     pub fn requestCompletion(self: *Client, line: usize, col: usize) void {
         self.comp_id = self.nextId();
         self.sendPositionRequest(self.comp_id, "textDocument/completion", line, col);
+    }
+
+    pub fn requestSignatureHelp(self: *Client, line: usize, col: usize) void {
+        self.sig_id = self.nextId();
+        self.sendPositionRequest(self.sig_id, "textDocument/signatureHelp", line, col);
     }
 
     pub fn requestHover(self: *Client, line: usize, col: usize) void {
@@ -327,6 +351,7 @@ pub const Client = struct {
         if (id == self.hover_id) self.handleHover(result);
         if (id == self.def_id) self.handleDefinition(result);
         if (id == self.comp_id) self.handleCompletion(result);
+        if (id == self.sig_id) self.handleSignature(result);
     }
 
     /// Read the server's `textDocumentSync` to decide full vs. incremental
@@ -366,6 +391,52 @@ pub const Client = struct {
             };
         }
         self.comp_ready = true;
+    }
+
+    /// Parse a `SignatureHelp`: take the active signature's label and locate the
+    /// active parameter's byte range within it. `sig_ready` is set regardless so
+    /// the editor knows to (re)open or close the popup.
+    fn handleSignature(self: *Client, result: std.json.Value) void {
+        self.clearSignature();
+        self.sig_ready = true;
+        const sigs = getField(result, "signatures") orelse return;
+        if (sigs != .array or sigs.array.items.len == 0) return;
+
+        const active_sig: usize = blk: {
+            const n = asInt(getField(result, "activeSignature")) orelse 0;
+            const idx: usize = if (n >= 0) @intCast(n) else 0;
+            break :blk if (idx < sigs.array.items.len) idx else 0;
+        };
+        const sig = sigs.array.items[active_sig];
+        const label = asStr(getField(sig, "label")) orelse return;
+        const owned = self.gpa.dupe(u8, label) catch return;
+
+        // Locate the active parameter's byte range within the label, if any.
+        var pstart: usize = 0;
+        var pend: usize = 0;
+        active: {
+            const params = getField(sig, "parameters") orelse break :active;
+            if (params != .array or params.array.items.len == 0) break :active;
+            // A signature-level activeParameter (3.16+) overrides the top-level one.
+            const ap_val = asInt(getField(sig, "activeParameter")) orelse asInt(getField(result, "activeParameter")) orelse 0;
+            const ap: usize = if (ap_val >= 0) @intCast(ap_val) else 0;
+            if (ap >= params.array.items.len) break :active;
+            const plabel = getField(params.array.items[ap], "label") orelse break :active;
+            switch (plabel) {
+                // A literal substring of the signature label.
+                .string => |s| if (std.mem.indexOf(u8, owned, s)) |off| {
+                    pstart = off;
+                    pend = off + s.len;
+                },
+                // A [startUtf16, endUtf16) pair of offsets into the label.
+                .array => |a| if (a.items.len >= 2 and a.items[0] == .integer and a.items[1] == .integer) {
+                    pstart = utf16ToByte(owned, @intCast(@max(a.items[0].integer, 0)));
+                    pend = utf16ToByte(owned, @intCast(@max(a.items[1].integer, 0)));
+                },
+                else => {},
+            }
+        }
+        self.signature = .{ .label = owned, .active_start = pstart, .active_end = pend };
     }
 
     fn updateDiagnostics(self: *Client, params: std.json.Value) void {
@@ -475,6 +546,20 @@ fn utf16Pos(content: []const u8, byte: usize) struct { line: u32, character: u32
     return .{ .line = line, .character = col };
 }
 
+/// UTF-16 code-unit offset within a string -> byte offset (the inverse of the
+/// column part of `utf16Pos`, for the single-line label offsets LSP uses in
+/// signature-help parameter ranges).
+fn utf16ToByte(s: []const u8, units: usize) usize {
+    var u: usize = 0;
+    var i: usize = 0;
+    while (i < s.len and u < units) {
+        const d = unicode.decode(s[i..]);
+        u += if (d.cp > 0xFFFF) 2 else 1;
+        i += d.len;
+    }
+    return i;
+}
+
 fn getField(v: std.json.Value, key: []const u8) ?std.json.Value {
     if (v != .object) return null;
     return v.object.get(key);
@@ -556,4 +641,15 @@ test "json escaping" {
     defer list.deinit(gpa);
     try appendEscaped(&list, gpa, "a\"b\\c\nd");
     try std.testing.expectEqualStrings("a\\\"b\\\\c\\nd", list.items);
+}
+
+test "utf16ToByte" {
+    // ASCII: code units == bytes.
+    try std.testing.expectEqual(@as(usize, 0), utf16ToByte("foo(a, b)", 0));
+    try std.testing.expectEqual(@as(usize, 4), utf16ToByte("foo(a, b)", 4));
+    // A 4-byte codepoint (😀) is 2 UTF-16 units but 4 bytes; "x" before it is 1/1.
+    try std.testing.expectEqual(@as(usize, 1), utf16ToByte("x\u{1F600}y", 1));
+    try std.testing.expectEqual(@as(usize, 5), utf16ToByte("x\u{1F600}y", 3));
+    // Past the end clamps to len.
+    try std.testing.expectEqual(@as(usize, 3), utf16ToByte("abc", 99));
 }

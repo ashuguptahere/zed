@@ -208,6 +208,7 @@ pub const Editor = struct {
     comp_open: bool,
     comp_filtered: std.ArrayList(usize), // indices into lsp.completions matching the prefix
     comp_sel: usize,
+    sig_open: bool, // signature-help popup is showing (reads lsp.signature)
 
     quit: bool,
     inbuf: [256]u8,
@@ -279,6 +280,7 @@ pub const Editor = struct {
             .comp_open = false,
             .comp_filtered = .empty,
             .comp_sel = 0,
+            .sig_open = false,
             .quit = false,
             .inbuf = undefined,
         };
@@ -1437,6 +1439,7 @@ pub const Editor = struct {
             .escape => {
                 self.mode = .normal;
                 self.comp_open = false;
+                self.sig_open = false;
                 if (self.cx > 0) self.cx = unicode.prevBoundary(self.curLine(), self.cx);
                 self.updateGoal();
             },
@@ -1452,7 +1455,11 @@ pub const Editor = struct {
                 self.cx = try self.buf.insertCodepoint(self.cy, self.cx, '\t');
                 self.updateGoal();
             },
-            .char => |c| try self.insertChar(c),
+            .char => |c| {
+                try self.insertChar(c);
+                // Opening or advancing a call argument list asks for signatures.
+                if (c == '(' or c == ',') self.lspSignatureHelp();
+            },
             .ctrl => |c| if (c == 'n') self.lspCompletion(), // request completion
             else => {},
         }
@@ -2557,6 +2564,11 @@ pub const Editor = struct {
                 self.filterCompletions();
             }
         }
+        if (client.sig_ready) {
+            client.sig_ready = false;
+            // Show it while inserting; an empty result just closes the popup.
+            self.sig_open = self.mode == .insert and client.signature != null;
+        }
     }
 
     /// Codepoint column of the cursor (an approximation of the UTF-16 column
@@ -2583,6 +2595,14 @@ pub const Editor = struct {
 
     fn lspCompletion(self: *Editor) void {
         if (self.lsp) |*c| c.requestCompletion(self.cy, self.charCol());
+    }
+
+    fn lspSignatureHelp(self: *Editor) void {
+        self.comp_open = false; // a call-argument list isn't an identifier completion
+        // Flush the just-typed "(" or "," first, so the server sees it before
+        // it computes the signature (this keystroke's edit is still pending).
+        self.syncLsp();
+        if (self.lsp) |*c| c.requestSignatureHelp(self.cy, self.charCol());
     }
 
     /// The identifier run immediately before the cursor (what completion filters
@@ -2825,6 +2845,7 @@ pub const Editor = struct {
 
         try self.renderStatus();
         if (self.await_arg == .space_leader) try self.renderWhichKey();
+        if (self.sig_open) try self.renderSignature(gutter);
         if (self.comp_open) try self.renderCompletion(gutter);
         try self.emit(ansi.reset_attrs);
         try self.placeCursor(gutter);
@@ -2868,6 +2889,44 @@ pub const Editor = struct {
             const used = 2 + it.key.len + 2 + it.desc.len;
             if (used < width) try self.emitSpaces(width - used);
         }
+    }
+
+    /// One-line signature-help popup, anchored just above the cursor (or below
+    /// if it is on the top row), with the active parameter emphasized.
+    fn renderSignature(self: *Editor, gutter: usize) !void {
+        const th = theme.current;
+        const client = if (self.lsp) |*c| c else return;
+        const sig = client.signature orelse return;
+        const label = sig.label[0 .. std.mem.indexOfScalar(u8, sig.label, '\n') orelse sig.label.len];
+        if (label.len == 0) return;
+
+        const cur_row = (self.cy - self.top) + 1; // 1-based screen row of cursor
+        const row = if (cur_row > 1) cur_row - 1 else cur_row + 1;
+        const cur_col = gutter + (displayCol(self.curLine(), self.cx) - self.left) + 1;
+        const col = @max(@as(usize, 1), cur_col);
+        if (col > self.win.cols) return;
+        const avail = self.win.cols - col + 1; // cells from `col` to the screen edge
+
+        var b: [16]u8 = undefined;
+        try self.emit(try std.fmt.bufPrint(&b, "\x1b[{d};{d}H", .{ row, col }));
+        try self.setBg(th.status_seg_bg);
+        try self.emit(" ");
+        // Emit the label a codepoint at a time, switching colour over the active
+        // parameter's byte range; clip to the available width.
+        var used: usize = 1; // the leading space
+        var i: usize = 0;
+        while (i < label.len) {
+            const d = unicode.decode(label[i..]);
+            const w = unicode.width(d.cp);
+            if (used + w >= avail) break;
+            const in_param = sig.active_start != sig.active_end and i >= sig.active_start and i < sig.active_end;
+            try self.setFg(if (in_param) th.builtin else th.status_seg_fg);
+            try self.emit(label[i .. i + d.len]);
+            used += w;
+            i += d.len;
+        }
+        try self.setFg(th.status_seg_fg);
+        if (used < avail) try self.emit(" ");
     }
 
     /// Completion popup, anchored under the cursor (or above if near the bottom).
