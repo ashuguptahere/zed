@@ -92,6 +92,18 @@ while True:
                        "end": {"line": 0, "character": 7}},
              "newText": new},
         ]}}})
+    elif method == "textDocument/codeAction":
+        # One action carrying an inline edit (line 0: replace "a" with "A") and
+        # one command-only action the editor lists but cannot execute.
+        uri = m["params"]["textDocument"]["uri"]
+        send({"jsonrpc": "2.0", "id": m["id"], "result": [
+            {"title": "Rename a to A", "kind": "quickfix", "edit": {"changes": {uri: [
+                {"range": {"start": {"line": 0, "character": 6},
+                           "end": {"line": 0, "character": 7}},
+                 "newText": "A"},
+            ]}}},
+            {"title": "Run mock command", "command": "mock.run"},
+        ]})
     elif method == "textDocument/hover":
         send({"jsonrpc": "2.0", "id": m["id"], "result": {"contents": "mock hover"}})
     elif method == "textDocument/definition":

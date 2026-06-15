@@ -4,7 +4,8 @@
 Runs zed with --lsp pointing at tools/mock_lsp.py and checks the rendered output
 for diagnostics (count/sign/message), hover, incremental didChange, completion
 (popup + accept), signature help (popup + active-parameter highlight + overload
-cycling) and rename (prompt + applied edits).
+cycling), rename (prompt + applied edits) and code actions (picker + applied
+edit).
 """
 import os, pty, select, sys, time, fcntl, termios, struct, re
 
@@ -110,6 +111,14 @@ out, text = run([(b"0w", 0.3), (b"gr", 0.4), (b"\x7fxyz", 0.4), (b"\r", 0.9)],
 check("rename prompt pre-filled with identifier", b"rename: a" in ANSI.sub(b"", out))
 check("rename status shown", b"renamed 1" in out)
 check("rename applied to buffer", "const xyz = 1;" in text)
+
+# Code actions: ga requests them; the response opens a picker listing the
+# titles. Enter on the first (an inline edit) rewrites [0,6)-[0,7) to "A".
+out, text = run([(b"ga", 0.8), (b"\r", 0.8)], final=b"\x1b:wq\r")
+plain = ANSI.sub(b"", out)
+check("code action picker labelled", b"ACTIONS" in plain)
+check("code action titles listed", b"Rename a to A" in plain and b"Run mock command" in plain)
+check("code action edit applied to buffer", "const A = 1;" in text)
 
 print()
 print("ALL PASS" if fails == 0 else f"{fails} FAILURE(S)")

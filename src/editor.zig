@@ -62,7 +62,7 @@ pub const Mode = enum {
     }
 };
 
-const PickerKind = enum { files, grep };
+const PickerKind = enum { files, grep, code_action };
 const PickItem = struct { display: []u8, path: []u8, line: usize };
 
 const Operator = enum { none, delete, change, yank, indent_right, indent_left, comment, surround };
@@ -623,6 +623,9 @@ pub const Editor = struct {
                     self.resetPending();
                 } else if (k == .char and k.char == 'r') {
                     self.enterRename(); // gr: rename symbol (prompts for the new name)
+                } else if (k == .char and k.char == 'a') {
+                    self.lspCodeAction(); // ga: code actions for the current line
+                    self.resetPending();
                 } else
                     self.resetPending();
             },
@@ -2071,6 +2074,30 @@ pub const Editor = struct {
         self.refilter();
     }
 
+    /// Populate the picker with the server's code actions (titles) and open it.
+    /// The action's index is stashed in `PickItem.line` so `pickerOpen` can
+    /// apply it.
+    fn openCodeActionPicker(self: *Editor) void {
+        const client = if (self.lsp) |*c| c else return;
+        self.freePicker();
+        self.picker_kind = .code_action;
+        self.picker_sel = 0;
+        self.picker_scroll = 0;
+        for (client.code_actions.items, 0..) |action, i| {
+            const disp = self.gpa.dupe(u8, action.title) catch continue;
+            const p = self.gpa.dupe(u8, action.title) catch { // fuzzy filters on `path`
+                self.gpa.free(disp);
+                continue;
+            };
+            self.picker_items.append(self.gpa, .{ .display = disp, .path = p, .line = i }) catch {
+                self.gpa.free(disp);
+                self.gpa.free(p);
+            };
+        }
+        self.mode = .picker;
+        self.refilter();
+    }
+
     fn freePicker(self: *Editor) void {
         for (self.picker_items.items) |it| {
             self.gpa.free(it.display);
@@ -2232,6 +2259,11 @@ pub const Editor = struct {
             return;
         }
         const it = self.picker_items.items[self.picker_filtered.items[self.picker_sel]];
+        if (self.picker_kind == .code_action) {
+            const idx = it.line; // the action index stashed at population time
+            self.closePicker();
+            return self.applyCodeAction(idx);
+        }
         const path = self.gpa.dupe(u8, it.path) catch return;
         defer self.gpa.free(path);
         const line = if (it.line > 0) it.line - 1 else 0;
@@ -2275,7 +2307,11 @@ pub const Editor = struct {
         if (self.picker_sel >= self.picker_scroll + visible) self.picker_scroll = self.picker_sel - visible + 1;
 
         // Prompt line.
-        const klabel = if (self.picker_kind == .files) " FILES " else " SEARCH ";
+        const klabel = switch (self.picker_kind) {
+            .files => " FILES ",
+            .grep => " SEARCH ",
+            .code_action => " ACTIONS ",
+        };
         try self.setBg(th.mode_command);
         try self.setFg(th.bg);
         try self.emit(klabel);
@@ -2644,6 +2680,12 @@ pub const Editor = struct {
             client.rename_ready = false;
             try self.applyRename(client);
         }
+        if (client.ca_ready) {
+            client.ca_ready = false;
+            if (self.mode == .normal) {
+                if (client.code_actions.items.len > 0) self.openCodeActionPicker() else self.setStatus("no code actions", .{});
+            }
+        }
     }
 
     /// Codepoint column of the cursor (an approximation of the UTF-16 column
@@ -2674,15 +2716,40 @@ pub const Editor = struct {
         if (self.lsp) |*c| c.requestRename(self.cy, self.charCol(), name);
     }
 
-    /// Apply a rename's edits to the current buffer as one undoable change.
-    /// Edits are single-line word replacements applied last-position-first so
-    /// earlier byte offsets stay valid; multi-line edits (which rename never
-    /// emits) are skipped.
+    fn lspCodeAction(self: *Editor) void {
+        const client = if (self.lsp) |*c| c else return;
+        const line = self.buf.line(self.cy);
+        var cols: usize = 0;
+        var i: usize = 0;
+        while (i < line.len) : (cols += 1) i = unicode.nextBoundary(line, i);
+        client.requestCodeAction(self.cy, 0, self.cy, cols); // the whole current line
+    }
+
+    /// Apply the picked code action: its inline edits, or a note that it is
+    /// command-based (which the editor doesn't execute).
+    fn applyCodeAction(self: *Editor, idx: usize) !void {
+        const client = if (self.lsp) |*c| c else return;
+        if (idx >= client.code_actions.items.len) return;
+        const action = client.code_actions.items[idx];
+        if (action.edits.len == 0) return self.setStatus("'{s}' needs a command (unsupported)", .{action.title});
+        const n = try self.applyEdits(action.edits);
+        self.setStatus("applied: {s} ({d} edit(s))", .{ action.title, n });
+    }
+
+    /// Apply a rename's edits to the buffer.
     fn applyRename(self: *Editor, client: *lsp.Client) !void {
-        const edits = client.edits.items;
-        if (edits.len == 0) return self.setStatus("rename: no changes", .{});
+        if (client.edits.items.len == 0) return self.setStatus("rename: no changes", .{});
+        const n = try self.applyEdits(client.edits.items);
+        self.setStatus("renamed {d} occurrence(s)", .{n});
+    }
+
+    /// Apply a set of WorkspaceEdit `TextEdit`s to the current buffer as one
+    /// undoable change. Edits are single-line replacements applied
+    /// last-position-first so earlier byte offsets stay valid; multi-line edits
+    /// are skipped. Returns the number applied.
+    fn applyEdits(self: *Editor, edits: []lsp.TextEdit) !usize {
         self.pushUndo();
-        std.mem.sort(lsp.TextEdit, edits, {}, renameEditAfter);
+        std.mem.sort(lsp.TextEdit, edits, {}, textEditAfter);
         var applied: usize = 0;
         for (edits) |e| {
             if (e.start_line != e.end_line or e.start_line >= self.buf.lineCount()) continue;
@@ -2697,7 +2764,7 @@ pub const Editor = struct {
         self.clampCursor();
         self.updateGoal();
         self.syncLsp(); // notify the server of the applied edits
-        self.setStatus("renamed {d} occurrence(s)", .{applied});
+        return applied;
     }
 
     fn lspCompletion(self: *Editor) void {
@@ -3492,8 +3559,8 @@ fn byteAtCharCol(line: []const u8, char: usize) usize {
     return i;
 }
 
-/// Order rename edits last-position-first (line then column, descending).
-fn renameEditAfter(_: void, a: lsp.TextEdit, b: lsp.TextEdit) bool {
+/// Order text edits last-position-first (line then column, descending).
+fn textEditAfter(_: void, a: lsp.TextEdit, b: lsp.TextEdit) bool {
     if (a.start_line != b.start_line) return a.start_line > b.start_line;
     return a.start_char > b.start_char;
 }
