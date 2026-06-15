@@ -3210,6 +3210,8 @@ fn langName(l: syntax.Language) []const u8 {
         .javascript => "js",
         .typescript => "ts",
         .json => "json",
+        .rust => "rust",
+        .go => "go",
         .none => "text",
     };
 }
@@ -3223,6 +3225,8 @@ fn langId(l: syntax.Language) []const u8 {
         .javascript => "javascript",
         .typescript => "typescript",
         .json => "json",
+        .rust => "rust",
+        .go => "go",
         .none => "plaintext",
     };
 }
@@ -3234,6 +3238,8 @@ fn defaultServer(l: syntax.Language) ?[]const []const u8 {
         .c => &.{"clangd"},
         .python => &.{"pylsp"},
         .javascript, .typescript => &.{ "typescript-language-server", "--stdio" },
+        .rust => &.{"rust-analyzer"},
+        .go => &.{"gopls"},
         else => null,
     };
 }

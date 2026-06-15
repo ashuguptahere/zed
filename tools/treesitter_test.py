@@ -95,6 +95,10 @@ TYPE = b"\x1b[38;2;42;195;222m"  # theme.type_ (cyan)
 out = capture(content="function f(a: number): string { return \"x\"; }\n", name="sample.ts")
 check("typescript file highlights (type + string)", TYPE in out and STRING in out)
 
+# A Rust file goes through the new .rust variant.
+out = capture(content="fn main() {\n    let s = \"hi\";\n}\n", name="sample.rs")
+check("rust file highlights (keyword + string)", KEYWORD in out and STRING in out)
+
 print()
 print("ALL PASS" if fails == 0 else f"{fails} FAILURE(S)")
 sys.exit(1 if fails else 0)

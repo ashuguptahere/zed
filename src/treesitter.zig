@@ -25,6 +25,8 @@ extern fn tree_sitter_python() *const c.TSLanguage;
 extern fn tree_sitter_json() *const c.TSLanguage;
 extern fn tree_sitter_javascript() *const c.TSLanguage;
 extern fn tree_sitter_typescript() *const c.TSLanguage;
+extern fn tree_sitter_rust() *const c.TSLanguage;
+extern fn tree_sitter_go() *const c.TSLanguage;
 
 const highlights_zig = @embedFile("ts_highlights_zig");
 const highlights_c = @embedFile("ts_highlights_c");
@@ -33,6 +35,8 @@ const highlights_json = @embedFile("ts_highlights_json");
 const highlights_javascript = @embedFile("ts_highlights_javascript");
 // TypeScript's query only adds type/keyword patterns; it layers on JavaScript's.
 const highlights_typescript = highlights_javascript ++ "\n" ++ @embedFile("ts_highlights_typescript");
+const highlights_rust = @embedFile("ts_highlights_rust");
+const highlights_go = @embedFile("ts_highlights_go");
 
 pub const Highlighter = struct {
     gpa: Allocator,
@@ -51,6 +55,8 @@ pub const Highlighter = struct {
             .json => .{ tree_sitter_json(), highlights_json },
             .javascript => .{ tree_sitter_javascript(), highlights_javascript },
             .typescript => .{ tree_sitter_typescript(), highlights_typescript },
+            .rust => .{ tree_sitter_rust(), highlights_rust },
+            .go => .{ tree_sitter_go(), highlights_go },
             .none => return null, // falls back to the lexer
         };
 
@@ -187,7 +193,7 @@ fn pointAt(content: []const u8, byte: usize) c.TSPoint {
 }
 
 test "every vendored grammar and its highlight query load" {
-    inline for (.{ syntax.Language.zig, .c, .python, .json, .javascript, .typescript }) |lang| {
+    inline for (.{ syntax.Language.zig, .c, .python, .json, .javascript, .typescript, .rust, .go }) |lang| {
         var h = Highlighter.init(std.testing.allocator, lang) orelse return error.GrammarFailedToLoad;
         h.deinit();
     }
@@ -200,6 +206,8 @@ test "grammars produce highlights" {
         .{ syntax.Language.json, "{\"a\": 1, \"b\": true}" },
         .{ syntax.Language.javascript, "const x = (a) => a + 1;" },
         .{ syntax.Language.typescript, "function f(a: number): number { return a; }" },
+        .{ syntax.Language.rust, "fn main() { let x = 1; }" },
+        .{ syntax.Language.go, "func main() { x := 1 }" },
     };
     inline for (cases) |case| {
         var h = Highlighter.init(std.testing.allocator, case[0]).?;

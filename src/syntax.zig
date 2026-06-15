@@ -22,7 +22,7 @@ pub const Style = enum {
     preproc,
 };
 
-pub const Language = enum { none, zig, c, python, javascript, typescript, json };
+pub const Language = enum { none, zig, c, python, javascript, typescript, json, rust, go };
 
 /// Pick a language from a file path's extension.
 pub fn detect(path: ?[]const u8) Language {
@@ -36,6 +36,8 @@ pub fn detect(path: ?[]const u8) Language {
         .{ "py", Language.python },
         .{ "js", Language.javascript },   .{ "jsx", Language.javascript },   .{ "mjs", Language.javascript },
         .{ "ts", Language.typescript },   .{ "tsx", Language.typescript },
+        .{ "rs", Language.rust },
+        .{ "go", Language.go },
         .{ "json", Language.json },
     };
     inline for (map) |entry| {
@@ -228,6 +230,18 @@ fn specFor(lang: Language) Spec {
         .json => .{
             .constants = &.{ "true", "false", "null" },
         },
+        .rust => .{
+            .keywords = &.{ "fn", "let", "mut", "const", "static", "pub", "struct", "enum", "union", "impl", "trait", "use", "mod", "return", "if", "else", "match", "for", "while", "loop", "break", "continue", "async", "await", "move", "ref", "where", "as", "dyn", "unsafe", "extern", "crate", "self", "super", "type", "in" },
+            .types = &.{ "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize", "f32", "f64", "bool", "char", "str", "String", "Vec", "Option", "Result", "Box" },
+            .constants = &.{ "true", "false", "None", "Some", "Ok", "Err" },
+            .line_comment = "//",
+        },
+        .go => .{
+            .keywords = &.{ "func", "var", "const", "type", "struct", "interface", "package", "import", "return", "if", "else", "for", "range", "switch", "case", "default", "break", "continue", "go", "defer", "chan", "select", "map", "fallthrough", "goto" },
+            .types = &.{ "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64", "uintptr", "float32", "float64", "complex64", "complex128", "string", "bool", "byte", "rune", "error", "any" },
+            .constants = &.{ "true", "false", "nil", "iota" },
+            .line_comment = "//",
+        },
         .none => .{ .line_comment = "" },
     };
 }
@@ -240,6 +254,8 @@ test "detect language" {
     try testing.expectEqual(Language.javascript, detect("app.js"));
     try testing.expectEqual(Language.typescript, detect("app.ts"));
     try testing.expectEqual(Language.typescript, detect("ui.tsx"));
+    try testing.expectEqual(Language.rust, detect("src/lib.rs"));
+    try testing.expectEqual(Language.go, detect("main.go"));
     try testing.expectEqual(Language.none, detect("README"));
 }
 
