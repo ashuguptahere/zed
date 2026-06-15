@@ -24,6 +24,7 @@ const search = @import("search.zig");
 const theme = @import("theme.zig");
 const syntax = @import("syntax.zig");
 const fuzzy = @import("fuzzy.zig");
+const git = @import("git.zig");
 const ansi = term.ansi;
 const Allocator = std.mem.Allocator;
 const Pos = buffer.Pos;
@@ -182,6 +183,7 @@ pub const Editor = struct {
     status: std.ArrayList(u8),
     lang: syntax.Language,
     style_buf: std.ArrayList(syntax.Style),
+    git_signs: git.Signs,
     cur_fg: ?Color,
     cur_bg: ?Color,
     quit: bool,
@@ -237,6 +239,7 @@ pub const Editor = struct {
             .status = .empty,
             .lang = syntax.detect(buf.path),
             .style_buf = .empty,
+            .git_signs = git.Signs.init(gpa),
             .cur_fg = null,
             .cur_bg = null,
             .quit = false,
@@ -256,6 +259,7 @@ pub const Editor = struct {
         self.frame.deinit(self.gpa);
         self.status.deinit(self.gpa);
         self.style_buf.deinit(self.gpa);
+        self.git_signs.deinit();
         self.extra.deinit(self.gpa);
         self.freePicker();
         self.picker_items.deinit(self.gpa);
@@ -270,6 +274,7 @@ pub const Editor = struct {
         self.term.installResizeHandler();
         try self.term.enterAltScreen();
         self.win = self.term.size();
+        self.refreshGit();
         self.setStatus("zed {s} — :q to quit, i to insert", .{@import("cli.zig").version});
 
         var needs_render = true;
@@ -2104,6 +2109,7 @@ pub const Editor = struct {
         self.top = 0;
         self.left = 0;
         self.goal_col = 0;
+        self.refreshGit();
         self.setStatus("opened {s}", .{self.buf.path orelse ""});
     }
 
@@ -2273,6 +2279,7 @@ pub const Editor = struct {
             },
         };
         self.setStatus("\"{s}\" written", .{self.buf.path orelse ""});
+        self.refreshGit();
         return true;
     }
 
@@ -2289,6 +2296,15 @@ pub const Editor = struct {
     fn pushUndo(self: *Editor) void {
         self.history.record(&self.buf, self.cy, self.cx);
         self.change_started = true;
+    }
+
+    /// Recompute the git change signs for the current file (best-effort).
+    fn refreshGit(self: *Editor) void {
+        if (self.buf.path) |p| {
+            git.compute(self.gpa, self.io, p, &self.git_signs);
+        } else {
+            self.git_signs.clearRetainingCapacity();
+        }
     }
 
     fn undoChange(self: *Editor) void {
@@ -2420,7 +2436,7 @@ pub const Editor = struct {
         var n = self.buf.lineCount();
         var digits: usize = 1;
         while (n >= 10) : (n = n / 10) digits += 1;
-        return @max(digits, 3) + 1;
+        return @max(digits, 3) + 2; // git sign column + numbers + trailing space
     }
 
     fn scroll(self: *Editor) void {
@@ -2523,12 +2539,29 @@ pub const Editor = struct {
 
     fn emitGutter(self: *Editor, file_row: usize, gutter: usize, is_cur: bool) !void {
         const th = theme.current;
+        const ndigits = gutter - 2;
+
+        // Git change sign (leftmost column).
+        if (self.git_signs.get(file_row)) |s| {
+            try self.setFg(switch (s) {
+                .added => th.git_add,
+                .changed => th.git_change,
+                .deleted => th.git_delete,
+            });
+            try self.emit(switch (s) {
+                .added, .changed => "\u{2502}", // │
+                .deleted => "\u{2581}", // ▁
+            });
+        } else {
+            try self.emit(" ");
+        }
+
         // Absolute number on the current line, relative distance elsewhere.
         const num = if (is_cur) file_row + 1 else if (file_row > self.cy) file_row - self.cy else self.cy - file_row;
         var nb: [20]u8 = undefined;
         const ns = std.fmt.bufPrint(&nb, "{d}", .{num}) catch unreachable;
         try self.setFg(if (is_cur) th.gutter_active else th.gutter);
-        try self.emitSpaces(gutter - 1 - ns.len);
+        try self.emitSpaces(ndigits - ns.len);
         try self.emit(ns);
         try self.emit(" ");
     }

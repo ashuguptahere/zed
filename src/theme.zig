@@ -52,6 +52,11 @@ pub const Theme = struct {
     operator: Color,
     preproc: Color,
 
+    // git gutter signs
+    git_add: Color,
+    git_change: Color,
+    git_delete: Color,
+
     // mode accent colours (used for the statusline block)
     mode_normal: Color,
     mode_insert: Color,
@@ -88,6 +93,10 @@ pub const tokyonight: Theme = .{
     .number = rgb(0xff, 0x9e, 0x64),
     .operator = rgb(0x89, 0xdd, 0xff),
     .preproc = rgb(0x7d, 0xcf, 0xff),
+
+    .git_add = rgb(0x9e, 0xce, 0x6a),
+    .git_change = rgb(0xe0, 0xaf, 0x68),
+    .git_delete = rgb(0xf7, 0x76, 0x8e),
 
     .mode_normal = rgb(0x7a, 0xa2, 0xf7),
     .mode_insert = rgb(0x9e, 0xce, 0x6a),

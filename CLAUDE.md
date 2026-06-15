@@ -88,6 +88,7 @@ Source is `src/`, one responsibility per module:
 | `theme.zig`   | Colour palette (Tokyo Night) and 24-bit SGR helpers. |
 | `syntax.zig`  | Dependency-free per-line lexer producing per-byte styles. |
 | `fuzzy.zig`   | Subsequence scorer for the pickers. |
+| `git.zig`     | Git change signs for the gutter (parses `git diff -U0`). |
 | `editor.zig`  | State, the vim command interpreter, multiple cursors, pickers, viewport, themed rendering. |
 
 The pure, error-prone logic (motions, search) lives in its own unit-tested
@@ -167,9 +168,10 @@ The renderer aims for an AstroNvim/Helix look: a Tokyo Night true-colour theme
 (`theme.zig`), a powerline statusline (coloured mode block, separators,
 file/filetype/position/percent segments — a nerd font is recommended for the
 glyphs), syntax highlighting (`syntax.zig`), relative+absolute line numbers, a
-cursorline, and indent guides. All colour is emitted as 24-bit SGR; the frame is
-still built once and written in a single syscall, and rendering still only
-happens on change.
+cursorline, indent guides, and a git change gutter (add/change/delete signs
+from `git diff`, recomputed on load and save). All colour is emitted as 24-bit
+SGR; the frame is still built once and written in a single syscall, and
+rendering still only happens on change.
 
 Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
 `editor.zig`.
