@@ -12,6 +12,7 @@ pub const version = "0.1.0";
 pub const Config = struct {
     file: ?[]const u8 = null,
     log_path: ?[]const u8 = null,
+    lsp_cmd: ?[]const u8 = null,
 };
 
 pub const Parsed = union(enum) {
@@ -42,6 +43,12 @@ pub fn parse(argv: []const [:0]const u8) Parsed {
                 cfg.log_path = argv[i];
             } else if (prefix(arg, "--log=")) {
                 cfg.log_path = arg["--log=".len..];
+            } else if (eql(arg, "--lsp")) {
+                i += 1;
+                if (i >= argv.len) return .{ .err = "--lsp requires a server command" };
+                cfg.lsp_cmd = argv[i];
+            } else if (prefix(arg, "--lsp=")) {
+                cfg.lsp_cmd = arg["--lsp=".len..];
             } else {
                 return .{ .err = "unknown option (try --help)" };
             }
@@ -63,6 +70,7 @@ const help_text =
     \\  -h, --help        Show this help and exit
     \\  -V, --version     Show version and exit
     \\      --log <path>  Write diagnostic logs to <path>
+    \\      --lsp <cmd>   Language server command (e.g. "zls"); defaults per filetype
     \\
     \\Keys (normal mode):
     \\  h j k l           Move left/down/up/right

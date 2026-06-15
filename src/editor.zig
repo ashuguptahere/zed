@@ -25,6 +25,7 @@ const theme = @import("theme.zig");
 const syntax = @import("syntax.zig");
 const fuzzy = @import("fuzzy.zig");
 const git = @import("git.zig");
+const lsp = @import("lsp.zig");
 const ansi = term.ansi;
 const Allocator = std.mem.Allocator;
 const Pos = buffer.Pos;
@@ -186,10 +187,16 @@ pub const Editor = struct {
     git_signs: git.Signs,
     cur_fg: ?Color,
     cur_bg: ?Color,
+
+    // language server
+    lsp_cmd: ?[]const u8, // override command, else a per-language default
+    lsp: ?lsp.Client,
+    lsp_sent: std.ArrayList(u8), // last content sent, to avoid redundant didChange
+
     quit: bool,
     inbuf: [256]u8,
 
-    pub fn init(gpa: Allocator, io: std.Io, t: *term.Terminal, buf: buffer.Buffer) Editor {
+    pub fn init(gpa: Allocator, io: std.Io, t: *term.Terminal, buf: buffer.Buffer, lsp_cmd: ?[]const u8) Editor {
         return .{
             .gpa = gpa,
             .io = io,
@@ -242,6 +249,9 @@ pub const Editor = struct {
             .git_signs = git.Signs.init(gpa),
             .cur_fg = null,
             .cur_bg = null,
+            .lsp_cmd = lsp_cmd,
+            .lsp = null,
+            .lsp_sent = .empty,
             .quit = false,
             .inbuf = undefined,
         };
@@ -260,6 +270,8 @@ pub const Editor = struct {
         self.status.deinit(self.gpa);
         self.style_buf.deinit(self.gpa);
         self.git_signs.deinit();
+        if (self.lsp) |*c| c.deinit();
+        self.lsp_sent.deinit(self.gpa);
         self.extra.deinit(self.gpa);
         self.freePicker();
         self.picker_items.deinit(self.gpa);
@@ -277,6 +289,12 @@ pub const Editor = struct {
         self.refreshGit();
         self.setStatus("zed {s} — :q to quit, i to insert", .{@import("cli.zig").version});
 
+        // Paint the file before starting the language server, whose handshake
+        // can block briefly.
+        self.scroll();
+        try self.render();
+        self.startLsp();
+
         var needs_render = true;
         while (!self.quit) {
             if (needs_render) {
@@ -284,17 +302,26 @@ pub const Editor = struct {
                 try self.render();
                 needs_render = false;
             }
-            const ready = try self.term.waitForInput();
+            const lsp_fd: ?std.posix.fd_t = if (self.lsp) |*c| (if (c.alive) c.out_fd else null) else null;
+            const ready = try self.term.waitReady(lsp_fd);
             if (self.term.takeResize()) {
                 self.win = self.term.size();
                 needs_render = true;
                 continue;
             }
-            if (!ready) continue;
-            const chunk = try self.readInput();
-            if (chunk.len == 0) continue;
-            try self.processInput(chunk);
-            needs_render = true;
+            if (ready.other) {
+                if (self.lsp) |*c| c.processReadable();
+                try self.consumeLspResults();
+                needs_render = true;
+            }
+            if (ready.input) {
+                const chunk = try self.readInput();
+                if (chunk.len > 0) {
+                    try self.processInput(chunk);
+                    self.syncLsp();
+                    needs_render = true;
+                }
+            }
         }
     }
 
@@ -475,6 +502,7 @@ pub const Editor = struct {
             'r' => self.await_arg = .replace,
             '~' => try self.toggleCase(self.eff()),
             'J' => try self.joinLines(self.eff()),
+            'K' => self.lspHover(),
             'p' => try self.paste(true),
             'P' => try self.paste(false),
             'u' => self.undoChange(),
@@ -553,7 +581,10 @@ pub const Editor = struct {
                     self.doMotion(self.gotoLineMotion(if (self.count > 0) self.count - 1 else 0))
                 else if (k == .char and k.char == 'c')
                     self.operator = .comment // gc{motion} / gcc
-                else
+                else if (k == .char and k.char == 'd') {
+                    self.lspDefinition(); // gd: goto definition
+                    self.resetPending();
+                } else
                     self.resetPending();
             },
             .z_prefix => {
@@ -2307,6 +2338,110 @@ pub const Editor = struct {
         }
     }
 
+    // === language server ===================================================
+
+    /// Spawn a language server for the current file (best-effort; no server or
+    /// no command simply leaves LSP disabled).
+    fn startLsp(self: *Editor) void {
+        const path = self.buf.path orelse return;
+
+        var argv_store: [8][]const u8 = undefined;
+        var argc: usize = 0;
+        if (self.lsp_cmd) |cmd| {
+            var it = std.mem.tokenizeScalar(u8, cmd, ' ');
+            while (it.next()) |tok| {
+                if (argc < argv_store.len) {
+                    argv_store[argc] = tok;
+                    argc += 1;
+                }
+            }
+        } else if (defaultServer(self.lang)) |def| {
+            for (def) |a| {
+                argv_store[argc] = a;
+                argc += 1;
+            }
+        }
+        if (argc == 0) return;
+
+        const cwd = std.process.currentPathAlloc(self.io, self.gpa) catch return;
+        defer self.gpa.free(cwd);
+
+        // Build the file:// URI and an absolute path.
+        var uri_buf: std.ArrayList(u8) = .empty;
+        defer uri_buf.deinit(self.gpa);
+        uri_buf.appendSlice(self.gpa, "file://") catch return;
+        if (path.len > 0 and path[0] == '/') {
+            uri_buf.appendSlice(self.gpa, path) catch return;
+        } else {
+            uri_buf.appendSlice(self.gpa, cwd) catch return;
+            uri_buf.append(self.gpa, '/') catch return;
+            uri_buf.appendSlice(self.gpa, path) catch return;
+        }
+
+        const content = self.buf.toBytes(self.gpa) catch return;
+        defer self.gpa.free(content);
+
+        self.lsp = lsp.Client.start(self.gpa, self.io, argv_store[0..argc], cwd, uri_buf.items, langId(self.lang), content);
+        if (self.lsp != null) {
+            self.lsp_sent.clearRetainingCapacity();
+            self.lsp_sent.appendSlice(self.gpa, content) catch {};
+            self.setStatus("language server started", .{});
+        }
+    }
+
+    /// Tell the server about edits, but only when the content actually changed.
+    fn syncLsp(self: *Editor) void {
+        var client = if (self.lsp) |*c| c else return;
+        if (!client.alive or !self.buf.dirty) return;
+        const content = self.buf.toBytes(self.gpa) catch return;
+        defer self.gpa.free(content);
+        if (std.mem.eql(u8, content, self.lsp_sent.items)) return;
+        client.didChange(content);
+        self.lsp_sent.clearRetainingCapacity();
+        self.lsp_sent.appendSlice(self.gpa, content) catch {};
+    }
+
+    /// Act on hover / goto-definition responses pushed by the server.
+    fn consumeLspResults(self: *Editor) !void {
+        var client = if (self.lsp) |*c| c else return;
+        if (client.takeHover()) |text| {
+            defer self.gpa.free(text);
+            const line_end = std.mem.indexOfScalar(u8, text, '\n') orelse text.len;
+            self.setStatus("{s}", .{text[0..line_end]});
+        }
+        if (client.takeDefinition()) |loc| {
+            defer self.gpa.free(loc.uri);
+            const local = std.mem.startsWith(u8, loc.uri, "file://") and self.lsp != null;
+            _ = local;
+            self.cy = @min(loc.line, self.buf.lineCount() - 1);
+            self.cx = byteAtDisplayCol(self.curLine(), 0);
+            self.cx = @min(loc.col, self.curLine().len);
+            self.updateGoal();
+        }
+    }
+
+    /// Codepoint column of the cursor (an approximation of the UTF-16 column
+    /// LSP wants; exact for ASCII/BMP text).
+    fn charCol(self: *Editor) usize {
+        const line = self.curLine();
+        var n: usize = 0;
+        var i: usize = 0;
+        while (i < self.cx and i < line.len) {
+            i = unicode.nextBoundary(line, i);
+            n += 1;
+        }
+        return n;
+    }
+
+    fn lspHover(self: *Editor) void {
+        if (self.lsp) |*c| c.requestHover(self.cy, self.charCol());
+        self.resetPending();
+    }
+
+    fn lspDefinition(self: *Editor) void {
+        if (self.lsp) |*c| c.requestDefinition(self.cy, self.charCol());
+    }
+
     fn undoChange(self: *Editor) void {
         if (!self.history.undo(&self.buf, &self.cy, &self.cx)) self.setStatus("already at oldest change", .{});
         self.clampCursor();
@@ -2541,19 +2676,29 @@ pub const Editor = struct {
         const th = theme.current;
         const ndigits = gutter - 2;
 
-        // Git change sign (leftmost column).
-        if (self.git_signs.get(file_row)) |s| {
-            try self.setFg(switch (s) {
-                .added => th.git_add,
-                .changed => th.git_change,
-                .deleted => th.git_delete,
-            });
-            try self.emit(switch (s) {
-                .added, .changed => "\u{2502}", // │
-                .deleted => "\u{2581}", // ▁
-            });
-        } else {
-            try self.emit(" ");
+        // Leftmost column: an LSP diagnostic sign takes priority over a git sign.
+        var sign_drawn = false;
+        if (self.lsp) |*c| {
+            if (c.severityAt(file_row)) |sev| {
+                try self.setFg(if (sev == 1) th.git_delete else th.git_change); // error=red, warn=yellow
+                try self.emit("\u{25CF}"); // ●
+                sign_drawn = true;
+            }
+        }
+        if (!sign_drawn) {
+            if (self.git_signs.get(file_row)) |s| {
+                try self.setFg(switch (s) {
+                    .added => th.git_add,
+                    .changed => th.git_change,
+                    .deleted => th.git_delete,
+                });
+                try self.emit(switch (s) {
+                    .added, .changed => "\u{2502}", // │
+                    .deleted => "\u{2581}", // ▁
+                });
+            } else {
+                try self.emit(" ");
+            }
         }
 
         // Absolute number on the current line, relative distance elsewhere.
@@ -2760,6 +2905,8 @@ pub const Editor = struct {
         var mb: [256]u8 = undefined;
         const middle = if (self.status.items.len > 0)
             self.status.items
+        else if (self.lspMiddle(&mb)) |m|
+            m
         else if (self.extra.items.len > 0)
             (std.fmt.bufPrint(&mb, "{d} cursors", .{self.extra.items.len + 1}) catch "")
         else
@@ -2783,6 +2930,21 @@ pub const Editor = struct {
         try self.setBg(accent);
         try self.setFg(th.bg);
         try self.emit(pctseg);
+    }
+
+    /// Statusline middle content from the language server: the diagnostic on
+    /// the current line, else a count of errors/warnings, else null.
+    fn lspMiddle(self: *Editor, buf: []u8) ?[]const u8 {
+        const client = if (self.lsp) |*c| c else return null;
+        if (client.messageAt(self.cy)) |msg| {
+            const end = std.mem.indexOfScalar(u8, msg, '\n') orelse msg.len;
+            return std.fmt.bufPrint(buf, "\u{25CF} {s}", .{msg[0..end]}) catch msg[0..end];
+        }
+        const c = client.counts();
+        if (c.errors > 0 or c.warnings > 0) {
+            return std.fmt.bufPrint(buf, "E:{d} W:{d}", .{ c.errors, c.warnings }) catch null;
+        }
+        return null;
     }
 
     fn modeColor(self: *Editor) Color {
@@ -2954,6 +3116,29 @@ fn langName(l: syntax.Language) []const u8 {
         .javascript => "js",
         .json => "json",
         .none => "text",
+    };
+}
+
+/// LSP languageId for a detected language.
+fn langId(l: syntax.Language) []const u8 {
+    return switch (l) {
+        .zig => "zig",
+        .c => "c",
+        .python => "python",
+        .javascript => "javascript",
+        .json => "json",
+        .none => "plaintext",
+    };
+}
+
+/// Default language-server command per language (used when --lsp is not given).
+fn defaultServer(l: syntax.Language) ?[]const []const u8 {
+    return switch (l) {
+        .zig => &.{"zls"},
+        .c => &.{"clangd"},
+        .python => &.{"pylsp"},
+        .javascript => &.{ "typescript-language-server", "--stdio" },
+        else => null,
     };
 }
 

@@ -46,7 +46,7 @@ pub fn main(init: std.process.Init) !void {
     };
 
     // From here the editor owns `buf`; only `ed.deinit` frees it.
-    var ed = editor.Editor.init(gpa, io, &terminal, buf);
+    var ed = editor.Editor.init(gpa, io, &terminal, buf, cfg.lsp_cmd);
     defer ed.deinit();
     defer terminal.restore();
 
@@ -93,5 +93,6 @@ test {
     _ = @import("syntax.zig");
     _ = @import("fuzzy.zig");
     _ = @import("git.zig");
+    _ = @import("lsp.zig");
     _ = @import("editor.zig");
 }

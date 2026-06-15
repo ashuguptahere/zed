@@ -7,3 +7,6 @@ zig-out/
 
 # OS cruft
 .DS_Store
+
+# Stray package fetch dirs
+zig-pkg/

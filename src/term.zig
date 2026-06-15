@@ -162,21 +162,33 @@ pub const Terminal = struct {
         }
     }
 
-    /// Block (consuming no CPU) until input is ready or a signal fires.
-    /// Returns `false` when interrupted before input arrived — typically
-    /// SIGWINCH — which the caller treats as "check for a resize and redraw".
+    /// Which descriptors became readable while blocked in `waitReady`.
+    pub const Ready = struct { input: bool, other: bool };
+
+    /// Block (consuming no CPU) until stdin or `other` (e.g. a language server)
+    /// is readable, or a signal fires. Both fields are false when interrupted —
+    /// typically SIGWINCH — which the caller treats as "check for a resize".
     ///
     /// We call the raw poll syscall rather than `std.posix.poll`, because the
     /// latter silently retries on EINTR and so would never surface a resize
     /// that arrives while we are blocked. (A resize landing in the brief window
     /// between the resize check and entering poll is missed until the next key;
     /// closing that race needs a self-pipe and is left as future work.)
-    pub fn waitForInput(self: *Terminal) Error!bool {
-        var fds = [_]posix.pollfd{.{ .fd = self.in, .events = posix.POLL.IN, .revents = 0 }};
-        const rc = posix.system.poll(&fds, 1, -1);
+    pub fn waitReady(self: *Terminal, other: ?posix.fd_t) Error!Ready {
+        var fds: [2]posix.pollfd = undefined;
+        fds[0] = .{ .fd = self.in, .events = posix.POLL.IN, .revents = 0 };
+        var n: posix.nfds_t = 1;
+        if (other) |o| {
+            fds[1] = .{ .fd = o, .events = posix.POLL.IN, .revents = 0 };
+            n = 2;
+        }
+        const rc = posix.system.poll(&fds, n, -1);
         return switch (posix.system.errno(rc)) {
-            .SUCCESS => (fds[0].revents & posix.POLL.IN) != 0,
-            .INTR => false,
+            .SUCCESS => .{
+                .input = (fds[0].revents & posix.POLL.IN) != 0,
+                .other = n == 2 and (fds[1].revents & posix.POLL.IN) != 0,
+            },
+            .INTR => .{ .input = false, .other = false },
             else => |e| posix.unexpectedErrno(e),
         };
     }

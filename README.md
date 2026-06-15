@@ -30,6 +30,8 @@ idle**.
   - Surround (`ys`/`cs`/`ds`, visual `S`) and blockwise visual (`Ctrl-v` + `I`/`A`)
   - Pickers via a `Space` which-key menu: `Space f` fuzzy file finder,
     `Space /` global content search
+  - LSP: per-filetype language server (or `--lsp <cmd>`) — diagnostics in the
+    gutter/statusline, `K` hover, `gd` goto-definition
 - Commands: `:w`, `:q`, `:wq`/`:x`, `:q!`, `:w <name>`, `:{number}`, `ZZ`/`ZQ`
 - AstroNvim/Helix-style look: Tokyo Night true-colour theme, syntax
   highlighting, a powerline statusline (mode block, separators, segments),

@@ -89,7 +89,8 @@ Source is `src/`, one responsibility per module:
 | `syntax.zig`  | Dependency-free per-line lexer producing per-byte styles. |
 | `fuzzy.zig`   | Subsequence scorer for the pickers. |
 | `git.zig`     | Git change signs for the gutter (parses `git diff -U0`). |
-| `editor.zig`  | State, the vim command interpreter, multiple cursors, pickers, viewport, themed rendering. |
+| `lsp.zig`     | Minimal LSP client: JSON-RPC over a server's stdio (diagnostics, hover, goto). |
+| `editor.zig`  | State, the vim command interpreter, multiple cursors, pickers, LSP, viewport, themed rendering. |
 
 The pure, error-prone logic (motions, search) lives in its own unit-tested
 modules; `editor.zig` is the stateful orchestrator (mode machine, operators,
@@ -161,6 +162,11 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   searches file *contents* across the project, `Space f` matches file *names*.
 - **Command line:** `:w` write, `:q` quit (blocked if unsaved), `:wq`/`:x`,
   `:q!`, `:w <name>`, `:{number}` goto line, `:$`; `ZZ`/`ZQ`.
+- **LSP:** a language server is launched per filetype (`zls`, `clangd`, `pylsp`,
+  `typescript-language-server`), or any command via `--lsp`. Diagnostics show as
+  gutter signs + a statusline message/count; `K` hovers, `gd` goes to definition.
+  Best-effort: no server installed simply means no LSP. Its stdout is polled
+  alongside the terminal, so an idle editor still uses no CPU.
 
 ## Appearance
 
@@ -209,5 +215,9 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   literal, not regex. Statusline separators assume a nerd font.
 - Block paste of a blockwise yank is charwise (not a true rectangular paste);
   block `A` on lines shorter than the block does not pad with spaces.
-- Helix features still to build: LSP and tree-sitter highlighting (deps now
-  allowed). Multiple buffers/windows and config files — not yet built.
+- LSP is full-document sync with diagnostics/hover/goto; no completion,
+  signature help, rename or cross-file definition jumps yet.
+- Tree-sitter highlighting is still the lexer (`syntax.zig`). Upstream
+  tree-sitter's `build.zig.zon` isn't 0.16-compatible, so it needs vendoring
+  the runtime C + a grammar's generated `parser.c` and linking libc via FFI —
+  a dedicated follow-up. Multiple buffers/windows and config files — not yet built.
