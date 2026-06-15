@@ -20,7 +20,7 @@ ZIG = (
     "}\n"
 )
 
-def capture():
+def capture(keys=()):
     d = tempfile.mkdtemp(prefix="zedts")  # not a git repo
     path = os.path.join(d, "sample.zig")
     with open(path, "w") as f:
@@ -33,14 +33,18 @@ def capture():
         os._exit(127)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
     out = bytearray()
-    end = time.time() + 1.2
-    while time.time() < end:
-        r, _, _ = select.select([fd], [], [], 0.2)
-        if r:
-            try: data = os.read(fd, 8192)
-            except OSError: break
-            if not data: break
-            out.extend(data)
+    def drain(dur):
+        end = time.time() + dur
+        while time.time() < end:
+            r, _, _ = select.select([fd], [], [], 0.2)
+            if r:
+                try: data = os.read(fd, 8192)
+                except OSError: return
+                if not data: return
+                out.extend(data)
+    drain(1.0)
+    for k in keys:
+        os.write(fd, k); drain(0.4)
     os.write(fd, b"\x1b:q!\r"); time.sleep(0.3)
     try: os.kill(pid, 9)
     except ProcessLookupError: pass
@@ -57,11 +61,22 @@ def check(name, cond):
     if not cond:
         fails += 1
 
-out = capture()
 KEYWORD = b"\x1b[38;2;187;154;247m"  # theme.keyword (purple)
 STRING = b"\x1b[38;2;158;206;106m"   # theme.string_ (green)
+NUMBER = b"\x1b[38;2;255;158;100m"   # theme.number (orange)
+
+# Full parse on load.
+out = capture()
 check("keywords highlighted", KEYWORD in out)
 check("multiline string highlighted (tree-sitter only)", STRING in out)
+
+# Incremental reparse: insert a new line at the top (O + text + Esc). The new
+# tokens must be highlighted, and the pre-existing multiline string must stay
+# highlighted (proving the reused tree wasn't corrupted by the edit).
+out = capture(keys=[b"O", b"const z = 99;", b"\x1b"])
+check("incremental: new keyword highlighted", KEYWORD in out)
+check("incremental: new number highlighted", NUMBER in out)
+check("incremental: existing string still highlighted", STRING in out)
 
 print()
 print("ALL PASS" if fails == 0 else f"{fails} FAILURE(S)")

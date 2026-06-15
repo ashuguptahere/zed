@@ -1,10 +1,12 @@
 //! Tree-sitter syntax highlighting (vendored runtime + grammar, via the C API).
 //!
-//! Parses the whole document and runs the grammar's own `highlights.scm` query
-//! to produce a per-byte `Style` array. This is the "real" highlighting that
+//! Parses the document and runs the grammar's own `highlights.scm` query to
+//! produce a per-byte `Style` array. This is the "real" highlighting that
 //! understands structure, replacing the per-line lexer for languages we have a
-//! grammar for. It is best-effort: if the parser or query fails to build, the
-//! editor falls back to `syntax.zig`.
+//! grammar for. Reparsing is incremental: the previous tree is kept and a
+//! single edit (derived from the prefix/suffix diff of old vs new text) is
+//! applied so tree-sitter only re-parses the changed span. Best-effort: if the
+//! parser or query fails to build, the editor falls back to `syntax.zig`.
 //!
 //! The runtime and the tree-sitter-zig grammar are vendored under `vendor/` and
 //! compiled by `build.zig`; see CLAUDE.md for how to add more grammars.
@@ -26,6 +28,8 @@ pub const Highlighter = struct {
     parser: *c.TSParser,
     query: *c.TSQuery,
     capture_styles: []syntax.Style, // capture id -> style
+    tree: ?*c.TSTree, // last parse, kept for incremental reparsing
+    content: std.ArrayList(u8), // copy of the last-parsed text, to diff against
 
     /// Create a highlighter for `lang`, or null if unsupported / setup failed.
     pub fn init(gpa: Allocator, lang: syntax.Language) ?Highlighter {
@@ -52,23 +56,42 @@ pub const Highlighter = struct {
             styles[i] = mapCapture(name[0..len]);
         }
 
-        return .{ .gpa = gpa, .parser = parser, .query = query, .capture_styles = styles };
+        return .{ .gpa = gpa, .parser = parser, .query = query, .capture_styles = styles, .tree = null, .content = .empty };
     }
 
     pub fn deinit(self: *Highlighter) void {
+        if (self.tree) |t| c.ts_tree_delete(t);
+        self.content.deinit(self.gpa);
         self.gpa.free(self.capture_styles);
         c.ts_query_delete(self.query);
         c.ts_parser_delete(self.parser);
     }
 
     /// Parse `content` and fill `out` (one `Style` per byte; `out.len ==
-    /// content.len`). Later captures win on overlap, matching the nvim-style
-    /// convention that more specific patterns come later.
+    /// content.len`). Reuses the previous tree incrementally: a single edit is
+    /// derived from the common prefix/suffix of the old and new text, so
+    /// tree-sitter only re-parses the region that actually changed. Later
+    /// captures win on overlap, matching the nvim convention.
     pub fn highlight(self: *Highlighter, content: []const u8, out: []syntax.Style) void {
         @memset(out, .normal);
-        if (content.len == 0) return;
-        const tree = c.ts_parser_parse_string(self.parser, null, content.ptr, @intCast(content.len)) orelse return;
-        defer c.ts_tree_delete(tree);
+        if (content.len == 0) {
+            self.replaceTree(null);
+            self.rememberContent(content);
+            return;
+        }
+
+        const old_tree: ?*c.TSTree = if (self.tree) |t| blk: {
+            const edit = computeEdit(self.content.items, content);
+            c.ts_tree_edit(t, &edit);
+            break :blk t;
+        } else null;
+
+        const tree = c.ts_parser_parse_string(self.parser, old_tree, content.ptr, @intCast(content.len)) orelse {
+            self.replaceTree(null);
+            return;
+        };
+        self.replaceTree(tree);
+        self.rememberContent(content);
         const root = c.ts_tree_root_node(tree);
 
         const cursor = c.ts_query_cursor_new() orelse return;
@@ -88,7 +111,69 @@ pub const Highlighter = struct {
             }
         }
     }
+
+    fn replaceTree(self: *Highlighter, tree: ?*c.TSTree) void {
+        if (self.tree) |t| c.ts_tree_delete(t);
+        self.tree = tree;
+    }
+
+    fn rememberContent(self: *Highlighter, content: []const u8) void {
+        self.content.clearRetainingCapacity();
+        self.content.appendSlice(self.gpa, content) catch self.content.clearRetainingCapacity();
+    }
 };
+
+/// Derive a single `TSInputEdit` from the common prefix and suffix of the old
+/// and new text. The changed span [start, *_end) covers every actual change
+/// (even several at once), so tree-sitter reparses conservatively but correctly.
+fn computeEdit(old: []const u8, new: []const u8) c.TSInputEdit {
+    const min = @min(old.len, new.len);
+    var p: usize = 0;
+    while (p < min and old[p] == new[p]) p += 1;
+    var s: usize = 0;
+    while (s < min - p and old[old.len - 1 - s] == new[new.len - 1 - s]) s += 1;
+
+    const old_end = old.len - s;
+    const new_end = new.len - s;
+    return .{
+        .start_byte = @intCast(p),
+        .old_end_byte = @intCast(old_end),
+        .new_end_byte = @intCast(new_end),
+        .start_point = pointAt(new, p),
+        .old_end_point = pointAt(old, old_end),
+        .new_end_point = pointAt(new, new_end),
+    };
+}
+
+/// Byte offset -> (row, byte-column) point.
+fn pointAt(content: []const u8, byte: usize) c.TSPoint {
+    var row: u32 = 0;
+    var line_start: usize = 0;
+    var i: usize = 0;
+    while (i < byte and i < content.len) : (i += 1) {
+        if (content[i] == '\n') {
+            row += 1;
+            line_start = i + 1;
+        }
+    }
+    return .{ .row = row, .column = @intCast(byte - line_start) };
+}
+
+test "computeEdit prefix/suffix diff" {
+    // "abXcd" -> "abYYcd": prefix "ab" (2), suffix "cd" (2).
+    const e = computeEdit("abXcd", "abYYcd");
+    try std.testing.expectEqual(@as(u32, 2), e.start_byte);
+    try std.testing.expectEqual(@as(u32, 3), e.old_end_byte);
+    try std.testing.expectEqual(@as(u32, 4), e.new_end_byte);
+}
+
+test "pointAt rows and columns" {
+    const text = "ab\ncde\nf";
+    try std.testing.expectEqual(@as(u32, 0), pointAt(text, 1).row);
+    const p = pointAt(text, 5); // 'd' on line 1 (0-based), col 2
+    try std.testing.expectEqual(@as(u32, 1), p.row);
+    try std.testing.expectEqual(@as(u32, 2), p.column);
+}
 
 /// Map an nvim/helix highlight capture name to our `Style`. Prefix-based so
 /// e.g. `@keyword.return` and `@function.call` are handled without an exact

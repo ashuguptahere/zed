@@ -225,7 +225,9 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
 - LSP is full-document sync with diagnostics/hover/goto; no completion,
   signature help, rename or cross-file definition jumps yet.
 - Tree-sitter highlighting is wired for Zig only (the one vendored grammar);
-  other languages use the lexer. Parsing is whole-document on each change (not
-  incremental yet), and query predicates (`#match?`/`#eq?`) are not evaluated.
-  Adding a grammar = vendor its `parser.c` + `highlights.scm` and extend
-  `treesitter.zig`. Multiple buffers/windows and config files — not yet built.
+  other languages use the lexer. Parsing is incremental (the prior tree is
+  reused via a prefix/suffix diff of the old/new text), but the highlight query
+  still runs over the whole tree on each change, and query predicates
+  (`#match?`/`#eq?`) are not evaluated. Adding a grammar = vendor its `parser.c`
+  + `highlights.scm` and extend `treesitter.zig`. Multiple buffers/windows and
+  config files — not yet built.
