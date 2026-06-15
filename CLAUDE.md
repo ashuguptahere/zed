@@ -138,7 +138,9 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 - **Visual:** `v` (char), `V` (line), `Ctrl-v` (block); move to extend, `o`
   swaps ends, then `d c y x > <`. In block mode `I`/`A` insert at the left/right
   edge of every selected line (via the multi-cursor machinery).
-- **Search:** `/pat` `?pat`, `n N`, `*` `#`. Literal (not regex), wraps.
+- **Search:** `/pat` `?pat` (incremental — jumps live as you type, `Esc`
+  cancels and restores the cursor), `n N`, `*` `#`. Matches are highlighted.
+  Literal (not regex), wraps.
 - **Marks/macros:** `m{a-z}`, `` `{a-z} ``, `'{a-z}`; `q{a-z}…q` records, `@{a-z}`
   / `{n}@a` replays.
 - **Insert:** `i I a A o O` (and `c`/`s` entries), `Esc` to normal. Auto-pairs:

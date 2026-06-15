@@ -37,6 +37,7 @@ pub const Theme = struct {
     gutter: Color,
     gutter_active: Color,
     selection: Color,
+    match: Color, // search match highlight (background)
     indent_guide: Color,
 
     // syntax
@@ -74,6 +75,7 @@ pub const tokyonight: Theme = .{
     .gutter = rgb(0x3b, 0x42, 0x61),
     .gutter_active = rgb(0x73, 0x7a, 0xa2),
     .selection = rgb(0x28, 0x34, 0x57),
+    .match = rgb(0x3d, 0x59, 0xa1),
     .indent_guide = rgb(0x29, 0x2e, 0x42),
 
     .comment = rgb(0x56, 0x5f, 0x89),

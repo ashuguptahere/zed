@@ -150,6 +150,8 @@ pub const Editor = struct {
     // search
     last_search: std.ArrayList(u8),
     last_search_forward: bool,
+    search_origin: Pos, // cursor when a / or ? search began (for incremental preview)
+    prev_search: std.ArrayList(u8), // last_search saved on entry, restored if cancelled
 
     // command/search line
     cmd: std.ArrayList(u8),
@@ -213,6 +215,8 @@ pub const Editor = struct {
             .surr_from = 0,
             .last_search = .empty,
             .last_search_forward = true,
+            .search_origin = .{ .row = 0, .col = 0 },
+            .prev_search = .empty,
             .cmd = .empty,
             .cmd_kind = .ex,
             .picker_kind = .files,
@@ -244,6 +248,7 @@ pub const Editor = struct {
         self.registers.deinit();
         self.history.deinit();
         self.last_search.deinit(self.gpa);
+        self.prev_search.deinit(self.gpa);
         self.cmd.deinit(self.gpa);
         self.macro_buf.deinit(self.gpa);
         self.dot_keys.deinit(self.gpa);
@@ -1866,6 +1871,13 @@ pub const Editor = struct {
         }
     }
 
+    /// The term to highlight: the live query while typing a search, otherwise
+    /// the last committed search.
+    fn activeSearchTerm(self: *Editor) []const u8 {
+        if (self.mode == .command and self.searching()) return self.cmd.items;
+        return self.last_search.items;
+    }
+
     fn repeatSearch(self: *Editor, same_dir: bool) void {
         const fwd = if (same_dir) self.last_search_forward else !self.last_search_forward;
         self.jumpSearch(fwd);
@@ -2146,35 +2158,66 @@ pub const Editor = struct {
         self.mode = .command;
         self.cmd_kind = kind;
         self.cmd.clearRetainingCapacity();
+        if (kind != .ex) {
+            // Remember where we started so the search can preview live and be
+            // cancelled, and save the previous pattern to restore on cancel.
+            self.search_origin = self.cursor();
+            self.prev_search.clearRetainingCapacity();
+            self.prev_search.appendSlice(self.gpa, self.last_search.items) catch {};
+        }
         self.resetPending();
+    }
+
+    fn searching(self: *Editor) bool {
+        return self.cmd_kind == .search_forward or self.cmd_kind == .search_backward;
     }
 
     fn commandKey(self: *Editor, k: key.Key) !void {
         switch (k) {
-            .escape => self.mode = .normal,
+            .escape => {
+                if (self.searching()) {
+                    // Cancel: restore the previous pattern and the original cursor.
+                    self.last_search.clearRetainingCapacity();
+                    self.last_search.appendSlice(self.gpa, self.prev_search.items) catch {};
+                    self.setCursor(self.search_origin);
+                }
+                self.mode = .normal;
+            },
             .enter => {
                 const kind = self.cmd_kind;
                 self.mode = .normal;
                 switch (kind) {
                     .ex => try self.execEx(),
-                    .search_forward => self.runSearch(self.cmd.items, true),
-                    .search_backward => self.runSearch(self.cmd.items, false),
+                    // Search was already applied incrementally; nothing to do.
+                    .search_forward, .search_backward => {},
                 }
             },
             .backspace => {
                 if (self.cmd.items.len == 0) {
-                    self.mode = .normal;
+                    try self.commandKey(.escape);
                 } else {
                     self.cmd.items.len = unicode.prevBoundary(self.cmd.items, self.cmd.items.len);
+                    if (self.searching()) self.searchLive();
                 }
             },
             .char => |c| {
                 var enc: [4]u8 = undefined;
                 const len = std.unicode.utf8Encode(c, &enc) catch return;
                 try self.cmd.appendSlice(self.gpa, enc[0..len]);
+                if (self.searching()) self.searchLive();
             },
             else => {},
         }
+    }
+
+    /// Incremental search: jump to the first match from the original cursor as
+    /// the query changes, so the result previews live (Helix-style).
+    fn searchLive(self: *Editor) void {
+        self.last_search.clearRetainingCapacity();
+        self.last_search.appendSlice(self.gpa, self.cmd.items) catch {};
+        self.last_search_forward = self.cmd_kind == .search_forward;
+        self.setCursor(self.search_origin);
+        if (self.cmd.items.len > 0) self.jumpSearch(self.last_search_forward);
     }
 
     fn execEx(self: *Editor) !void {
@@ -2500,6 +2543,21 @@ pub const Editor = struct {
         const first_nb = motion.firstNonBlank(line);
         const indent_cols = displayCol(line, first_nb);
 
+        // Search-match ranges on this line (for highlighting).
+        var mstarts: [64]usize = undefined;
+        var mcount: usize = 0;
+        const needle = self.activeSearchTerm();
+        if (needle.len > 0) {
+            var off: usize = 0;
+            while (mcount < mstarts.len) {
+                const idx = std.mem.indexOfPos(u8, line, off, needle) orelse break;
+                mstarts[mcount] = idx;
+                mcount += 1;
+                off = idx + needle.len;
+            }
+        }
+        var mi: usize = 0;
+
         const left = self.left;
         const right = left + cols;
         var dc: usize = 0;
@@ -2518,7 +2576,9 @@ pub const Editor = struct {
 
             const is_extra = if (ecol) |ec| byte == ec else false;
             const selected = if (sel) |s| (byte >= s.lo and byte < s.hi) else false;
-            try self.setBg(if (is_extra) th.mode_normal else if (selected) th.selection else row_bg);
+            while (mi < mcount and byte >= mstarts[mi] + needle.len) mi += 1;
+            const in_match = mi < mcount and byte >= mstarts[mi] and byte < mstarts[mi] + needle.len;
+            try self.setBg(if (is_extra) th.mode_normal else if (selected) th.selection else if (in_match) th.match else row_bg);
 
             if (d.cp == '\t' or d.cp == ' ' or start < left or start + w > right) {
                 var c = if (start < left) left else start;
@@ -2532,7 +2592,7 @@ pub const Editor = struct {
                 }
             } else {
                 const stl = if (byte < self.style_buf.items.len) self.style_buf.items[byte] else .normal;
-                try self.setFg(if (is_extra) th.bg else self.styleColor(stl));
+                try self.setFg(if (is_extra) th.bg else if (in_match) th.fg else self.styleColor(stl));
                 try self.emit(bytes);
             }
         }

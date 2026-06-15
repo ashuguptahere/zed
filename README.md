@@ -23,7 +23,7 @@ idle**.
   - Registers and paste: `"a`, `p` / `P` (linewise & charwise)
   - Undo `u`, redo `Ctrl-r`, repeat `.`
   - Visual `v` / `V` with `d c y x > <`
-  - Search `/ ? n N * #` (literal, wraps)
+  - Search `/ ? n N * #` — incremental (jumps as you type) with match highlighting
   - Marks `m` `` ` `` `'` and macros `q…q` / `@`
   - Built-ins (no plugins): auto-pairs, comment toggle (`gcc` / `gc{motion}`)
   - Multiple cursors: `Ctrl-n` / `Ctrl-p` add carets below/above; edits apply to all
