@@ -42,6 +42,7 @@ pub const Mode = enum {
     insert,
     visual,
     visual_line,
+    visual_block,
     command,
     picker,
 
@@ -51,6 +52,7 @@ pub const Mode = enum {
             .insert => "INSERT",
             .visual => "VISUAL",
             .visual_line => "V-LINE",
+            .visual_block => "V-BLOCK",
             .command => "COMMAND",
             .picker => "PICKER",
         };
@@ -60,7 +62,7 @@ pub const Mode = enum {
 const PickerKind = enum { files, grep };
 const PickItem = struct { display: []u8, path: []u8, line: usize };
 
-const Operator = enum { none, delete, change, yank, indent_right, indent_left, comment };
+const Operator = enum { none, delete, change, yank, indent_right, indent_left, comment, surround };
 
 /// What the next key supplies an argument for.
 const Await = enum {
@@ -81,6 +83,10 @@ const Await = enum {
     macro_record, // q{reg}
     macro_play, // @{reg}
     space_leader, // <space> menu (which-key)
+    surround_add_char, // ys{motion}{char} / visual S{char}
+    surround_delete, // ds{char}
+    surround_change_from, // cs{old}...
+    surround_change_to, // cs{old}{new}
 };
 
 const CmdKind = enum { ex, search_forward, search_backward };
@@ -136,6 +142,10 @@ pub const Editor = struct {
 
     // multiple cursors (one per line; primary stays cy/cx). Empty = single cursor.
     extra: std.ArrayList(Pos),
+
+    // surround pending state
+    surr_span: ?Span,
+    surr_from: u8,
 
     // search
     last_search: std.ArrayList(u8),
@@ -199,6 +209,8 @@ pub const Editor = struct {
             .marks = [_]?Pos{null} ** 26,
             .vstart = .{ .row = 0, .col = 0 },
             .extra = .empty,
+            .surr_span = null,
+            .surr_from = 0,
             .last_search = .empty,
             .last_search_forward = true,
             .cmd = .empty,
@@ -329,7 +341,7 @@ pub const Editor = struct {
             self.change_started = false;
         }
         switch (self.mode) {
-            .normal, .insert, .visual, .visual_line => self.dot_temp.appendSlice(self.gpa, raw) catch {},
+            .normal, .insert, .visual, .visual_line, .visual_block => self.dot_temp.appendSlice(self.gpa, raw) catch {},
             .command, .picker => {},
         }
     }
@@ -352,7 +364,7 @@ pub const Editor = struct {
         switch (self.mode) {
             .normal => try self.normalKey(k),
             .insert => try self.insertKey(k),
-            .visual, .visual_line => try self.visualKey(k),
+            .visual, .visual_line, .visual_block => try self.visualKey(k),
             .command => try self.commandKey(k),
             .picker => try self.pickerKey(k),
         }
@@ -475,6 +487,7 @@ pub const Editor = struct {
     fn normalCtrl(self: *Editor, c: u8) void {
         switch (c) {
             'r' => self.redoChange(),
+            'v' => self.enterVisual(.visual_block), // blockwise visual
             'n' => self.addCursor(true), // add a cursor on the line below
             'p' => self.addCursor(false), // add a cursor on the line above
             'f' => self.pageMove(false),
@@ -564,8 +577,28 @@ pub const Editor = struct {
                 if (k == .char) switch (k.char) {
                     'f' => self.openFilePicker(),
                     '/', 's' => self.openGrepPicker(),
+                    'w' => _ = try self.write(""),
+                    'q' => self.doQuit(),
                     else => {},
                 };
+            },
+            .surround_add_char => {
+                defer self.resetPending();
+                if (charByte(k)) |c| try self.surroundAdd(c) else self.surr_span = null;
+            },
+            .surround_delete => {
+                defer self.resetPending();
+                if (charByte(k)) |c| try self.surroundDelete(c);
+            },
+            .surround_change_from => {
+                if (charByte(k)) |c| {
+                    self.surr_from = c;
+                    self.await_arg = .surround_change_to; // keep waiting for the new pair
+                } else self.resetPending();
+            },
+            .surround_change_to => {
+                defer self.resetPending();
+                if (charByte(k)) |c| try self.surroundChange(self.surr_from, c);
             },
             .none => {},
         }
@@ -580,6 +613,29 @@ pub const Editor = struct {
                 self.count2 = self.count2 * 10 + (c - '0');
                 return;
             }
+            // Surround: ds / cs / ys (vim-surround). Intercept before motions.
+            if (c == 's') switch (self.operator) {
+                .delete => {
+                    self.operator = .none;
+                    self.await_arg = .surround_delete;
+                    return;
+                },
+                .change => {
+                    self.operator = .none;
+                    self.await_arg = .surround_change_from;
+                    return;
+                },
+                .yank => {
+                    self.operator = .surround;
+                    return;
+                },
+                .surround => { // yss: surround the whole line
+                    const line = self.curLine();
+                    self.beginSurroundAdd(.{ .lines = false, .start = .{ .row = self.cy, .col = 0 }, .end = .{ .row = self.cy, .col = line.len } });
+                    return;
+                },
+                else => {},
+            };
             // Doubled operator -> linewise over `total` lines (dd, yy, cc, >>, <<).
             if (self.isDoubled(c)) return self.applyLinewiseOperator();
             if (c == 'i') {
@@ -613,6 +669,7 @@ pub const Editor = struct {
             .indent_right => c == '>',
             .indent_left => c == '<',
             .comment => c == 'c', // gcc
+            .surround => false, // handled by the 's' intercept (yss)
             .none => false,
         };
     }
@@ -627,10 +684,84 @@ pub const Editor = struct {
 
     fn applyTextObject(self: *Editor, around: bool, k: key.Key) !void {
         const op = self.operator;
-        defer self.resetPending();
-        const c = charByte(k) orelse return;
-        const span = self.textObjectSpan(around, c) orelse return;
+        const c = charByte(k) orelse {
+            self.resetPending();
+            return;
+        };
+        const span = self.textObjectSpan(around, c) orelse {
+            self.resetPending();
+            return;
+        };
+        if (op == .surround) {
+            self.beginSurroundAdd(span); // sets the next-key await
+            return;
+        }
         self.applyOperator(op, span);
+        self.resetPending();
+    }
+
+    // === surround ==========================================================
+
+    fn beginSurroundAdd(self: *Editor, span: Span) void {
+        self.surr_span = span;
+        self.count = 0;
+        self.count2 = 0;
+        self.operator = .none;
+        self.pending_register = null;
+        self.await_arg = .surround_add_char;
+    }
+
+    fn surroundAdd(self: *Editor, c: u8) !void {
+        const span = self.surr_span orelse return;
+        self.surr_span = null;
+        const pair = surroundPair(c) orelse return;
+        self.pushUndo();
+        try self.buf.insertBytes(span.end.row, span.end.col, pair.close);
+        try self.buf.insertBytes(span.start.row, span.start.col, pair.open);
+        self.setCursor(span.start);
+    }
+
+    fn surroundDelete(self: *Editor, c: u8) !void {
+        const sp = self.findSurroundSpan(c) orelse {
+            self.setStatus("no surrounding pair", .{});
+            return;
+        };
+        self.pushUndo();
+        const close_len = unicode.decode(self.buf.line(sp.end.row)[sp.end.col..]).len;
+        try self.buf.deleteInLine(sp.end.row, sp.end.col, sp.end.col + close_len);
+        const open_len = unicode.decode(self.buf.line(sp.start.row)[sp.start.col..]).len;
+        try self.buf.deleteInLine(sp.start.row, sp.start.col, sp.start.col + open_len);
+        self.setCursor(sp.start);
+    }
+
+    fn surroundChange(self: *Editor, from: u8, to: u8) !void {
+        const sp = self.findSurroundSpan(from) orelse {
+            self.setStatus("no surrounding pair", .{});
+            return;
+        };
+        const pair = surroundPair(to) orelse return;
+        self.pushUndo();
+        const close_len = unicode.decode(self.buf.line(sp.end.row)[sp.end.col..]).len;
+        try self.buf.deleteInLine(sp.end.row, sp.end.col, sp.end.col + close_len);
+        try self.buf.insertBytes(sp.end.row, sp.end.col, pair.close);
+        const open_len = unicode.decode(self.buf.line(sp.start.row)[sp.start.col..]).len;
+        try self.buf.deleteInLine(sp.start.row, sp.start.col, sp.start.col + open_len);
+        try self.buf.insertBytes(sp.start.row, sp.start.col, pair.open);
+        self.setCursor(sp.start);
+    }
+
+    /// The around-span (delimiters inclusive) of the pair identified by `c`.
+    fn findSurroundSpan(self: *Editor, c: u8) ?motion.Span {
+        return switch (c) {
+            '(', ')', 'b' => motion.objPair(&self.buf, self.cursor(), '(', ')', true),
+            '[', ']' => motion.objPair(&self.buf, self.cursor(), '[', ']', true),
+            '{', '}', 'B' => motion.objPair(&self.buf, self.cursor(), '{', '}', true),
+            '<', '>' => motion.objPair(&self.buf, self.cursor(), '<', '>', true),
+            '"' => motion.objQuote(&self.buf, self.cursor(), '"', true),
+            '\'' => motion.objQuote(&self.buf, self.cursor(), '\'', true),
+            '`' => motion.objQuote(&self.buf, self.cursor(), '`', true),
+            else => null,
+        };
     }
 
     fn textObjectSpan(self: *Editor, around: bool, c: u8) ?Span {
@@ -658,6 +789,10 @@ pub const Editor = struct {
     fn doMotion(self: *Editor, res: MotionResult) void {
         if (self.operator != .none) {
             const span = self.buildSpan(res);
+            if (self.operator == .surround) {
+                self.beginSurroundAdd(span);
+                return;
+            }
             self.applyOperator(self.operator, span);
             self.resetPending();
             return;
@@ -1312,9 +1447,12 @@ pub const Editor = struct {
                     self.cy = tmp.row;
                     self.cx = tmp.col;
                 },
-                'd', 'x' => try self.visualOperator(.delete),
-                'y' => try self.visualOperator(.yank),
-                'c', 's' => try self.visualOperator(.change),
+                'd', 'x' => if (self.mode == .visual_block) try self.blockDelete() else try self.visualOperator(.delete),
+                'y' => if (self.mode == .visual_block) try self.blockYank() else try self.visualOperator(.yank),
+                'c', 's' => if (self.mode == .visual_block) try self.blockChange() else try self.visualOperator(.change),
+                'I' => if (self.mode == .visual_block) try self.blockInsert(false),
+                'A' => if (self.mode == .visual_block) try self.blockInsert(true),
+                'S' => self.visualSurround(),
                 '>' => try self.visualOperator(.indent_right),
                 '<' => try self.visualOperator(.indent_left),
                 'V' => self.mode = .visual_line,
@@ -1365,6 +1503,102 @@ pub const Editor = struct {
         self.mode = .normal;
         self.applyOperator(op, span);
         self.resetPending();
+    }
+
+    /// Visual `S{char}`: surround the selection.
+    fn visualSurround(self: *Editor) void {
+        var start = self.vstart;
+        var end = self.cursor();
+        if (cmpPos(end, start) < 0) {
+            const tmp = start;
+            start = end;
+            end = tmp;
+        }
+        end = .{ .row = end.row, .col = unicode.nextBoundary(self.buf.line(end.row), end.col) };
+        self.mode = .normal;
+        self.beginSurroundAdd(.{ .lines = false, .start = start, .end = end });
+    }
+
+    // === blockwise visual ==================================================
+
+    const BlockRect = struct { top: usize, bot: usize, left: usize, right: usize };
+
+    /// The block rectangle in display columns from the anchor and cursor.
+    fn blockCols(self: *Editor) BlockRect {
+        const a = self.vstart;
+        const b = self.cursor();
+        const a_dc = displayCol(self.buf.line(a.row), a.col);
+        const b_dc = displayCol(self.buf.line(b.row), b.col);
+        return .{
+            .top = @min(a.row, b.row),
+            .bot = @max(a.row, b.row),
+            .left = @min(a_dc, b_dc),
+            .right = @max(a_dc, b_dc),
+        };
+    }
+
+    fn blockDelete(self: *Editor) !void {
+        const r = self.blockCols();
+        self.pushUndo();
+        var i = r.top;
+        while (i <= r.bot) : (i += 1) {
+            const line = self.buf.line(i);
+            const lo = byteAtDisplayCol(line, r.left);
+            const hi = byteAtDisplayCol(line, r.right + 1);
+            if (hi > lo) try self.buf.deleteInLine(i, lo, hi);
+        }
+        self.mode = .normal;
+        self.cy = r.top;
+        self.cx = byteAtDisplayCol(self.buf.line(r.top), r.left);
+        self.updateGoal();
+    }
+
+    fn blockYank(self: *Editor) !void {
+        const r = self.blockCols();
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(self.gpa);
+        var i = r.top;
+        while (i <= r.bot) : (i += 1) {
+            const line = self.buf.line(i);
+            const lo = byteAtDisplayCol(line, r.left);
+            const hi = byteAtDisplayCol(line, r.right + 1);
+            try out.appendSlice(self.gpa, line[lo..hi]);
+            if (i < r.bot) try out.append(self.gpa, '\n');
+        }
+        try self.registers.set(self.pending_register, out.items, false);
+        self.mode = .normal;
+        self.cy = r.top;
+        self.cx = byteAtDisplayCol(self.buf.line(r.top), r.left);
+        self.updateGoal();
+    }
+
+    /// Block insert/append: place a caret at the left/right edge of every row in
+    /// the block, then enter multi-cursor insert (typing replicates to all rows).
+    fn blockInsert(self: *Editor, at_right: bool) !void {
+        const r = self.blockCols();
+        const dc = if (at_right) r.right + 1 else r.left;
+        self.clearExtra();
+        self.cy = r.top;
+        self.cx = byteAtDisplayCol(self.buf.line(r.top), dc);
+        var i = r.top + 1;
+        while (i <= r.bot) : (i += 1) {
+            self.extra.append(self.gpa, .{ .row = i, .col = byteAtDisplayCol(self.buf.line(i), dc) }) catch {};
+        }
+        self.mode = .normal;
+        try self.enterInsertMulti(.at);
+    }
+
+    fn blockChange(self: *Editor) !void {
+        const r = self.blockCols();
+        try self.blockDelete(); // sets cursor to (top, left); pushes undo
+        self.cy = r.top;
+        self.cx = byteAtDisplayCol(self.buf.line(r.top), r.left);
+        var i = r.top + 1;
+        while (i <= r.bot) : (i += 1) {
+            self.extra.append(self.gpa, .{ .row = i, .col = byteAtDisplayCol(self.buf.line(i), r.left) }) catch {};
+        }
+        self.mode = .insert;
+        self.updateGoal();
     }
 
     // === multiple cursors ==================================================
@@ -2199,11 +2433,49 @@ pub const Editor = struct {
         }
 
         try self.renderStatus();
+        if (self.await_arg == .space_leader) try self.renderWhichKey();
         try self.emit(ansi.reset_attrs);
         try self.placeCursor(gutter);
         try self.emit(ansi.show_cursor);
         try self.term.write(self.frame.items);
         sp.lap("render");
+    }
+
+    const WhichKey = struct { key: []const u8, desc: []const u8 };
+    const leader_keys = [_]WhichKey{
+        .{ .key = "f", .desc = "find file" },
+        .{ .key = "s", .desc = "search in files" },
+        .{ .key = "/", .desc = "search in files" },
+        .{ .key = "w", .desc = "write (save)" },
+        .{ .key = "q", .desc = "quit" },
+    };
+
+    /// Draw the which-key popup for the Space leader, anchored above the status bar.
+    fn renderWhichKey(self: *Editor) !void {
+        const th = theme.current;
+        const width: usize = 26;
+        const rows: usize = self.win.rows;
+        const height = leader_keys.len + 1;
+        if (rows < height + 2) return;
+        const top = rows - height - 1; // 1-based; leave the status bar at the bottom
+
+        var b: [16]u8 = undefined;
+        try self.emit(try std.fmt.bufPrint(&b, "\x1b[{d};1H", .{top}));
+        try self.setBg(th.mode_command);
+        try self.setFg(th.bg);
+        try self.emit(" SPACE");
+        try self.emitSpaces(width - 6);
+
+        for (leader_keys, 0..) |it, i| {
+            try self.emit(try std.fmt.bufPrint(&b, "\x1b[{d};1H", .{top + 1 + i}));
+            try self.setBg(th.status_seg_bg);
+            try self.setFg(th.mode_normal);
+            try self.emitFmt("  {s}  ", .{it.key});
+            try self.setFg(th.status_seg_fg);
+            try self.emit(it.desc);
+            const used = 2 + it.key.len + 2 + it.desc.len;
+            if (used < width) try self.emitSpaces(width - used);
+        }
     }
 
     fn emitGutter(self: *Editor, file_row: usize, gutter: usize, is_cur: bool) !void {
@@ -2314,6 +2586,12 @@ pub const Editor = struct {
     const SelRange = struct { lo: usize, hi: usize };
 
     fn selectionRange(self: *Editor, row: usize) ?SelRange {
+        if (self.mode == .visual_block) {
+            const rr = self.blockCols();
+            if (row < rr.top or row > rr.bot) return null;
+            const line = self.buf.line(row);
+            return .{ .lo = byteAtDisplayCol(line, rr.left), .hi = byteAtDisplayCol(line, rr.right + 1) };
+        }
         if (self.mode != .visual and self.mode != .visual_line) return null;
         var a = self.vstart;
         var b = self.cursor();
@@ -2333,17 +2611,6 @@ pub const Editor = struct {
     fn renderStatus(self: *Editor) !void {
         const th = theme.current;
         const cols: usize = self.win.cols;
-
-        // which-key leader menu.
-        if (self.await_arg == .space_leader) {
-            try self.setBg(th.status_bg);
-            try self.setFg(th.mode_command);
-            const menu = " SPACE   f find file    / search    Esc cancel";
-            const show = @min(menu.len, cols);
-            try self.emit(menu[0..show]);
-            try self.emitSpaces(cols - show);
-            return;
-        }
 
         // Command / search line: a simple prompt across the bar.
         if (self.mode == .command) {
@@ -2430,7 +2697,7 @@ pub const Editor = struct {
         return switch (self.mode) {
             .normal => th.mode_normal,
             .insert => th.mode_insert,
-            .visual, .visual_line => th.mode_visual,
+            .visual, .visual_line, .visual_block => th.mode_visual,
             .command, .picker => th.mode_command,
         };
     }
@@ -2447,6 +2714,7 @@ pub const Editor = struct {
             .indent_right => '>',
             .indent_left => '<',
             .comment => 'g',
+            .surround => 's',
             .none => null,
         };
         if (opc) |c| {
@@ -2550,6 +2818,22 @@ fn closerFor(cp: u21) ?u21 {
 fn isPair(open: u21, close: u21) bool {
     if (closerFor(open)) |c| return c == close;
     return isQuote(open) and open == close;
+}
+
+const Pair = struct { open: []const u8, close: []const u8 };
+
+/// The delimiter strings to add for a surround character.
+fn surroundPair(c: u8) ?Pair {
+    return switch (c) {
+        '(', ')', 'b' => .{ .open = "(", .close = ")" },
+        '[', ']' => .{ .open = "[", .close = "]" },
+        '{', '}', 'B' => .{ .open = "{", .close = "}" },
+        '<', '>' => .{ .open = "<", .close = ">" },
+        '"' => .{ .open = "\"", .close = "\"" },
+        '\'' => .{ .open = "'", .close = "'" },
+        '`' => .{ .open = "`", .close = "`" },
+        else => null,
+    };
 }
 
 fn lastColumn(line: []const u8) usize {

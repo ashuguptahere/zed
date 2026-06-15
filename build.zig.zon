@@ -8,6 +8,7 @@
         "build.zig",
         "build.zig.zon",
         "src",
+        "doc",
         "README.md",
         "CLAUDE.md",
     },

@@ -107,6 +107,9 @@ zig build run -- [file]         # run the editor
 zig build test                  # unit tests (pure logic; no tty needed)
 ```
 
+`zig build` also installs the man page to `zig-out/share/man/man1/zed.1`
+(source: `doc/zed.1`); view it with `man ./doc/zed.1`.
+
 Interactive behaviour can't be unit-tested without a terminal, so integration
 checks live in `tools/` and drive the editor through a pseudo-terminal:
 
@@ -132,21 +135,27 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   (plus `b`/`B` aliases), e.g. `ciw`, `di"`, `da(`.
 - **Registers/paste:** `"a` selects a register; `p`/`P` paste (linewise/charwise).
 - **Undo:** `u`, redo `Ctrl-r`. **Repeat:** `.` repeats the last change.
-- **Visual:** `v` (char), `V` (line); move to extend, `o` swaps ends, then
-  `d c y x > <`.
+- **Visual:** `v` (char), `V` (line), `Ctrl-v` (block); move to extend, `o`
+  swaps ends, then `d c y x > <`. In block mode `I`/`A` insert at the left/right
+  edge of every selected line (via the multi-cursor machinery).
 - **Search:** `/pat` `?pat`, `n N`, `*` `#`. Literal (not regex), wraps.
 - **Marks/macros:** `m{a-z}`, `` `{a-z} ``, `'{a-z}`; `q{a-z}…q` records, `@{a-z}`
   / `{n}@a` replays.
 - **Insert:** `i I a A o O` (and `c`/`s` entries), `Esc` to normal. Auto-pairs:
   typing an opener inserts its closer; typing the closer steps over it.
 - **Built-ins (no plugins):** `gcc` / `gc{motion}` comment toggling, auto-pairs.
+- **Surround:** `ys{motion}{char}` (e.g. `ysiw)`), `cs{old}{new}` (e.g. `cs"'`),
+  `ds{char}`, `yss{char}` for the whole line, and `S{char}` in visual mode.
 - **Multiple cursors:** `Ctrl-n` / `Ctrl-p` add a caret on the line below/above
   (one per line); movement, `x`, and `i`/`a`/`I`/`A` + typing apply to every
   caret; `Esc` collapses back to one.
-- **Pickers (which-key leader = `Space`):** `Space f` fuzzy file finder,
-  `Space /` (or `Space s`) global literal search. In a picker: type to filter,
+- **Pickers (which-key leader = `Space`):** pressing `Space` shows a which-key
+  popup; `Space f` fuzzy file finder, `Space /` (or `Space s`) global literal
+  content search, `Space w` write, `Space q` quit. In a picker: type to filter,
   `Ctrl-n`/`Ctrl-p` or arrows to move, `Enter` to open, `Esc` to cancel.
   Opening a file is blocked while the current buffer has unsaved changes.
+  Note the three search scopes: `/` searches the current buffer, `Space /`
+  searches file *contents* across the project, `Space f` matches file *names*.
 - **Command line:** `:w` write, `:q` quit (blocked if unsaved), `:wq`/`:x`,
   `:q!`, `:w <name>`, `:{number}` goto line, `:$`; `ZZ`/`ZQ`.
 
@@ -194,6 +203,7 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   per-caret line splits/joins or arbitrary selection-based multi-edit.
 - Pickers are single-buffer (opening replaces the buffer) and global search is
   literal, not regex. Statusline separators assume a nerd font.
-- Helix features still to build: surround (`ys`/`cs`/`ds`), blockwise visual
-  (`Ctrl-v`), LSP, and tree-sitter highlighting (deps now allowed).
-- Multiple buffers/windows and config files — not yet built.
+- Block paste of a blockwise yank is charwise (not a true rectangular paste);
+  block `A` on lines shorter than the block does not pad with spaces.
+- Helix features still to build: LSP and tree-sitter highlighting (deps now
+  allowed). Multiple buffers/windows and config files — not yet built.

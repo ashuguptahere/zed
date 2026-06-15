@@ -14,6 +14,9 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(exe);
 
+    // Install the man page so `man zed` works after `zig build --prefix ...`.
+    b.installFile("doc/zed.1", "share/man/man1/zed.1");
+
     // `zig build run [-- args]` builds and runs the editor.
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());

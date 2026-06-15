@@ -27,8 +27,9 @@ idle**.
   - Marks `m` `` ` `` `'` and macros `q…q` / `@`
   - Built-ins (no plugins): auto-pairs, comment toggle (`gcc` / `gc{motion}`)
   - Multiple cursors: `Ctrl-n` / `Ctrl-p` add carets below/above; edits apply to all
+  - Surround (`ys`/`cs`/`ds`, visual `S`) and blockwise visual (`Ctrl-v` + `I`/`A`)
   - Pickers via a `Space` which-key menu: `Space f` fuzzy file finder,
-    `Space /` global search
+    `Space /` global content search
 - Commands: `:w`, `:q`, `:wq`/`:x`, `:q!`, `:w <name>`, `:{number}`, `ZZ`/`ZQ`
 - AstroNvim/Helix-style look: Tokyo Night true-colour theme, syntax
   highlighting, a powerline statusline (mode block, separators, segments),
@@ -47,10 +48,11 @@ idle**.
 Requires Zig `0.16.0`.
 
 ```sh
-zig build                          # -> zig-out/bin/zed
+zig build                          # -> zig-out/bin/zed (+ man page under share/man)
 zig build -Doptimize=ReleaseFast   # optimized build
 zig build run -- path/to/file      # build and run
 zig build test                     # run unit tests
+man ./doc/zed.1                    # read the manual
 ```
 
 ## Usage

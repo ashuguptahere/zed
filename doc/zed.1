@@ -1,0 +1,195 @@
+.TH ZED 1 "2026-06-15" "zed 0.1.0" "User Commands"
+.SH NAME
+zed \- a fast, terminal-based, modal code editor written in Zig
+.SH SYNOPSIS
+.B zed
+.RI [ options ]
+.RI [ file ]
+.SH DESCRIPTION
+.B zed
+(\(lqzig-editor\(rq) is a modal terminal editor in the spirit of
+.BR nvim (1)
+and
+.BR hx (1).
+It has a comprehensive vim-style keymap, multiple cursors, fuzzy file and
+global-content search pickers, syntax highlighting, and an AstroNvim/Helix-style
+themed interface \(em all with no external runtime dependencies.
+.PP
+If
+.I file
+exists it is opened; otherwise a buffer with that name is created on the first
+write. With no
+.I file
+argument an empty buffer is opened. The editor requires an interactive terminal.
+.SH OPTIONS
+.TP
+.BR \-h ", " \-\-help
+Show usage and exit.
+.TP
+.BR \-V ", " \-\-version
+Show the version and exit.
+.TP
+.BI \-\-log " path"
+Write timestamped diagnostic logs (including microsecond render/input timings)
+to
+.IR path .
+Logging is off by default.
+.SH MODES
+zed is modal: NORMAL for movement and commands, INSERT for typing, VISUAL and
+V\-LINE and V\-BLOCK for selections, COMMAND for the
+.RB \(lq : \(rq
+line, and PICKER for the fuzzy finders.
+.B Esc
+returns to NORMAL mode.
+.SH "NORMAL MODE KEYS"
+.SS Motions
+.TP
+.B h j k l
+Left, down, up, right (arrow keys also work).
+.TP
+.B w W b B e E
+Word / WORD motions.
+.TP
+.B 0 ^ $
+Start, first non-blank, end of line.
+.TP
+.B gg G \fItag\fP{n}G
+First line, last line, line \fIn\fP.
+.TP
+.B f F t T \fR;\fP ,
+Find/till a character on the line, repeat and reverse.
+.TP
+.B %
+Jump to the matching bracket.
+.TP
+.B H M L
+Top, middle, bottom of the screen.
+.TP
+.B Ctrl-d Ctrl-u Ctrl-f Ctrl-b
+Half/full page down and up.
+.SS Operators
+.TP
+.B d c y
+Delete, change, yank \(em followed by a motion or text object, or doubled
+.RB ( dd ", " cc ", " yy ).
+.TP
+.B > <
+Indent and dedent
+.RB ( >> ", " << ).
+.TP
+.B gc\fItag\fP{motion} gcc
+Toggle comments.
+.TP
+.B D C Y x X s S r ~ J
+Delete/change to end of line, delete char, substitute, replace char, toggle
+case, join lines.
+.SS "Text objects"
+.TP
+.B iw aw i( a( i" a" \fR(and\fP i[ a{ i< i' i`\fR)\fP
+Inner/around word, brackets, and quotes, e.g.
+.BR ciw ", " di" ", " da( .
+.SS Surround
+.TP
+.B ys\fItag\fP{motion}{char}
+Surround the motion's text with {char}, e.g.
+.B ysiw)
+wraps the inner word in parentheses.
+.TP
+.B cs{old}{new}
+Change surrounding {old} to {new}, e.g.
+.BR cs"' .
+.TP
+.B ds{char}
+Delete the surrounding {char}, e.g.
+.BR ds( .
+.SS "Registers, undo, repeat"
+.TP
+.B \(dq{a-z}
+Select a register for the next yank/delete/paste.
+.TP
+.B p P u Ctrl-r .
+Paste after/before, undo, redo, repeat last change.
+.SS "Multiple cursors"
+.TP
+.B Ctrl-n Ctrl-p
+Add a cursor on the line below / above. Movement,
+.BR x ,
+and
+.BR i / a / I / A
+plus typing apply to every cursor;
+.B Esc
+collapses to one.
+.SS "Marks and macros"
+.TP
+.B m{a-z} `{a-z} '{a-z}
+Set a mark, jump to it exactly, jump to its line.
+.TP
+.B q{a-z} \fR...\fP q \fR then\fP @{a-z}
+Record and replay a macro.
+.SH "VISUAL MODE"
+.B v
+character\-wise,
+.B V
+line\-wise, and
+.B Ctrl-v
+block\-wise. Move to extend the selection, then
+.BR d / c / y / x / > / < .
+In block mode,
+.B I
+and
+.B A
+insert at the left/right edge of every selected line. Press
+.B S{char}
+to surround the selection.
+.SH "PICKERS (Space leader)"
+.TP
+.B Space f
+Fuzzy file finder (file names).
+.TP
+.B Space /\fR, \fPSpace s
+Global search across file \fIcontents\fP.
+.TP
+.B Space w\fR, \fPSpace q
+Write, quit.
+.PP
+In a picker, type to filter,
+.B Ctrl-n
+/
+.B Ctrl-p
+or the arrow keys to move the selection,
+.B Enter
+to open, and
+.B Esc
+to cancel. The in\-buffer
+.B /
+and
+.B ?
+search the current file; use
+.B Space /
+to search across files.
+.SH "COMMAND LINE"
+.TP
+.B :w \fR[\fPname\fR]\fP :q :wq :x :q! :{n} ZZ ZQ
+Write, quit (blocked when there are unsaved changes), write\-and\-quit, force
+quit, go to line \fIn\fP, write\-and\-quit, quit without writing.
+.SH ENVIRONMENT
+.TP
+.B TERM
+Used for terminal capabilities. A Nerd Font is recommended so the powerline
+statusline separators render correctly.
+.SH "EXIT STATUS"
+.TP
+.B 0
+Success.
+.TP
+.B 1
+Runtime error (e.g. not a terminal, or a file could not be opened).
+.TP
+.B 2
+Command\-line usage error.
+.SH AUTHOR
+Written by Aashish Gupta.
+.SH "SEE ALSO"
+.BR nvim (1),
+.BR hx (1),
+.BR vim (1)
