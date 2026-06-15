@@ -3,8 +3,8 @@
 
 Runs zed with --lsp pointing at tools/mock_lsp.py and checks the rendered output
 for diagnostics (count/sign/message), hover, incremental didChange, completion
-(popup + accept) and signature help (popup + active-parameter highlight +
-overload cycling).
+(popup + accept), signature help (popup + active-parameter highlight + overload
+cycling) and rename (prompt + applied edits).
 """
 import os, pty, select, sys, time, fcntl, termios, struct, re
 
@@ -102,6 +102,14 @@ check("signature popup shows label", b"mockFn(a: int, b: int)" in plain)
 check("active parameter highlighted", BUILTIN + b"a: int" in out)
 check("overload counter shown", b"(1/2)" in plain)
 check("Ctrl-p cycles to other overload", b"mockFn(a: str)" in plain and b"(2/2)" in plain)
+
+# Rename: move onto "a" (line 0), gr opens a prompt pre-filled with "a"; clear it
+# with backspace, type the new name, Enter. The mock rewrites [0,6)-[0,7) with it.
+out, text = run([(b"0w", 0.3), (b"gr", 0.4), (b"\x7fxyz", 0.4), (b"\r", 0.9)],
+                final=b"\x1b:wq\r")
+check("rename prompt pre-filled with identifier", b"rename: a" in ANSI.sub(b"", out))
+check("rename status shown", b"renamed 1" in out)
+check("rename applied to buffer", "const xyz = 1;" in text)
 
 print()
 print("ALL PASS" if fails == 0 else f"{fails} FAILURE(S)")

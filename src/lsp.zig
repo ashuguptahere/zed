@@ -31,6 +31,16 @@ pub const Signature = struct {
     active_end: usize, // == active_start when there is no active parameter
 };
 
+/// One edit from a rename's WorkspaceEdit: replace [start, end) (LSP positions,
+/// UTF-16 columns) with `text`.
+pub const TextEdit = struct {
+    start_line: u32,
+    start_char: u32,
+    end_line: u32,
+    end_char: u32,
+    text: []u8,
+};
+
 pub const Client = struct {
     gpa: Allocator,
     io: std.Io,
@@ -59,6 +69,9 @@ pub const Client = struct {
     signatures: std.ArrayList(Signature), // all overloads from the last response
     sig_active: usize, // index of the displayed overload (server-suggested, then cycled)
     sig_ready: bool, // a signatureHelp response just arrived (editor should consume)
+    rename_id: i64,
+    edits: std.ArrayList(TextEdit), // pending rename edits for the current file
+    rename_ready: bool, // a rename response just arrived (editor should apply)
 
     pub fn start(
         gpa: Allocator,
@@ -102,6 +115,9 @@ pub const Client = struct {
             .signatures = .empty,
             .sig_active = 0,
             .sig_ready = false,
+            .rename_id = -1,
+            .edits = .empty,
+            .rename_ready = false,
         };
 
         self.sendInitialize(root);
@@ -130,6 +146,8 @@ pub const Client = struct {
         self.completions.deinit(self.gpa);
         self.clearSignatures();
         self.signatures.deinit(self.gpa);
+        self.clearEdits();
+        self.edits.deinit(self.gpa);
         if (self.hover_text) |t| self.gpa.free(t);
         if (self.def_target) |d| self.gpa.free(d.uri);
     }
@@ -153,6 +171,11 @@ pub const Client = struct {
         self.sig_active = 0;
     }
 
+    fn clearEdits(self: *Client) void {
+        for (self.edits.items) |e| self.gpa.free(e.text);
+        self.edits.clearRetainingCapacity();
+    }
+
     // --- outgoing ----------------------------------------------------------
 
     fn sendInitialize(self: *Client, root: []const u8) void {
@@ -160,7 +183,7 @@ pub const Client = struct {
         defer body.deinit(self.gpa);
         body.appendSlice(self.gpa, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"processId\":null,\"rootUri\":\"file://") catch return;
         appendEscaped(&body, self.gpa, root) catch return;
-        body.appendSlice(self.gpa, "\",\"capabilities\":{\"textDocument\":{\"publishDiagnostics\":{},\"hover\":{},\"definition\":{},\"completion\":{},\"signatureHelp\":{}}}}}") catch return;
+        body.appendSlice(self.gpa, "\",\"capabilities\":{\"textDocument\":{\"publishDiagnostics\":{},\"hover\":{},\"definition\":{},\"completion\":{},\"signatureHelp\":{},\"rename\":{}}}}}") catch return;
         self.writeMessage(body.items);
     }
 
@@ -260,6 +283,21 @@ pub const Client = struct {
         self.sendPositionRequest(self.def_id, "textDocument/definition", line, col);
     }
 
+    pub fn requestRename(self: *Client, line: usize, col: usize, new_name: []const u8) void {
+        if (!self.alive) return;
+        self.rename_id = self.nextId();
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(self.gpa);
+        const a = self.gpa;
+        var nb: [200]u8 = undefined;
+        body.appendSlice(a, std.fmt.bufPrint(&nb, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":\"textDocument/rename\",\"params\":{{\"textDocument\":{{\"uri\":\"", .{self.rename_id}) catch return) catch return;
+        appendEscaped(&body, a, self.uri) catch return;
+        body.appendSlice(a, std.fmt.bufPrint(&nb, "\"}},\"position\":{{\"line\":{d},\"character\":{d}}},\"newName\":\"", .{ line, col }) catch return) catch return;
+        appendEscaped(&body, a, new_name) catch return;
+        body.appendSlice(a, "\"}}") catch return;
+        self.writeMessage(body.items);
+    }
+
     fn sendPositionRequest(self: *Client, id: i64, method: []const u8, line: usize, col: usize) void {
         if (!self.alive) return;
         var body: std.ArrayList(u8) = .empty;
@@ -356,6 +394,7 @@ pub const Client = struct {
         if (id == self.def_id) self.handleDefinition(result);
         if (id == self.comp_id) self.handleCompletion(result);
         if (id == self.sig_id) self.handleSignature(result);
+        if (id == self.rename_id) self.handleRename(result);
     }
 
     /// Read the server's `textDocumentSync` to decide full vs. incremental
@@ -420,6 +459,50 @@ pub const Client = struct {
         if (n == 0) return;
         const idx = asInt(getField(result, "activeSignature")) orelse 0;
         self.sig_active = if (idx >= 0 and @as(usize, @intCast(idx)) < n) @intCast(idx) else 0;
+    }
+
+    /// Parse a rename's `WorkspaceEdit`, keeping only the edits for the open
+    /// file (the editor is single-buffer). `rename_ready` is set regardless so
+    /// the editor consumes the result (an empty list means "no changes").
+    fn handleRename(self: *Client, result: std.json.Value) void {
+        self.clearEdits();
+        self.rename_ready = true;
+        if (result != .object) return; // null = nothing to rename
+        // `changes`: a { uri: TextEdit[] } map.
+        if (getField(result, "changes")) |changes| {
+            if (changes == .object) {
+                if (changes.object.get(self.uri)) |arr| self.collectEdits(arr);
+            }
+            return;
+        }
+        // `documentChanges`: an array of { textDocument: {uri}, edits: [...] }.
+        if (getField(result, "documentChanges")) |dc| {
+            if (dc != .array) return;
+            for (dc.array.items) |tde| {
+                const td = getField(tde, "textDocument") orelse continue;
+                const uri = asStr(getField(td, "uri")) orelse continue;
+                if (!std.mem.eql(u8, uri, self.uri)) continue;
+                if (getField(tde, "edits")) |arr| self.collectEdits(arr);
+            }
+        }
+    }
+
+    fn collectEdits(self: *Client, arr: std.json.Value) void {
+        if (arr != .array) return;
+        for (arr.array.items) |e| {
+            const range = getField(e, "range") orelse continue;
+            const s = getField(range, "start") orelse continue;
+            const en = getField(range, "end") orelse continue;
+            const new_text = asStr(getField(e, "newText")) orelse continue;
+            const owned = self.gpa.dupe(u8, new_text) catch continue;
+            self.edits.append(self.gpa, .{
+                .start_line = u32From(getField(s, "line")),
+                .start_char = u32From(getField(s, "character")),
+                .end_line = u32From(getField(en, "line")),
+                .end_char = u32From(getField(en, "character")),
+                .text = owned,
+            }) catch self.gpa.free(owned);
+        }
     }
 
     fn updateDiagnostics(self: *Client, params: std.json.Value) void {
@@ -581,6 +664,12 @@ fn asInt(v: ?std.json.Value) ?i64 {
         .integer => |i| i,
         else => null,
     };
+}
+
+/// A non-negative line/character field as a u32 (0 when absent or negative).
+fn u32From(v: ?std.json.Value) u32 {
+    const i = asInt(v) orelse 0;
+    return if (i > 0) @intCast(i) else 0;
 }
 
 fn asStr(v: ?std.json.Value) ?[]const u8 {

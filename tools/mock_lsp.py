@@ -82,6 +82,16 @@ while True:
             "activeSignature": 0,
             "activeParameter": 0,
         }})
+    elif method == "textDocument/rename":
+        # Replace the "a" identifier on line 0 (chars [6,7)) with the new name,
+        # echoing the requested newName so the test can verify the round-trip.
+        uri = m["params"]["textDocument"]["uri"]
+        new = m["params"]["newName"]
+        send({"jsonrpc": "2.0", "id": m["id"], "result": {"changes": {uri: [
+            {"range": {"start": {"line": 0, "character": 6},
+                       "end": {"line": 0, "character": 7}},
+             "newText": new},
+        ]}}})
     elif method == "textDocument/hover":
         send({"jsonrpc": "2.0", "id": m["id"], "result": {"contents": "mock hover"}})
     elif method == "textDocument/definition":

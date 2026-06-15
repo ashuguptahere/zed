@@ -175,7 +175,9 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 - **LSP:** a language server is launched per filetype (`zls`, `clangd`, `pylsp`,
   `typescript-language-server`), or any command via `--lsp`. Diagnostics show as
   gutter signs + a statusline message/count; `K` hovers (`Ctrl-k` in insert
-  mode), `gd` goes to definition,
+  mode), `gd` goes to definition, `gr` renames the symbol under the cursor
+  (prompts on the command line, pre-filled with the identifier; the returned
+  edits for the current file are applied as one undoable change).
   `Ctrl-n` in insert mode requests completion (popup: `Ctrl-n`/`Ctrl-p` or
   arrows to move, `Tab`/`Enter` to accept, `Esc` to dismiss). Typing `(` or `,`
   in insert mode requests signature help, shown as a one-line popup above the
@@ -233,11 +235,12 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   literal, not regex. Statusline separators assume a nerd font.
 - Block paste of a blockwise yank is charwise (not a true rectangular paste);
   block `A` on lines shorter than the block does not pad with spaces.
-- LSP does diagnostics/hover/goto/completion/signature help with incremental
-  (or full) document sync; no snippets/`textEdit` completions, rename or
-  cross-file definition jumps yet (definition jumps stay within the open file).
-  Signature help triggers on `(`/`,`; `Ctrl-p` cycles overloads when the server
-  returns several.
+- LSP does diagnostics/hover/goto/completion/signature help/rename with
+  incremental (or full) document sync; no snippets/`textEdit` completions or
+  cross-file edits yet. Both goto-definition and rename are scoped to the open
+  file (the editor is single-buffer): rename applies only the WorkspaceEdit
+  entries for the current URI, and only single-line edits. Signature help
+  triggers on `(`/`,`; `Ctrl-p` cycles overloads when the server returns several.
 - Tree-sitter highlighting is wired for Zig, C, Python, JSON, JavaScript, TypeScript, Rust,
   Go, HTML and Markdown (the vendored grammars); other files use the lexer. Parsing is incremental (the prior
   tree is reused via a prefix/suffix diff) and the highlight query runs only over the

@@ -92,7 +92,7 @@ const Await = enum {
     surround_change_to, // cs{old}{new}
 };
 
-const CmdKind = enum { ex, search_forward, search_backward };
+const CmdKind = enum { ex, search_forward, search_backward, rename };
 
 const Find = struct { kind: Await, ch: u21 };
 
@@ -621,6 +621,8 @@ pub const Editor = struct {
                 else if (k == .char and k.char == 'd') {
                     self.lspDefinition(); // gd: goto definition
                     self.resetPending();
+                } else if (k == .char and k.char == 'r') {
+                    self.enterRename(); // gr: rename symbol (prompts for the new name)
                 } else
                     self.resetPending();
             },
@@ -2328,6 +2330,46 @@ pub const Editor = struct {
         return self.cmd_kind == .search_forward or self.cmd_kind == .search_backward;
     }
 
+    /// The command-line prompt string for the current kind (ASCII, so its byte
+    /// length is also its display width).
+    fn cmdPrompt(self: *Editor) []const u8 {
+        return switch (self.cmd_kind) {
+            .ex => ":",
+            .search_forward => "/",
+            .search_backward => "?",
+            .rename => "rename: ",
+        };
+    }
+
+    /// Start an LSP rename: prompt on the command line, pre-filled with the
+    /// identifier under the cursor (which is what gets renamed).
+    fn enterRename(self: *Editor) void {
+        defer self.resetPending();
+        if (self.lsp == null) return self.setStatus("no language server", .{});
+        self.mode = .command;
+        self.cmd_kind = .rename;
+        self.cmd.clearRetainingCapacity();
+        self.cmd.appendSlice(self.gpa, self.identUnderCursor()) catch {};
+    }
+
+    /// The identifier spanning the cursor on the current line (empty if none).
+    fn identUnderCursor(self: *Editor) []const u8 {
+        const line = self.curLine();
+        var start = self.cx;
+        while (start > 0) {
+            const p = unicode.prevBoundary(line, start);
+            if (!isIdentCp(unicode.decode(line[p..]).cp)) break;
+            start = p;
+        }
+        var end = self.cx;
+        while (end < line.len) {
+            const d = unicode.decode(line[end..]);
+            if (!isIdentCp(d.cp)) break;
+            end += d.len;
+        }
+        return line[start..end];
+    }
+
     fn commandKey(self: *Editor, k: key.Key) !void {
         switch (k) {
             .escape => {
@@ -2346,6 +2388,7 @@ pub const Editor = struct {
                     .ex => try self.execEx(),
                     // Search was already applied incrementally; nothing to do.
                     .search_forward, .search_backward => {},
+                    .rename => self.lspRename(),
                 }
             },
             .backspace => {
@@ -2597,6 +2640,10 @@ pub const Editor = struct {
             // Show it while inserting; an empty result just closes the popup.
             self.sig_open = self.mode == .insert and client.signatures.items.len > 0;
         }
+        if (client.rename_ready) {
+            client.rename_ready = false;
+            try self.applyRename(client);
+        }
     }
 
     /// Codepoint column of the cursor (an approximation of the UTF-16 column
@@ -2618,6 +2665,39 @@ pub const Editor = struct {
 
     fn lspDefinition(self: *Editor) void {
         if (self.lsp) |*c| c.requestDefinition(self.cy, self.charCol());
+    }
+
+    /// Send the rename request with the name typed on the command line.
+    fn lspRename(self: *Editor) void {
+        const name = std.mem.trim(u8, self.cmd.items, " ");
+        if (name.len == 0) return self.setStatus("rename: empty name", .{});
+        if (self.lsp) |*c| c.requestRename(self.cy, self.charCol(), name);
+    }
+
+    /// Apply a rename's edits to the current buffer as one undoable change.
+    /// Edits are single-line word replacements applied last-position-first so
+    /// earlier byte offsets stay valid; multi-line edits (which rename never
+    /// emits) are skipped.
+    fn applyRename(self: *Editor, client: *lsp.Client) !void {
+        const edits = client.edits.items;
+        if (edits.len == 0) return self.setStatus("rename: no changes", .{});
+        self.pushUndo();
+        std.mem.sort(lsp.TextEdit, edits, {}, renameEditAfter);
+        var applied: usize = 0;
+        for (edits) |e| {
+            if (e.start_line != e.end_line or e.start_line >= self.buf.lineCount()) continue;
+            const line = self.buf.line(e.start_line);
+            const sb = byteAtCharCol(line, e.start_char);
+            const eb = byteAtCharCol(line, e.end_char);
+            if (eb < sb or eb > line.len) continue;
+            try self.buf.deleteInLine(e.start_line, sb, eb);
+            try self.buf.insertBytes(e.start_line, sb, e.text);
+            applied += 1;
+        }
+        self.clampCursor();
+        self.updateGoal();
+        self.syncLsp(); // notify the server of the applied edits
+        self.setStatus("renamed {d} occurrence(s)", .{applied});
     }
 
     fn lspCompletion(self: *Editor) void {
@@ -3209,15 +3289,12 @@ pub const Editor = struct {
         if (self.mode == .command) {
             try self.setBg(th.status_bg);
             try self.setFg(th.fg);
-            const prompt: []const u8 = switch (self.cmd_kind) {
-                .ex => ":",
-                .search_forward => "/",
-                .search_backward => "?",
-            };
+            const prompt = self.cmdPrompt();
             try self.emit(prompt);
-            const shown = @min(self.cmd.items.len, if (cols > 0) cols - 1 else 0);
+            const room = if (cols > prompt.len) cols - prompt.len else 0;
+            const shown = @min(self.cmd.items.len, room);
             try self.emit(self.cmd.items[0..shown]);
-            try self.emitSpaces(cols - 1 - shown);
+            try self.emitSpaces(room - shown);
             return;
         }
 
@@ -3342,7 +3419,7 @@ pub const Editor = struct {
         var col: usize = undefined;
         if (self.mode == .command) {
             row = self.win.rows;
-            col = 2 + unicode.displayWidth(self.cmd.items);
+            col = self.cmdPrompt().len + 1 + unicode.displayWidth(self.cmd.items);
         } else {
             row = (self.cy - self.top) + 1;
             const cur = displayCol(self.curLine(), self.cx);
@@ -3404,6 +3481,21 @@ fn markIndex(k: key.Key) ?usize {
 
 fn isIdentCp(cp: u21) bool {
     return cp == '_' or (cp >= '0' and cp <= '9') or (cp >= 'a' and cp <= 'z') or (cp >= 'A' and cp <= 'Z') or cp >= 0x80;
+}
+
+/// Byte offset of the `char`-th codepoint on a line (inverse of `charCol`,
+/// sharing its BMP approximation of LSP's UTF-16 columns).
+fn byteAtCharCol(line: []const u8, char: usize) usize {
+    var i: usize = 0;
+    var n: usize = 0;
+    while (i < line.len and n < char) : (n += 1) i = unicode.nextBoundary(line, i);
+    return i;
+}
+
+/// Order rename edits last-position-first (line then column, descending).
+fn renameEditAfter(_: void, a: lsp.TextEdit, b: lsp.TextEdit) bool {
+    if (a.start_line != b.start_line) return a.start_line > b.start_line;
+    return a.start_char > b.start_char;
 }
 
 fn startsWithCI(haystack: []const u8, prefix: []const u8) bool {
