@@ -20,11 +20,17 @@ ZIG = (
     "}\n"
 )
 
-def capture(keys=()):
+# A file taller than the screen, with a multiline string near the bottom that
+# is off-screen until we scroll down.
+TALL = ("pub fn f() void {\n"
+        + "".join(f"    const a{i} = {i};\n" for i in range(40))
+        + "    const s =\n        \\\\deep\n    ;\n    _ = s;\n}\n")
+
+def capture(keys=(), content=ZIG):
     d = tempfile.mkdtemp(prefix="zedts")  # not a git repo
     path = os.path.join(d, "sample.zig")
     with open(path, "w") as f:
-        f.write(ZIG)
+        f.write(content)
     pid, fd = pty.fork()
     if pid == 0:
         os.chdir(d)
@@ -77,6 +83,11 @@ out = capture(keys=[b"O", b"const z = 99;", b"\x1b"])
 check("incremental: new keyword highlighted", KEYWORD in out)
 check("incremental: new number highlighted", NUMBER in out)
 check("incremental: existing string still highlighted", STRING in out)
+
+# Visible-range query: a multiline string near the bottom of a tall file is
+# off-screen at first; after scrolling to it (G), the re-query must highlight it.
+out = capture(keys=[b"G"], content=TALL)
+check("scroll re-queries: off-screen string highlighted after G", STRING in out)
 
 print()
 print("ALL PASS" if fails == 0 else f"{fails} FAILURE(S)")

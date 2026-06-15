@@ -67,35 +67,42 @@ pub const Highlighter = struct {
         c.ts_parser_delete(self.parser);
     }
 
-    /// Parse `content` and fill `out` (one `Style` per byte; `out.len ==
-    /// content.len`). Reuses the previous tree incrementally: a single edit is
-    /// derived from the common prefix/suffix of the old and new text, so
-    /// tree-sitter only re-parses the region that actually changed. Later
-    /// captures win on overlap, matching the nvim convention.
-    pub fn highlight(self: *Highlighter, content: []const u8, out: []syntax.Style) void {
-        @memset(out, .normal);
+    /// (Re)parse `content`, reusing the previous tree incrementally: a single
+    /// edit derived from the common prefix/suffix of the old and new text means
+    /// tree-sitter only re-parses the region that changed. Does not run the
+    /// highlight query — call `queryRange` for that.
+    pub fn reparse(self: *Highlighter, content: []const u8) void {
         if (content.len == 0) {
             self.replaceTree(null);
             self.rememberContent(content);
             return;
         }
-
         const old_tree: ?*c.TSTree = if (self.tree) |t| blk: {
             const edit = computeEdit(self.content.items, content);
             c.ts_tree_edit(t, &edit);
             break :blk t;
         } else null;
-
         const tree = c.ts_parser_parse_string(self.parser, old_tree, content.ptr, @intCast(content.len)) orelse {
             self.replaceTree(null);
             return;
         };
         self.replaceTree(tree);
         self.rememberContent(content);
+    }
+
+    /// Run the highlight query over document bytes [start, end) and fill `out`
+    /// (one `Style` per byte, `out[i]` is the style of byte `start + i`). Only
+    /// nodes intersecting the range are visited, so this is O(visible), not
+    /// O(document). Later captures win on overlap (nvim convention).
+    pub fn queryRange(self: *Highlighter, start: usize, end: usize, out: []syntax.Style) void {
+        @memset(out, .normal);
+        const tree = self.tree orelse return;
+        if (end <= start) return;
         const root = c.ts_tree_root_node(tree);
 
         const cursor = c.ts_query_cursor_new() orelse return;
         defer c.ts_query_cursor_delete(cursor);
+        _ = c.ts_query_cursor_set_byte_range(cursor, @intCast(start), @intCast(end));
         c.ts_query_cursor_exec(cursor, self.query, root);
 
         var match: c.TSQueryMatch = undefined;
@@ -104,10 +111,14 @@ pub const Highlighter = struct {
             for (caps) |cap| {
                 const style = self.capture_styles[cap.index];
                 if (style == .normal) continue;
-                const start = c.ts_node_start_byte(cap.node);
-                const end = c.ts_node_end_byte(cap.node);
-                var k: usize = start;
-                while (k < end and k < out.len) : (k += 1) out[k] = style;
+                const ns = c.ts_node_start_byte(cap.node);
+                const ne = c.ts_node_end_byte(cap.node);
+                // Clamp the node's absolute byte span to the queried window.
+                const lo = if (ns > start) ns - start else 0;
+                if (ne <= start) continue;
+                var k: usize = lo;
+                const hi = @min(ne - start, out.len);
+                while (k < hi) : (k += 1) out[k] = style;
             }
         }
     }

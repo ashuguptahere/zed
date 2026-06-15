@@ -189,11 +189,16 @@ pub const Editor = struct {
     cur_fg: ?Color,
     cur_bg: ?Color,
 
-    // tree-sitter highlighting (whole-document styles; lexer fallback when null)
+    // tree-sitter highlighting (lexer fallback when null). The query runs only
+    // over the visible byte range; ts_styles holds styles for that range.
     ts: ?treesitter.Highlighter,
-    ts_styles: std.ArrayList(syntax.Style),
-    ts_line_starts: std.ArrayList(usize),
-    ts_rev: u64,
+    ts_styles: std.ArrayList(syntax.Style), // styles for [ts_vis_start, ...)
+    ts_line_starts: std.ArrayList(usize), // whole-document per-line byte offset
+    ts_doc_len: usize,
+    ts_vis_start: usize, // doc byte offset of the queried region
+    ts_rev: u64, // buffer revision last parsed
+    ts_q_top: usize, // viewport top of the last query (sentinel = stale)
+    ts_q_rows: usize,
 
     // language server
     lsp_cmd: ?[]const u8, // override command, else a per-language default
@@ -259,7 +264,11 @@ pub const Editor = struct {
             .ts = null,
             .ts_styles = .empty,
             .ts_line_starts = .empty,
+            .ts_doc_len = 0,
+            .ts_vis_start = 0,
             .ts_rev = 0,
+            .ts_q_top = std.math.maxInt(usize),
+            .ts_q_rows = 0,
             .lsp_cmd = lsp_cmd,
             .lsp = null,
             .lsp_sent = .empty,
@@ -2363,15 +2372,24 @@ pub const Editor = struct {
         if (self.ts != null) self.tsReparse();
     }
 
-    /// Reparse the whole document and rebuild the per-byte style array and the
-    /// per-line byte offsets used to index it.
+    /// Keep highlighting current: reparse on a content change, then (re)run the
+    /// query if the content or the visible viewport changed. Both are O(visible)
+    /// in the common case. Call after `scroll`, so `self.top` is current.
+    fn tsUpdate(self: *Editor) void {
+        if (self.ts == null) return;
+        if (self.ts_rev != self.buf.revision) self.tsReparse();
+        const rows = self.textRows();
+        if (self.top != self.ts_q_top or rows != self.ts_q_rows) self.tsQuery(self.top, rows);
+    }
+
+    /// Incrementally reparse and rebuild the per-line byte offsets. Marks the
+    /// query stale so the next `tsUpdate` re-queries the visible range.
     fn tsReparse(self: *Editor) void {
         var h = if (self.ts) |*x| x else return;
         const content = self.buf.toBytes(self.gpa) catch return;
         defer self.gpa.free(content);
-
-        self.ts_styles.resize(self.gpa, content.len) catch return;
-        h.highlight(content, self.ts_styles.items);
+        h.reparse(content);
+        self.ts_doc_len = content.len;
 
         self.ts_line_starts.clearRetainingCapacity();
         var off: usize = 0;
@@ -2380,6 +2398,22 @@ pub const Editor = struct {
             off += ln.items.len + 1; // + newline
         }
         self.ts_rev = self.buf.revision;
+        self.ts_q_top = std.math.maxInt(usize); // force a requery
+    }
+
+    /// Run the highlight query over just the visible lines' byte range.
+    fn tsQuery(self: *Editor, top: usize, rows: usize) void {
+        var h = if (self.ts) |*x| x else return;
+        const lc = self.buf.lineCount();
+        if (top >= self.ts_line_starts.items.len) return;
+        const last = @min(top + rows, lc); // exclusive
+        const start_byte = self.ts_line_starts.items[top];
+        const end_byte = if (last < self.ts_line_starts.items.len) self.ts_line_starts.items[last] else self.ts_doc_len;
+        self.ts_styles.resize(self.gpa, end_byte - start_byte) catch return;
+        h.queryRange(start_byte, end_byte, self.ts_styles.items);
+        self.ts_vis_start = start_byte;
+        self.ts_q_top = top;
+        self.ts_q_rows = rows;
     }
 
     // === language server ===================================================
@@ -2634,7 +2668,7 @@ pub const Editor = struct {
     fn render(self: *Editor) !void {
         var sp = log.Span.start();
         const th = theme.current;
-        if (self.ts != null and self.ts_rev != self.buf.revision) self.tsReparse();
+        self.tsUpdate();
         self.frame.clearRetainingCapacity();
         self.cur_fg = null;
         self.cur_bg = null;
@@ -2761,10 +2795,15 @@ pub const Editor = struct {
         self.style_buf.resize(self.gpa, line.len) catch {};
         if (self.style_buf.items.len == line.len) {
             if (self.ts != null and row < self.ts_line_starts.items.len) {
-                // Tree-sitter: copy this line's slice out of the whole-doc styles.
+                // Tree-sitter: read this line's styles out of the visible-range
+                // buffer, which starts at document byte `ts_vis_start`.
                 const lstart = self.ts_line_starts.items[row];
                 for (self.style_buf.items, 0..) |*s, i| {
-                    s.* = if (lstart + i < self.ts_styles.items.len) self.ts_styles.items[lstart + i] else .normal;
+                    const abs = lstart + i;
+                    s.* = if (abs >= self.ts_vis_start and abs - self.ts_vis_start < self.ts_styles.items.len)
+                        self.ts_styles.items[abs - self.ts_vis_start]
+                    else
+                        .normal;
                 }
             } else {
                 syntax.highlight(self.lang, line, self.style_buf.items);

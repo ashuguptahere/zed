@@ -90,7 +90,7 @@ Source is `src/`, one responsibility per module:
 | `fuzzy.zig`   | Subsequence scorer for the pickers. |
 | `git.zig`     | Git change signs for the gutter (parses `git diff -U0`). |
 | `lsp.zig`     | Minimal LSP client: JSON-RPC over a server's stdio (diagnostics, hover, goto). |
-| `treesitter.zig` | Tree-sitter highlighting via the vendored C runtime + grammar (FFI + `highlights.scm` query). |
+| `treesitter.zig` | Tree-sitter highlighting via the vendored C runtime + grammar (incremental parse, visible-range `highlights.scm` query). |
 | `editor.zig`  | State, the vim command interpreter, multiple cursors, pickers, LSP, tree-sitter, viewport, themed rendering. |
 
 Vendored C lives under `vendor/` (`tree-sitter/` runtime, `tree-sitter-zig/`
@@ -226,8 +226,8 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   signature help, rename or cross-file definition jumps yet.
 - Tree-sitter highlighting is wired for Zig only (the one vendored grammar);
   other languages use the lexer. Parsing is incremental (the prior tree is
-  reused via a prefix/suffix diff of the old/new text), but the highlight query
-  still runs over the whole tree on each change, and query predicates
-  (`#match?`/`#eq?`) are not evaluated. Adding a grammar = vendor its `parser.c`
-  + `highlights.scm` and extend `treesitter.zig`. Multiple buffers/windows and
-  config files — not yet built.
+  reused via a prefix/suffix diff) and the highlight query runs only over the
+  visible byte range (re-run on edit or scroll), so per-keystroke work is
+  O(screen) not O(document). Query predicates (`#match?`/`#eq?`) are not
+  evaluated. Adding a grammar = vendor its `parser.c` + `highlights.scm` and
+  extend `treesitter.zig`. Multiple buffers/windows and config files — not yet built.
