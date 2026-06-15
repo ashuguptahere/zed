@@ -65,4 +65,28 @@ pub fn build(b: *std.Build) void {
     const run_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
+
+    // `zig build itest` drives the built editor through a pseudo-terminal (and a
+    // mock language server) to cover the interactive paths unit tests can't.
+    const mock_mod = b.createModule(.{
+        .root_source_file = b.path("tools/mock_lsp.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const mock_exe = b.addExecutable(.{ .name = "mock_lsp", .root_module = mock_mod });
+
+    const itest_mod = b.createModule(.{
+        .root_source_file = b.path("tools/itest.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    itest_mod.link_libc = true; // the pty harness uses posix_openpt/forkpty-style libc calls
+    const itest_exe = b.addExecutable(.{ .name = "itest", .root_module = itest_mod });
+
+    const run_itest = b.addRunArtifact(itest_exe);
+    run_itest.addArtifactArg(exe); // argv[1] = zed
+    run_itest.addArtifactArg(mock_exe); // argv[2] = mock_lsp
+    if (b.args) |args| run_itest.addArgs(args);
+    const itest_step = b.step("itest", "Run pty integration tests");
+    itest_step.dependOn(&run_itest.step);
 }

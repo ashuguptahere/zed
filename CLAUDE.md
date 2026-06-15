@@ -116,6 +116,7 @@ zig build                       # debug build -> zig-out/bin/zed
 zig build -Doptimize=ReleaseFast
 zig build run -- [file]         # run the editor
 zig build test                  # unit tests (pure logic; no tty needed)
+zig build itest                 # pty integration tests (drives the built editor)
 ```
 
 `zig build` also installs the man page to `zig-out/share/man/man1/zed.1`
@@ -123,16 +124,18 @@ zig build test                  # unit tests (pure logic; no tty needed)
 the vendored tree-sitter C (~6s extra cold; cached afterwards).
 
 Interactive behaviour can't be unit-tested without a terminal, so integration
-checks live in `tools/` and drive the editor through a pseudo-terminal:
+checks live in `tools/` and drive the built editor through a real pseudo-terminal
+(all Zig — no runtime or test-time dependency beyond the toolchain). `zig build
+itest` builds `zed` plus a `mock_lsp` server, then runs the `itest` harness:
 
-```sh
-zig build
-python3 tools/pty_test.py "$PWD/zig-out/bin/zed" /tmp/zed_it.txt   # edit/save/quit
-python3 tools/cpu_test.py "$PWD/zig-out/bin/zed" /tmp/zed.txt /tmp/zed.log  # idle CPU + profiling
-```
+- `tools/harness.zig` — the pty harness (`Session.spawn`/`drain`/`send`, output
+  capture + ANSI stripping, temp dirs, file helpers, `/proc` CPU sampling).
+- `tools/mock_lsp.zig` — a stub language server for the LSP scenario.
+- `tools/itest.zig` — the runner; `tools/scenarios/*.zig` are the suites (vim,
+  feature, multicursor, extra, search, treesitter, picker, git, lsp, cpu),
+  each a `pub fn run(ctx: *harness.Ctx) !void`.
 
-(Python is dev-only tooling for spawning a pty; the editor itself has no runtime
-dependencies.)
+The editor itself has no runtime dependencies.
 
 ## Editor usage
 
