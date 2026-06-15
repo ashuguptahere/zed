@@ -20,8 +20,14 @@ const c = @cImport({
 });
 
 extern fn tree_sitter_zig() *const c.TSLanguage;
+extern fn tree_sitter_c() *const c.TSLanguage;
+extern fn tree_sitter_python() *const c.TSLanguage;
+extern fn tree_sitter_json() *const c.TSLanguage;
 
 const highlights_zig = @embedFile("ts_highlights_zig");
+const highlights_c = @embedFile("ts_highlights_c");
+const highlights_python = @embedFile("ts_highlights_python");
+const highlights_json = @embedFile("ts_highlights_json");
 
 pub const Highlighter = struct {
     gpa: Allocator,
@@ -35,7 +41,10 @@ pub const Highlighter = struct {
     pub fn init(gpa: Allocator, lang: syntax.Language) ?Highlighter {
         const ts_lang: *const c.TSLanguage, const query_src: []const u8 = switch (lang) {
             .zig => .{ tree_sitter_zig(), highlights_zig },
-            else => return null,
+            .c => .{ tree_sitter_c(), highlights_c },
+            .python => .{ tree_sitter_python(), highlights_python },
+            .json => .{ tree_sitter_json(), highlights_json },
+            else => return null, // .javascript / .none fall back to the lexer
         };
 
         const parser = c.ts_parser_new() orelse return null;
@@ -168,6 +177,37 @@ fn pointAt(content: []const u8, byte: usize) c.TSPoint {
         }
     }
     return .{ .row = row, .column = @intCast(byte - line_start) };
+}
+
+test "every vendored grammar and its highlight query load" {
+    inline for (.{ syntax.Language.zig, .c, .python, .json }) |lang| {
+        var h = Highlighter.init(std.testing.allocator, lang) orelse return error.GrammarFailedToLoad;
+        h.deinit();
+    }
+}
+
+test "grammars produce highlights" {
+    const cases = .{
+        .{ syntax.Language.c, "int main(void) { return 0; }" },
+        .{ syntax.Language.python, "def f():\n    return 1\n" },
+        .{ syntax.Language.json, "{\"a\": 1, \"b\": true}" },
+    };
+    inline for (cases) |case| {
+        var h = Highlighter.init(std.testing.allocator, case[0]).?;
+        defer h.deinit();
+        const src = case[1];
+        var styles: [src.len]syntax.Style = undefined;
+        h.reparse(src);
+        h.queryRange(0, src.len, &styles);
+        var any = false;
+        for (styles) |s| {
+            if (s != .normal) {
+                any = true;
+                break;
+            }
+        }
+        try std.testing.expect(any);
+    }
 }
 
 test "computeEdit prefix/suffix diff" {

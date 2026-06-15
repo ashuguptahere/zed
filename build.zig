@@ -20,15 +20,24 @@ pub fn build(b: *std.Build) void {
         .file = b.path("vendor/tree-sitter/src/lib.c"),
         .flags = &.{ "-std=c11", "-D_GNU_SOURCE" },
     });
-    exe_mod.addIncludePath(b.path("vendor/tree-sitter-zig/src"));
-    exe_mod.addCSourceFile(.{
-        .file = b.path("vendor/tree-sitter-zig/src/parser.c"),
-        .flags = &.{"-D_GNU_SOURCE"},
-    });
-    // The grammar's highlight query, embedded via @embedFile.
-    exe_mod.addAnonymousImport("ts_highlights_zig", .{
-        .root_source_file = b.path("vendor/tree-sitter-zig/highlights.scm"),
-    });
+    // Each grammar: its include dir, generated parser.c (+ optional C scanner),
+    // and its highlights query embedded via @embedFile.
+    const Grammar = struct { name: []const u8, scanner: bool };
+    const grammars = [_]Grammar{
+        .{ .name = "zig", .scanner = false },
+        .{ .name = "c", .scanner = false },
+        .{ .name = "python", .scanner = true },
+        .{ .name = "json", .scanner = false },
+    };
+    inline for (grammars) |g| {
+        const dir = "vendor/tree-sitter-" ++ g.name;
+        exe_mod.addIncludePath(b.path(dir ++ "/src"));
+        exe_mod.addCSourceFile(.{ .file = b.path(dir ++ "/src/parser.c"), .flags = &.{"-D_GNU_SOURCE"} });
+        if (g.scanner) exe_mod.addCSourceFile(.{ .file = b.path(dir ++ "/src/scanner.c"), .flags = &.{"-D_GNU_SOURCE"} });
+        exe_mod.addAnonymousImport("ts_highlights_" ++ g.name, .{
+            .root_source_file = b.path(dir ++ "/highlights.scm"),
+        });
+    }
 
     const exe = b.addExecutable(.{ .name = "zed", .root_module = exe_mod });
     b.installArtifact(exe);
