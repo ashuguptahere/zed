@@ -35,7 +35,7 @@ idle**.
     gutter/statusline, `K` hover, `gd` goto-definition
 - Commands: `:w`, `:q`, `:wq`/`:x`, `:q!`, `:w <name>`, `:{number}`, `ZZ`/`ZQ`
 - AstroNvim/Helix-style look: Tokyo Night true-colour theme, syntax
-  highlighting (tree-sitter for Zig/C/Python/JSON/JS/TS/Rust/Go, a built-in lexer otherwise), a powerline
+  highlighting (tree-sitter for 10 languages (Zig/C/Python/JSON/JS/TS/Rust/Go/HTML/Markdown), a built-in lexer otherwise), a powerline
   statusline (mode block, separators, segments), relative+absolute line numbers,
   cursorline, indent guides, and a git change gutter (add/change/delete signs)
   (a nerd font is recommended for the glyphs)

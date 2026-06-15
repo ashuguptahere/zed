@@ -22,7 +22,7 @@ pub const Style = enum {
     preproc,
 };
 
-pub const Language = enum { none, zig, c, python, javascript, typescript, json, rust, go };
+pub const Language = enum { none, zig, c, python, javascript, typescript, json, rust, go, html, markdown };
 
 /// Pick a language from a file path's extension.
 pub fn detect(path: ?[]const u8) Language {
@@ -38,6 +38,8 @@ pub fn detect(path: ?[]const u8) Language {
         .{ "ts", Language.typescript },   .{ "tsx", Language.typescript },
         .{ "rs", Language.rust },
         .{ "go", Language.go },
+        .{ "html", Language.html },       .{ "htm", Language.html },
+        .{ "md", Language.markdown },     .{ "markdown", Language.markdown },
         .{ "json", Language.json },
     };
     inline for (map) |entry| {
@@ -242,7 +244,9 @@ fn specFor(lang: Language) Spec {
             .constants = &.{ "true", "false", "nil", "iota" },
             .line_comment = "//",
         },
-        .none => .{ .line_comment = "" },
+        // HTML/Markdown have no useful single-line lexer fallback; they rely on
+        // tree-sitter. (This path is only hit if a grammar fails to load.)
+        .html, .markdown, .none => .{ .line_comment = "" },
     };
 }
 
@@ -256,6 +260,8 @@ test "detect language" {
     try testing.expectEqual(Language.typescript, detect("ui.tsx"));
     try testing.expectEqual(Language.rust, detect("src/lib.rs"));
     try testing.expectEqual(Language.go, detect("main.go"));
+    try testing.expectEqual(Language.html, detect("index.html"));
+    try testing.expectEqual(Language.markdown, detect("README.md"));
     try testing.expectEqual(Language.none, detect("README"));
 }
 

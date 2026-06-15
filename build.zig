@@ -34,6 +34,9 @@ pub fn build(b: *std.Build) void {
         .{ .name = "typescript", .src = "vendor/tree-sitter-typescript/typescript/src", .scanner = true, .highlights = "vendor/tree-sitter-typescript/highlights.scm" },
         .{ .name = "rust", .src = "vendor/tree-sitter-rust/src", .scanner = true, .highlights = "vendor/tree-sitter-rust/highlights.scm" },
         .{ .name = "go", .src = "vendor/tree-sitter-go/src", .scanner = false, .highlights = "vendor/tree-sitter-go/highlights.scm" },
+        .{ .name = "html", .src = "vendor/tree-sitter-html/src", .scanner = true, .highlights = "vendor/tree-sitter-html/highlights.scm" },
+        .{ .name = "markdown", .src = "vendor/tree-sitter-markdown/src", .scanner = true, .highlights = "vendor/tree-sitter-markdown/highlights.scm" },
+        .{ .name = "markdown_inline", .src = "vendor/tree-sitter-markdown-inline/src", .scanner = true, .highlights = "vendor/tree-sitter-markdown-inline/highlights.scm" },
     };
     inline for (grammars) |g| {
         exe_mod.addIncludePath(b.path(g.src));

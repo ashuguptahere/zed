@@ -3212,6 +3212,8 @@ fn langName(l: syntax.Language) []const u8 {
         .json => "json",
         .rust => "rust",
         .go => "go",
+        .html => "html",
+        .markdown => "md",
         .none => "text",
     };
 }
@@ -3227,6 +3229,8 @@ fn langId(l: syntax.Language) []const u8 {
         .json => "json",
         .rust => "rust",
         .go => "go",
+        .html => "html",
+        .markdown => "markdown",
         .none => "plaintext",
     };
 }

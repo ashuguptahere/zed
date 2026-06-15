@@ -94,7 +94,7 @@ Source is `src/`, one responsibility per module:
 | `editor.zig`  | State, the vim command interpreter, multiple cursors, pickers, LSP, tree-sitter, viewport, themed rendering. |
 
 Vendored C lives under `vendor/` (`tree-sitter/` runtime, plus `tree-sitter-zig`,
-`-c`, `-python`, `-json`, `-javascript`, `-typescript`, `-rust`, `-go` grammars, each with
+`-c`, `-python`, `-json`, `-javascript`, `-typescript`, `-rust`, `-go`, `-html`, `-markdown` (block + inline) grammars, each with
 `parser.c`, an optional `scanner.c`, and `highlights.scm`); `build.zig` compiles
 them with `-D_GNU_SOURCE` and links libc. Adding a grammar is one entry in the
 `grammars` list in `build.zig` plus a case in `treesitter.zig` (TypeScript keeps
@@ -183,7 +183,7 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 The renderer aims for an AstroNvim/Helix look: a Tokyo Night true-colour theme
 (`theme.zig`), a powerline statusline (coloured mode block, separators,
 file/filetype/position/percent segments — a nerd font is recommended for the
-glyphs), syntax highlighting (tree-sitter for Zig/C/Python/JSON/JS/TS/Rust/Go via
+glyphs), syntax highlighting (tree-sitter for 10 languages (Zig/C/Python/JSON/JS/TS/Rust/Go/HTML/Markdown) via
 `treesitter.zig`, the `syntax.zig` lexer otherwise), relative+absolute line numbers, a
 cursorline, indent guides, and a git change gutter (add/change/delete signs
 from `git diff`, recomputed on load and save). All colour is emitted as 24-bit
@@ -228,10 +228,13 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   block `A` on lines shorter than the block does not pad with spaces.
 - LSP is full-document sync with diagnostics/hover/goto; no completion,
   signature help, rename or cross-file definition jumps yet.
-- Tree-sitter highlighting is wired for Zig, C, Python, JSON, JavaScript, TypeScript, Rust and
-  Go (the vendored grammars); other files use the lexer. Parsing is incremental (the prior
+- Tree-sitter highlighting is wired for Zig, C, Python, JSON, JavaScript, TypeScript, Rust,
+  Go, HTML and Markdown (the vendored grammars); other files use the lexer. Parsing is incremental (the prior
   tree is reused via a prefix/suffix diff) and the highlight query runs only over the
   visible byte range (re-run on edit or scroll), so per-keystroke work is
   O(screen) not O(document). Query predicates (`#match?`/`#eq?`) are not
-  evaluated. Adding a grammar = vendor its `parser.c` + `highlights.scm` and
-  extend `treesitter.zig`. Multiple buffers/windows and config files — not yet built.
+  evaluated. Full tree-sitter injections aren't implemented; Markdown instead
+  uses two highlight layers (block grammar + inline grammar, the latter filling
+  bytes the block layer left plain), and HTML doesn't highlight embedded JS/CSS.
+  Adding a grammar = vendor its `parser.c` + `highlights.scm` and extend
+  `treesitter.zig`. Multiple buffers/windows and config files — not yet built.

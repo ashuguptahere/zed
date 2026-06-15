@@ -99,6 +99,17 @@ check("typescript file highlights (type + string)", TYPE in out and STRING in ou
 out = capture(content="fn main() {\n    let s = \"hi\";\n}\n", name="sample.rs")
 check("rust file highlights (keyword + string)", KEYWORD in out and STRING in out)
 
+# HTML: tag names highlighted (as keywords) and attribute values (as strings).
+out = capture(content="<div class=\"x\">hi</div>\n", name="sample.html")
+check("html file highlights (tag + attr value)", KEYWORD in out and STRING in out)
+
+# Markdown exercises the two-layer path: the heading comes from the block layer
+# and the bold from the inline (secondary) layer.
+BUILTIN = b"\x1b[38;2;224;175;104m"  # theme.builtin (@text.strong)
+out = capture(content="# Title\n\nsome **bold** text\n", name="sample.md")
+check("markdown: heading highlighted (block layer)", KEYWORD in out)
+check("markdown: bold highlighted (inline layer)", BUILTIN in out)
+
 print()
 print("ALL PASS" if fails == 0 else f"{fails} FAILURE(S)")
 sys.exit(1 if fails else 0)
