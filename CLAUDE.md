@@ -174,7 +174,8 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   `:q!`, `:w <name>`, `:{number}` goto line, `:$`; `ZZ`/`ZQ`.
 - **LSP:** a language server is launched per filetype (`zls`, `clangd`, `pylsp`,
   `typescript-language-server`), or any command via `--lsp`. Diagnostics show as
-  gutter signs + a statusline message/count; `K` hovers, `gd` goes to definition,
+  gutter signs + a statusline message/count; `K` hovers (`Ctrl-k` in insert
+  mode), `gd` goes to definition,
   `Ctrl-n` in insert mode requests completion (popup: `Ctrl-n`/`Ctrl-p` or
   arrows to move, `Tab`/`Enter` to accept, `Esc` to dismiss). Typing `(` or `,`
   in insert mode requests signature help, shown as a one-line popup above the

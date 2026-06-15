@@ -536,7 +536,10 @@ pub const Editor = struct {
             'r' => self.await_arg = .replace,
             '~' => try self.toggleCase(self.eff()),
             'J' => try self.joinLines(self.eff()),
-            'K' => self.lspHover(),
+            'K' => {
+                self.lspHover();
+                self.resetPending();
+            },
             'p' => try self.paste(true),
             'P' => try self.paste(false),
             'u' => self.undoChange(),
@@ -1481,7 +1484,11 @@ pub const Editor = struct {
                 // Opening or advancing a call argument list asks for signatures.
                 if (c == '(' or c == ',') self.lspSignatureHelp();
             },
-            .ctrl => |c| if (c == 'n') self.lspCompletion(), // request completion
+            .ctrl => |c| switch (c) {
+                'n' => self.lspCompletion(), // request completion
+                'k' => self.lspHover(), // hover (parallels normal-mode K)
+                else => {},
+            },
             else => {},
         }
     }
@@ -2607,7 +2614,6 @@ pub const Editor = struct {
 
     fn lspHover(self: *Editor) void {
         if (self.lsp) |*c| c.requestHover(self.cy, self.charCol());
-        self.resetPending();
     }
 
     fn lspDefinition(self: *Editor) void {

@@ -72,6 +72,10 @@ check("error sign rendered (red dot)", RED in out and DOT in out)
 check("diagnostic message shown on its line", b"mock error" in out)
 check("hover result shown", b"mock hover" in out)
 
+# Hover also works in insert mode (Ctrl-k), shown the same way in the statusline.
+out, _ = run([(b"i", 0.3), (b"\x0b", 0.8)])  # enter insert, then Ctrl-k
+check("insert-mode hover shown", b"mock hover" in out)
+
 # Incremental sync: the server advertises textDocumentSync=2, so an edit sends a
 # ranged change. The mock echoes which kind it saw as a line-0 diagnostic; after
 # editing on line 0 the cursor sits there, so the message shows in the bar.
