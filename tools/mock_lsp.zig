@@ -56,6 +56,16 @@ pub fn main(init: std.process.Init) !void {
             // exercise the client's label flattening: ": " + "i32" -> ": i32".
             send(gpa, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":[{{\"position\":{{\"line\":0,\"character\":7}}," ++
                 "\"label\":[{{\"value\":\": \"}},{{\"value\":\"i32\"}}],\"kind\":1}}]}}", .{id orelse 0});
+        } else if (eql(method, "textDocument/documentSymbol")) {
+            // A nested DocumentSymbol[] (struct Foo with a child field, plus a
+            // top-level fn main) to exercise the client's flattening.
+            sendRaw(gpa, "{\"jsonrpc\":\"2.0\",\"id\":");
+            sendInt(gpa, id orelse 0);
+            sendRaw(gpa, ",\"result\":[" ++
+                "{\"name\":\"Foo\",\"kind\":23,\"selectionRange\":{\"start\":{\"line\":0,\"character\":6},\"end\":{\"line\":0,\"character\":7}},\"children\":[" ++
+                "{\"name\":\"field_a\",\"kind\":8,\"selectionRange\":{\"start\":{\"line\":0,\"character\":6},\"end\":{\"line\":0,\"character\":7}}}]}," ++
+                "{\"name\":\"main\",\"kind\":12,\"selectionRange\":{\"start\":{\"line\":2,\"character\":6},\"end\":{\"line\":2,\"character\":7}}}]}");
+            flush(gpa);
         } else if (eql(method, "textDocument/hover")) {
             send(gpa, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{{\"contents\":\"mock hover\"}}}}", .{id orelse 0});
         } else if (eql(method, "textDocument/definition")) {

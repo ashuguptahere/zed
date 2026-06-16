@@ -59,6 +59,17 @@ pub const InlayHint = struct {
     text: []u8,
 };
 
+/// A document symbol, flattened from the (possibly nested) response. `kind` is
+/// the LSP SymbolKind; `depth` is the nesting level (0 = top); (line, col) is
+/// the symbol's selection position.
+pub const Symbol = struct {
+    name: []u8,
+    kind: u8,
+    line: u32,
+    col: u32,
+    depth: u8,
+};
+
 pub const Client = struct {
     gpa: Allocator,
     io: std.Io,
@@ -97,6 +108,9 @@ pub const Client = struct {
     apply_ready: bool, // a workspace/applyEdit just arrived (editor should apply)
     hint_id: i64,
     inlay_hints: std.ArrayList(InlayHint), // virtual text for the open document
+    sym_id: i64,
+    symbols: std.ArrayList(Symbol), // last documentSymbol result (flattened)
+    sym_ready: bool, // a documentSymbol response just arrived (editor should consume)
 
     pub fn start(
         gpa: Allocator,
@@ -150,6 +164,9 @@ pub const Client = struct {
             .apply_ready = false,
             .hint_id = -1,
             .inlay_hints = .empty,
+            .sym_id = -1,
+            .symbols = .empty,
+            .sym_ready = false,
         };
 
         self.sendInitialize(root);
@@ -186,6 +203,8 @@ pub const Client = struct {
         self.server_edits.deinit(self.gpa);
         self.clearInlayHints();
         self.inlay_hints.deinit(self.gpa);
+        self.clearSymbols();
+        self.symbols.deinit(self.gpa);
         if (self.hover_text) |t| self.gpa.free(t);
         if (self.def_target) |d| self.gpa.free(d.uri);
     }
@@ -235,6 +254,11 @@ pub const Client = struct {
         self.inlay_hints.clearRetainingCapacity();
     }
 
+    fn clearSymbols(self: *Client) void {
+        for (self.symbols.items) |s| self.gpa.free(s.name);
+        self.symbols.clearRetainingCapacity();
+    }
+
     // --- outgoing ----------------------------------------------------------
 
     fn sendInitialize(self: *Client, root: []const u8) void {
@@ -242,7 +266,7 @@ pub const Client = struct {
         defer body.deinit(self.gpa);
         body.appendSlice(self.gpa, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"processId\":null,\"rootUri\":\"file://") catch return;
         appendEscaped(&body, self.gpa, root) catch return;
-        body.appendSlice(self.gpa, "\",\"capabilities\":{\"textDocument\":{\"publishDiagnostics\":{},\"hover\":{},\"definition\":{},\"completion\":{},\"signatureHelp\":{},\"rename\":{},\"codeAction\":{},\"inlayHint\":{}}}}}") catch return;
+        body.appendSlice(self.gpa, "\",\"capabilities\":{\"textDocument\":{\"publishDiagnostics\":{},\"hover\":{},\"definition\":{},\"completion\":{},\"signatureHelp\":{},\"rename\":{},\"codeAction\":{},\"inlayHint\":{},\"documentSymbol\":{}}}}}") catch return;
         self.writeMessage(body.items);
     }
 
@@ -378,6 +402,19 @@ pub const Client = struct {
         self.writeMessage(body.items);
     }
 
+    pub fn requestDocumentSymbol(self: *Client) void {
+        if (!self.alive) return;
+        self.sym_id = self.nextId();
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(self.gpa);
+        const a = self.gpa;
+        var nb: [128]u8 = undefined;
+        body.appendSlice(a, std.fmt.bufPrint(&nb, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":\"textDocument/documentSymbol\",\"params\":{{\"textDocument\":{{\"uri\":\"", .{self.sym_id}) catch return) catch return;
+        appendEscaped(&body, a, self.uri) catch return;
+        body.appendSlice(a, "\"}}}") catch return; // close uri", textDocument, params, root
+        self.writeMessage(body.items);
+    }
+
     /// Request inlay hints for the whole document [0,0]-[end_line,0].
     pub fn requestInlayHints(self: *Client, end_line: usize) void {
         if (!self.alive) return;
@@ -509,6 +546,7 @@ pub const Client = struct {
         if (id == self.rename_id) self.handleRename(result);
         if (id == self.ca_id) self.handleCodeAction(result);
         if (id == self.hint_id) self.handleInlayHints(result);
+        if (id == self.sym_id) self.handleDocumentSymbol(result);
     }
 
     /// Read the server's `textDocumentSync` to decide full vs. incremental
@@ -650,6 +688,45 @@ pub const Client = struct {
                 .col = u32From(getField(pos, "character")),
                 .text = text,
             }) catch self.gpa.free(text);
+        }
+    }
+
+    /// Parse a documentSymbol result — either a nested `DocumentSymbol[]` or a
+    /// flat `SymbolInformation[]` — into a flat list (children depth-tagged).
+    fn handleDocumentSymbol(self: *Client, result: std.json.Value) void {
+        self.clearSymbols();
+        self.sym_ready = true;
+        if (result != .array) return;
+        for (result.array.items) |s| self.addSymbol(s, 0);
+    }
+
+    fn addSymbol(self: *Client, s: std.json.Value, depth: u8) void {
+        if (self.symbols.items.len >= 1000) return; // bound pathological files
+        const name = asStr(getField(s, "name")) orelse return;
+        // Position: DocumentSymbol.selectionRange/range.start, else
+        // SymbolInformation.location.range.start.
+        const pos = blk: {
+            if (getField(s, "selectionRange")) |r| break :blk getField(r, "start");
+            if (getField(s, "range")) |r| break :blk getField(r, "start");
+            if (getField(s, "location")) |loc| {
+                if (getField(loc, "range")) |r| break :blk getField(r, "start");
+            }
+            break :blk null;
+        } orelse return;
+
+        const owned = self.gpa.dupe(u8, name) catch return;
+        self.symbols.append(self.gpa, .{
+            .name = owned,
+            .kind = @intCast(u32From(getField(s, "kind"))),
+            .line = u32From(getField(pos, "line")),
+            .col = u32From(getField(pos, "character")),
+            .depth = depth,
+        }) catch {
+            self.gpa.free(owned);
+            return;
+        };
+        if (getField(s, "children")) |ch| {
+            if (ch == .array) for (ch.array.items) |c| self.addSymbol(c, depth +| 1);
         }
     }
 

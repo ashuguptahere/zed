@@ -62,7 +62,7 @@ pub const Mode = enum {
     }
 };
 
-const PickerKind = enum { files, grep, code_action };
+const PickerKind = enum { files, grep, code_action, symbol };
 const PickItem = struct { display: []u8, path: []u8, line: usize };
 
 const Operator = enum { none, delete, change, yank, indent_right, indent_left, comment, surround };
@@ -671,6 +671,7 @@ pub const Editor = struct {
                     'd' => self.lspDefinition(), // go to definition
                     'r' => self.enterRename(), // rename symbol
                     'a' => self.lspCodeAction(), // code action
+                    'o' => self.lspDocumentSymbol(), // document symbols (outline)
                     'k' => self.lspHover(), // hover
                     'w' => _ = try self.write(""),
                     'q' => self.doQuit(),
@@ -2110,6 +2111,31 @@ pub const Editor = struct {
         self.refilter();
     }
 
+    /// Populate the picker with the document's symbols (kind tag + indented
+    /// name) and open it; the symbol index is stashed in `PickItem.line`.
+    fn openSymbolPicker(self: *Editor) void {
+        const client = if (self.lsp) |*c| c else return;
+        self.freePicker();
+        self.picker_kind = .symbol;
+        self.picker_sel = 0;
+        self.picker_scroll = 0;
+        const spaces = "                    "; // 20 spaces, sliced by depth
+        for (client.symbols.items, 0..) |sym, i| {
+            const pad = spaces[0..@min(@as(usize, sym.depth) * 2, spaces.len)];
+            const disp = std.fmt.allocPrint(self.gpa, "{s}{s} {s}", .{ pad, symbolKindName(sym.kind), sym.name }) catch continue;
+            const p = self.gpa.dupe(u8, sym.name) catch { // fuzzy filters on the bare name
+                self.gpa.free(disp);
+                continue;
+            };
+            self.picker_items.append(self.gpa, .{ .display = disp, .path = p, .line = i }) catch {
+                self.gpa.free(disp);
+                self.gpa.free(p);
+            };
+        }
+        self.mode = .picker;
+        self.refilter();
+    }
+
     fn freePicker(self: *Editor) void {
         for (self.picker_items.items) |it| {
             self.gpa.free(it.display);
@@ -2276,6 +2302,12 @@ pub const Editor = struct {
             self.closePicker();
             return self.applyCodeAction(idx);
         }
+        if (self.picker_kind == .symbol) {
+            const idx = it.line; // the symbol index stashed at population time
+            self.closePicker();
+            self.jumpToSymbol(idx);
+            return;
+        }
         const path = self.gpa.dupe(u8, it.path) catch return;
         defer self.gpa.free(path);
         const line = if (it.line > 0) it.line - 1 else 0;
@@ -2323,6 +2355,7 @@ pub const Editor = struct {
             .files => " FILES ",
             .grep => " SEARCH ",
             .code_action => " ACTIONS ",
+            .symbol => " SYMBOLS ",
         };
         try self.setBg(th.mode_command);
         try self.setFg(th.bg);
@@ -2700,6 +2733,12 @@ pub const Editor = struct {
                 if (client.code_actions.items.len > 0) self.openCodeActionPicker() else self.setStatus("no code actions", .{});
             }
         }
+        if (client.sym_ready) {
+            client.sym_ready = false;
+            if (self.mode == .normal) {
+                if (client.symbols.items.len > 0) self.openSymbolPicker() else self.setStatus("no symbols", .{});
+            }
+        }
         if (client.apply_ready) {
             client.apply_ready = false;
             _ = try self.applyEdits(client.server_edits.items); // workspace/applyEdit
@@ -2726,6 +2765,20 @@ pub const Editor = struct {
 
     fn lspDefinition(self: *Editor) void {
         if (self.lsp) |*c| c.requestDefinition(self.cy, self.charCol());
+    }
+
+    fn lspDocumentSymbol(self: *Editor) void {
+        if (self.lsp) |*c| c.requestDocumentSymbol();
+    }
+
+    /// Move the cursor to the picked symbol's position.
+    fn jumpToSymbol(self: *Editor, idx: usize) void {
+        const client = if (self.lsp) |*c| c else return;
+        if (idx >= client.symbols.items.len) return;
+        const sym = client.symbols.items[idx];
+        self.cy = @min(sym.line, self.buf.lineCount() - 1);
+        self.cx = @min(byteAtCharCol(self.curLine(), sym.col), self.curLine().len);
+        self.updateGoal();
     }
 
     /// Display width of inlay hints on `row` rendered to the left of byte
@@ -3091,6 +3144,7 @@ pub const Editor = struct {
         .{ .key = "d", .desc = "go to definition" },
         .{ .key = "r", .desc = "rename symbol" },
         .{ .key = "a", .desc = "code action" },
+        .{ .key = "o", .desc = "document symbols" },
         .{ .key = "k", .desc = "hover" },
         .{ .key = "w", .desc = "write (save)" },
         .{ .key = "q", .desc = "quit" },
@@ -3658,6 +3712,30 @@ fn markIndex(k: key.Key) ?usize {
 
 fn isIdentCp(cp: u21) bool {
     return cp == '_' or (cp >= '0' and cp <= '9') or (cp >= 'a' and cp <= 'z') or (cp >= 'A' and cp <= 'Z') or cp >= 0x80;
+}
+
+/// A short label for an LSP SymbolKind, shown before each symbol in the picker.
+fn symbolKindName(kind: u8) []const u8 {
+    return switch (kind) {
+        2 => "module",
+        3 => "namespace",
+        4 => "package",
+        5 => "class",
+        6 => "method",
+        7 => "property",
+        8 => "field",
+        9 => "ctor",
+        10 => "enum",
+        11 => "interface",
+        12 => "fn",
+        13 => "var",
+        14 => "const",
+        22 => "enum-member",
+        23 => "struct",
+        25 => "operator",
+        26 => "typeparam",
+        else => "·",
+    };
 }
 
 /// Byte offset of the `char`-th codepoint on a line (inverse of `charCol`,

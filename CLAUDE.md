@@ -169,8 +169,9 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 - **Pickers (which-key leader = `Space`):** pressing `Space` shows a which-key
   popup; `Space f` fuzzy file finder, `Space /` (or `Space s`) global literal
   content search, `Space d` go to definition, `Space r` rename, `Space a` code
-  action, `Space k` hover (the LSP entries mirror `gd`/`gr`/`ga`/`K`), `Space w`
-  write, `Space q` quit. In a picker: type to filter,
+  action, `Space o` document symbols (jump via a picker), `Space k` hover (the
+  LSP entries mirror `gd`/`gr`/`ga`/`K`), `Space w` write, `Space q` quit. In a
+  picker: type to filter,
   `Ctrl-n`/`Ctrl-p` or arrows to move, `Enter` to open, `Esc` to cancel.
   Opening a file is blocked while the current buffer has unsaved changes.
   Note the three search scopes: `/` searches the current buffer, `Space /`
@@ -246,8 +247,10 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
 - Block paste of a blockwise yank is charwise (not a true rectangular paste);
   block `A` on lines shorter than the block does not pad with spaces.
 - LSP does diagnostics/hover/goto/completion/signature help/rename/code
-  actions/inlay hints with incremental (or full) document sync; no
-  snippets/`textEdit` completions or cross-file edits yet. Inlay hints are
+  actions/inlay hints/document symbols with incremental (or full) document sync;
+  no snippets/`textEdit` completions or cross-file edits yet. Document symbols
+  are flattened (nested `DocumentSymbol[]` or flat `SymbolInformation[]`) into a
+  picker that jumps to the selected symbol. Inlay hints are
   requested for the whole document (re-requested per edit, not debounced) and
   rendered inline; horizontal-scroll interaction with hints is approximate. Goto-definition, rename and code actions are scoped to
   the open file (the editor is single-buffer): rename and code actions apply

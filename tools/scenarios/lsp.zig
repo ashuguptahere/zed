@@ -1,7 +1,7 @@
 //! LSP client against the mock server: diagnostics (+ ]d/[d navigation), hover
-//! (normal + insert), inlay hints, incremental didChange, completion, signature
-//! help (+ overload cycling), rename, and code actions (inline edit +
-//! executeCommand/applyEdit). Drives the built mock_lsp binary.
+//! (normal + insert), inlay hints, document symbols (picker + jump), incremental
+//! didChange, completion, signature help (+ overload cycling), rename, and code
+//! actions (inline edit + executeCommand/applyEdit). Drives the built mock_lsp.
 
 const std = @import("std");
 const h = @import("../harness.zig");
@@ -105,6 +105,7 @@ pub fn run(ctx: *h.Ctx) !void {
         ctx.check("inlay hint rendered inline", r.plainHas(": i32"));
     }
 
+
     // Incremental sync: an edit on line 0 makes the mock echo "INCREMENTAL".
     {
         const r = drive(ctx, &.{ .{ .keys = "ix", .ms = 800 }, .{ .keys = "\x1b", .ms = 800 } }, quit);
@@ -169,5 +170,20 @@ pub fn run(ctx: *h.Ctx) !void {
         }, "\x1b:wq\r");
         defer r.deinit(ctx.gpa);
         ctx.check("executeCommand applyEdit applied to buffer", r.textHas("const B = 2;"));
+    }
+
+    // Document symbols: Space-o opens a picker (kind tag + indented names);
+    // filtering to "main" and Enter jumps to line 2 col 6, where x deletes.
+    {
+        const r = drive(ctx, &.{
+            .{ .keys = " o", .ms = 800 },
+            .{ .keys = "main", .ms = 300 },
+            .{ .keys = "\r", .ms = 300 },
+            .{ .keys = "x", .ms = 300 },
+        }, "\x1b:wq\r");
+        defer r.deinit(ctx.gpa);
+        ctx.check("symbol picker labelled", r.plainHas("SYMBOLS"));
+        ctx.check("symbol picker lists symbols", r.plainHas("struct Foo") and r.plainHas("fn main"));
+        ctx.check("jump to symbol lands at its position", r.textHas("const  = 3;"));
     }
 }
