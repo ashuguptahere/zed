@@ -14,6 +14,7 @@ const scenarios = .{
     .{ "treesitter", @import("scenarios/treesitter.zig") },
     .{ "picker", @import("scenarios/picker.zig") },
     .{ "git", @import("scenarios/git.zig") },
+    .{ "windows", @import("scenarios/windows.zig") },
     .{ "lsp", @import("scenarios/lsp.zig") },
     .{ "cpu", @import("scenarios/cpu.zig") },
 };

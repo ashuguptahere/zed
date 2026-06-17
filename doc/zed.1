@@ -169,9 +169,28 @@ search the current file; use
 to search across files.
 .SH "COMMAND LINE"
 .TP
-.B :w \fR[\fPname\fR]\fP :q :wq :x :q! :{n} ZZ ZQ
-Write, quit (blocked when there are unsaved changes), write\-and\-quit, force
-quit, go to line \fIn\fP, write\-and\-quit, quit without writing.
+.B :w \fR[\fPname\fR]\fP :q :wq :x :q! :qa :{n} ZZ ZQ
+Write, quit (closes the window when more than one is open, else quits; blocked
+on the last window with unsaved changes), write\-and\-quit, force quit, quit
+all, go to line \fIn\fP, write\-and\-quit, quit without writing.
+.SH "BUFFERS & WINDOWS"
+Several files can be open at once, each with its own cursor, undo history and
+language server.
+.TP
+.B :e \fIfile\fP
+Open \fIfile\fP in the active window (reusing it if already open).
+.TP
+.B :bn :bp :bd :ls
+Next / previous buffer in the active window, close the current buffer, list
+open buffers.
+.TP
+.B :split :vsplit :close :only
+Split the view horizontally / vertically, close the active window, close all
+but the active window.
+.TP
+.B Ctrl-w \fR{\fPv s c o w h j k l\fR}\fP
+Window commands: \fBv\fP/\fBs\fP split vertically/horizontally, \fBc\fP close,
+\fBo\fP only, \fBw\fP/\fBh\fP/\fBj\fP/\fBk\fP/\fBl\fP move focus between windows.
 .SH ENVIRONMENT
 .TP
 .B TERM

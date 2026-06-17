@@ -91,7 +91,7 @@ Source is `src/`, one responsibility per module:
 | `git.zig`     | Git change signs for the gutter (parses `git diff -U0`). |
 | `lsp.zig`     | Minimal LSP client: JSON-RPC over a server's stdio (diagnostics, hover, goto, completion, signature help; incremental or full doc sync per the server's capabilities). |
 | `treesitter.zig` | Tree-sitter highlighting via the vendored C runtime + grammar (incremental parse, visible-range `highlights.scm` query). |
-| `editor.zig`  | State, the vim command interpreter, multiple cursors, pickers, LSP, tree-sitter, viewport, themed rendering. |
+| `editor.zig`  | State, the vim command interpreter, multiple cursors, multiple buffers + windows (splits), pickers, LSP, tree-sitter, viewport, themed rendering. |
 
 Vendored C lives under `vendor/` (`tree-sitter/` runtime, plus `tree-sitter-zig`,
 `-c`, `-python`, `-json`, `-javascript`, `-typescript`, `-rust`, `-go`, `-html`, `-markdown` (block + inline) grammars, each with
@@ -176,8 +176,18 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   Opening a file is blocked while the current buffer has unsaved changes.
   Note the three search scopes: `/` searches the current buffer, `Space /`
   searches file *contents* across the project, `Space f` matches file *names*.
-- **Command line:** `:w` write, `:q` quit (blocked if unsaved), `:wq`/`:x`,
-  `:q!`, `:w <name>`, `:{number}` goto line, `:$`; `ZZ`/`ZQ`.
+- **Command line:** `:w` write, `:q` quit (closes the window if more than one;
+  blocked if unsaved on the last), `:wq`/`:x`, `:q!`, `:qa` quit all,
+  `:w <name>`, `:{number}` goto line, `:$`; `ZZ`/`ZQ`.
+- **Buffers & windows:** several files can be open at once, each with its own
+  cursor, undo, tree-sitter and LSP. `:e <file>` opens (or, in the picker,
+  `Enter`) a file in the active window — already-open files are reused, not
+  reloaded. `:bn`/`:bp` cycle the active window through buffers, `:bd` closes
+  one, `:ls` lists them. Split the view with `:split`/`:vsplit` (or `Ctrl-w s`/
+  `Ctrl-w v`), move focus with `Ctrl-w w`/`h`/`j`/`k`/`l`, and `:close`/`Ctrl-w
+  c` / `:only` manage them. Splits tile evenly in one orientation; each window
+  shows any buffer (the same buffer can be open in two windows). Per-window
+  status lines appear when more than one window is open.
 - **LSP:** a language server is launched per filetype (`zls`, `clangd`, `pylsp`,
   `typescript-language-server`), or any command via `--lsp`. Diagnostics show as
   gutter signs + a statusline message/count; `K` hovers (`Ctrl-k` in insert
@@ -242,8 +252,11 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   languages). Tree-sitter is the upgrade path now that deps are allowed.
 - Multi-cursor is one-caret-per-line (column editing); it does not do
   per-caret line splits/joins or arbitrary selection-based multi-edit.
-- Pickers are single-buffer (opening replaces the buffer) and global search is
-  literal, not regex. Statusline separators assume a nerd font.
+- Global search is literal, not regex. Statusline separators assume a nerd font.
+- Windows/splits use a flat even tiling in one orientation at a time (a split
+  re-tiles all windows; no nested/mixed layouts or per-window resizing). Only
+  the active window has live LSP polling and an editable selection/search/inlay
+  overlay; inactive windows render from their cached state.
 - Block paste of a blockwise yank is charwise (not a true rectangular paste);
   block `A` on lines shorter than the block does not pad with spaces.
 - LSP does diagnostics/hover/goto/completion/signature help/rename/code
@@ -252,9 +265,10 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   are flattened (nested `DocumentSymbol[]` or flat `SymbolInformation[]`) into a
   picker that jumps to the selected symbol. Inlay hints are
   requested for the whole document (re-requested per edit, not debounced) and
-  rendered inline; horizontal-scroll interaction with hints is approximate. Goto-definition, rename and code actions are scoped to
-  the open file (the editor is single-buffer): rename and code actions apply
-  only the WorkspaceEdit entries for the current URI, and only single-line edits.
+  rendered inline; horizontal-scroll interaction with hints is approximate.
+  Rename and code actions apply only the WorkspaceEdit entries for the current
+  document's URI (cross-file edits to other open buffers aren't applied), and
+  only single-line edits.
   Code actions are requested for the current line with an empty diagnostics
   context (diagnostic ranges aren't stored); command-based actions run via
   `workspace/executeCommand`, and a server-initiated `workspace/applyEdit` is
@@ -270,4 +284,4 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   uses two highlight layers (block grammar + inline grammar, the latter filling
   bytes the block layer left plain), and HTML doesn't highlight embedded JS/CSS.
   Adding a grammar = vendor its `parser.c` + `highlights.scm` and extend
-  `treesitter.zig`. Multiple buffers/windows and config files — not yet built.
+  `treesitter.zig`. Config files — not yet built.

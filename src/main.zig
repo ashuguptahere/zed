@@ -46,7 +46,12 @@ pub fn main(init: std.process.Init) !void {
     };
 
     // From here the editor owns `buf`; only `ed.deinit` frees it.
-    var ed = editor.Editor.init(gpa, io, &terminal, buf, cfg.lsp_cmd);
+    var ed = editor.Editor.init(gpa, io, &terminal, buf, cfg.lsp_cmd) catch |err| {
+        buf.deinit();
+        terminal.restore();
+        cli.printError(@errorName(err));
+        std.process.exit(1);
+    };
     defer ed.deinit();
     defer terminal.restore();
 

@@ -83,6 +83,7 @@ const Await = enum {
     z_prefix, // Z then Z/Q
     bracket_next, // ] then d (next diagnostic)
     bracket_prev, // [ then d (previous diagnostic)
+    ctrl_w, // Ctrl-w then a window command
     object_inner, // operator i{obj}
     object_around, // operator a{obj}
     macro_record, // q{reg}
@@ -114,11 +115,75 @@ const Span = struct {
     bot: usize = 0,
 };
 
+/// An open document. The *active* doc's state is mirrored on the Editor for
+/// churn-free editing; `swapDocState` swaps it in/out of the Doc on focus
+/// change, so an inactive Doc holds the live state and the active Doc's fields
+/// are empty placeholders (its real state lives on the Editor). `buf` is the
+/// exception — it always lives here, and `Editor.buf` points at the active one.
+const Doc = struct {
+    buf: buffer.Buffer,
+    lang: syntax.Language,
+    history: undo.History,
+    marks: [26]?Pos,
+    git_signs: git.Signs,
+    lsp: ?lsp.Client,
+    lsp_rev: u64,
+    ts: ?treesitter.Highlighter,
+    ts_styles: std.ArrayList(syntax.Style),
+    ts_line_starts: std.ArrayList(usize),
+    ts_doc_len: usize,
+    ts_vis_start: usize,
+    ts_rev: u64,
+    ts_q_top: usize,
+    ts_q_rows: usize,
+};
+
+/// A viewport onto a document. The *active* window's viewport is mirrored on
+/// the Editor (`cy/cx/goal_col/top/left`); `g*` is its screen region, recomputed
+/// by the layout each frame.
+const Win = struct {
+    doc: *Doc,
+    cy: usize = 0,
+    cx: usize = 0,
+    goal_col: usize = 0,
+    top: usize = 0,
+    left: usize = 0,
+    gx: usize = 1, // 1-based screen origin
+    gy: usize = 1,
+    gw: usize = 1,
+    gh: usize = 1,
+};
+
+/// Everything a window needs to render one frame, resolved from either the
+/// Editor mirror (active window) or the window's stored Doc (inactive).
+const View = struct {
+    buf: *buffer.Buffer,
+    active: bool,
+    has_ts: bool,
+    ts_styles: []const syntax.Style,
+    ts_line_starts: []const usize,
+    ts_vis_start: usize,
+    git: *const git.Signs,
+    lang: syntax.Language,
+    cy: usize,
+    top: usize,
+    left: usize,
+    gutter: usize,
+    cols: usize, // text width = gw - gutter
+};
+
 pub const Editor = struct {
     gpa: Allocator,
     io: std.Io,
     term: *term.Terminal,
-    buf: buffer.Buffer,
+    buf: *buffer.Buffer, // the active document's buffer (= &cur.doc.buf)
+
+    // open documents + windows (multiple buffers / splits)
+    docs: std.ArrayList(*Doc),
+    wins: std.ArrayList(*Win),
+    cur: *Win, // focused window
+    d: *Doc, // focused window's document (== cur.doc)
+    split_vertical: bool, // window tiling orientation (true = side-by-side columns)
 
     mode: Mode,
     cy: usize,
@@ -215,12 +280,58 @@ pub const Editor = struct {
     quit: bool,
     inbuf: [256]u8,
 
-    pub fn init(gpa: Allocator, io: std.Io, t: *term.Terminal, buf: buffer.Buffer, lsp_cmd: ?[]const u8) Editor {
+    /// Build a fresh, empty Doc holding `b`; its per-doc state is placeholder
+    /// (the active doc's real state lives on the Editor and is swapped in here
+    /// only when this doc loses focus).
+    fn makeDoc(gpa: Allocator, b: buffer.Buffer) !*Doc {
+        const doc = try gpa.create(Doc);
+        doc.* = .{
+            .buf = b,
+            .lang = .none,
+            .history = undo.History.init(gpa),
+            .marks = [_]?Pos{null} ** 26,
+            .git_signs = git.Signs.init(gpa),
+            .lsp = null,
+            .lsp_rev = 0,
+            .ts = null,
+            .ts_styles = .empty,
+            .ts_line_starts = .empty,
+            .ts_doc_len = 0,
+            .ts_vis_start = 0,
+            .ts_rev = 0,
+            .ts_q_top = std.math.maxInt(usize),
+            .ts_q_rows = 0,
+        };
+        return doc;
+    }
+
+    fn freeDocState(doc: *Doc, gpa: Allocator) void {
+        doc.history.deinit();
+        doc.git_signs.deinit();
+        if (doc.ts) |*t| t.deinit();
+        doc.ts_styles.deinit(gpa);
+        doc.ts_line_starts.deinit(gpa);
+        if (doc.lsp) |*c| c.deinit();
+    }
+
+    pub fn init(gpa: Allocator, io: std.Io, t: *term.Terminal, buf: buffer.Buffer, lsp_cmd: ?[]const u8) !Editor {
+        const doc = try makeDoc(gpa, buf);
+        const win = try gpa.create(Win);
+        win.* = .{ .doc = doc };
+        var docs: std.ArrayList(*Doc) = .empty;
+        try docs.append(gpa, doc);
+        var wins: std.ArrayList(*Win) = .empty;
+        try wins.append(gpa, win);
         return .{
             .gpa = gpa,
             .io = io,
             .term = t,
-            .buf = buf,
+            .buf = &doc.buf,
+            .docs = docs,
+            .wins = wins,
+            .cur = win,
+            .d = doc,
+            .split_vertical = true,
             .mode = .normal,
             .cy = 0,
             .cx = 0,
@@ -263,7 +374,7 @@ pub const Editor = struct {
             .in_dot = false,
             .frame = .empty,
             .status = .empty,
-            .lang = syntax.detect(buf.path),
+            .lang = syntax.detect(doc.buf.path),
             .style_buf = .empty,
             .git_signs = git.Signs.init(gpa),
             .cur_fg = null,
@@ -312,7 +423,16 @@ pub const Editor = struct {
         self.picker_files.deinit(self.gpa);
         self.picker_filtered.deinit(self.gpa);
         self.picker_query.deinit(self.gpa);
-        self.buf.deinit();
+        // The active doc's real state was freed above (the Editor mirror); each
+        // Doc owns its buffer (+ inactive docs own their state placeholders here).
+        for (self.docs.items) |doc| {
+            doc.buf.deinit();
+            freeDocState(doc, self.gpa);
+            self.gpa.destroy(doc);
+        }
+        for (self.wins.items) |w| self.gpa.destroy(w);
+        self.docs.deinit(self.gpa);
+        self.wins.deinit(self.gpa);
     }
 
     pub fn run(self: *Editor) !void {
@@ -494,7 +614,7 @@ pub const Editor = struct {
             'e' => self.doMotion(self.repeatWord(.e, false)),
             'E' => self.doMotion(self.repeatWord(.e, true)),
             'G' => self.doMotion(self.gotoLineMotion(if (self.count > 0) self.count - 1 else self.buf.lineCount() - 1)),
-            '%' => if (motion.matchPair(&self.buf, self.cursor())) |p| self.doMotion(.{ .pos = p, .kind = .inclusive, .col_mode = .exact }) else self.resetPending(),
+            '%' => if (motion.matchPair(self.buf, self.cursor())) |p| self.doMotion(.{ .pos = p, .kind = .inclusive, .col_mode = .exact }) else self.resetPending(),
             'H' => self.doMotion(self.gotoLineMotion(self.top)),
             'M' => self.doMotion(self.gotoLineMotion(self.top + self.textRows() / 2)),
             'L' => self.doMotion(self.gotoLineMotion(@min(self.top + self.textRows() - 1, self.buf.lineCount() - 1))),
@@ -582,6 +702,7 @@ pub const Editor = struct {
                 self.snapColumn();
                 self.resetPending();
             },
+            'w' => self.await_arg = .ctrl_w, // window command prefix
             'c' => self.setStatus("Type :q then Enter to quit", .{}),
             else => self.resetPending(),
         }
@@ -644,6 +765,23 @@ pub const Editor = struct {
             .bracket_next, .bracket_prev => {
                 if (k == .char and k.char == 'd') self.gotoDiagnostic(a == .bracket_next);
                 self.resetPending();
+            },
+            .ctrl_w => {
+                self.resetPending();
+                const ch: u8 = switch (k) {
+                    .char => |c| if (c < 128) @intCast(c) else 0,
+                    .ctrl => |c| c, // Ctrl-w Ctrl-w also cycles
+                    else => 0,
+                };
+                switch (ch) {
+                    'v' => self.splitWindow(true), // vertical split (columns)
+                    's' => self.splitWindow(false), // horizontal split (rows)
+                    'c', 'q' => self.closeWindow(),
+                    'o' => self.onlyWindow(),
+                    'w', 'l', 'j' => self.nextWindow(true),
+                    'h', 'k', 'p' => self.nextWindow(false),
+                    else => {},
+                }
             },
             .object_inner, .object_around => try self.applyTextObject(a == .object_around, k),
             .macro_record => {
@@ -849,28 +987,28 @@ pub const Editor = struct {
     /// The around-span (delimiters inclusive) of the pair identified by `c`.
     fn findSurroundSpan(self: *Editor, c: u8) ?motion.Span {
         return switch (c) {
-            '(', ')', 'b' => motion.objPair(&self.buf, self.cursor(), '(', ')', true),
-            '[', ']' => motion.objPair(&self.buf, self.cursor(), '[', ']', true),
-            '{', '}', 'B' => motion.objPair(&self.buf, self.cursor(), '{', '}', true),
-            '<', '>' => motion.objPair(&self.buf, self.cursor(), '<', '>', true),
-            '"' => motion.objQuote(&self.buf, self.cursor(), '"', true),
-            '\'' => motion.objQuote(&self.buf, self.cursor(), '\'', true),
-            '`' => motion.objQuote(&self.buf, self.cursor(), '`', true),
+            '(', ')', 'b' => motion.objPair(self.buf, self.cursor(), '(', ')', true),
+            '[', ']' => motion.objPair(self.buf, self.cursor(), '[', ']', true),
+            '{', '}', 'B' => motion.objPair(self.buf, self.cursor(), '{', '}', true),
+            '<', '>' => motion.objPair(self.buf, self.cursor(), '<', '>', true),
+            '"' => motion.objQuote(self.buf, self.cursor(), '"', true),
+            '\'' => motion.objQuote(self.buf, self.cursor(), '\'', true),
+            '`' => motion.objQuote(self.buf, self.cursor(), '`', true),
             else => null,
         };
     }
 
     fn textObjectSpan(self: *Editor, around: bool, c: u8) ?Span {
         const obj: ?motion.Span = switch (c) {
-            'w' => motion.objWord(&self.buf, self.cursor(), false, around),
-            'W' => motion.objWord(&self.buf, self.cursor(), true, around),
-            '(', ')', 'b' => motion.objPair(&self.buf, self.cursor(), '(', ')', around),
-            '[', ']' => motion.objPair(&self.buf, self.cursor(), '[', ']', around),
-            '{', '}', 'B' => motion.objPair(&self.buf, self.cursor(), '{', '}', around),
-            '<', '>' => motion.objPair(&self.buf, self.cursor(), '<', '>', around),
-            '"' => motion.objQuote(&self.buf, self.cursor(), '"', around),
-            '\'' => motion.objQuote(&self.buf, self.cursor(), '\'', around),
-            '`' => motion.objQuote(&self.buf, self.cursor(), '`', around),
+            'w' => motion.objWord(self.buf, self.cursor(), false, around),
+            'W' => motion.objWord(self.buf, self.cursor(), true, around),
+            '(', ')', 'b' => motion.objPair(self.buf, self.cursor(), '(', ')', around),
+            '[', ']' => motion.objPair(self.buf, self.cursor(), '[', ']', around),
+            '{', '}', 'B' => motion.objPair(self.buf, self.cursor(), '{', '}', around),
+            '<', '>' => motion.objPair(self.buf, self.cursor(), '<', '>', around),
+            '"' => motion.objQuote(self.buf, self.cursor(), '"', around),
+            '\'' => motion.objQuote(self.buf, self.cursor(), '\'', around),
+            '`' => motion.objQuote(self.buf, self.cursor(), '`', around),
             else => null,
         };
         const o = obj orelse return null;
@@ -978,9 +1116,9 @@ pub const Editor = struct {
         const n = if (self.operator != .none) self.total() else self.eff();
         while (i < n) : (i += 1) {
             p = switch (which) {
-                .f => motion.wordForward(&self.buf, p, big),
-                .b => motion.wordBackward(&self.buf, p, big),
-                .e => motion.wordEnd(&self.buf, p, big),
+                .f => motion.wordForward(self.buf, p, big),
+                .b => motion.wordBackward(self.buf, p, big),
+                .e => motion.wordEnd(self.buf, p, big),
             };
         }
         return .{ .pos = p, .kind = if (which == .e) .inclusive else .exclusive, .col_mode = .exact };
@@ -1610,13 +1748,13 @@ pub const Editor = struct {
                 '0' => self.cx = 0,
                 '^' => self.cx = motion.firstNonBlank(self.curLine()),
                 '$' => self.cx = lastColumn(self.curLine()),
-                'w' => self.setCursorKeep(motion.wordForward(&self.buf, self.cursor(), false)),
-                'W' => self.setCursorKeep(motion.wordForward(&self.buf, self.cursor(), true)),
-                'b' => self.setCursorKeep(motion.wordBackward(&self.buf, self.cursor(), false)),
-                'e' => self.setCursorKeep(motion.wordEnd(&self.buf, self.cursor(), false)),
+                'w' => self.setCursorKeep(motion.wordForward(self.buf, self.cursor(), false)),
+                'W' => self.setCursorKeep(motion.wordForward(self.buf, self.cursor(), true)),
+                'b' => self.setCursorKeep(motion.wordBackward(self.buf, self.cursor(), false)),
+                'e' => self.setCursorKeep(motion.wordEnd(self.buf, self.cursor(), false)),
                 'G' => self.setCursorKeep(.{ .row = self.buf.lineCount() - 1, .col = 0 }),
                 'g' => self.setCursorKeep(.{ .row = 0, .col = 0 }),
-                '%' => if (motion.matchPair(&self.buf, self.cursor())) |p| self.setCursorKeep(p),
+                '%' => if (motion.matchPair(self.buf, self.cursor())) |p| self.setCursorKeep(p),
                 'o' => {
                     const tmp = self.vstart;
                     self.vstart = self.cursor();
@@ -1912,12 +2050,12 @@ pub const Editor = struct {
             'l' => .{ .row = p.row, .col = if (p.col < line.len) unicode.nextBoundary(line, p.col) else p.col },
             '0' => .{ .row = p.row, .col = 0 },
             '$' => .{ .row = p.row, .col = line.len },
-            'w' => motion.wordForward(&self.buf, p, false),
-            'W' => motion.wordForward(&self.buf, p, true),
-            'b' => motion.wordBackward(&self.buf, p, false),
-            'B' => motion.wordBackward(&self.buf, p, true),
-            'e' => motion.wordEnd(&self.buf, p, false),
-            'E' => motion.wordEnd(&self.buf, p, true),
+            'w' => motion.wordForward(self.buf, p, false),
+            'W' => motion.wordForward(self.buf, p, true),
+            'b' => motion.wordBackward(self.buf, p, false),
+            'B' => motion.wordBackward(self.buf, p, true),
+            'e' => motion.wordEnd(self.buf, p, false),
+            'E' => motion.wordEnd(self.buf, p, true),
             'j' => self.vertCaret(p, true),
             'k' => self.vertCaret(p, false),
             else => p,
@@ -2032,9 +2170,9 @@ pub const Editor = struct {
     fn jumpSearch(self: *Editor, forward: bool) void {
         if (self.last_search.items.len == 0) return;
         const hit = if (forward)
-            search.next(&self.buf, self.cursor(), self.last_search.items)
+            search.next(self.buf, self.cursor(), self.last_search.items)
         else
-            search.prev(&self.buf, self.cursor(), self.last_search.items);
+            search.prev(self.buf, self.cursor(), self.last_search.items);
         if (hit) |p| {
             self.setCursor(p);
         } else {
@@ -2056,7 +2194,7 @@ pub const Editor = struct {
     }
 
     fn searchWord(self: *Editor, forward: bool) void {
-        const word = search.wordUnder(&self.buf, self.cursor());
+        const word = search.wordUnder(self.buf, self.cursor());
         if (word.len == 0) {
             self.resetPending();
             return;
@@ -2315,30 +2453,195 @@ pub const Editor = struct {
         self.openFile(path, line);
     }
 
-    fn openFile(self: *Editor, path: []const u8, line: usize) void {
-        if (self.buf.dirty) {
-            self.setStatus("unsaved changes — :w before opening another file", .{});
+    /// Swap the per-document state between the Editor mirror and `doc`. Calling
+    /// it for the old active doc saves the live state into it; calling it for
+    /// the new doc loads that doc's state into the mirror. `buf` is not swapped
+    /// (it lives in the Doc; `self.buf` is repointed by the caller).
+    fn swapDocState(self: *Editor, doc: *Doc) void {
+        std.mem.swap(syntax.Language, &self.lang, &doc.lang);
+        std.mem.swap(undo.History, &self.history, &doc.history);
+        std.mem.swap([26]?Pos, &self.marks, &doc.marks);
+        std.mem.swap(git.Signs, &self.git_signs, &doc.git_signs);
+        std.mem.swap(?lsp.Client, &self.lsp, &doc.lsp);
+        std.mem.swap(u64, &self.lsp_rev, &doc.lsp_rev);
+        std.mem.swap(?treesitter.Highlighter, &self.ts, &doc.ts);
+        std.mem.swap(std.ArrayList(syntax.Style), &self.ts_styles, &doc.ts_styles);
+        std.mem.swap(std.ArrayList(usize), &self.ts_line_starts, &doc.ts_line_starts);
+        std.mem.swap(usize, &self.ts_doc_len, &doc.ts_doc_len);
+        std.mem.swap(usize, &self.ts_vis_start, &doc.ts_vis_start);
+        std.mem.swap(u64, &self.ts_rev, &doc.ts_rev);
+        std.mem.swap(usize, &self.ts_q_top, &doc.ts_q_top);
+        std.mem.swap(usize, &self.ts_q_rows, &doc.ts_q_rows);
+    }
+
+    /// Make `doc` the active document, moving the live per-doc state in/out of
+    /// the Editor mirror. Tree-sitter is preserved across switches; a doc with
+    /// none yet (freshly opened) gets it built here. Does not touch windows.
+    fn loadDoc(self: *Editor, doc: *Doc) void {
+        if (doc == self.d) return;
+        self.swapDocState(self.d); // save active -> old doc
+        self.d = doc;
+        self.swapDocState(self.d); // load new doc -> mirror
+        self.buf = &doc.buf;
+        if (self.ts == null) self.startTs();
+    }
+
+    /// Point the active window at `doc` (e.g. `:e`, `:bn`).
+    fn focusDoc(self: *Editor, doc: *Doc) void {
+        if (doc == self.cur.doc) return;
+        self.loadDoc(doc);
+        self.cur.doc = doc;
+        self.comp_open = false;
+        self.sig_open = false;
+    }
+
+    fn winIndex(self: *Editor, w: *Win) usize {
+        for (self.wins.items, 0..) |it, i| if (it == w) return i;
+        return 0;
+    }
+
+    /// Move focus to window `w`, swapping its document in if different.
+    fn focusWin(self: *Editor, w: *Win) void {
+        if (w == self.cur) return;
+        self.saveViewport();
+        self.loadDoc(w.doc);
+        self.cur = w;
+        self.loadViewport();
+        self.comp_open = false;
+        self.sig_open = false;
+        self.clearExtra();
+    }
+
+    fn nextWindow(self: *Editor, forward: bool) void {
+        const n = self.wins.items.len;
+        if (n <= 1) return;
+        const idx = self.winIndex(self.cur);
+        const ni = if (forward) (idx + 1) % n else (idx + n - 1) % n;
+        self.focusWin(self.wins.items[ni]);
+    }
+
+    /// Split the active window (sharing its document), focusing the new split.
+    fn splitWindow(self: *Editor, vert: bool) void {
+        self.saveViewport();
+        const w = self.gpa.create(Win) catch return;
+        w.* = self.cur.*; // same doc + viewport
+        const idx = self.winIndex(self.cur) + 1;
+        self.wins.insert(self.gpa, idx, w) catch {
+            self.gpa.destroy(w);
             return;
+        };
+        self.split_vertical = vert;
+        self.cur = w; // focus the new split
+    }
+
+    /// Close the active window (its document stays open). Refuses the last one.
+    fn closeWindow(self: *Editor) void {
+        if (self.wins.items.len <= 1) {
+            self.setStatus("cannot close last window", .{});
+            return;
+        }
+        const idx = self.winIndex(self.cur);
+        const old = self.cur;
+        const ni = if (idx + 1 < self.wins.items.len) idx + 1 else idx - 1;
+        const target = self.wins.items[ni];
+        _ = self.wins.orderedRemove(idx);
+        self.gpa.destroy(old);
+        self.cur = target;
+        self.loadDoc(target.doc);
+        self.loadViewport();
+        self.comp_open = false;
+        self.sig_open = false;
+        self.clearExtra();
+    }
+
+    /// Close every window but the active one.
+    fn onlyWindow(self: *Editor) void {
+        var i: usize = 0;
+        while (i < self.wins.items.len) {
+            const w = self.wins.items[i];
+            if (w == self.cur) {
+                i += 1;
+                continue;
+            }
+            _ = self.wins.orderedRemove(i);
+            self.gpa.destroy(w);
+        }
+    }
+
+    /// Cycle the active window through the open documents (`:bn` / `:bp`).
+    fn cycleDoc(self: *Editor, forward: bool) void {
+        const n = self.docs.items.len;
+        if (n <= 1) return;
+        var idx: usize = 0;
+        for (self.docs.items, 0..) |doc, i| if (doc == self.d) {
+            idx = i;
+        };
+        const ni = if (forward) (idx + 1) % n else (idx + n - 1) % n;
+        self.focusDoc(self.docs.items[ni]);
+        self.placeAt(self.cy);
+        self.setStatus("{s}", .{self.buf.path orelse "[No Name]"});
+    }
+
+    /// Open `path` in the active window: focus its doc if already open, else
+    /// load it into a new doc (with its own LSP/tree-sitter/undo).
+    fn openFile(self: *Editor, path: []const u8, line: usize) void {
+        for (self.docs.items) |doc| {
+            const p = doc.buf.path orelse continue;
+            if (std.mem.eql(u8, p, path)) {
+                self.focusDoc(doc);
+                self.placeAt(line);
+                self.setStatus("switched to {s}", .{path});
+                return;
+            }
         }
         const nb = buffer.Buffer.load(self.gpa, self.io, path) catch {
             self.setStatus("cannot open {s}", .{path});
             return;
         };
-        self.buf.deinit();
-        self.buf = nb;
-        self.lang = syntax.detect(self.buf.path);
-        if (self.ts) |*t| t.deinit();
-        self.startTs();
-        self.history.deinit();
-        self.history = undo.History.init(self.gpa);
+        const doc = makeDoc(self.gpa, nb) catch {
+            var b = nb;
+            b.deinit();
+            self.setStatus("out of memory", .{});
+            return;
+        };
+        self.docs.append(self.gpa, doc) catch {
+            doc.buf.deinit();
+            freeDocState(doc, self.gpa);
+            self.gpa.destroy(doc);
+            return;
+        };
+        self.focusDoc(doc);
         self.clearExtra();
+        self.placeAt(line);
+        self.startLsp();
+        self.refreshGit();
+        self.setStatus("opened {s}", .{self.buf.path orelse ""});
+    }
+
+    fn placeAt(self: *Editor, line: usize) void {
         self.cy = @min(line, self.buf.lineCount() - 1);
         self.cx = 0;
         self.top = 0;
         self.left = 0;
         self.goal_col = 0;
-        self.refreshGit();
-        self.setStatus("opened {s}", .{self.buf.path orelse ""});
+    }
+
+    /// Persist the active window's mirrored viewport back into its Win struct
+    /// (so it survives focus changes and is available for rendering).
+    fn saveViewport(self: *Editor) void {
+        self.cur.cy = self.cy;
+        self.cur.cx = self.cx;
+        self.cur.goal_col = self.goal_col;
+        self.cur.top = self.top;
+        self.cur.left = self.left;
+    }
+
+    fn loadViewport(self: *Editor) void {
+        self.cy = self.cur.cy;
+        self.cx = self.cur.cx;
+        self.goal_col = self.cur.goal_col;
+        self.top = self.cur.top;
+        self.left = self.cur.left;
     }
 
     fn renderPickerBody(self: *Editor) !void {
@@ -2527,12 +2830,45 @@ pub const Editor = struct {
         } else if (eql(cmd, "q")) {
             self.doQuit();
         } else if (eql(cmd, "q!")) {
+            if (self.wins.items.len > 1) self.closeWindow() else self.quit = true;
+        } else if (eql(cmd, "qa") or eql(cmd, "qa!") or eql(cmd, "quitall")) {
             self.quit = true;
         } else if (eql(cmd, "wq") or eql(cmd, "x")) {
-            if (try self.write(arg)) self.quit = true;
+            if (try self.write(arg)) self.doQuit();
+        } else if (eql(cmd, "e") or eql(cmd, "edit")) {
+            if (arg.len > 0) self.openFile(arg, 0) else self.setStatus("usage: :e <file>", .{});
+        } else if (eql(cmd, "sp") or eql(cmd, "split")) {
+            self.splitWindow(false);
+        } else if (eql(cmd, "vs") or eql(cmd, "vsp") or eql(cmd, "vsplit")) {
+            self.splitWindow(true);
+        } else if (eql(cmd, "clo") or eql(cmd, "close")) {
+            self.closeWindow();
+        } else if (eql(cmd, "on") or eql(cmd, "only")) {
+            self.onlyWindow();
+        } else if (eql(cmd, "bn") or eql(cmd, "bnext")) {
+            self.cycleDoc(true);
+        } else if (eql(cmd, "bp") or eql(cmd, "bprev") or eql(cmd, "bprevious")) {
+            self.cycleDoc(false);
+        } else if (eql(cmd, "bd") or eql(cmd, "bdelete")) {
+            self.closeDoc();
+        } else if (eql(cmd, "ls") or eql(cmd, "buffers")) {
+            self.listBuffers();
         } else {
             self.setStatus("unknown command: {s}", .{cmd});
         }
+    }
+
+    /// Show the open documents in the status line (`:ls`).
+    fn listBuffers(self: *Editor) void {
+        var b: [512]u8 = undefined;
+        var n: usize = 0;
+        for (self.docs.items, 0..) |doc, i| {
+            const mark: []const u8 = if (doc == self.d) "*" else "";
+            const name = if (doc.buf.path) |p| std.fs.path.basename(p) else "[No Name]";
+            const seg = std.fmt.bufPrint(b[n..], "{d}{s}:{s}  ", .{ i + 1, mark, name }) catch break;
+            n += seg.len;
+        }
+        self.setStatus("{s}", .{b[0..n]});
     }
 
     fn cmdArgNone(_: *Editor) []const u8 {
@@ -2558,6 +2894,10 @@ pub const Editor = struct {
     }
 
     fn doQuit(self: *Editor) void {
+        if (self.wins.items.len > 1) { // close the window; the document stays open
+            self.closeWindow();
+            return;
+        }
         if (self.buf.dirty) {
             self.setStatus("unsaved changes — :w to save or :q! to discard", .{});
             return;
@@ -2565,10 +2905,43 @@ pub const Editor = struct {
         self.quit = true;
     }
 
+    fn docIndex(self: *Editor, doc: *Doc) usize {
+        for (self.docs.items, 0..) |it, i| if (it == doc) return i;
+        return 0;
+    }
+
+    /// Close the active document (`:bd`). Windows showing it fall back to
+    /// another open document; refuses to close the last buffer.
+    fn closeDoc(self: *Editor) void {
+        if (self.docs.items.len <= 1) {
+            self.setStatus("cannot close the last buffer", .{});
+            return;
+        }
+        const victim = self.d;
+        var repl: *Doc = self.docs.items[0];
+        for (self.docs.items) |doc| {
+            if (doc != victim) {
+                repl = doc;
+                break;
+            }
+        }
+        self.loadDoc(repl); // swaps victim's live state back into its Doc
+        for (self.wins.items) |w| {
+            if (w.doc == victim) w.doc = repl;
+        }
+        _ = self.docs.orderedRemove(self.docIndex(victim));
+        victim.buf.deinit();
+        freeDocState(victim, self.gpa);
+        self.gpa.destroy(victim);
+        self.clearExtra();
+        self.placeAt(self.cy);
+        self.setStatus("{s}", .{self.buf.path orelse "[No Name]"});
+    }
+
     // === undo / macros / dot ===============================================
 
     fn pushUndo(self: *Editor) void {
-        self.history.record(&self.buf, self.cy, self.cx);
+        self.history.record(self.buf, self.cy, self.cx);
         self.change_started = true;
     }
 
@@ -2942,14 +3315,14 @@ pub const Editor = struct {
     }
 
     fn undoChange(self: *Editor) void {
-        if (!self.history.undo(&self.buf, &self.cy, &self.cx)) self.setStatus("already at oldest change", .{});
+        if (!self.history.undo(self.buf, &self.cy, &self.cx)) self.setStatus("already at oldest change", .{});
         self.clampCursor();
         self.updateGoal();
         self.resetPending();
     }
 
     fn redoChange(self: *Editor) void {
-        if (!self.history.redo(&self.buf, &self.cy, &self.cx)) self.setStatus("already at newest change", .{});
+        if (!self.history.redo(self.buf, &self.cy, &self.cx)) self.setStatus("already at newest change", .{});
         self.clampCursor();
         self.updateGoal();
         self.resetPending();
@@ -3055,22 +3428,18 @@ pub const Editor = struct {
 
     // === viewport ==========================================================
 
+    // Viewport metrics refer to the active window (set by the last layout).
     fn textRows(self: *Editor) usize {
-        const rows: usize = self.win.rows;
-        return if (rows > 1) rows - 1 else 1;
+        return self.winTextRows(self.cur);
     }
 
     fn textCols(self: *Editor) usize {
-        const cols: usize = self.win.cols;
         const g = self.gutterWidth();
-        return if (cols > g) cols - g else 1;
+        return if (self.cur.gw > g) self.cur.gw - g else 1;
     }
 
     fn gutterWidth(self: *Editor) usize {
-        var n = self.buf.lineCount();
-        var digits: usize = 1;
-        while (n >= 10) : (n = n / 10) digits += 1;
-        return @max(digits, 3) + 2; // git sign column + numbers + trailing space
+        return gutterFor(self.buf.lineCount());
     }
 
     fn scroll(self: *Editor) void {
@@ -3084,12 +3453,136 @@ pub const Editor = struct {
         if (cur >= self.left + cols) self.left = cur - cols + 1;
     }
 
+    // === windows / layout ==================================================
+
+    /// Tile the windows over the text area (all but the bottom command line).
+    /// One orientation at a time (even split); the last window takes the
+    /// remainder so the screen is fully covered.
+    fn layout(self: *Editor) void {
+        const total_rows = if (self.win.rows > 1) self.win.rows - 1 else 1; // reserve command line
+        const cols = self.win.cols;
+        const n = self.wins.items.len;
+        if (self.split_vertical and n > 1) {
+            const each = cols / n;
+            var x: usize = 1;
+            for (self.wins.items, 0..) |w, i| {
+                const ww = if (i == n - 1) (if (cols + 1 > x) cols - x + 1 else 1) else each;
+                w.gx = x;
+                w.gy = 1;
+                w.gw = ww;
+                w.gh = total_rows;
+                x += ww;
+            }
+        } else {
+            const each = if (n > 0) total_rows / n else total_rows;
+            var y: usize = 1;
+            for (self.wins.items, 0..) |w, i| {
+                const wh = if (i == n - 1) (if (total_rows + 1 > y) total_rows - y + 1 else 1) else each;
+                w.gx = 1;
+                w.gy = y;
+                w.gw = cols;
+                w.gh = wh;
+                y += wh;
+            }
+        }
+    }
+
+    fn buildView(self: *Editor, w: *Win) View {
+        const doc = w.doc;
+        const g = gutterFor(doc.buf.lineCount());
+        const cols = if (w.gw > g) w.gw - g else 1;
+        if (w == self.cur) return .{
+            .buf = self.buf,
+            .active = true,
+            .has_ts = self.ts != null,
+            .ts_styles = self.ts_styles.items,
+            .ts_line_starts = self.ts_line_starts.items,
+            .ts_vis_start = self.ts_vis_start,
+            .git = &self.git_signs,
+            .lang = self.lang,
+            .cy = self.cy,
+            .top = self.top,
+            .left = self.left,
+            .gutter = g,
+            .cols = cols,
+        };
+        return .{
+            .buf = &doc.buf,
+            .active = false,
+            .has_ts = doc.ts != null,
+            .ts_styles = doc.ts_styles.items,
+            .ts_line_starts = doc.ts_line_starts.items,
+            .ts_vis_start = doc.ts_vis_start,
+            .git = &doc.git_signs,
+            .lang = doc.lang,
+            .cy = w.cy,
+            .top = w.top,
+            .left = w.left,
+            .gutter = g,
+            .cols = cols,
+        };
+    }
+
+    /// Rows of `w` available for buffer text (its bottom row is a status line
+    /// when more than one window is open).
+    fn winTextRows(self: *Editor, w: *Win) usize {
+        if (self.wins.items.len > 1) return if (w.gh > 1) w.gh - 1 else 1;
+        return w.gh;
+    }
+
+    fn renderWindow(self: *Editor, w: *Win) !void {
+        const th = theme.current;
+        const view = self.buildView(w);
+        const text_rows = self.winTextRows(w);
+        var b: [16]u8 = undefined;
+        var r: usize = 0;
+        while (r < text_rows) : (r += 1) {
+            const file_row = view.top + r;
+            try self.emit(try std.fmt.bufPrint(&b, "\x1b[{d};{d}H", .{ w.gy + r, w.gx }));
+            const is_cur = view.active and file_row == view.cy;
+            const row_bg = if (is_cur) th.cursorline else th.bg;
+            try self.setBg(row_bg);
+            if (file_row < view.buf.lineCount()) {
+                try self.emitGutter(&view, file_row);
+                try self.emitLine(&view, file_row, row_bg);
+            } else {
+                try self.setFg(th.fg_dim);
+                try self.emit("~");
+                try self.emitSpaces(w.gw - 1);
+            }
+        }
+        if (self.wins.items.len > 1) try self.emitWinStatus(w, view);
+    }
+
+    /// A per-window status line (filename + position), drawn on the window's
+    /// bottom region row. Only used when more than one window is open.
+    fn emitWinStatus(self: *Editor, w: *Win, view: View) !void {
+        const th = theme.current;
+        var b: [16]u8 = undefined;
+        try self.emit(try std.fmt.bufPrint(&b, "\x1b[{d};{d}H", .{ w.gy + w.gh - 1, w.gx }));
+        const active = w == self.cur;
+        try self.setBg(if (active) th.status_seg_bg else th.status_bg);
+        try self.setFg(if (active) th.status_seg_fg else th.fg_dim);
+        const name = view.buf.path orelse "[No Name]";
+        const dirty = if (view.buf.dirty) " \u{25CF}" else "";
+        var nb: [320]u8 = undefined;
+        const seg = std.fmt.bufPrint(&nb, " {s}{s}  {d}:{d} ", .{ name, dirty, view.cy + 1, view.left + 1 }) catch " ";
+        const shown = @min(seg.len, w.gw);
+        try self.emit(seg[0..shown]);
+        if (shown < w.gw) try self.emitSpaces(w.gw - shown);
+    }
+
+    fn gutterFor(line_count: usize) usize {
+        var n = line_count;
+        var digits: usize = 1;
+        while (n >= 10) : (n = n / 10) digits += 1;
+        return @max(digits, 3) + 2; // git sign column + numbers + trailing space
+    }
+
     // === rendering =========================================================
 
     fn render(self: *Editor) !void {
         var sp = log.Span.start();
-        const th = theme.current;
-        self.tsUpdate();
         self.frame.clearRetainingCapacity();
         self.cur_fg = null;
         self.cur_bg = null;
@@ -3104,28 +3597,16 @@ pub const Editor = struct {
             return;
         }
 
-        const rows = self.textRows();
+        self.layout();
+        self.scroll(); // active window viewport
+        self.tsUpdate(); // query the active doc's visible range (needs scrolled top)
+        self.saveViewport(); // mirror back into the active Win for rendering
+
+        for (self.wins.items) |w| try self.renderWindow(w);
+
         const gutter = self.gutterWidth();
-        const cols = self.textCols();
-
-        var r: usize = 0;
-        while (r < rows) : (r += 1) {
-            const file_row = self.top + r;
-            const is_cur = file_row == self.cy;
-            const row_bg = if (is_cur) th.cursorline else th.bg;
-            try self.setBg(row_bg);
-            if (file_row < self.buf.lineCount()) {
-                try self.emitGutter(file_row, gutter, is_cur);
-                try self.emitLine(file_row, self.buf.line(file_row), cols, row_bg);
-            } else {
-                try self.setFg(th.fg_dim);
-                try self.emit("~");
-            }
-            try self.setBg(row_bg);
-            try self.emit(ansi.clear_line_right);
-            try self.emit("\r\n");
-        }
-
+        // Bottom command/status line.
+        try self.emitFmt("\x1b[{d};1H", .{self.win.rows});
         try self.renderStatus();
         if (self.await_arg == .space_leader) try self.renderWhichKey();
         if (self.sig_open) try self.renderSignature(gutter);
@@ -3189,9 +3670,9 @@ pub const Editor = struct {
         const label = sig.label[0 .. std.mem.indexOfScalar(u8, sig.label, '\n') orelse sig.label.len];
         if (label.len == 0) return;
 
-        const cur_row = (self.cy - self.top) + 1; // 1-based screen row of cursor
+        const cur_row = self.cur.gy + (self.cy - self.top); // 1-based screen row of cursor
         const row = if (cur_row > 1) cur_row - 1 else cur_row + 1;
-        const cur_col = gutter + (displayCol(self.curLine(), self.cx) - self.left) + 1;
+        const cur_col = self.cur.gx + gutter + (displayCol(self.curLine(), self.cx) - self.left);
         const col = @max(@as(usize, 1), cur_col);
         if (col > self.win.cols) return;
         const avail = self.win.cols - col + 1; // cells from `col` to the screen edge
@@ -3250,11 +3731,15 @@ pub const Editor = struct {
             width = @max(width, @min(label.len + 2, 40));
         }
 
-        const cur_row = (self.cy - self.top) + 1; // 1-based screen row of cursor
-        const cur_col = gutter + (displayCol(self.curLine(), self.cx) - self.left) + 1;
-        // Below the cursor if it fits, else above.
-        const start_row = if (cur_row + height < rows) cur_row + 1 else (if (cur_row > height) cur_row - height else 1);
-        const col = @max(@as(usize, 1), cur_col);
+        const rel = self.cy - self.top; // cursor row within the window (0-based)
+        // Below the cursor if it fits in the window, else above.
+        const start_row = if (rel + 1 + height <= rows)
+            self.cur.gy + rel + 1
+        else if (rel >= height)
+            self.cur.gy + rel - height
+        else
+            self.cur.gy;
+        const col = @max(@as(usize, 1), self.cur.gx + gutter + (displayCol(self.curLine(), self.cx) - self.left));
 
         var b: [16]u8 = undefined;
         var i: usize = 0;
@@ -3272,21 +3757,26 @@ pub const Editor = struct {
         }
     }
 
-    fn emitGutter(self: *Editor, file_row: usize, gutter: usize, is_cur: bool) !void {
+    fn emitGutter(self: *Editor, view: *const View, file_row: usize) !void {
         const th = theme.current;
+        const gutter = view.gutter;
         const ndigits = gutter - 2;
+        const is_cur = view.active and file_row == view.cy;
 
-        // Leftmost column: an LSP diagnostic sign takes priority over a git sign.
+        // Leftmost column: an LSP diagnostic sign (active window only) takes
+        // priority over a git sign.
         var sign_drawn = false;
-        if (self.lsp) |*c| {
-            if (c.severityAt(file_row)) |sev| {
-                try self.setFg(if (sev == 1) th.git_delete else th.git_change); // error=red, warn=yellow
-                try self.emit("\u{25CF}"); // ●
-                sign_drawn = true;
+        if (view.active) {
+            if (self.lsp) |*c| {
+                if (c.severityAt(file_row)) |sev| {
+                    try self.setFg(if (sev == 1) th.git_delete else th.git_change); // error=red, warn=yellow
+                    try self.emit("\u{25CF}"); // ●
+                    sign_drawn = true;
+                }
             }
         }
         if (!sign_drawn) {
-            if (self.git_signs.get(file_row)) |s| {
+            if (view.git.get(file_row)) |s| {
                 try self.setFg(switch (s) {
                     .added => th.git_add,
                     .changed => th.git_change,
@@ -3301,8 +3791,8 @@ pub const Editor = struct {
             }
         }
 
-        // Absolute number on the current line, relative distance elsewhere.
-        const num = if (is_cur) file_row + 1 else if (file_row > self.cy) file_row - self.cy else self.cy - file_row;
+        // Absolute number on the cursor line, relative distance elsewhere.
+        const num = if (is_cur) file_row + 1 else if (file_row > view.cy) file_row - view.cy else view.cy - file_row;
         var nb: [20]u8 = undefined;
         const ns = std.fmt.bufPrint(&nb, "{d}", .{num}) catch unreachable;
         try self.setFg(if (is_cur) th.gutter_active else th.gutter);
@@ -3311,28 +3801,31 @@ pub const Editor = struct {
         try self.emit(" ");
     }
 
-    fn emitLine(self: *Editor, row: usize, line: []const u8, cols: usize, row_bg: Color) !void {
+    fn emitLine(self: *Editor, view: *const View, row: usize, row_bg: Color) !void {
         const th = theme.current;
+        const line = view.buf.line(row);
+        const cols = view.cols;
         self.style_buf.resize(self.gpa, line.len) catch {};
         if (self.style_buf.items.len == line.len) {
-            if (self.ts != null and row < self.ts_line_starts.items.len) {
+            if (view.has_ts and row < view.ts_line_starts.len) {
                 // Tree-sitter: read this line's styles out of the visible-range
                 // buffer, which starts at document byte `ts_vis_start`.
-                const lstart = self.ts_line_starts.items[row];
+                const lstart = view.ts_line_starts[row];
                 for (self.style_buf.items, 0..) |*s, i| {
                     const abs = lstart + i;
-                    s.* = if (abs >= self.ts_vis_start and abs - self.ts_vis_start < self.ts_styles.items.len)
-                        self.ts_styles.items[abs - self.ts_vis_start]
+                    s.* = if (abs >= view.ts_vis_start and abs - view.ts_vis_start < view.ts_styles.len)
+                        view.ts_styles[abs - view.ts_vis_start]
                     else
                         .normal;
                 }
             } else {
-                syntax.highlight(self.lang, line, self.style_buf.items);
+                syntax.highlight(view.lang, line, self.style_buf.items);
             }
         }
 
-        const sel = self.selectionRange(row);
-        const ecol = self.extraColAt(row);
+        // Selection / multi-cursor / search / inlay apply to the active window only.
+        const sel = if (view.active) self.selectionRange(row) else null;
+        const ecol = if (view.active) self.extraColAt(row) else null;
         const first_nb = motion.firstNonBlank(line);
         const indent_cols = displayCol(line, first_nb);
 
@@ -3341,19 +3834,21 @@ pub const Editor = struct {
         var hbyte: [32]usize = undefined;
         var htext: [32][]const u8 = undefined;
         var hint_n: usize = 0;
-        if (self.lsp) |*client| {
-            for (client.inlay_hints.items) |hint| {
-                if (hint.line != row or hint_n >= hbyte.len) continue;
-                hbyte[hint_n] = byteAtCharCol(line, hint.col);
-                htext[hint_n] = hint.text;
-                hint_n += 1;
-            }
-            var a: usize = 1;
-            while (a < hint_n) : (a += 1) { // insertion sort (lists are tiny)
-                var b = a;
-                while (b > 0 and hbyte[b - 1] > hbyte[b]) : (b -= 1) {
-                    std.mem.swap(usize, &hbyte[b - 1], &hbyte[b]);
-                    std.mem.swap([]const u8, &htext[b - 1], &htext[b]);
+        if (view.active) {
+            if (self.lsp) |*client| {
+                for (client.inlay_hints.items) |hint| {
+                    if (hint.line != row or hint_n >= hbyte.len) continue;
+                    hbyte[hint_n] = byteAtCharCol(line, hint.col);
+                    htext[hint_n] = hint.text;
+                    hint_n += 1;
+                }
+                var a: usize = 1;
+                while (a < hint_n) : (a += 1) { // insertion sort (lists are tiny)
+                    var b = a;
+                    while (b > 0 and hbyte[b - 1] > hbyte[b]) : (b -= 1) {
+                        std.mem.swap(usize, &hbyte[b - 1], &hbyte[b]);
+                        std.mem.swap([]const u8, &htext[b - 1], &htext[b]);
+                    }
                 }
             }
         }
@@ -3362,7 +3857,7 @@ pub const Editor = struct {
         // Search-match ranges on this line (for highlighting).
         var mstarts: [64]usize = undefined;
         var mcount: usize = 0;
-        const needle = self.activeSearchTerm();
+        const needle = if (view.active) self.activeSearchTerm() else "";
         if (needle.len > 0) {
             var off: usize = 0;
             while (mcount < mstarts.len) {
@@ -3374,7 +3869,7 @@ pub const Editor = struct {
         }
         var mi: usize = 0;
 
-        const left = self.left;
+        const left = view.left;
         const right = left + cols;
         var dc: usize = 0;
         var i: usize = 0;
@@ -3420,15 +3915,16 @@ pub const Editor = struct {
         while (hi < hint_n) : (hi += 1)
             try self.emitInlayText(htext[hi], &dc, left, right, row_bg);
 
-        // A secondary cursor sitting at end-of-line has no char to invert.
-        if (ecol) |ec| {
-            if (ec == line.len) {
-                const eol = displayCol(line, line.len);
-                if (eol >= left and eol < right) {
-                    try self.setBg(th.mode_normal);
-                    try self.emit(" ");
-                }
-            }
+        // Pad the rest of the window's text width with the row background, so a
+        // window never leaks stale cells or the contents of a neighbour to its
+        // right. A secondary cursor sitting at end-of-line is drawn here.
+        const eol_cursor = if (ecol) |ec| ec == line.len else false;
+        const eol_col = displayCol(line, line.len);
+        var shown: usize = if (dc > left) @min(dc - left, cols) else 0;
+        while (shown < cols) : (shown += 1) {
+            const at_cursor = eol_cursor and (left + shown == eol_col);
+            try self.setBg(if (at_cursor) th.mode_normal else row_bg);
+            try self.emit(" ");
         }
     }
 
@@ -3652,9 +4148,10 @@ pub const Editor = struct {
             row = self.win.rows;
             col = self.cmdPrompt().len + 1 + unicode.displayWidth(self.cmd.items);
         } else {
-            row = (self.cy - self.top) + 1;
+            // Relative to the active window's screen region.
+            row = self.cur.gy + (self.cy - self.top);
             const cur = displayCol(self.curLine(), self.cx) + self.inlayCols(self.cy, self.cx);
-            col = gutter + (cur - self.left) + 1;
+            col = self.cur.gx + gutter + (cur - self.left);
         }
         try self.emitFmt("\x1b[{d};{d}H", .{ row, col });
     }
