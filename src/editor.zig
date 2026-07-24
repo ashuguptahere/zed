@@ -28,6 +28,7 @@ const git = @import("git.zig");
 const lsp = @import("lsp.zig");
 const treesitter = @import("treesitter.zig");
 const config = @import("config.zig");
+const regex = @import("regex.zig");
 const ansi = term.ansi;
 const Allocator = std.mem.Allocator;
 const Pos = buffer.Pos;
@@ -238,6 +239,10 @@ pub const Editor = struct {
     // search
     last_search: std.ArrayList(u8),
     last_search_forward: bool,
+    // Compiled form of the pattern being highlighted/jumped (cached per text;
+    // null when the pattern is empty or (still) invalid, e.g. mid-typing).
+    search_re: ?regex.Regex,
+    search_re_pat: std.ArrayList(u8),
     search_origin: Pos, // cursor when a / or ? search began (for incremental preview)
     prev_search: std.ArrayList(u8), // last_search saved on entry, restored if cancelled
 
@@ -391,6 +396,8 @@ pub const Editor = struct {
             .surr_from = 0,
             .last_search = .empty,
             .last_search_forward = true,
+            .search_re = null,
+            .search_re_pat = .empty,
             .search_origin = .{ .row = 0, .col = 0 },
             .prev_search = .empty,
             .cmd = .empty,
@@ -449,6 +456,8 @@ pub const Editor = struct {
         self.registers.deinit();
         self.history.deinit();
         self.last_search.deinit(self.gpa);
+        if (self.search_re) |*re| re.deinit(self.gpa);
+        self.search_re_pat.deinit(self.gpa);
         self.prev_search.deinit(self.gpa);
         self.cmd.deinit(self.gpa);
         self.macro_buf.deinit(self.gpa);
@@ -2302,15 +2311,31 @@ pub const Editor = struct {
 
     fn jumpSearch(self: *Editor, forward: bool) void {
         if (self.last_search.items.len == 0) return;
+        const re = self.compiledPattern(self.last_search.items) orelse return; // invalid mid-typing
         const hit = if (forward)
-            search.next(self.buf, self.cursor(), self.last_search.items)
+            search.next(self.buf, self.cursor(), re)
         else
-            search.prev(self.buf, self.cursor(), self.last_search.items);
+            search.prev(self.buf, self.cursor(), re);
         if (hit) |p| {
             self.setCursor(p);
         } else {
             self.setStatus("pattern not found: {s}", .{self.last_search.items});
         }
+    }
+
+    /// Compile-and-cache `pat` (search patterns are modern regexes; a plain
+    /// word is still just a literal and keeps the SIMD fast path). Returns
+    /// null for empty or invalid patterns — callers treat that as "no match".
+    fn compiledPattern(self: *Editor, pat: []const u8) ?*const regex.Regex {
+        if (pat.len == 0) return null;
+        if (!std.mem.eql(u8, pat, self.search_re_pat.items)) {
+            if (self.search_re) |*old| old.deinit(self.gpa);
+            self.search_re = regex.Regex.compile(self.gpa, pat, false) catch null;
+            self.search_re_pat.clearRetainingCapacity();
+            self.search_re_pat.appendSlice(self.gpa, pat) catch {};
+        }
+        if (self.search_re) |*re| return re;
+        return null;
     }
 
     /// The term to highlight: the live query while typing a search, otherwise
@@ -2326,13 +2351,24 @@ pub const Editor = struct {
         self.resetPending();
     }
 
+    /// `*` / `#`: search for the word under the cursor, with vim's whole-word
+    /// boundaries (the pattern becomes `\<word\>`, metacharacters escaped).
     fn searchWord(self: *Editor, forward: bool) void {
         const word = search.wordUnder(self.buf, self.cursor());
         if (word.len == 0) {
             self.resetPending();
             return;
         }
-        self.runSearch(word, forward);
+        var pat: std.ArrayList(u8) = .empty;
+        defer pat.deinit(self.gpa);
+        pat.appendSlice(self.gpa, "\\<") catch return;
+        for (word) |ch| {
+            if (std.mem.indexOfScalar(u8, ".\\*+?()[]|^$/<>{}", ch) != null)
+                pat.append(self.gpa, '\\') catch return;
+            pat.append(self.gpa, ch) catch return;
+        }
+        pat.appendSlice(self.gpa, "\\>") catch return;
+        self.runSearch(pat.items, forward);
         self.resetPending();
     }
 
@@ -3064,6 +3100,10 @@ pub const Editor = struct {
         const raw = std.mem.trim(u8, self.cmd.items, " ");
         if (raw.len == 0) return;
 
+        // :[range]s/pat/rep/[flags] — try substitution first, since its range
+        // can start with digits that would otherwise read as :<number>.
+        if (parseSubstitute(raw)) |sub| return self.doSubstitute(sub);
+
         // :<number> jumps to a line.
         if (raw[0] >= '0' and raw[0] <= '9') {
             const ln = std.fmt.parseInt(usize, raw, 10) catch return;
@@ -3125,6 +3165,129 @@ pub const Editor = struct {
         } else {
             self.setStatus("unknown command: {s}", .{cmd});
         }
+    }
+
+    const Substitute = struct {
+        lo: ?usize, // 1-based inclusive; null = current line
+        hi: ?usize,
+        whole: bool, // '%' range
+        pat: []const u8,
+        rep: []const u8,
+        global: bool, // g flag: every occurrence on the line
+        icase: bool, // i flag
+    };
+
+    /// Recognise `[%|n|n,m]s/pat/rep/[flags]` (separator is `/`, escapable as
+    /// `\/`). Returns null when `raw` is not a substitution at all.
+    fn parseSubstitute(raw: []const u8) ?Substitute {
+        var i: usize = 0;
+        var lo: ?usize = null;
+        var hi: ?usize = null;
+        var whole = false;
+        if (i < raw.len and raw[i] == '%') {
+            whole = true;
+            i += 1;
+        } else if (i < raw.len and std.ascii.isDigit(raw[i])) {
+            const s = i;
+            while (i < raw.len and std.ascii.isDigit(raw[i])) i += 1;
+            lo = std.fmt.parseInt(usize, raw[s..i], 10) catch return null;
+            hi = lo;
+            if (i < raw.len and raw[i] == ',') {
+                i += 1;
+                const s2 = i;
+                while (i < raw.len and std.ascii.isDigit(raw[i])) i += 1;
+                if (i == s2) return null;
+                hi = std.fmt.parseInt(usize, raw[s2..i], 10) catch return null;
+            }
+        }
+        if (i >= raw.len or raw[i] != 's') return null;
+        i += 1;
+        if (i >= raw.len or raw[i] != '/') return null;
+        i += 1;
+        // Split pattern / replacement on unescaped '/'.
+        const pat_start = i;
+        while (i < raw.len and raw[i] != '/') : (i += 1) {
+            if (raw[i] == '\\' and i + 1 < raw.len) i += 1; // skip escaped char
+        }
+        if (i >= raw.len) return null; // no closing separator after the pattern
+        const pat = raw[pat_start..i];
+        i += 1;
+        const rep_start = i;
+        while (i < raw.len and raw[i] != '/') : (i += 1) {
+            if (raw[i] == '\\' and i + 1 < raw.len) i += 1;
+        }
+        const rep = raw[rep_start..i];
+        var global = false;
+        var icase = false;
+        if (i < raw.len) { // consume '/', then flags
+            i += 1;
+            for (raw[i..]) |f| switch (f) {
+                'g' => global = true,
+                'i' => icase = true,
+                else => return null,
+            };
+        }
+        if (pat.len == 0) return null;
+        return .{ .lo = lo, .hi = hi, .whole = whole, .pat = pat, .rep = rep, .global = global, .icase = icase };
+    }
+
+    /// Apply a parsed `:s` as a single undoable change. The replacement
+    /// understands `&` (whole match), `\1`-`\9` (groups), `\\`, `\&` and `\/`.
+    fn doSubstitute(self: *Editor, sub: Substitute) void {
+        var re = regex.Regex.compile(self.gpa, sub.pat, sub.icase) catch {
+            self.setStatus("invalid pattern: {s}", .{sub.pat});
+            return;
+        };
+        defer re.deinit(self.gpa);
+
+        const last_row = self.buf.lineCount() - 1;
+        var lo: usize = if (sub.whole) 0 else if (sub.lo) |n| @min(n -| 1, last_row) else self.cy;
+        var hi: usize = if (sub.whole) last_row else if (sub.hi) |n| @min(n -| 1, last_row) else self.cy;
+        if (lo > hi) std.mem.swap(usize, &lo, &hi);
+
+        self.pushUndo();
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(self.gpa);
+        var n_subs: usize = 0;
+        var changed_lines: usize = 0;
+        var last_changed = self.cy;
+
+        var row = lo;
+        while (row <= hi) : (row += 1) {
+            const line = self.buf.line(row);
+            out.clearRetainingCapacity();
+            var at: usize = 0;
+            var n_here: usize = 0;
+            while (at <= line.len) {
+                const m = re.find(line, at) orelse break;
+                out.appendSlice(self.gpa, line[at..m.span.start]) catch break;
+                expandReplacement(&out, self.gpa, sub.rep, line, m) catch break;
+                n_here += 1;
+                if (m.span.end > m.span.start) {
+                    at = m.span.end;
+                } else {
+                    // Zero-width match: keep the next byte and move past it.
+                    if (m.span.start < line.len) out.append(self.gpa, line[m.span.start]) catch break;
+                    at = m.span.start + 1;
+                }
+                if (!sub.global) break;
+            }
+            if (n_here == 0) continue;
+            out.appendSlice(self.gpa, line[at..]) catch continue;
+            self.buf.setLine(row, out.items) catch continue;
+            n_subs += n_here;
+            changed_lines += 1;
+            last_changed = row;
+        }
+
+        if (n_subs == 0) {
+            self.setStatus("no matches: {s}", .{sub.pat});
+            return;
+        }
+        self.cy = last_changed;
+        self.cx = motion.firstNonBlank(self.curLine());
+        self.updateGoal();
+        self.setStatus("{d} substitution(s) on {d} line(s)", .{ n_subs, changed_lines });
     }
 
     /// Show the open documents in the status line (`:ls`).
@@ -4462,15 +4625,19 @@ pub const Editor = struct {
 
         // Search-match ranges on this line (for highlighting).
         var mstarts: [64]usize = undefined;
+        var mends: [64]usize = undefined;
         var mcount: usize = 0;
-        const needle = if (view.active) self.activeSearchTerm() else "";
-        if (needle.len > 0) {
+        const search_re: ?*const regex.Regex = if (view.active) self.compiledPattern(self.activeSearchTerm()) else null;
+        if (search_re) |re| {
             var off: usize = 0;
-            while (mcount < mstarts.len) {
-                const idx = std.mem.indexOfPos(u8, line, off, needle) orelse break;
-                mstarts[mcount] = idx;
-                mcount += 1;
-                off = idx + needle.len;
+            while (mcount < mstarts.len and off <= line.len) {
+                const m = re.find(line, off) orelse break;
+                if (m.span.end > m.span.start) { // zero-width matches aren't highlightable
+                    mstarts[mcount] = m.span.start;
+                    mends[mcount] = m.span.end;
+                    mcount += 1;
+                }
+                off = if (m.span.end > m.span.start) m.span.end else m.span.start + 1;
             }
         }
         var mi: usize = 0;
@@ -4497,8 +4664,8 @@ pub const Editor = struct {
 
             const is_extra = if (ecol) |ec| byte == ec else false;
             const selected = if (sel) |s| (byte >= s.lo and byte < s.hi) else false;
-            while (mi < mcount and byte >= mstarts[mi] + needle.len) mi += 1;
-            const in_match = mi < mcount and byte >= mstarts[mi] and byte < mstarts[mi] + needle.len;
+            while (mi < mcount and byte >= mends[mi]) mi += 1;
+            const in_match = mi < mcount and byte >= mstarts[mi] and byte < mends[mi];
             try self.setBg(if (is_extra) th.mode_normal else if (selected) th.selection else if (in_match) th.match else row_bg);
 
             if (d.cp == '\t' or d.cp == ' ' or start < left or start + w > right) {
@@ -4854,6 +5021,28 @@ fn byteAtCharCol(line: []const u8, char: usize) usize {
     var n: usize = 0;
     while (i < line.len and n < char) : (n += 1) i = unicode.nextBoundary(line, i);
     return i;
+}
+
+/// Expand a `:s` replacement into `out`: `&` = the whole match, `\1`-`\9` =
+/// capture groups (absent groups expand empty), `\\` `\&` `\/` are literals.
+fn expandReplacement(out: *std.ArrayList(u8), gpa: Allocator, rep: []const u8, line: []const u8, m: regex.Match) !void {
+    var i: usize = 0;
+    while (i < rep.len) : (i += 1) {
+        const c = rep[i];
+        if (c == '&') {
+            try out.appendSlice(gpa, line[m.span.start..m.span.end]);
+        } else if (c == '\\' and i + 1 < rep.len) {
+            i += 1;
+            const e = rep[i];
+            if (e >= '1' and e <= '9') {
+                if (m.groups[e - '1']) |g| try out.appendSlice(gpa, line[g.start..g.end]);
+            } else {
+                try out.append(gpa, e); // \\ \& \/ and any other escaped literal
+            }
+        } else {
+            try out.append(gpa, c);
+        }
+    }
 }
 
 /// Order text edits last-position-first (line then column, descending).

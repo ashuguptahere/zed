@@ -33,7 +33,11 @@ runtime dependencies**.
   - Registers and paste: `"a`, `p` / `P` (linewise & charwise)
   - Undo `u`, redo `Ctrl-r`, repeat `.`
   - Visual `v` / `V` with `d c y x > <`
-  - Search `/ ? n N * #` — incremental (jumps as you type) with match highlighting
+  - Search `/ ? n N * #` — **regex** (modern syntax, linear-time engine, no
+    catastrophic backtracking), incremental (jumps as you type), highlighted;
+    `*`/`#` match whole words
+  - `:%s/pat/rep/g` substitution with ranges (`%`, `n,m`), flags `g`/`i`,
+    `&` and `\1`–`\9` in replacements — behaviour pinned to real-nvim outputs
   - Marks `m` `` ` `` `'` and macros `q…q` / `@`
   - Built-ins (no plugins): auto-pairs, comment toggle (`gcc` / `gc{motion}`),
     surround (`ys`/`cs`/`ds`, visual `S`), blockwise visual (`Ctrl-v` + `I`/`A`),
@@ -129,10 +133,11 @@ machine (medians):
 
 | metric | zedit | helix 25.07.1 | nvim 0.12.4 |
 |---|---|---|---|
-| startup → interactive | **7.5 ms** | 27.3 ms | 10.5 ms |
-| open 10 MB / 200k lines | 14.3 ms | 35.1 ms | **10.7 ms** |
-| keypress → response | **0.12 ms** | 0.28 ms | 0.16 ms |
-| file picker open (this repo) | 5.2 cold / **4.5 ms** warm | 4.4 ms | n/a (no builtin) |
+| startup → interactive | **7.2 ms** | 27.0 ms | 10.5 ms |
+| open 10 MB / 200k lines | 17.6 ms | 35.1 ms | **10.7 ms** |
+| keypress → response | **0.10 ms** | 0.28 ms | 0.17 ms |
+| `/` search in the 10 MB file | 7.6 ms | **4.4 ms** | 51.1 ms |
+| file picker open (this repo) | 5.1 cold / **4.5 ms** warm | 4.4 ms | n/a (no builtin) |
 
 Buffer loading is zero-copy (one shared byte buffer; lines are slices that
 convert to owned storage on first edit), so the big-file number fell from

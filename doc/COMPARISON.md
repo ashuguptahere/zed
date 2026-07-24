@@ -10,8 +10,9 @@ batteries-included editor.
 
 ## The shortlist (both editors have it, zedit doesn't — highest leverage)
 
-1. **Regex search + `:%s` substitution** (both, high) — everything in zedit is
-   literal; this is the single biggest editing gap.
+1. ~~**Regex search + `:%s` substitution**~~ — **DONE** (regex.zig Pike VM;
+   `/ ? n N * #` are regex, `:[range]s/pat/rep/[gi]` with captures; grep
+   picker still literal).
 2. **Jumplist** `Ctrl-o`/`Ctrl-i` (both, high) — LSP-driven navigation is
    currently a one-way trip.
 3. **System clipboard** (both, high) — OSC 52 fits zedit's zero-dependency

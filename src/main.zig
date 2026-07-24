@@ -115,6 +115,7 @@ test {
     _ = @import("register.zig");
     _ = @import("undo.zig");
     _ = @import("search.zig");
+    _ = @import("regex.zig");
     _ = @import("theme.zig");
     _ = @import("syntax.zig");
     _ = @import("fuzzy.zig");

@@ -1,16 +1,64 @@
-//! Literal text search across the buffer.
+//! Buffer search (`/ ? n N * #`), regex-powered.
 //!
-//! vim uses regex; we do plain (case-sensitive) substring search, which covers
-//! the common `/word`, `n`/`N` and `*`/`#` workflow without pulling in a regex
-//! engine. Searches wrap around the end/start of the file.
+//! Patterns are modern regexes (regex.zig — Pike VM, linear time). Purely
+//! literal patterns take a fast path: while the buffer is unedited, one SIMD
+//! substring scan over the whole source instead of a per-line loop. Searches
+//! wrap around the end/start of the file.
 
 const std = @import("std");
 const buffer = @import("buffer.zig");
+const regex = @import("regex.zig");
 
 pub const Pos = buffer.Pos;
 
-/// First match at or after the position *following* `from`, wrapping to the top.
-pub fn next(buf: *const buffer.Buffer, from: Pos, needle: []const u8) ?Pos {
+/// First regex match after `from`, wrapping to the top.
+pub fn next(buf: *const buffer.Buffer, from: Pos, re: *const regex.Regex) ?Pos {
+    if (re.literal()) |lit| return nextLiteral(buf, from, lit);
+    const lines = buf.lineCount();
+    // Remainder of the current line, starting just past the cursor.
+    if (re.find(buf.line(from.row), from.col + 1)) |m|
+        return .{ .row = from.row, .col = m.span.start };
+    var i: usize = 1;
+    while (i <= lines) : (i += 1) {
+        const row = (from.row + i) % lines;
+        if (re.find(buf.line(row), 0)) |m|
+            return .{ .row = row, .col = m.span.start };
+    }
+    return null;
+}
+
+/// Last regex match strictly before `from`, wrapping to the bottom.
+pub fn prev(buf: *const buffer.Buffer, from: Pos, re: *const regex.Regex) ?Pos {
+    if (re.literal()) |lit| return prevLiteral(buf, from, lit);
+    const lines = buf.lineCount();
+    if (lastMatchBefore(buf.line(from.row), re, from.col)) |c|
+        return .{ .row = from.row, .col = c };
+    var i: usize = 1;
+    while (i <= lines) : (i += 1) {
+        const row = (from.row + lines - i) % lines;
+        const line = buf.line(row);
+        if (lastMatchBefore(line, re, line.len + 1)) |c|
+            return .{ .row = row, .col = c };
+    }
+    return null;
+}
+
+/// The start of the last match beginning strictly before `limit` (regexes
+/// only search forward, so walk the matches).
+fn lastMatchBefore(line: []const u8, re: *const regex.Regex, limit: usize) ?usize {
+    var best: ?usize = null;
+    var at: usize = 0;
+    while (at <= line.len) {
+        const m = re.find(line, at) orelse break;
+        if (m.span.start >= limit) break;
+        best = m.span.start;
+        at = if (m.span.end > m.span.start) m.span.end else m.span.start + 1;
+    }
+    return best;
+}
+
+/// First literal match at or after the position *following* `from`, wrapping.
+pub fn nextLiteral(buf: *const buffer.Buffer, from: Pos, needle: []const u8) ?Pos {
     if (needle.len == 0) return null;
     if (fastNext(buf, from, needle)) |p| return p;
     const lines = buf.lineCount();
@@ -28,8 +76,8 @@ pub fn next(buf: *const buffer.Buffer, from: Pos, needle: []const u8) ?Pos {
     return null;
 }
 
-/// Last match strictly before `from`, wrapping to the bottom.
-pub fn prev(buf: *const buffer.Buffer, from: Pos, needle: []const u8) ?Pos {
+/// Last literal match strictly before `from`, wrapping to the bottom.
+pub fn prevLiteral(buf: *const buffer.Buffer, from: Pos, needle: []const u8) ?Pos {
     if (needle.len == 0) return null;
     if (fastPrev(buf, from, needle)) |p| return p;
     const lines = buf.lineCount();
@@ -147,17 +195,17 @@ const testing = std.testing;
 test "next finds forward and wraps" {
     var b = try buffer.Buffer.fromBytes(testing.allocator, "foo bar\nbar baz\n");
     defer b.deinit();
-    try testing.expectEqual(@as(?Pos, Pos{ .row = 0, .col = 4 }), next(&b, .{ .row = 0, .col = 0 }, "bar"));
+    try testing.expectEqual(@as(?Pos, Pos{ .row = 0, .col = 4 }), nextLiteral(&b, .{ .row = 0, .col = 0 }, "bar"));
     // From the first 'bar', next match is on line 1.
-    try testing.expectEqual(@as(?Pos, Pos{ .row = 1, .col = 0 }), next(&b, .{ .row = 0, .col = 4 }, "bar"));
+    try testing.expectEqual(@as(?Pos, Pos{ .row = 1, .col = 0 }), nextLiteral(&b, .{ .row = 0, .col = 4 }, "bar"));
     // From line 1, wrap back to line 0.
-    try testing.expectEqual(@as(?Pos, Pos{ .row = 0, .col = 4 }), next(&b, .{ .row = 1, .col = 0 }, "bar"));
+    try testing.expectEqual(@as(?Pos, Pos{ .row = 0, .col = 4 }), nextLiteral(&b, .{ .row = 1, .col = 0 }, "bar"));
 }
 
 test "prev finds backward and wraps" {
     var b = try buffer.Buffer.fromBytes(testing.allocator, "foo bar\nbar baz\n");
     defer b.deinit();
-    try testing.expectEqual(@as(?Pos, Pos{ .row = 0, .col = 4 }), prev(&b, .{ .row = 1, .col = 0 }, "bar"));
+    try testing.expectEqual(@as(?Pos, Pos{ .row = 0, .col = 4 }), prevLiteral(&b, .{ .row = 1, .col = 0 }, "bar"));
 }
 
 test "wordUnder" {
@@ -170,9 +218,29 @@ test "wordUnder" {
 test "fast path and line-by-line agree after an edit" {
     var b = try buffer.Buffer.fromBytes(testing.allocator, "foo bar\nbar baz\nqux bar\n");
     defer b.deinit();
-    const before = next(&b, .{ .row = 0, .col = 4 }, "bar"); // via the fast path
+    const before = nextLiteral(&b, .{ .row = 0, .col = 4 }, "bar"); // via the fast path
     _ = try b.insertCodepoint(0, 0, 'x'); // buffer no longer pure-borrowed
-    const after = next(&b, .{ .row = 0, .col = 5 }, "bar"); // via the slow path
+    const after = nextLiteral(&b, .{ .row = 0, .col = 5 }, "bar"); // via the slow path
     try testing.expectEqual(@as(?Pos, Pos{ .row = 1, .col = 0 }), before);
     try testing.expectEqual(@as(?Pos, Pos{ .row = 1, .col = 0 }), after);
+}
+
+test "regex next and prev with a pattern" {
+    var b = try buffer.Buffer.fromBytes(testing.allocator, "foo bar\nbig bed\nbard\n");
+    defer b.deinit();
+    var re = try regex.Regex.compile(testing.allocator, "b.d", false);
+    defer re.deinit(testing.allocator);
+    try testing.expectEqual(@as(?Pos, Pos{ .row = 1, .col = 4 }), next(&b, .{ .row = 0, .col = 0 }, &re));
+    // "bard" contains no b.d (b-a-r-d: "b.d"? b<any>d needs 3 chars: bar->no, ard->no)... "bard" has no match.
+    try testing.expectEqual(@as(?Pos, Pos{ .row = 1, .col = 4 }), next(&b, .{ .row = 1, .col = 4 }, &re)); // wraps to itself
+    try testing.expectEqual(@as(?Pos, Pos{ .row = 1, .col = 4 }), prev(&b, .{ .row = 2, .col = 0 }, &re));
+}
+
+test "regex word-boundary search like *" {
+    var b = try buffer.Buffer.fromBytes(testing.allocator, "food foo\nfoo bar\n");
+    defer b.deinit();
+    var re = try regex.Regex.compile(testing.allocator, "\\<foo\\>", false);
+    defer re.deinit(testing.allocator);
+    try testing.expectEqual(@as(?Pos, Pos{ .row = 0, .col = 5 }), next(&b, .{ .row = 0, .col = 0 }, &re));
+    try testing.expectEqual(@as(?Pos, Pos{ .row = 1, .col = 0 }), next(&b, .{ .row = 0, .col = 5 }, &re));
 }

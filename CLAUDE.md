@@ -84,7 +84,8 @@ Source is `src/`, one responsibility per module:
 | `motion.zig`  | Pure cursor motions, word/WORD rules, find-char, `%`, text objects. |
 | `register.zig`| Vim registers (named/unnamed, linewise flag) for yank/delete/paste. |
 | `undo.zig`    | Undo/redo as capped buffer snapshots. |
-| `search.zig`  | Buffer search (`/ ? n N * #`) with a whole-source SIMD fast path while the buffer is unedited (pure zero-copy). |
+| `regex.zig`   | Regex engine: Pike VM (Thompson NFA), linear time, captures; modern "very magic" syntax. |
+| `search.zig`  | Buffer search (`/ ? n N * #`): regex-powered, with a whole-source SIMD fast path for literal patterns while the buffer is unedited. |
 | `theme.zig`   | Colour palettes (Tokyo Night default + Gruvbox/Catppuccin/Nord/One Dark), the active-theme global, 24-bit SGR helpers. |
 | `config.zig`  | The single documented config file (`~/.config/zedit/config`): parse, apply, standard path, `--init-config` default text. |
 | `syntax.zig`  | Dependency-free per-line lexer producing per-byte styles. |
@@ -162,8 +163,10 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   swaps ends, then `d c y x > <`. In block mode `I`/`A` insert at the left/right
   edge of every selected line (via the multi-cursor machinery).
 - **Search:** `/pat` `?pat` (incremental — jumps live as you type, `Esc`
-  cancels and restores the cursor), `n N`, `*` `#`. Matches are highlighted.
-  Literal (not regex), wraps.
+  cancels and restores the cursor), `n N`, `*` `#` (whole-word, `\<word\>`).
+  Matches are highlighted; wraps. Patterns are modern regexes (regex.zig:
+  `. [..] * + ? ( ) | ^ $ \w \d \s \b \< \>` — Helix/ripgrep style, not
+  vim's magic mode); a plain word behaves exactly as before.
 - **Marks/macros:** `m{a-z}`, `` `{a-z} ``, `'{a-z}`; `q{a-z}…q` records, `@{a-z}`
   / `{n}@a` replays.
 - **Insert:** `i I a A o O` (and `c`/`s` entries), `Esc` to normal. Auto-pairs:
@@ -284,14 +287,14 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   adopt that (or a rope) only if it matters in practice.
 - A resize landing in the tiny window between the resize check and entering
   `poll` is noticed on the next keypress (a self-pipe would close the race).
-- Vim gaps: blockwise visual (`Ctrl-v`), regex and `:%s` substitution,
-  autoindent, and the trickier dot-repeat/macro interactions are not (fully)
-  implemented. `*`/search are literal, not regex.
+- Vim gaps: autoindent and the trickier dot-repeat/macro interactions are not
+  (fully) implemented. In-buffer search/`:s` are regex, but the syntax is
+  modern ("very magic"-like), not vim's magic mode — `\(` groups etc. differ.
 - Highlighting is a per-line lexer (no cross-line block comments; a handful of
   languages). Tree-sitter is the upgrade path now that deps are allowed.
 - Multi-cursor is one-caret-per-line (column editing); it does not do
   per-caret line splits/joins or arbitrary selection-based multi-edit.
-- Global search is literal, not regex. Statusline separators assume a nerd font.
+- The project-wide grep picker is literal, not regex (in-buffer search is regex). Statusline separators assume a nerd font.
 - Windows/splits use a flat even tiling in one orientation at a time (a split
   re-tiles all windows; no nested/mixed layouts or per-window resizing). Only
   the active window has live LSP polling and an editable selection/search/inlay

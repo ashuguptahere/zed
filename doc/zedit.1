@@ -279,6 +279,24 @@ to search across files.
 Write, quit (closes the window when more than one is open, else quits; blocked
 on the last window with unsaved changes), write\-and\-quit, force quit, quit
 all, go to line \fIn\fP, write\-and\-quit, quit without writing.
+.TP
+.B :\fR[\fPrange\fR]\fPs/pat/rep/\fR[\fPflags\fR]\fP
+Substitute. Ranges:
+.B %
+(whole file),
+.BR n,m ,
+or none (current line). Flags:
+.B g
+(every occurrence on the line),
+.B i
+(ignore case). The replacement understands
+.B &
+(whole match) and
+.BR \\e1 \- \\e9
+(capture groups). Patterns are modern regexes (also used by
+.BR / ):
+.B . [..] * + ? ( ) | ^ $ \\ew \\ed \\es \\eb \\e< \\e>
+\(em Helix-style, not vim's magic mode.
 .SH "BUFFERS & WINDOWS"
 Several files can be open at once, each with its own cursor, undo history and
 language server.
