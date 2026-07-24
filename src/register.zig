@@ -1,9 +1,11 @@
 //! Vim registers: named text holders for yank, delete and paste.
 //!
-//! Slot 0 is the unnamed register ("); slots 1..26 are a..z. Writing a named
-//! register mirrors into the unnamed one, matching vim. An uppercase name
-//! appends to the lowercase register. Each register remembers whether its text
-//! is linewise so paste can reproduce vim's behaviour.
+//! Slot 0 is the unnamed register ("); slots 1..26 are a..z; slot 27 is the
+//! system clipboard (`+`, with `*` as an alias) — the editor mirrors writes to
+//! it out to the terminal via OSC 52, so it works locally and over SSH.
+//! Writing a named register mirrors into the unnamed one, matching vim. An
+//! uppercase name appends to the lowercase register. Each register remembers
+//! whether its text is linewise so paste can reproduce vim's behaviour.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -15,10 +17,10 @@ pub const Register = struct {
 
 pub const Store = struct {
     gpa: Allocator,
-    slots: [27]?Register,
+    slots: [28]?Register,
 
     pub fn init(gpa: Allocator) Store {
-        return .{ .gpa = gpa, .slots = [_]?Register{null} ** 27 };
+        return .{ .gpa = gpa, .slots = [_]?Register{null} ** 28 };
     }
 
     pub fn deinit(self: *Store) void {
@@ -34,8 +36,15 @@ pub const Store = struct {
             '"' => 0,
             'a'...'z' => 1 + (n - 'a'),
             'A'...'Z' => 1 + (n - 'A'),
+            '+', '*' => 27, // system clipboard (shared slot, like vim's common setup)
             else => null,
         };
+    }
+
+    /// Whether `name` addresses the system clipboard (`"+` / `"*`).
+    pub fn isClipboard(name: ?u8) bool {
+        const n = name orelse return false;
+        return n == '+' or n == '*';
     }
 
     /// Store `text` in register `name` (null = unnamed). Copies the text.
@@ -87,4 +96,14 @@ test "named mirrors to unnamed; uppercase appends" {
     try std.testing.expectEqualStrings("foo", s.get(null).?.text); // mirrored
     try s.set('A', "bar", true);
     try std.testing.expectEqualStrings("foobar", s.get('a').?.text);
+}
+
+test "clipboard register + and * share a slot" {
+    var s = Store.init(std.testing.allocator);
+    defer s.deinit();
+    try s.set('+', "clip", false);
+    try std.testing.expectEqualStrings("clip", s.get('*').?.text);
+    try std.testing.expectEqualStrings("clip", s.get(null).?.text); // mirrored
+    try std.testing.expect(Store.isClipboard('+'));
+    try std.testing.expect(!Store.isClipboard('a'));
 }

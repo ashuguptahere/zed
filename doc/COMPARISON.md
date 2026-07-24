@@ -15,8 +15,8 @@ batteries-included editor.
    picker still literal).
 2. ~~**Jumplist** `Ctrl-o`/`Ctrl-i`~~ — **DONE** (cross-buffer, nvim-verified;
    records G/search/marks/%/buffer switches/gd).
-3. **System clipboard** (both, high) — OSC 52 fits zedit's zero-dependency
-   design perfectly (nvim 0.11 made it a default fallback).
+3. ~~**System clipboard**~~ — **DONE** (`"+`/`"*` via OSC 52 + bracketed
+   paste in; works over SSH with zero dependencies).
 4. **Autoindent** on `o`/`O`/Enter (both, high — already in Known gaps).
 5. **LSP: find references, formatting (+ format-on-save), cross-file /
    multi-line WorkspaceEdits** (both, high).

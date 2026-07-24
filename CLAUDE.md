@@ -77,7 +77,7 @@ Source is `src/`, one responsibility per module:
 | `main.zig`    | Composition root: CLI → logging → buffer → terminal → editor; failure handling. |
 | `cli.zig`     | Argument parsing and the help/version text. |
 | `log.zig`     | File logging (custom `std.log` sink) and the `Span` profiling primitive. |
-| `term.zig`    | POSIX terminal control: raw mode, alternate screen, window size, event-driven input. |
+| `term.zig`    | POSIX terminal control: raw mode, alternate screen, bracketed paste, window size, event-driven input. |
 | `key.zig`     | Decoding raw input bytes into `Key` events (text, arrows, navigation). |
 | `unicode.zig` | UTF-8 decoding, codepoint boundaries, display width. |
 | `buffer.zig`  | The document: zero-copy load (lines borrow from one shared buffer, copy-on-write on first edit), save, UTF-8-aware edits. |
@@ -158,6 +158,11 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 - **Text objects:** `iw aw iW aW`, `i( i[ i{ i< i" i' i\`` and `a…` variants
   (plus `b`/`B` aliases), e.g. `ciw`, `di"`, `da(`.
 - **Registers/paste:** `"a` selects a register; `p`/`P` paste (linewise/charwise).
+  `"+` / `"*` are the system clipboard: yanks there are sent to the terminal
+  as OSC 52 (sets the local clipboard, even over SSH); pastes use the
+  register's shadow copy. Terminal pastes arrive via bracketed paste and
+  insert literally (no auto-pairs, single undo step; works in insert, normal,
+  the command line and pickers).
 - **Undo:** `u`, redo `Ctrl-r`. **Repeat:** `.` repeats the last change.
 - **Visual:** `v` (char), `V` (line), `Ctrl-v` (block); move to extend, `o`
   swaps ends, then `d c y x > <`. In block mode `I`/`A` insert at the left/right
@@ -255,7 +260,12 @@ any font), syntax highlighting (tree-sitter for 10 languages (Zig/C/Python/JSON/
 cursorline, indent guides, and a git change gutter (add/change/delete signs
 from `git diff`, recomputed on load and save). All colour is emitted as 24-bit
 SGR; the frame is still built once and written in a single syscall, and
-rendering still only happens on change.
+rendering still only happens on change. Frames are built as positioned,
+colour-independent row segments and diffed against the previous frame — only
+changed rows are written (full frames when popups overlay rows, in the picker,
+or after a resize), which keeps slow SSH links snappy. Input reads complete
+escape sequences split across chunks (SSH delivers small reads) before
+decoding.
 
 Runtime configuration is one documented file (see `config.zig`): theme,
 `tab_width`, `nerd_font`, `sidebar` (left/right), `relative_numbers`,

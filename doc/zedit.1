@@ -171,8 +171,13 @@ Delete the surrounding {char}, e.g.
 .BR ds( .
 .SS "Registers, undo, repeat"
 .TP
-.B \(dq{a-z}
+.B \(dq{a-z} \(dq+ \(dq*
 Select a register for the next yank/delete/paste.
+.B \(dq+
+and
+.B \(dq*
+are the system clipboard: yanking to them emits OSC 52, which sets the local
+clipboard even over SSH. Terminal pastes (bracketed paste) insert literally.
 .TP
 .B p P u Ctrl-r .
 Paste after/before, undo, redo, repeat last change.

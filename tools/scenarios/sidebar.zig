@@ -95,7 +95,10 @@ pub fn run(ctx: *h.Ctx) !void {
         var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "f.txt" }, .cwd = dir, .term = "xterm-256color" });
         defer s.finish();
         s.drain(500);
-        s.send(" gd"); // inline unified diff in a split
+        s.send(" g"); // the Git which-key submenu must render (regression:
+        s.drain(300); // .space_git was missing from the render switch)
+        ctx.check("Space g shows the Git menu", s.containsPlain(ctx.gpa, "diff (inline)"));
+        s.send("d"); // continue into the inline diff
         s.drain(600);
         ctx.check("inline diff shows hunks", s.containsPlain(ctx.gpa, "@@") and
             s.containsPlain(ctx.gpa, "+BETA") and s.containsPlain(ctx.gpa, "[diff] f.txt"));

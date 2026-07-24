@@ -30,6 +30,8 @@ fn handleWinch(_: posix.SIG) callconv(.c) void {
 pub const ansi = struct {
     pub const enter_alt_screen = "\x1b[?1049h";
     pub const leave_alt_screen = "\x1b[?1049l";
+    pub const enable_bracketed_paste = "\x1b[?2004h";
+    pub const disable_bracketed_paste = "\x1b[?2004l";
     pub const clear_screen = "\x1b[2J";
     pub const clear_line_right = "\x1b[K";
     pub const cursor_home = "\x1b[H";
@@ -116,11 +118,16 @@ pub const Terminal = struct {
 
     pub fn enterAltScreen(self: *Terminal) Error!void {
         try self.write(ansi.enter_alt_screen);
+        // Bracketed paste: terminal-pastes arrive fenced in \x1b[200~ ...
+        // \x1b[201~ so they insert literally (crucial over SSH, where the
+        // terminal's paste is the only clipboard route into the editor).
+        try self.write(ansi.enable_bracketed_paste);
         self.alt_active = true;
     }
 
     pub fn leaveAltScreen(self: *Terminal) void {
         if (!self.alt_active) return;
+        self.write(ansi.disable_bracketed_paste) catch {};
         self.write(ansi.show_cursor) catch {};
         self.write(ansi.leave_alt_screen) catch {};
         self.alt_active = false;

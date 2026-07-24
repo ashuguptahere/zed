@@ -30,7 +30,8 @@ runtime dependencies**.
     `%`, `H M L`, `Ctrl-d/u/f/b`, arrows
   - Counts and operators: `d c y`, `> <`, doubled `dd cc yy`, `D C Y x X s S`,
     `r ~ J`, e.g. `3dw`, `d2j`, `ci"`, `da(`, `diw`
-  - Registers and paste: `"a`, `p` / `P` (linewise & charwise)
+  - Registers and paste: `"a`, `p` / `P` (linewise & charwise); `"+`/`"*`
+    talk to the **system clipboard via OSC 52** — works over SSH
   - Undo `u`, redo `Ctrl-r`, repeat `.`
   - Visual `v` / `V` with `d c y x > <`
   - Search `/ ? n N * #` — **regex** (modern syntax, linear-time engine, no
@@ -170,6 +171,20 @@ that's the open-time win; helix loads into a rope; VSCode's JS string model
 is why it struggles and disables features around ~50 MB. zedit reads once,
 indexes lines in one vectorized pass, and edits copy-on-write per line.
 nvim's remaining open-time edge is deferred line indexing — on the list.)
+
+## SSH
+
+zedit is built to feel local over a remote shell:
+
+- **Clipboard out**: `"+y` sends an OSC 52 escape through the connection, so
+  the *local* terminal's clipboard gets the text — no X11 forwarding, no
+  xclip/wl-copy on the server.
+- **Clipboard in**: your terminal's paste arrives via **bracketed paste** and
+  is inserted literally — multi-line pastes don't trigger auto-pairs or get
+  executed as commands.
+- **Bandwidth**: rendering is row-diffed — a keystroke re-sends only the rows
+  that changed, not the whole screen — and input handling reassembles escape
+  sequences that SSH splits across small reads.
 
 ## Project layout
 

@@ -176,6 +176,10 @@ const Win = struct {
 /// One jumplist entry: where the cursor was before a jump-motion.
 const Jump = struct { doc: *Doc, pos: Pos };
 
+/// One positioned, colour-independent frame segment (a screen row of one
+/// window / the sidebar / the status bar), for row-diffed rendering.
+const Seg = struct { key: usize, start: usize, end: usize = 0 };
+
 /// Everything a window needs to render one frame, resolved from either the
 /// Editor mirror (active window) or the window's stored Doc (inactive).
 const View = struct {
@@ -292,6 +296,16 @@ pub const Editor = struct {
 
     // rendering / io
     frame: std.ArrayList(u8),
+    // Row-diff state: each frame is built as positioned, colour-independent
+    // segments (one per screen row per window/sidebar/status). When nothing
+    // overlays them, only segments whose bytes changed since the previous
+    // frame are written — a big bandwidth win over SSH.
+    seg_marks: std.ArrayList(Seg),
+    segs_end: usize,
+    prev_frame: std.ArrayList(u8),
+    prev_marks: std.ArrayList(Seg),
+    prev_valid: bool,
+    out_frame: std.ArrayList(u8),
     status: std.ArrayList(u8),
     lang: syntax.Language,
     style_buf: std.ArrayList(syntax.Style),
@@ -319,6 +333,12 @@ pub const Editor = struct {
     comp_filtered: std.ArrayList(usize), // indices into lsp.completions matching the prefix
     comp_sel: usize,
     sig_open: bool, // signature-help popup is showing (reads lsp.signature)
+
+    // Bracketed paste (terminal paste, incl. over SSH): content arrives fenced
+    // in \x1b[200~ ... \x1b[201~ and is inserted literally.
+    pasting: bool,
+    paste_carry: [8]u8, // partial end-marker bytes at a read boundary
+    paste_carry_len: usize,
 
     quit: bool,
     inbuf: [256]u8,
@@ -435,6 +455,12 @@ pub const Editor = struct {
             .change_started = false,
             .in_dot = false,
             .frame = .empty,
+            .seg_marks = .empty,
+            .segs_end = 0,
+            .prev_frame = .empty,
+            .prev_marks = .empty,
+            .prev_valid = false,
+            .out_frame = .empty,
             .status = .empty,
             .lang = syntax.detect(doc.buf.path),
             .style_buf = .empty,
@@ -456,6 +482,9 @@ pub const Editor = struct {
             .comp_filtered = .empty,
             .comp_sel = 0,
             .sig_open = false,
+            .pasting = false,
+            .paste_carry = undefined,
+            .paste_carry_len = 0,
             .quit = false,
             .inbuf = undefined,
         };
@@ -474,6 +503,10 @@ pub const Editor = struct {
         self.dot_keys.deinit(self.gpa);
         self.dot_temp.deinit(self.gpa);
         self.frame.deinit(self.gpa);
+        self.seg_marks.deinit(self.gpa);
+        self.prev_frame.deinit(self.gpa);
+        self.prev_marks.deinit(self.gpa);
+        self.out_frame.deinit(self.gpa);
         self.status.deinit(self.gpa);
         self.style_buf.deinit(self.gpa);
         self.git_signs.deinit();
@@ -535,6 +568,7 @@ pub const Editor = struct {
             const ready = try self.term.waitReady(lsp_fd);
             if (self.term.takeResize()) {
                 self.win = self.term.size();
+                self.prev_valid = false; // layout changed; diff base is stale
                 needs_render = true;
                 continue;
             }
@@ -556,17 +590,35 @@ pub const Editor = struct {
 
     fn readInput(self: *Editor) ![]u8 {
         var n = (try self.term.read(self.inbuf[0..])).len;
-        if (n == 1 and self.inbuf[0] == 0x1b and self.term.waitMore(25)) {
+        // Complete a trailing escape sequence split across reads — over SSH,
+        // input regularly arrives in small chunks, and decoding half a CSI
+        // sequence would garble arrows, paste fences and friends. A genuine
+        // lone Esc press just times out the short wait and stays Esc.
+        while (n > 0 and n < self.inbuf.len and
+            incompleteEscapeTail(self.inbuf[0..n]) and self.term.waitMore(15))
+        {
             n += (try self.term.read(self.inbuf[n..])).len;
         }
         return self.inbuf[0..n];
     }
 
     /// User input from the terminal: decode keys, record macros, dispatch.
+    const paste_start_seq = "\x1b[200~";
+    const paste_end_seq = "\x1b[201~";
+
     fn processInput(self: *Editor, chunk: []const u8) !void {
         var sp = log.Span.start();
         var i: usize = 0;
         while (i < chunk.len) {
+            if (self.pasting) {
+                i += try self.pasteConsume(chunk[i..]);
+                continue;
+            }
+            if (std.mem.startsWith(u8, chunk[i..], paste_start_seq)) {
+                self.beginPaste();
+                i += paste_start_seq.len;
+                continue;
+            }
             const d = key.decode(chunk[i..]);
             const raw = chunk[i .. i + d.consumed];
             i += d.consumed;
@@ -575,6 +627,102 @@ pub const Editor = struct {
             if (self.quit) break;
         }
         sp.lap("input");
+    }
+
+    fn beginPaste(self: *Editor) void {
+        self.pasting = true;
+        self.paste_carry_len = 0;
+        self.comp_open = false;
+        self.sig_open = false;
+        switch (self.mode) {
+            .normal, .insert, .visual, .visual_line, .visual_block => self.pushUndo(),
+            else => {},
+        }
+    }
+
+    /// Consume paste-content bytes up to (and including) the end fence,
+    /// inserting everything literally. Returns how many bytes were consumed.
+    /// A fence split across reads is held in `paste_carry` until resolved.
+    fn pasteConsume(self: *Editor, bytes: []const u8) !usize {
+        // Resolve carried bytes first: either they complete the end fence, or
+        // they were literal content that merely looked like its start.
+        if (self.paste_carry_len > 0) {
+            const have = self.paste_carry_len;
+            const need = paste_end_seq.len - have;
+            const take = @min(need, bytes.len);
+            if (std.mem.eql(u8, bytes[0..take], paste_end_seq[have .. have + take])) {
+                if (take == need) {
+                    self.paste_carry_len = 0;
+                    self.endPaste();
+                    return take;
+                }
+                @memcpy(self.paste_carry[have .. have + take], bytes[0..take]);
+                self.paste_carry_len += take;
+                return take; // still a fence prefix; wait for more
+            }
+            // False alarm: the carry was content. Insert it and rescan `bytes`.
+            try self.pasteInsert(self.paste_carry[0..have]);
+            self.paste_carry_len = 0;
+        }
+        if (std.mem.indexOf(u8, bytes, paste_end_seq)) |at| {
+            try self.pasteInsert(bytes[0..at]);
+            self.endPaste();
+            return at + paste_end_seq.len;
+        }
+        // No fence: keep any trailing fence-prefix for the next read.
+        var keep: usize = 0;
+        var probe = @min(paste_end_seq.len - 1, bytes.len);
+        while (probe > 0) : (probe -= 1) {
+            if (std.mem.eql(u8, bytes[bytes.len - probe ..], paste_end_seq[0..probe])) {
+                keep = probe;
+                break;
+            }
+        }
+        try self.pasteInsert(bytes[0 .. bytes.len - keep]);
+        @memcpy(self.paste_carry[0..keep], bytes[bytes.len - keep ..]);
+        self.paste_carry_len = keep;
+        return bytes.len;
+    }
+
+    fn endPaste(self: *Editor) void {
+        self.pasting = false;
+        self.updateGoal();
+    }
+
+    /// Insert pasted bytes literally: no auto-pairs, no key semantics. In the
+    /// command line / picker only the first line is taken (they're one-line).
+    fn pasteInsert(self: *Editor, bytes: []const u8) !void {
+        if (bytes.len == 0) return;
+        switch (self.mode) {
+            .command => {
+                const end = std.mem.indexOfAny(u8, bytes, "\r\n") orelse bytes.len;
+                try self.cmd.appendSlice(self.gpa, bytes[0..end]);
+                if (self.searching()) self.searchLive();
+            },
+            .picker => {
+                const end = std.mem.indexOfAny(u8, bytes, "\r\n") orelse bytes.len;
+                try self.picker_query.appendSlice(self.gpa, bytes[0..end]);
+                self.onQueryChange();
+            },
+            else => {
+                var i: usize = 0;
+                while (i < bytes.len) {
+                    const nl = std.mem.indexOfScalarPos(u8, bytes, i, '\n') orelse bytes.len;
+                    var seg = bytes[i..nl];
+                    if (seg.len > 0 and seg[seg.len - 1] == '\r') seg = seg[0 .. seg.len - 1];
+                    if (seg.len > 0) {
+                        try self.buf.insertBytes(self.cy, self.cx, seg);
+                        self.cx += seg.len;
+                    }
+                    if (nl < bytes.len) {
+                        try self.buf.splitLine(self.cy, self.cx);
+                        self.cy += 1;
+                        self.cx = 0;
+                    }
+                    i = nl + 1;
+                }
+            },
+        }
     }
 
     /// Replay decoded keys (macros, dot-repeat) without re-recording them.
@@ -1288,7 +1436,7 @@ pub const Editor = struct {
         }
         const text = self.extract(span) catch return;
         defer self.gpa.free(text);
-        self.registers.set(self.pending_register, text, span.lines) catch {};
+        self.yankTo(text, span.lines);
 
         if (op == .yank) {
             if (span.lines) {
@@ -1461,7 +1609,7 @@ pub const Editor = struct {
     fn charwiseDelete(self: *Editor, span: Span) !void {
         const text = try self.extract(span);
         defer self.gpa.free(text);
-        try self.registers.set(self.pending_register, text, false);
+        self.yankTo(text, false);
         self.pushUndo();
         self.setCursor(self.deleteSpan(span));
     }
@@ -1471,7 +1619,7 @@ pub const Editor = struct {
         const span: Span = .{ .lines = false, .start = .{ .row = self.cy, .col = self.cx }, .end = .{ .row = self.cy, .col = line.len } };
         const text = try self.extract(span);
         defer self.gpa.free(text);
-        try self.registers.set(self.pending_register, text, false);
+        self.yankTo(text, false);
         self.pushUndo();
         self.setCursor(self.deleteSpan(span));
         if (change) self.mode = .insert;
@@ -2041,7 +2189,7 @@ pub const Editor = struct {
             try out.appendSlice(self.gpa, line[lo..hi]);
             if (i < r.bot) try out.append(self.gpa, '\n');
         }
-        try self.registers.set(self.pending_register, out.items, false);
+        self.yankTo(out.items, false);
         self.mode = .normal;
         self.cy = r.top;
         self.cx = byteAtDisplayCol(self.buf.line(r.top), r.left);
@@ -3861,6 +4009,33 @@ pub const Editor = struct {
         self.updateGoal();
     }
 
+    /// Store yanked/deleted text in the pending register. Writes to the
+    /// clipboard registers (`"+` / `"*`) are also sent to the terminal as an
+    /// OSC 52 sequence, which sets the *local* system clipboard even over SSH.
+    fn yankTo(self: *Editor, text: []const u8, linewise: bool) void {
+        self.registers.set(self.pending_register, text, linewise) catch {};
+        if (register.Store.isClipboard(self.pending_register)) self.osc52Copy(text);
+    }
+
+    fn osc52Copy(self: *Editor, text: []const u8) void {
+        const max_raw = 1 << 20; // terminals cap OSC 52 payloads; 1 MiB is generous
+        if (text.len > max_raw) {
+            self.setStatus("clipboard: too large for OSC 52 ({d} bytes)", .{text.len});
+            return;
+        }
+        const enc = std.base64.standard.Encoder;
+        const b64 = self.gpa.alloc(u8, enc.calcSize(text.len)) catch return;
+        defer self.gpa.free(b64);
+        _ = enc.encode(b64, text);
+        var seq: std.ArrayList(u8) = .empty;
+        defer seq.deinit(self.gpa);
+        seq.appendSlice(self.gpa, "\x1b]52;c;") catch return;
+        seq.appendSlice(self.gpa, b64) catch return;
+        seq.append(self.gpa, 0x07) catch return; // BEL terminator
+        self.term.write(seq.items) catch {};
+        self.setStatus("copied {d} bytes to the system clipboard", .{text.len});
+    }
+
     fn undoChange(self: *Editor) void {
         if (!self.history.undo(self.buf, &self.cy, &self.cx)) self.setStatus("already at oldest change", .{});
         self.clampCursor();
@@ -4236,6 +4411,7 @@ pub const Editor = struct {
         if (self.sb_sel >= self.sb_scroll + rows) self.sb_scroll = self.sb_sel - rows + 1;
 
         var b: [16]u8 = undefined;
+        self.beginSeg(1, x);
         try self.emit(try std.fmt.bufPrint(&b, "\x1b[1;{d}H", .{x}));
         try self.setBg(if (self.sb_focus) th.mode_command else th.status_seg_bg);
         try self.setFg(if (self.sb_focus) th.bg else th.status_seg_fg);
@@ -4245,6 +4421,7 @@ pub const Editor = struct {
         var r: usize = 0;
         while (r < rows) : (r += 1) {
             const idx = self.sb_scroll + r;
+            self.beginSeg(r + 2, x);
             try self.emit(try std.fmt.bufPrint(&b, "\x1b[{d};{d}H", .{ r + 2, x }));
             const selected = idx == self.sb_sel and idx < self.sb_entries.items.len;
             try self.setBg(if (selected and self.sb_focus) th.selection else if (selected) th.cursorline else th.bg_dark);
@@ -4357,6 +4534,7 @@ pub const Editor = struct {
         var r: usize = 0;
         while (r < text_rows) : (r += 1) {
             const file_row = view.top + r;
+            self.beginSeg(w.gy + r, w.gx);
             try self.emit(try std.fmt.bufPrint(&b, "\x1b[{d};{d}H", .{ w.gy + r, w.gx }));
             const is_cur = view.active and file_row == view.cy;
             const row_bg = if (is_cur) th.cursorline else th.bg;
@@ -4378,6 +4556,7 @@ pub const Editor = struct {
     fn emitWinStatus(self: *Editor, w: *Win, view: View) !void {
         const th = theme.current;
         var b: [16]u8 = undefined;
+        self.beginSeg(w.gy + w.gh - 1, w.gx);
         try self.emit(try std.fmt.bufPrint(&b, "\x1b[{d};{d}H", .{ w.gy + w.gh - 1, w.gx }));
         const active = w == self.cur;
         try self.setBg(if (active) th.status_seg_bg else th.status_bg);
@@ -4400,6 +4579,65 @@ pub const Editor = struct {
 
     // === rendering =========================================================
 
+    fn segKey(row: usize, col: usize) usize {
+        return row * 100_000 + col;
+    }
+
+    /// Start a new diffable segment at the current frame position. Resets the
+    /// SGR dedupe state so every segment carries its own colours and can be
+    /// skipped or replayed independently.
+    fn beginSeg(self: *Editor, row: usize, col: usize) void {
+        if (self.seg_marks.items.len > 0) {
+            self.seg_marks.items[self.seg_marks.items.len - 1].end = self.frame.items.len;
+        }
+        self.seg_marks.append(self.gpa, .{ .key = segKey(row, col), .start = self.frame.items.len }) catch {};
+        self.cur_fg = null;
+        self.cur_bg = null;
+    }
+
+    fn closeSegs(self: *Editor) void {
+        if (self.seg_marks.items.len > 0) {
+            self.seg_marks.items[self.seg_marks.items.len - 1].end = self.frame.items.len;
+        }
+        self.segs_end = self.frame.items.len;
+    }
+
+    /// Write the built frame: whole when the previous frame can't be diffed
+    /// against, else only the segments whose bytes changed.
+    fn writeFrame(self: *Editor, diffable: bool) !void {
+        defer if (diffable) {
+            std.mem.swap(std.ArrayList(u8), &self.frame, &self.prev_frame);
+            std.mem.swap(std.ArrayList(Seg), &self.seg_marks, &self.prev_marks);
+            self.prev_valid = true;
+        } else {
+            self.prev_valid = false;
+        };
+
+        if (!diffable or !self.prev_valid or self.seg_marks.items.len == 0) {
+            try self.term.write(self.frame.items);
+            return;
+        }
+        self.out_frame.clearRetainingCapacity();
+        const first = self.seg_marks.items[0].start;
+        try self.out_frame.appendSlice(self.gpa, self.frame.items[0..first]);
+        for (self.seg_marks.items) |seg| {
+            const bytes = self.frame.items[seg.start..seg.end];
+            if (self.prevSegBytes(seg.key)) |old| {
+                if (std.mem.eql(u8, old, bytes)) continue; // unchanged row
+            }
+            try self.out_frame.appendSlice(self.gpa, bytes);
+        }
+        try self.out_frame.appendSlice(self.gpa, self.frame.items[self.segs_end..]);
+        try self.term.write(self.out_frame.items);
+    }
+
+    fn prevSegBytes(self: *Editor, seg_key: usize) ?[]const u8 {
+        for (self.prev_marks.items) |seg| {
+            if (seg.key == seg_key) return self.prev_frame.items[seg.start..seg.end];
+        }
+        return null;
+    }
+
     fn render(self: *Editor) !void {
         var sp = log.Span.start();
         self.frame.clearRetainingCapacity();
@@ -4409,9 +4647,11 @@ pub const Editor = struct {
         try self.emit(ansi.cursor_home);
         try self.emit(ansi.reset_attrs);
 
+        self.seg_marks.clearRetainingCapacity();
         if (self.mode == .picker) {
             try self.renderPickerBody();
             try self.term.write(self.frame.items);
+            self.prev_valid = false; // the picker paints the whole screen
             sp.lap("render");
             return;
         }
@@ -4426,10 +4666,18 @@ pub const Editor = struct {
 
         const gutter = self.gutterWidth();
         // Bottom command/status line.
+        self.beginSeg(self.win.rows, 1);
         try self.emitFmt("\x1b[{d};1H", .{self.win.rows});
         try self.renderStatus();
+        self.closeSegs();
+        // Overlays draw on top of already-emitted rows, so frames showing one
+        // are written whole (and the next plain frame repaints beneath them).
+        var overlay = self.sig_open or self.comp_open;
         switch (self.await_arg) {
-            .space_leader, .space_find, .space_lang => try self.renderWhichKey(),
+            .space_leader, .space_find, .space_lang, .space_git => {
+                try self.renderWhichKey();
+                overlay = true;
+            },
             else => {},
         }
         if (self.sig_open) try self.renderSignature(gutter);
@@ -4437,7 +4685,7 @@ pub const Editor = struct {
         try self.emit(ansi.reset_attrs);
         try self.placeCursor(gutter);
         try self.emit(ansi.show_cursor);
-        try self.term.write(self.frame.items);
+        try self.writeFrame(!overlay);
         sp.lap("render");
     }
 
@@ -5057,6 +5305,21 @@ fn charOf(k: key.Key) ?u21 {
         .tab => '\t',
         else => null,
     };
+}
+
+/// True when `buf` ends in the middle of an escape sequence (a bare ESC, or a
+/// CSI/SS3 introducer whose final byte hasn't arrived yet).
+fn incompleteEscapeTail(buf: []const u8) bool {
+    const idx = std.mem.lastIndexOfScalar(u8, buf, 0x1b) orelse return false;
+    const tail = buf[idx..];
+    if (tail.len == 1) return true; // lone ESC: maybe a sequence, maybe the key
+    if (tail[1] != '[' and tail[1] != 'O') return false; // ESC+other: complete
+    if (tail.len == 2) return true; // introducer without its body yet
+    if (tail[1] == 'O') return false; // SS3 is exactly three bytes
+    for (tail[2..]) |b| {
+        if (b >= 0x40 and b <= 0x7e) return false; // CSI final byte seen
+    }
+    return true;
 }
 
 fn charByte(k: key.Key) ?u8 {
