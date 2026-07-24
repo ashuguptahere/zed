@@ -56,6 +56,11 @@ runtime dependencies**.
 - **Multiple buffers and windows**: `:e`, `:bn`/`:bp`/`:bd`/`:ls`;
   `:split`/`:vsplit` and `Ctrl-w` navigation; every buffer keeps its own
   cursor, undo history, highlighting and language server
+- **File-tree sidebar** (`Space e`): browse and open files, expand
+  directories; lives on the left or right (config `sidebar = left|right`)
+- **Git diff views**: `Space g d` inline unified diff (coloured +/- lines) in
+  a split, `Space g s` the index version side by side — plus the always-on
+  gutter change signs
 - **Themes**: `tokyonight` (default), `gruvbox`, `catppuccin`, `nord`,
   `onedark` — set in the config, switch live with `:theme <name>` or `Space f t`
 - AstroNvim/Helix-style look: true-colour syntax highlighting (tree-sitter for
@@ -108,7 +113,7 @@ zedit --init-config
 
 Format is `key = value` with `#` comments; unknown keys are ignored and a
 missing file just means defaults. Settings today: `theme`, `tab_width`,
-`nerd_font`.
+`nerd_font`, `sidebar`.
 
 > **Icons look broken?** The powerline statusline separators are Nerd Font
 > glyphs (private-use codepoints). Terminal applications cannot ship fonts —

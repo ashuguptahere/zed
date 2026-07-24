@@ -86,6 +86,10 @@ verbatim.
 glyphs; set
 .B false
 for a flat statusline that renders correctly in any font.
+.TP
+.B sidebar
+.BR left " (default) or " right :
+which side the file-tree explorer opens on.
 .SH MODES
 zedit is modal: NORMAL for movement and commands, INSERT for typing, VISUAL and
 V\-LINE and V\-BLOCK for selections, COMMAND for the
@@ -218,6 +222,27 @@ Theme picker.
 .TP
 .B Space l a\fR, \fPSpace l r\fR, \fPSpace l s\fR, \fPSpace l d
 Code action, rename symbol, document symbols, line diagnostic.
+.TP
+.B Space g d\fR, \fPSpace g s
+Git: unified diff of the current file in a split (also
+.BR :diff ),
+and the index version side by side (also
+.BR :vdiff ).
+.TP
+.B Space e
+Toggle the file-tree explorer. Inside it:
+.B j k
+move,
+.B Enter\fR/\fPl
+expand a directory or open the file,
+.B h
+collapse / go to parent,
+.B R
+refresh,
+.B Esc
+return focus to the buffer,
+.B q
+close.
 .TP
 .B Space c\fR, \fPSpace w\fR, \fPSpace q
 Close buffer, write, quit.

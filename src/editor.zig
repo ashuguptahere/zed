@@ -74,6 +74,11 @@ pub const Mode = enum {
 const PickerKind = enum { files, grep, code_action, symbol, theme, buffer };
 const PickItem = struct { display: []u8, path: []u8, line: usize };
 
+/// One visible row of the file-tree sidebar (a flattened view of the tree:
+/// expanded directories contribute their children right below themselves).
+const SbEntry = struct { path: []u8, depth: u8, is_dir: bool, expanded: bool };
+const sidebar_width: usize = 28;
+
 const Operator = enum { none, delete, change, yank, indent_right, indent_left, comment, surround };
 
 /// What the next key supplies an argument for.
@@ -100,6 +105,7 @@ const Await = enum {
     space_leader, // <space> menu (which-key)
     space_find, // <space>f — the AstroNvim Find group
     space_lang, // <space>l — the AstroNvim Language-tools group
+    space_git, // <space>g — the Git group (diff views)
     surround_add_char, // ys{motion}{char} / visual S{char}
     surround_delete, // ds{char}
     surround_change_from, // cs{old}...
@@ -133,6 +139,7 @@ const Span = struct {
 /// exception — it always lives here, and `Editor.buf` points at the active one.
 const Doc = struct {
     buf: buffer.Buffer,
+    name: ?[]u8, // display name for scratch buffers (buf.path == null)
     lang: syntax.Language,
     history: undo.History,
     marks: [26]?Pos,
@@ -241,6 +248,14 @@ pub const Editor = struct {
     // picker (fuzzy file finder / global search)
     picker_kind: PickerKind,
     picker_items: std.ArrayList(PickItem),
+    // file-tree sidebar (Space e; side set by the config's `sidebar`)
+    sb_open: bool,
+    sb_focus: bool, // keys go to the tree instead of the buffer
+    sb_entries: std.ArrayList(SbEntry),
+    sb_expanded: std.StringHashMap(void), // owned keys: expanded dir paths
+    sb_sel: usize,
+    sb_scroll: usize,
+
     // Warm file-list cache (the Zed trick: opening the picker does no
     // filesystem work after the first walk; Ctrl-r in the picker refreshes).
     fcache: std.ArrayList([]u8), // project file paths, walked once per session
@@ -303,6 +318,7 @@ pub const Editor = struct {
         const doc = try gpa.create(Doc);
         doc.* = .{
             .buf = b,
+            .name = null,
             .lang = syntax.detect(b.path),
             .history = undo.History.init(gpa),
             .marks = [_]?Pos{null} ** 26,
@@ -321,7 +337,12 @@ pub const Editor = struct {
         return doc;
     }
 
+    fn docLabel(doc: *const Doc) []const u8 {
+        return doc.buf.path orelse (doc.name orelse "[No Name]");
+    }
+
     fn freeDocState(doc: *Doc, gpa: Allocator) void {
+        if (doc.name) |n| gpa.free(n);
         doc.history.deinit();
         doc.git_signs.deinit();
         if (doc.ts) |*t| t.deinit();
@@ -376,6 +397,12 @@ pub const Editor = struct {
             .cmd_kind = .ex,
             .picker_kind = .files,
             .picker_items = .empty,
+            .sb_open = false,
+            .sb_focus = false,
+            .sb_entries = .empty,
+            .sb_expanded = std.StringHashMap(void).init(gpa),
+            .sb_sel = 0,
+            .sb_scroll = 0,
             .fcache = .empty,
             .fcache_masks = .empty,
             .fcache_ready = false,
@@ -439,6 +466,11 @@ pub const Editor = struct {
         self.extra.deinit(self.gpa);
         self.freePicker();
         self.picker_items.deinit(self.gpa);
+        self.sbFree();
+        self.sb_entries.deinit(self.gpa);
+        var xit = self.sb_expanded.keyIterator();
+        while (xit.next()) |k| self.gpa.free(k.*);
+        self.sb_expanded.deinit();
         for (self.fcache.items) |f| self.gpa.free(f);
         self.fcache.deinit(self.gpa);
         self.fcache_masks.deinit(self.gpa);
@@ -576,6 +608,7 @@ pub const Editor = struct {
 
     fn handleKey(self: *Editor, k: key.Key) !void {
         self.status.clearRetainingCapacity();
+        if (self.sb_focus and self.mode == .normal) return self.sidebarKey(k);
         switch (self.mode) {
             .normal => try self.normalKey(k),
             .insert => try self.insertKey(k),
@@ -831,6 +864,8 @@ pub const Editor = struct {
                 if (k == .char) switch (k.char) {
                     'f' => self.await_arg = .space_find,
                     'l' => self.await_arg = .space_lang,
+                    'g' => self.await_arg = .space_git,
+                    'e' => self.sidebarToggle(), // file explorer (AstroNvim <leader>e)
                     'w' => _ = try self.write(""),
                     'q' => self.doQuit(),
                     'c' => self.closeDoc(), // close buffer (AstroNvim <leader>c)
@@ -854,6 +889,14 @@ pub const Editor = struct {
                     'r' => self.enterRename(), // rename symbol
                     's' => self.lspDocumentSymbol(), // document symbols
                     'd' => self.lineDiagnostic(), // show the line's diagnostic
+                    else => {},
+                };
+            },
+            .space_git => {
+                self.resetPending();
+                if (k == .char) switch (k.char) {
+                    'd' => self.gitDiffInline(), // unified diff in a split
+                    's' => self.gitDiffSide(), // HEAD/index version side by side
                     else => {},
                 };
             },
@@ -2389,7 +2432,7 @@ pub const Editor = struct {
         self.picker_sel = 0;
         self.picker_scroll = 0;
         for (self.docs.items, 0..) |doc, i| {
-            const name = doc.buf.path orelse "[No Name]";
+            const name = docLabel(doc);
             const mark: []const u8 = if (doc == self.d) "* " else "  ";
             const dirty: []const u8 = if (doc.buf.dirty) " \u{25CF}" else "";
             const disp = std.fmt.allocPrint(self.gpa, "{s}{s}{s}", .{ mark, name, dirty }) catch continue;
@@ -2791,7 +2834,7 @@ pub const Editor = struct {
         const ni = if (forward) (idx + 1) % n else (idx + n - 1) % n;
         self.focusDoc(self.docs.items[ni]);
         self.placeAt(self.cy);
-        self.setStatus("{s}", .{self.buf.path orelse "[No Name]"});
+        self.setStatus("{s}", .{docLabel(self.d)});
     }
 
     /// Open `path` in the active window: focus its doc if already open, else
@@ -3067,6 +3110,10 @@ pub const Editor = struct {
             self.closeDoc();
         } else if (eql(cmd, "ls") or eql(cmd, "buffers")) {
             self.listBuffers();
+        } else if (eql(cmd, "diff")) {
+            self.gitDiffInline();
+        } else if (eql(cmd, "vdiff")) {
+            self.gitDiffSide();
         } else if (eql(cmd, "theme")) {
             if (arg.len == 0) {
                 self.openThemePicker();
@@ -3086,7 +3133,7 @@ pub const Editor = struct {
         var n: usize = 0;
         for (self.docs.items, 0..) |doc, i| {
             const mark: []const u8 = if (doc == self.d) "*" else "";
-            const name = if (doc.buf.path) |p| std.fs.path.basename(p) else "[No Name]";
+            const name = std.fs.path.basename(docLabel(doc));
             const seg = std.fmt.bufPrint(b[n..], "{d}{s}:{s}  ", .{ i + 1, mark, name }) catch break;
             n += seg.len;
         }
@@ -3157,7 +3204,7 @@ pub const Editor = struct {
         self.gpa.destroy(victim);
         self.clearExtra();
         self.placeAt(self.cy);
-        self.setStatus("{s}", .{self.buf.path orelse "[No Name]"});
+        self.setStatus("{s}", .{docLabel(self.d)});
     }
 
     // === undo / macros / dot ===============================================
@@ -3686,6 +3733,273 @@ pub const Editor = struct {
         if (cur >= self.left + cols) self.left = cur - cols + 1;
     }
 
+    // === git diff views ====================================================
+
+    /// `Space g d` / `:diff`: the current file's unified diff (worktree vs
+    /// index) in a horizontal split, highlighted by the `.diff` lexer.
+    fn gitDiffInline(self: *Editor) void {
+        const path = self.buf.path orelse return self.setStatus("no file to diff", .{});
+        const res = std.process.run(self.gpa, self.io, .{
+            .argv = &.{ "git", "diff", "--no-color", "--", path },
+            .stdout_limit = .limited(8 << 20),
+            .stderr_limit = .limited(64 << 10),
+        }) catch return self.setStatus("git not available", .{});
+        defer self.gpa.free(res.stdout);
+        defer self.gpa.free(res.stderr);
+        switch (res.term) {
+            .exited => |code| if (code != 0) return self.setStatus("not a git repository", .{}),
+            else => return,
+        }
+        if (std.mem.trim(u8, res.stdout, " \t\r\n").len == 0) return self.setStatus("no changes", .{});
+        var nb: [300]u8 = undefined;
+        const label = std.fmt.bufPrint(&nb, "[diff] {s}", .{std.fs.path.basename(path)}) catch "[diff]";
+        self.openScratch(label, res.stdout, .diff, false);
+    }
+
+    /// `Space g s` / `:vdiff`: the file's index (staged) version side by side
+    /// with the working copy — the same base the gutter signs compare against.
+    fn gitDiffSide(self: *Editor) void {
+        const path = self.buf.path orelse return self.setStatus("no file to diff", .{});
+        var sb: [300]u8 = undefined;
+        const spec = std.fmt.bufPrint(&sb, ":./{s}", .{path}) catch return;
+        const res = std.process.run(self.gpa, self.io, .{
+            .argv = &.{ "git", "show", spec },
+            .stdout_limit = .limited(8 << 20),
+            .stderr_limit = .limited(64 << 10),
+        }) catch return self.setStatus("git not available", .{});
+        defer self.gpa.free(res.stdout);
+        defer self.gpa.free(res.stderr);
+        switch (res.term) {
+            .exited => |code| if (code != 0) return self.setStatus("file is not tracked by git", .{}),
+            else => return,
+        }
+        var nb: [300]u8 = undefined;
+        const label = std.fmt.bufPrint(&nb, "{s} (index)", .{std.fs.path.basename(path)}) catch "(index)";
+        self.openScratch(label, res.stdout, syntax.detect(path), true);
+    }
+
+    /// Open `content` as a named scratch document in a new split (vertical or
+    /// horizontal). Scratch docs have no path; `:w <name>` can still save them.
+    fn openScratch(self: *Editor, label: []const u8, content: []const u8, lang: syntax.Language, vert: bool) void {
+        const nb = buffer.Buffer.fromBytes(self.gpa, content) catch return;
+        const doc = makeDoc(self.gpa, nb) catch {
+            var b = nb;
+            b.deinit();
+            return;
+        };
+        doc.lang = lang;
+        doc.name = self.gpa.dupe(u8, label) catch null;
+        self.docs.append(self.gpa, doc) catch {
+            doc.buf.deinit();
+            freeDocState(doc, self.gpa);
+            self.gpa.destroy(doc);
+            return;
+        };
+        self.splitWindow(vert);
+        self.focusDoc(doc);
+        self.clearExtra();
+        self.placeAt(0);
+    }
+
+    // === file-tree sidebar =================================================
+
+    fn sbFree(self: *Editor) void {
+        for (self.sb_entries.items) |e| self.gpa.free(e.path);
+        self.sb_entries.clearRetainingCapacity();
+    }
+
+    /// Rebuild the flattened tree: the cwd's entries, with expanded directories
+    /// contributing their children inline (directories first, alphabetical).
+    fn sbRebuild(self: *Editor) void {
+        self.sbFree();
+        self.sbAddDir(".", 0);
+        if (self.sb_sel >= self.sb_entries.items.len and self.sb_entries.items.len > 0)
+            self.sb_sel = self.sb_entries.items.len - 1;
+    }
+
+    fn sbAddDir(self: *Editor, dir_path: []const u8, depth: u8) void {
+        if (depth > 16 or self.sb_entries.items.len > 5000) return; // sanity bounds
+        const Tmp = struct { name: []u8, is_dir: bool };
+        var tmp: std.ArrayList(Tmp) = .empty;
+        defer {
+            for (tmp.items) |t| self.gpa.free(t.name);
+            tmp.deinit(self.gpa);
+        }
+        var dir = std.Io.Dir.cwd().openDir(self.io, dir_path, .{ .iterate = true }) catch return;
+        defer dir.close(self.io);
+        var it = dir.iterate();
+        while (it.next(self.io) catch null) |entry| {
+            const is_dir = entry.kind == .directory;
+            if (!is_dir and entry.kind != .file) continue;
+            if (is_dir and ignoredDir(entry.name)) continue;
+            const name = self.gpa.dupe(u8, entry.name) catch continue;
+            tmp.append(self.gpa, .{ .name = name, .is_dir = is_dir }) catch {
+                self.gpa.free(name);
+                break;
+            };
+        }
+        std.mem.sort(Tmp, tmp.items, {}, struct {
+            fn less(_: void, a: Tmp, b: Tmp) bool {
+                if (a.is_dir != b.is_dir) return a.is_dir; // directories first
+                return std.mem.lessThan(u8, a.name, b.name);
+            }
+        }.less);
+
+        for (tmp.items) |t| {
+            const path = if (std.mem.eql(u8, dir_path, "."))
+                (self.gpa.dupe(u8, t.name) catch continue)
+            else
+                (std.fmt.allocPrint(self.gpa, "{s}/{s}", .{ dir_path, t.name }) catch continue);
+            const expanded = t.is_dir and self.sb_expanded.contains(path);
+            self.sb_entries.append(self.gpa, .{ .path = path, .depth = depth, .is_dir = t.is_dir, .expanded = expanded }) catch {
+                self.gpa.free(path);
+                return;
+            };
+            if (expanded) self.sbAddDir(path, depth + 1);
+        }
+    }
+
+    /// `Space e`: open + focus the sidebar, or close it when already open.
+    fn sidebarToggle(self: *Editor) void {
+        if (self.sb_open) {
+            self.sb_open = false;
+            self.sb_focus = false;
+        } else {
+            self.sb_open = true;
+            self.sb_focus = true;
+            self.sbRebuild();
+        }
+    }
+
+    fn sidebarKey(self: *Editor, k: key.Key) !void {
+        const n = self.sb_entries.items.len;
+        switch (k) {
+            .escape => self.sb_focus = false, // keep it open, focus the buffer
+            .down => self.sbMove(1),
+            .up => self.sbMove(-1),
+            .enter => try self.sbActivate(),
+            .char => |c| switch (c) {
+                'j' => self.sbMove(1),
+                'k' => self.sbMove(-1),
+                'g' => self.sb_sel = 0,
+                'G' => self.sb_sel = if (n > 0) n - 1 else 0,
+                'l' => try self.sbActivate(),
+                'h' => self.sbCollapse(),
+                'R' => self.sbRebuild(),
+                'q' => {
+                    self.sb_open = false;
+                    self.sb_focus = false;
+                },
+                else => {},
+            },
+            else => {},
+        }
+    }
+
+    fn sbMove(self: *Editor, delta: i64) void {
+        const n = self.sb_entries.items.len;
+        if (n == 0) return;
+        const cur = @as(i64, @intCast(self.sb_sel)) + delta;
+        self.sb_sel = @intCast(@max(0, @min(cur, @as(i64, @intCast(n - 1)))));
+    }
+
+    /// Enter/l: expand or collapse a directory; open a file in the active
+    /// window (returning focus to the buffer).
+    fn sbActivate(self: *Editor) !void {
+        if (self.sb_sel >= self.sb_entries.items.len) return;
+        const e = self.sb_entries.items[self.sb_sel];
+        if (e.is_dir) {
+            self.sbToggleDir(e.path);
+        } else {
+            self.openFile(e.path, 0);
+            self.sb_focus = false;
+        }
+    }
+
+    /// h: collapse the selected directory, or jump to the parent entry.
+    fn sbCollapse(self: *Editor) void {
+        if (self.sb_sel >= self.sb_entries.items.len) return;
+        const e = self.sb_entries.items[self.sb_sel];
+        if (e.is_dir and e.expanded) {
+            self.sbToggleDir(e.path);
+            return;
+        }
+        if (e.depth == 0) return;
+        var i = self.sb_sel;
+        while (i > 0) : (i -= 1) {
+            if (self.sb_entries.items[i - 1].depth < e.depth) {
+                self.sb_sel = i - 1;
+                return;
+            }
+        }
+    }
+
+    fn sbToggleDir(self: *Editor, path: []const u8) void {
+        if (self.sb_expanded.fetchRemove(path)) |kv| {
+            self.gpa.free(kv.key);
+        } else {
+            const owned = self.gpa.dupe(u8, path) catch return;
+            self.sb_expanded.put(owned, {}) catch {
+                self.gpa.free(owned);
+                return;
+            };
+        }
+        self.sbRebuild();
+    }
+
+    /// The sidebar's 1-based screen x origin (its width is `sbWidth`).
+    fn sbX(self: *Editor) usize {
+        if (config.settings.sidebar == .left) return 1;
+        return self.win.cols - self.sbWidth() + 1;
+    }
+
+    fn sbWidth(self: *Editor) usize {
+        const cols: usize = self.win.cols;
+        return @min(sidebar_width, cols / 2);
+    }
+
+    /// Draw the sidebar: a header row, then the flattened tree with the
+    /// selection highlighted (brighter while the sidebar has focus).
+    fn renderSidebar(self: *Editor) !void {
+        const th = theme.current;
+        const x = self.sbX();
+        const w = self.sbWidth();
+        const rows: usize = if (self.win.rows > 2) self.win.rows - 2 else 1; // header + command line
+        if (self.sb_sel < self.sb_scroll) self.sb_scroll = self.sb_sel;
+        if (self.sb_sel >= self.sb_scroll + rows) self.sb_scroll = self.sb_sel - rows + 1;
+
+        var b: [16]u8 = undefined;
+        try self.emit(try std.fmt.bufPrint(&b, "\x1b[1;{d}H", .{x}));
+        try self.setBg(if (self.sb_focus) th.mode_command else th.status_seg_bg);
+        try self.setFg(if (self.sb_focus) th.bg else th.status_seg_fg);
+        try self.emit(" EXPLORER");
+        try self.emitSpaces(w - 9);
+
+        var r: usize = 0;
+        while (r < rows) : (r += 1) {
+            const idx = self.sb_scroll + r;
+            try self.emit(try std.fmt.bufPrint(&b, "\x1b[{d};{d}H", .{ r + 2, x }));
+            const selected = idx == self.sb_sel and idx < self.sb_entries.items.len;
+            try self.setBg(if (selected and self.sb_focus) th.selection else if (selected) th.cursorline else th.bg_dark);
+            if (idx < self.sb_entries.items.len) {
+                const e = self.sb_entries.items[idx];
+                const name = std.fs.path.basename(e.path);
+                const pad = @min(@as(usize, e.depth) * 2 + 1, w);
+                try self.emitSpaces(pad);
+                const glyph: []const u8 = if (!e.is_dir) "  " else if (e.expanded) "\u{25BE} " else "\u{25B8} ";
+                try self.setFg(if (e.is_dir) th.function else if (selected) th.fg else th.fg_dim);
+                try self.emit(glyph);
+                var used = pad + 2;
+                const shown = @min(name.len, if (w > used) w - used else 0);
+                try self.emit(name[0..shown]);
+                used += shown;
+                if (used < w) try self.emitSpaces(w - used);
+            } else {
+                try self.emitSpaces(w);
+            }
+        }
+    }
+
     // === windows / layout ==================================================
 
     /// Tile the windows over the text area (all but the bottom command line).
@@ -3693,13 +4007,17 @@ pub const Editor = struct {
     /// remainder so the screen is fully covered.
     fn layout(self: *Editor) void {
         const total_rows = if (self.win.rows > 1) self.win.rows - 1 else 1; // reserve command line
-        const cols = self.win.cols;
+        const cols: usize = self.win.cols;
+        // The sidebar carves its width off the chosen side; windows tile the rest.
+        const sb_w: usize = if (self.sb_open) self.sbWidth() else 0;
+        const avail = if (cols > sb_w) cols - sb_w else 1;
+        const x0: usize = if (config.settings.sidebar == .left) 1 + sb_w else 1;
         const n = self.wins.items.len;
         if (self.split_vertical and n > 1) {
-            const each = cols / n;
-            var x: usize = 1;
+            const each = avail / n;
+            var x: usize = x0;
             for (self.wins.items, 0..) |w, i| {
-                const ww = if (i == n - 1) (if (cols + 1 > x) cols - x + 1 else 1) else each;
+                const ww = if (i == n - 1) (if (x0 + avail > x) x0 + avail - x else 1) else each;
                 w.gx = x;
                 w.gy = 1;
                 w.gw = ww;
@@ -3711,9 +4029,9 @@ pub const Editor = struct {
             var y: usize = 1;
             for (self.wins.items, 0..) |w, i| {
                 const wh = if (i == n - 1) (if (total_rows + 1 > y) total_rows - y + 1 else 1) else each;
-                w.gx = 1;
+                w.gx = x0;
                 w.gy = y;
-                w.gw = cols;
+                w.gw = avail;
                 w.gh = wh;
                 y += wh;
             }
@@ -3796,7 +4114,7 @@ pub const Editor = struct {
         const active = w == self.cur;
         try self.setBg(if (active) th.status_seg_bg else th.status_bg);
         try self.setFg(if (active) th.status_seg_fg else th.fg_dim);
-        const name = view.buf.path orelse "[No Name]";
+        const name = docLabel(w.doc);
         const dirty = if (view.buf.dirty) " \u{25CF}" else "";
         var nb: [320]u8 = undefined;
         const seg = std.fmt.bufPrint(&nb, " {s}{s}  {d}:{d} ", .{ name, dirty, view.cy + 1, view.left + 1 }) catch " ";
@@ -3836,6 +4154,7 @@ pub const Editor = struct {
         self.saveViewport(); // mirror back into the active Win for rendering
 
         for (self.wins.items) |w| try self.renderWindow(w);
+        if (self.sb_open) try self.renderSidebar();
 
         const gutter = self.gutterWidth();
         // Bottom command/status line.
@@ -3859,6 +4178,8 @@ pub const Editor = struct {
     const leader_keys = [_]WhichKey{
         .{ .key = "f", .desc = "Find \u{2026}" },
         .{ .key = "l", .desc = "Language tools \u{2026}" },
+        .{ .key = "g", .desc = "Git \u{2026}" },
+        .{ .key = "e", .desc = "explorer" },
         .{ .key = "c", .desc = "close buffer" },
         .{ .key = "w", .desc = "write (save)" },
         .{ .key = "q", .desc = "quit" },
@@ -3875,6 +4196,10 @@ pub const Editor = struct {
         .{ .key = "s", .desc = "document symbols" },
         .{ .key = "d", .desc = "line diagnostic" },
     };
+    const git_keys = [_]WhichKey{
+        .{ .key = "d", .desc = "diff (inline)" },
+        .{ .key = "s", .desc = "diff (side by side)" },
+    };
 
     /// Draw the which-key popup for the pending leader menu (`Space`, `Space f`
     /// or `Space l`), anchored above the status bar.
@@ -3884,12 +4209,14 @@ pub const Editor = struct {
             .space_leader => &leader_keys,
             .space_find => &find_keys,
             .space_lang => &lang_keys,
+            .space_git => &git_keys,
             else => return,
         };
         const title: []const u8 = switch (self.await_arg) {
             .space_leader => " SPACE",
             .space_find => " SPACE f",
             .space_lang => " SPACE l",
+            .space_git => " SPACE g",
             else => unreachable,
         };
         const width: usize = 26;
@@ -4220,6 +4547,8 @@ pub const Editor = struct {
             .number => th.number,
             .operator => th.operator,
             .preproc => th.preproc,
+            .diff_add => th.git_add,
+            .diff_del => th.git_delete,
         };
     }
 
@@ -4295,7 +4624,7 @@ pub const Editor = struct {
         try self.emit(sepRight());
 
         var fb: [320]u8 = undefined;
-        const fname = self.buf.path orelse "[No Name]";
+        const fname = docLabel(self.d);
         const dirty = if (self.buf.dirty) " \u{25CF}" else "";
         const fileseg = std.fmt.bufPrint(&fb, " {s}{s} ", .{ fname, dirty }) catch " ";
         try self.setBg(th.status_seg_bg);
@@ -4405,6 +4734,10 @@ pub const Editor = struct {
         if (self.mode == .command) {
             row = self.win.rows;
             col = self.cmdPrompt().len + 1 + unicode.displayWidth(self.cmd.items);
+        } else if (self.sb_focus) {
+            // On the sidebar's selected row.
+            row = 2 + (self.sb_sel -| self.sb_scroll);
+            col = self.sbX() + 1;
         } else {
             // Relative to the active window's screen region.
             row = self.cur.gy + (self.cy - self.top);
@@ -4593,6 +4926,7 @@ fn langName(l: syntax.Language) []const u8 {
         .go => "go",
         .html => "html",
         .markdown => "md",
+        .diff => "diff",
         .none => "text",
     };
 }
@@ -4610,6 +4944,7 @@ fn langId(l: syntax.Language) []const u8 {
         .go => "go",
         .html => "html",
         .markdown => "markdown",
+        .diff => "diff",
         .none => "plaintext",
     };
 }

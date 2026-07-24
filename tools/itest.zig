@@ -16,6 +16,7 @@ const scenarios = .{
     .{ "picker", @import("scenarios/picker.zig") },
     .{ "git", @import("scenarios/git.zig") },
     .{ "windows", @import("scenarios/windows.zig") },
+    .{ "sidebar", @import("scenarios/sidebar.zig") },
     .{ "config", @import("scenarios/configtheme.zig") },
     .{ "lsp", @import("scenarios/lsp.zig") },
     .{ "cpu", @import("scenarios/cpu.zig") },

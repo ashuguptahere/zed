@@ -20,9 +20,11 @@ pub const Style = enum {
     number,
     operator,
     preproc,
+    diff_add, // '+' lines in a diff (git_add green)
+    diff_del, // '-' lines in a diff (git_delete red)
 };
 
-pub const Language = enum { none, zig, c, python, javascript, typescript, json, rust, go, html, markdown };
+pub const Language = enum { none, zig, c, python, javascript, typescript, json, rust, go, html, markdown, diff };
 
 /// Pick a language from a file path's extension.
 pub fn detect(path: ?[]const u8) Language {
@@ -41,6 +43,7 @@ pub fn detect(path: ?[]const u8) Language {
         .{ "html", Language.html },       .{ "htm", Language.html },
         .{ "md", Language.markdown },     .{ "markdown", Language.markdown },
         .{ "json", Language.json },
+        .{ "diff", Language.diff },   .{ "patch", Language.diff },
     };
     inline for (map) |entry| {
         if (std.mem.eql(u8, ext, entry[0])) return entry[1];
@@ -62,6 +65,23 @@ const Spec = struct {
 pub fn highlight(lang: Language, line: []const u8, out: []Style) void {
     std.debug.assert(out.len == line.len);
     @memset(out, .normal);
+    // Diffs are classified whole-line, not tokenised.
+    if (lang == .diff) {
+        const style: Style = if (std.mem.startsWith(u8, line, "+++") or std.mem.startsWith(u8, line, "---"))
+            .comment
+        else if (std.mem.startsWith(u8, line, "+"))
+            .diff_add
+        else if (std.mem.startsWith(u8, line, "-"))
+            .diff_del
+        else if (std.mem.startsWith(u8, line, "@@"))
+            .preproc
+        else if (std.mem.startsWith(u8, line, "diff ") or std.mem.startsWith(u8, line, "index "))
+            .comment
+        else
+            .normal;
+        @memset(out, style);
+        return;
+    }
     const spec = specFor(lang);
 
     var i: usize = 0;
@@ -246,7 +266,7 @@ fn specFor(lang: Language) Spec {
         },
         // HTML/Markdown have no useful single-line lexer fallback; they rely on
         // tree-sitter. (This path is only hit if a grammar fails to load.)
-        .html, .markdown, .none => .{ .line_comment = "" },
+        .html, .markdown, .diff, .none => .{ .line_comment = "" },
     };
 }
 

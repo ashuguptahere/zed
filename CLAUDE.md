@@ -178,8 +178,9 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   shows a which-key popup with nested groups (submenus get their own popup):
   `Space f` = Find (`f f` files, `f w` words/grep, `f b` buffers, `f t`
   themes); `Space l` = Language tools (`l a` code action, `l r` rename, `l s`
-  document symbols, `l d` line diagnostic); `Space c` close buffer, `Space w`
-  write, `Space q` quit. In a picker: type to filter, `Ctrl-n`/`Ctrl-p` or
+  document symbols, `l d` line diagnostic); `Space g` = Git (`g d` inline diff,
+  `g s` side-by-side); `Space e` file explorer, `Space c` close buffer,
+  `Space w` write, `Space q` quit. In a picker: type to filter, `Ctrl-n`/`Ctrl-p` or
   arrows to move, `Enter` to open, `Esc` to cancel, and `Ctrl-r` re-walks the
   project (the file list is cached per session — the Zed-style warm picker:
   opening does no filesystem work after the first walk, candidates are
@@ -190,6 +191,19 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 - **Command line:** `:w` write, `:q` quit (closes the window if more than one;
   blocked if unsaved on the last), `:wq`/`:x`, `:q!`, `:qa` quit all,
   `:w <name>`, `:{number}` goto line, `:$`; `ZZ`/`ZQ`.
+- **Sidebar (`Space e`):** a file-tree of the cwd on the configured side
+  (config `sidebar = left|right`), which carves its width off the window
+  tiling. Focused keys: `j`/`k` move, `Enter`/`l` expand a directory or open a
+  file (focus returns to the buffer), `h` collapse/parent, `g`/`G` top/bottom,
+  `R` refresh, `Esc` unfocus (stays open), `q` or `Space e` close. Hidden and
+  ignored directories (`.git`, `zig-out`, …) are skipped, like the picker.
+- **Git diff views:** `Space g d` / `:diff` opens the file's unified diff
+  (worktree vs index) in a horizontal split, coloured by the `.diff` lexer
+  (`+` green, `-` red, `@@` hunk headers); `Space g s` / `:vdiff` opens the
+  index version side by side in a vertical split with normal syntax
+  highlighting — the same base the gutter signs compare against. Both are
+  named scratch buffers (`[diff] name`, `name (index)`) closable with
+  `:close`/`Space c`.
 - **Buffers & windows:** several files can be open at once, each with its own
   cursor, undo, tree-sitter and LSP. `:e <file>` opens (or, in the picker,
   `Enter`) a file in the active window — already-open files are reused, not
@@ -235,7 +249,8 @@ SGR; the frame is still built once and written in a single syscall, and
 rendering still only happens on change.
 
 Runtime configuration is one documented file (see `config.zig`): theme,
-`tab_width`, `nerd_font`; `zedit --init-config` writes the annotated default.
+`tab_width`, `nerd_font`, `sidebar` (left/right); `zedit --init-config` writes
+the annotated default.
 `zedit --tutor` opens the embedded interactive tutorial (`doc/tutor.txt`,
 embedded via `build.zig`).
 
@@ -304,8 +319,10 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   bytes the block layer left plain), and HTML doesn't highlight embedded JS/CSS.
   Adding a grammar = vendor its `parser.c` + `highlights.scm` and extend
   `treesitter.zig`.
-- Roadmap (agreed with the owner, not yet built): a file-tree sidebar with a
-  configurable side, git diff views (side-by-side and inline), an exact
-  AstroNvim-style nested leader tree (`Space f f`, `Space l a`, …), selective
-  ports of Helix/Neovim behavioural test cases, and a benchmark suite backing
-  the performance claims (startup, input latency, large files vs helix/nvim).
+- The sidebar tree is flat-file only (no rename/create/delete operations from
+  the tree), rebuilt on expand/toggle rather than watched; the side-by-side
+  diff shows the index version in a plain split (no aligned filler lines or
+  synced scrolling like vimdiff). The inline diff buffer is a static snapshot.
+- Roadmap (agreed with the owner): port further tranches of Neovim behavioural
+  tests via headless ground truth (see `vim_compat`); a rope/gap buffer to win
+  the large-file benchmark against nvim (currently ~3× slower there).

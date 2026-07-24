@@ -10,12 +10,16 @@
 const std = @import("std");
 const theme = @import("theme.zig");
 
+pub const Side = enum { left, right };
+
 pub const Settings = struct {
     /// Cells a tab character occupies (rendering only; tabs are stored verbatim).
     tab_width: usize = 4,
     /// Use Nerd Font glyphs (powerline statusline separators). Set false if
     /// your terminal font shows boxes/question marks in the statusline.
     nerd_font: bool = true,
+    /// Which side the file-tree sidebar (`Space e`) opens on.
+    sidebar: Side = .left,
 };
 
 /// The live settings, read by the editor/renderer. Defaults apply when there
@@ -48,6 +52,9 @@ pub const default_text =
     \\# statusline that works with any font.
     \\nerd_font = true
     \\
+    \\# Which side the file-tree sidebar (Space e) opens on: left or right.
+    \\sidebar = left
+    \\
 ;
 
 /// Apply `key = value` lines to the live settings. Forgiving by design:
@@ -70,6 +77,9 @@ pub fn apply(text: []const u8) void {
         } else if (std.mem.eql(u8, key, "nerd_font")) {
             if (std.mem.eql(u8, value, "true")) settings.nerd_font = true;
             if (std.mem.eql(u8, value, "false")) settings.nerd_font = false;
+        } else if (std.mem.eql(u8, key, "sidebar")) {
+            if (std.mem.eql(u8, value, "left")) settings.sidebar = .left;
+            if (std.mem.eql(u8, value, "right")) settings.sidebar = .right;
         }
     }
 }

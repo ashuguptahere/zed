@@ -135,7 +135,7 @@ pub const Highlighter = struct {
             .go => .{ tree_sitter_go(), highlights_go },
             .html => .{ tree_sitter_html(), highlights_html },
             .markdown => .{ tree_sitter_markdown(), highlights_markdown },
-            .none => return null, // falls back to the lexer
+            .none, .diff => return null, // fall back to the lexer
         };
 
         var primary = Layer.init(gpa, ts_lang, query_src) orelse return null;
