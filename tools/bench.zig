@@ -9,6 +9,8 @@
 //!   picker    fuzzy-file-picker key until the redraw settles (zedit cold
 //!             = includes the project walk; warm = the Zed-style cached open;
 //!             helix re-walks each open; nvim has no built-in fuzzy picker)
+//!   search    `/needle<CR>` for a unique needle near the end of the 10 MB
+//!             file, keypress to settled redraw
 //!
 //! Fairness: nvim runs with `-u NONE -i NONE` and helix with an empty
 //! XDG_CONFIG_HOME so nobody pays for user plugins/config; zedit runs its
@@ -63,8 +65,8 @@ pub fn main(init: std.process.Init) !void {
         .{ .name = "nvim", .bin = "nvim", .argv_prefix = &.{ "nvim", "-u", "NONE", "-i", "NONE" }, .picker_key = null },
     };
 
-    std.debug.print("\n{s:<8} {s:>12} {s:>12} {s:>12} {s:>14}\n", .{ "editor", "startup", "bigfile", "keypress", "picker-open" });
-    std.debug.print("{s:-<8} {s:->12} {s:->12} {s:->12} {s:->14}\n", .{ "", "", "", "", "" });
+    std.debug.print("\n{s:<8} {s:>12} {s:>12} {s:>12} {s:>12} {s:>14}\n", .{ "editor", "startup", "bigfile", "keypress", "big-search", "picker-open" });
+    std.debug.print("{s:-<8} {s:->12} {s:->12} {s:->12} {s:->12} {s:->14}\n", .{ "", "", "", "", "", "" });
 
     for (editors) |ed| {
         if (!binaryWorks(gpa, io, ed.bin)) {
@@ -74,7 +76,8 @@ pub fn main(init: std.process.Init) !void {
         const startup = median(measureStartup(gpa, ed, small_file, runs));
         const bigload = median(measureStartup(gpa, ed, big_file, 3));
         const keypress = median(measureKeypress(gpa, ed, runs));
-        std.debug.print("{s:<8} {d:>10.1}ms {d:>10.1}ms {d:>10.2}ms", .{ ed.name, startup, bigload, keypress });
+        const bigsearch = median(measureSearch(gpa, ed, 3));
+        std.debug.print("{s:<8} {d:>10.1}ms {d:>10.1}ms {d:>10.2}ms {d:>10.1}ms", .{ ed.name, startup, bigload, keypress, bigsearch });
         if (ed.picker_key) |pk| {
             const cold = measurePicker(gpa, ed, pk, false);
             std.debug.print(" {d:>8.1}ms cold", .{cold});
@@ -126,6 +129,23 @@ fn measureKeypress(gpa: std.mem.Allocator, ed: Editor, n: usize) []f64 {
         s.send(key);
         if (firstByteMs(&s, 1000)) |ms| out.append(gpa, ms) catch break;
         _ = waitQuiet(&s, 30, 500);
+    }
+    return out.toOwnedSlice(gpa) catch &.{};
+}
+
+/// Search for a unique needle near the end of the big file: `/needle<CR>`,
+/// keypress until the redraw settles.
+fn measureSearch(gpa: std.mem.Allocator, ed: Editor, n: usize) []f64 {
+    var out: std.ArrayList(f64) = .empty;
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        var s = spawnOn(gpa, ed, big_file) orelse break;
+        defer quitAndFinish(&s, ed);
+        _ = waitQuiet(&s, 80, 8000);
+        const t0 = nowNs();
+        s.send("/value_199999\r");
+        _ = waitQuiet(&s, 80, 8000);
+        out.append(gpa, msBetween(t0, nowNs()) - 80.0) catch break;
     }
     return out.toOwnedSlice(gpa) catch &.{};
 }

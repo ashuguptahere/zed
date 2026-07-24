@@ -17,7 +17,7 @@ const Allocator = std.mem.Allocator;
 
 /// Hard cap on the size of a file we will load, to fail loudly rather than
 /// exhaust memory on a pathological input.
-pub const max_file_bytes = 256 * 1024 * 1024;
+pub const max_file_bytes = 2 * 1024 * 1024 * 1024;
 
 /// One line: a zero-copy slice of the buffer's `source`, or (after its first
 /// mutation) heap bytes of its own.
@@ -62,13 +62,20 @@ pub const Buffer = struct {
     /// vim: `ggVGd` then `:w` writes 0 bytes, but `d$` on a one-line file
     /// writes "\n". Cleared by any text insertion.
     emptied: bool,
+    /// True while every line is still a borrowed slice of `source` in file
+    /// order — the state right after a load. Search uses this to scan the
+    /// whole source in one pass instead of line by line (see search.zig).
+    pure_borrowed: bool,
+    /// Whether the loaded file had CRLF line endings (the fast search path
+    /// bows out then, since line slices exclude the stripped '\r').
+    has_cr: bool,
 
     pub fn initEmpty(gpa: Allocator) !Buffer {
         var lines: std.ArrayList(Line) = .empty;
         try lines.append(gpa, .{ .borrowed = &.{} });
         // New buffers follow the POSIX convention: once they hold content they
         // are saved with a trailing newline. A still-empty buffer writes 0 bytes.
-        return .{ .gpa = gpa, .lines = lines, .source = null, .path = null, .dirty = false, .revision = 0, .final_newline = true, .emptied = true };
+        return .{ .gpa = gpa, .lines = lines, .source = null, .path = null, .dirty = false, .revision = 0, .final_newline = true, .emptied = true, .pure_borrowed = false, .has_cr = false };
     }
 
     pub fn deinit(self: *Buffer) void {
@@ -102,9 +109,10 @@ pub const Buffer = struct {
         errdefer lines.deinit(gpa);
 
         const src: []const u8 = source orelse &.{};
-        // Pre-size the line array exactly (one SIMD count pass beats repeated
-        // grow-and-copy of a multi-megabyte array).
-        try lines.ensureTotalCapacityPrecise(gpa, std.mem.count(u8, src, "\n") + 1);
+        // Estimate the line count (~40 bytes/line) to make growth rare, but
+        // keep a single pass — a separate exact count pass costs ~25% of the
+        // whole parse on huge files.
+        try lines.ensureTotalCapacity(gpa, src.len / 40 + 1);
         // One vectorized pass over the bytes: per-line `indexOf` calls cost
         // more in call overhead than the search itself on short lines
         // (measured ~3x slower on a 200k-line file).
@@ -112,32 +120,37 @@ pub const Buffer = struct {
         const nl_splat: @Vector(vlen, u8) = @splat('\n');
         var start: usize = 0;
         var i: usize = 0;
+        var has_cr = false;
         while (i + vlen <= src.len) : (i += vlen) {
             const chunk: @Vector(vlen, u8) = src[i..][0..vlen].*;
             var mask: u32 = @bitCast(chunk == nl_splat);
             while (mask != 0) {
                 const nl = i + @ctz(mask);
-                lines.appendAssumeCapacity(.{ .borrowed = stripCr(src[start..nl]) });
+                const stripped = stripCr(src[start..nl]);
+                has_cr = has_cr or stripped.len != nl - start;
+                try lines.append(gpa, .{ .borrowed = stripped });
                 start = nl + 1;
                 mask &= mask - 1; // clear the lowest set bit
             }
         }
         while (i < src.len) : (i += 1) {
             if (src[i] == '\n') {
-                lines.appendAssumeCapacity(.{ .borrowed = stripCr(src[start..i]) });
+                const stripped = stripCr(src[start..i]);
+                has_cr = has_cr or stripped.len != i - start;
+                try lines.append(gpa, .{ .borrowed = stripped });
                 start = i + 1;
             }
         }
         var final_newline = true;
         if (start < src.len) {
             // Trailing text after the last newline: no final newline on disk.
-            lines.appendAssumeCapacity(.{ .borrowed = stripCr(src[start..]) });
+            try lines.append(gpa, .{ .borrowed = stripCr(src[start..]) });
             final_newline = false;
         }
         const was_empty = lines.items.len == 0;
         if (was_empty) try lines.append(gpa, .{ .borrowed = &.{} });
 
-        return .{ .gpa = gpa, .lines = lines, .source = source, .path = null, .dirty = false, .revision = 0, .final_newline = final_newline, .emptied = was_empty };
+        return .{ .gpa = gpa, .lines = lines, .source = source, .path = null, .dirty = false, .revision = 0, .final_newline = final_newline, .emptied = was_empty, .pure_borrowed = source != null, .has_cr = has_cr };
     }
 
     /// Load `path` into a new buffer. A missing file yields an empty buffer
@@ -213,6 +226,7 @@ pub const Buffer = struct {
                 errdefer a.deinit(self.gpa);
                 try a.appendSlice(self.gpa, s);
                 l.* = .{ .owned = a };
+                self.pure_borrowed = false;
                 return &l.owned;
             },
         }
@@ -247,6 +261,7 @@ pub const Buffer = struct {
                 try self.lines.insert(self.gpa, row + 1, .{ .owned = new_line });
                 // The insert may have moved the array; re-fetch before truncating.
                 self.lines.items[row].owned.items.len = col;
+                self.pure_borrowed = false;
             },
         }
         self.emptied = false;
@@ -305,6 +320,8 @@ pub const Buffer = struct {
         self.source = tmp.source;
         self.final_newline = tmp.final_newline;
         self.emptied = tmp.emptied;
+        self.pure_borrowed = tmp.pure_borrowed;
+        self.has_cr = tmp.has_cr;
         self.revision +%= 1;
     }
 
@@ -342,6 +359,7 @@ pub const Buffer = struct {
         errdefer new_line.deinit(self.gpa);
         try new_line.appendSlice(self.gpa, bytes);
         try self.lines.insert(self.gpa, at, .{ .owned = new_line });
+        self.pure_borrowed = false;
         self.emptied = false;
         self.dirty = true;
         self.revision +%= 1;

@@ -84,7 +84,7 @@ Source is `src/`, one responsibility per module:
 | `motion.zig`  | Pure cursor motions, word/WORD rules, find-char, `%`, text objects. |
 | `register.zig`| Vim registers (named/unnamed, linewise flag) for yank/delete/paste. |
 | `undo.zig`    | Undo/redo as capped buffer snapshots. |
-| `search.zig`  | Literal substring search (`/ ? n N * #`). |
+| `search.zig`  | Buffer search (`/ ? n N * #`) with a whole-source SIMD fast path while the buffer is unedited (pure zero-copy). |
 | `theme.zig`   | Colour palettes (Tokyo Night default + Gruvbox/Catppuccin/Nord/One Dark), the active-theme global, 24-bit SGR helpers. |
 | `config.zig`  | The single documented config file (`~/.config/zedit/config`): parse, apply, standard path, `--init-config` default text. |
 | `syntax.zig`  | Dependency-free per-line lexer producing per-byte styles. |
@@ -249,7 +249,8 @@ SGR; the frame is still built once and written in a single syscall, and
 rendering still only happens on change.
 
 Runtime configuration is one documented file (see `config.zig`): theme,
-`tab_width`, `nerd_font`, `sidebar` (left/right), `relative_numbers`; `zedit --init-config` writes
+`tab_width`, `nerd_font`, `sidebar` (left/right), `relative_numbers`,
+`large_file_mb`; `zedit --init-config` writes
 the annotated default.
 `zedit --tutor` opens the embedded interactive tutorial (`doc/tutor.txt`,
 embedded via `build.zig`).
@@ -276,8 +277,11 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
 
 - Windows console support (the `term.zig` compile-time gate marks the spot).
 - Large-file performance: loading is zero-copy with copy-on-write lines
-  (`buffer.zig`); a full rope remains the next step only if per-edit costs on
-  huge files ever show up in profiles.
+  (`buffer.zig`, 2 GB cap), and above the config's `large_file_mb` (64 MB
+  default) highlighting/LSP/git signs are skipped ("large-file mode"). A
+  476 MB / 10M-line file opens in ~375 ms and `/`-searches in ~196 ms (nvim:
+  103/217, helix: 459/1753). nvim still opens faster via lazy line indexing —
+  adopt that (or a rope) only if it matters in practice.
 - A resize landing in the tiny window between the resize check and entering
   `poll` is noticed on the next keypress (a self-pipe would close the race).
 - Vim gaps: blockwise visual (`Ctrl-v`), regex and `:%s` substitution,

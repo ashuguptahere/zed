@@ -97,6 +97,10 @@ which side the file-tree explorer opens on.
 absolute (the AstroNvim hybrid style); set
 .B false
 for absolute numbers everywhere.
+.TP
+.B large_file_mb
+Files larger than this many megabytes (default 64) open in large-file mode:
+highlighting, LSP and git signs are skipped so huge files open instantly.
 .SH MODES
 zedit is modal: NORMAL for movement and commands, INSERT for typing, VISUAL and
 V\-LINE and V\-BLOCK for selections, COMMAND for the

@@ -23,6 +23,10 @@ pub const Settings = struct {
     /// Relative line numbers in the gutter (the cursor line stays absolute,
     /// AstroNvim's hybrid style). False shows absolute numbers everywhere.
     relative_numbers: bool = true,
+    /// Files larger than this many megabytes open in large-file mode: syntax
+    /// highlighting, LSP and git signs are skipped so the file opens instantly
+    /// and nothing chokes on it. 0 treats every file as large.
+    large_file_mb: usize = 64,
 };
 
 /// The live settings, read by the editor/renderer. Defaults apply when there
@@ -62,6 +66,11 @@ pub const default_text =
     \\# Set to false for absolute numbers everywhere.
     \\relative_numbers = true
     \\
+    \\# Files larger than this many megabytes open in large-file mode:
+    \\# highlighting, LSP and git signs are skipped so huge files open
+    \\# instantly and nothing chokes on them.
+    \\large_file_mb = 64
+    \\
 ;
 
 /// Apply `key = value` lines to the live settings. Forgiving by design:
@@ -90,6 +99,9 @@ pub fn apply(text: []const u8) void {
         } else if (std.mem.eql(u8, key, "relative_numbers")) {
             if (std.mem.eql(u8, value, "true")) settings.relative_numbers = true;
             if (std.mem.eql(u8, value, "false")) settings.relative_numbers = false;
+        } else if (std.mem.eql(u8, key, "large_file_mb")) {
+            const n = std.fmt.parseInt(usize, value, 10) catch continue;
+            settings.large_file_mb = n;
         }
     }
 }

@@ -113,7 +113,7 @@ zedit --init-config
 
 Format is `key = value` with `#` comments; unknown keys are ignored and a
 missing file just means defaults. Settings today: `theme`, `tab_width`,
-`nerd_font`, `sidebar`, `relative_numbers`.
+`nerd_font`, `sidebar`, `relative_numbers`, `large_file_mb`.
 
 > **Icons look broken?** The powerline statusline separators are Nerd Font
 > glyphs (private-use codepoints). Terminal applications cannot ship fonts —
@@ -141,6 +141,28 @@ remaining ~4 ms is the up-front read+line-scan that nvim defers; the
 warm-picker advantage grows with project size since zedit skips the
 filesystem walk entirely after the first open. A feature-by-feature
 comparison against both editors lives in [doc/COMPARISON.md](doc/COMPARISON.md).
+
+### Huge files
+
+Files up to 2 GB open without ceremony. Above the configurable
+`large_file_mb` threshold (default 64 MB) zedit switches to **large-file
+mode**: highlighting, LSP and git signs are skipped so nothing downstream
+chokes — the same strategy VSCode uses, minus the scary dialog. Loading stays
+zero-copy, and while a file is unedited, `/` search scans the whole buffer in
+one SIMD pass instead of line-by-line. Measured on a **476 MB / 10M-line**
+file (same pty methodology):
+
+| | open | `/` search across the file |
+|---|---|---|
+| **zedit** | 375 ms | **196 ms** |
+| nvim 0.12 (`-u NONE`) | **103 ms** | 217 ms |
+| helix 25.07 | 459 ms | 1753 ms |
+
+(How others do it: vim/nvim use their block-based memline with lazy work —
+that's the open-time win; helix loads into a rope; VSCode's JS string model
+is why it struggles and disables features around ~50 MB. zedit reads once,
+indexes lines in one vectorized pass, and edits copy-on-write per line.
+nvim's remaining open-time edge is deferred line indexing — on the list.)
 
 ## Project layout
 

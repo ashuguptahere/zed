@@ -104,6 +104,23 @@ pub fn run(ctx: *h.Ctx) !void {
         s2.drain(200);
     }
 
+    // large_file_mb = 0 forces large-file mode: no highlighting, and the
+    // statusline explains why.
+    {
+        h.writeFile(ctx.io, cfg_path, "large_file_mb = 0\n");
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ ctx.zedit, "--config", cfg_path, "b.zig" },
+            .cwd = dir,
+            .term = "xterm-256color",
+        });
+        defer s.finish();
+        s.drain(500);
+        ctx.check("large-file mode disables highlighting", !s.contains(KEYWORD));
+        ctx.check("large-file mode is announced", s.containsPlain(ctx.gpa, "large file"));
+        s.send(":q!\r");
+        s.drain(200);
+    }
+
     // :e detects the opened file's language (highlighting for the .zig file).
     {
         var s = try h.Session.spawn(ctx.gpa, .{

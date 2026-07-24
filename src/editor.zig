@@ -3216,6 +3216,7 @@ pub const Editor = struct {
 
     /// Recompute the git change signs for the current file (best-effort).
     fn refreshGit(self: *Editor) void {
+        if (self.isLargeFile()) return;
         if (self.buf.path) |p| {
             git.compute(self.gpa, self.io, p, &self.git_signs);
         } else {
@@ -3225,7 +3226,20 @@ pub const Editor = struct {
 
     // === tree-sitter highlighting ==========================================
 
+    /// Whether the active document is in large-file mode (config
+    /// `large_file_mb`): highlighting, LSP and git signs are skipped so huge
+    /// files open instantly and nothing downstream chokes on them.
+    fn isLargeFile(self: *Editor) bool {
+        return docIsLarge(self.d);
+    }
+
+    fn docIsLarge(doc: *const Doc) bool {
+        const src = doc.buf.source orelse return false;
+        return src.len > config.settings.large_file_mb << 20;
+    }
+
     fn startTs(self: *Editor) void {
+        if (self.isLargeFile()) return;
         self.ts = treesitter.Highlighter.init(self.gpa, self.lang);
         if (self.ts != null) self.tsReparse();
     }
@@ -3279,6 +3293,10 @@ pub const Editor = struct {
     /// Spawn a language server for the current file (best-effort; no server or
     /// no command simply leaves LSP disabled).
     fn startLsp(self: *Editor) void {
+        if (self.isLargeFile()) {
+            self.setStatus("large file: highlighting, LSP and git signs disabled", .{});
+            return;
+        }
         const path = self.buf.path orelse return;
 
         var argv_store: [8][]const u8 = undefined;
@@ -4042,6 +4060,7 @@ pub const Editor = struct {
         const doc = w.doc;
         const g = gutterFor(doc.buf.lineCount());
         const cols = if (w.gw > g) w.gw - g else 1;
+        const large = docIsLarge(doc);
         if (w == self.cur) return .{
             .buf = self.buf,
             .active = true,
@@ -4050,7 +4069,7 @@ pub const Editor = struct {
             .ts_line_starts = self.ts_line_starts.items,
             .ts_vis_start = self.ts_vis_start,
             .git = &self.git_signs,
-            .lang = self.lang,
+            .lang = if (large) .none else self.lang,
             .cy = self.cy,
             .top = self.top,
             .left = self.left,
@@ -4065,7 +4084,7 @@ pub const Editor = struct {
             .ts_line_starts = doc.ts_line_starts.items,
             .ts_vis_start = doc.ts_vis_start,
             .git = &doc.git_signs,
-            .lang = doc.lang,
+            .lang = if (large) .none else doc.lang,
             .cy = w.cy,
             .top = w.top,
             .left = w.left,
