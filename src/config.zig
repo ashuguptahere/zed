@@ -20,6 +20,9 @@ pub const Settings = struct {
     nerd_font: bool = true,
     /// Which side the file-tree sidebar (`Space e`) opens on.
     sidebar: Side = .left,
+    /// Relative line numbers in the gutter (the cursor line stays absolute,
+    /// AstroNvim's hybrid style). False shows absolute numbers everywhere.
+    relative_numbers: bool = true,
 };
 
 /// The live settings, read by the editor/renderer. Defaults apply when there
@@ -55,6 +58,10 @@ pub const default_text =
     \\# Which side the file-tree sidebar (Space e) opens on: left or right.
     \\sidebar = left
     \\
+    \\# Relative line numbers in the gutter (the cursor line stays absolute).
+    \\# Set to false for absolute numbers everywhere.
+    \\relative_numbers = true
+    \\
 ;
 
 /// Apply `key = value` lines to the live settings. Forgiving by design:
@@ -80,6 +87,9 @@ pub fn apply(text: []const u8) void {
         } else if (std.mem.eql(u8, key, "sidebar")) {
             if (std.mem.eql(u8, value, "left")) settings.sidebar = .left;
             if (std.mem.eql(u8, value, "right")) settings.sidebar = .right;
+        } else if (std.mem.eql(u8, key, "relative_numbers")) {
+            if (std.mem.eql(u8, value, "true")) settings.relative_numbers = true;
+            if (std.mem.eql(u8, value, "false")) settings.relative_numbers = false;
         }
     }
 }

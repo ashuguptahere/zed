@@ -1914,7 +1914,7 @@ pub const Editor = struct {
                 if (row == start.row) lo = start.col;
                 if (row == end.row) hi = @min(unicode.nextBoundary(line, end.col), line.len);
             }
-            const mut = self.buf.lines.items[row].items;
+            const mut = try self.buf.lineMut(row);
             for (mut[lo..hi]) |*ch| {
                 ch.* = switch (how) {
                     .upper => std.ascii.toUpper(ch.*),
@@ -3251,9 +3251,9 @@ pub const Editor = struct {
 
         self.ts_line_starts.clearRetainingCapacity();
         var off: usize = 0;
-        for (self.buf.lines.items) |ln| {
+        for (self.buf.lines.items) |*ln| {
             self.ts_line_starts.append(self.gpa, off) catch {};
-            off += ln.items.len + 1; // + newline
+            off += ln.bytes().len + 1; // + newline
         }
         self.ts_rev = self.buf.revision;
         self.ts_q_top = std.math.maxInt(usize); // force a requery
@@ -4376,8 +4376,10 @@ pub const Editor = struct {
             }
         }
 
-        // Absolute number on the cursor line, relative distance elsewhere.
-        const num = if (is_cur) file_row + 1 else if (file_row > view.cy) file_row - view.cy else view.cy - file_row;
+        // Absolute number on the cursor line, relative distance elsewhere
+        // (config `relative_numbers = false` makes every number absolute).
+        const rel = config.settings.relative_numbers;
+        const num = if (is_cur or !rel) file_row + 1 else if (file_row > view.cy) file_row - view.cy else view.cy - file_row;
         var nb: [20]u8 = undefined;
         const ns = std.fmt.bufPrint(&nb, "{d}", .{num}) catch unreachable;
         try self.setFg(if (is_cur) th.gutter_active else th.gutter);

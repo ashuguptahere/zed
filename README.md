@@ -113,7 +113,7 @@ zedit --init-config
 
 Format is `key = value` with `#` comments; unknown keys are ignored and a
 missing file just means defaults. Settings today: `theme`, `tab_width`,
-`nerd_font`, `sidebar`.
+`nerd_font`, `sidebar`, `relative_numbers`.
 
 > **Icons look broken?** The powerline statusline separators are Nerd Font
 > glyphs (private-use codepoints). Terminal applications cannot ship fonts —
@@ -129,14 +129,18 @@ machine (medians):
 
 | metric | zedit | helix 25.07.1 | nvim 0.12.4 |
 |---|---|---|---|
-| startup → interactive | **7.5 ms** | 28.4 ms | 10.5 ms |
-| open 10 MB / 200k lines | 36.6 ms | 36.6 ms | **10.8 ms** |
-| keypress → response | **0.13 ms** | 0.57 ms | **0.13 ms** |
-| file picker open (this repo) | 5.9 cold / **4.6 ms** warm | 5.2 ms | n/a (no builtin) |
+| startup → interactive | **7.5 ms** | 27.3 ms | 10.5 ms |
+| open 10 MB / 200k lines | 14.3 ms | 35.1 ms | **10.7 ms** |
+| keypress → response | **0.12 ms** | 0.28 ms | 0.16 ms |
+| file picker open (this repo) | 5.2 cold / **4.5 ms** warm | 4.4 ms | n/a (no builtin) |
 
-Honest notes: nvim wins large-file open (flat line array vs their tree —
-a rope is on our roadmap); the warm-picker advantage grows with project size
-since zedit skips the filesystem walk entirely after the first open.
+Buffer loading is zero-copy (one shared byte buffer; lines are slices that
+convert to owned storage on first edit), so the big-file number fell from
+36.6 ms to 14.3 ms. Honest notes: nvim still edges the large-file open — the
+remaining ~4 ms is the up-front read+line-scan that nvim defers; the
+warm-picker advantage grows with project size since zedit skips the
+filesystem walk entirely after the first open. A feature-by-feature
+comparison against both editors lives in [doc/COMPARISON.md](doc/COMPARISON.md).
 
 ## Project layout
 

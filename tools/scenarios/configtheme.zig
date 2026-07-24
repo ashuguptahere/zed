@@ -77,6 +77,33 @@ pub fn run(ctx: *h.Ctx) !void {
         s.drain(200);
     }
 
+    // relative_numbers = false shows absolute numbers everywhere: with 12
+    // lines and the cursor on line 1, the last gutter number is 12 (absolute)
+    // instead of 11 (relative distance).
+    {
+        const many = try std.fmt.allocPrint(ctx.gpa, "{s}/many.txt", .{dir});
+        defer ctx.gpa.free(many);
+        h.writeFile(ctx.io, many, "x\n" ** 12);
+        h.writeFile(ctx.io, cfg_path, "relative_numbers = false\n");
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ ctx.zedit, "--config", cfg_path, "many.txt" },
+            .cwd = dir,
+            .term = "xterm-256color",
+        });
+        defer s.finish();
+        s.drain(500);
+        ctx.check("relative_numbers=false shows absolute numbers", s.containsPlain(ctx.gpa, "12"));
+        s.send(":q!\r");
+        s.drain(200);
+
+        var s2 = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "many.txt" }, .cwd = dir, .term = "xterm-256color" });
+        defer s2.finish();
+        s2.drain(500);
+        ctx.check("relative numbers by default", s2.containsPlain(ctx.gpa, "11") and !s2.containsPlain(ctx.gpa, "12"));
+        s2.send(":q!\r");
+        s2.drain(200);
+    }
+
     // :e detects the opened file's language (highlighting for the .zig file).
     {
         var s = try h.Session.spawn(ctx.gpa, .{

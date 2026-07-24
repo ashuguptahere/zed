@@ -80,7 +80,7 @@ Source is `src/`, one responsibility per module:
 | `term.zig`    | POSIX terminal control: raw mode, alternate screen, window size, event-driven input. |
 | `key.zig`     | Decoding raw input bytes into `Key` events (text, arrows, navigation). |
 | `unicode.zig` | UTF-8 decoding, codepoint boundaries, display width. |
-| `buffer.zig`  | The document: line storage, load/save, UTF-8-aware edits. |
+| `buffer.zig`  | The document: zero-copy load (lines borrow from one shared buffer, copy-on-write on first edit), save, UTF-8-aware edits. |
 | `motion.zig`  | Pure cursor motions, word/WORD rules, find-char, `%`, text objects. |
 | `register.zig`| Vim registers (named/unnamed, linewise flag) for yank/delete/paste. |
 | `undo.zig`    | Undo/redo as capped buffer snapshots. |
@@ -249,7 +249,7 @@ SGR; the frame is still built once and written in a single syscall, and
 rendering still only happens on change.
 
 Runtime configuration is one documented file (see `config.zig`): theme,
-`tab_width`, `nerd_font`, `sidebar` (left/right); `zedit --init-config` writes
+`tab_width`, `nerd_font`, `sidebar` (left/right), `relative_numbers`; `zedit --init-config` writes
 the annotated default.
 `zedit --tutor` opens the embedded interactive tutorial (`doc/tutor.txt`,
 embedded via `build.zig`).
@@ -275,8 +275,9 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
 ## Known gaps / future work (keep this honest)
 
 - Windows console support (the `term.zig` compile-time gate marks the spot).
-- Large-file performance: lines are a flat array; a rope/gap buffer is the next
-  step if profiling shows it's needed.
+- Large-file performance: loading is zero-copy with copy-on-write lines
+  (`buffer.zig`); a full rope remains the next step only if per-edit costs on
+  huge files ever show up in profiles.
 - A resize landing in the tiny window between the resize check and entering
   `poll` is noticed on the next keypress (a self-pipe would close the race).
 - Vim gaps: blockwise visual (`Ctrl-v`), regex and `:%s` substitution,
@@ -324,5 +325,11 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   diff shows the index version in a plain split (no aligned filler lines or
   synced scrolling like vimdiff). The inline diff buffer is a static snapshot.
 - Roadmap (agreed with the owner): port further tranches of Neovim behavioural
-  tests via headless ground truth (see `vim_compat`); a rope/gap buffer to win
-  the large-file benchmark against nvim (currently ~3× slower there).
+  tests via headless ground truth (see `vim_compat`), and work down
+  `doc/COMPARISON.md` — the verified feature-gap analysis vs Helix/Neovim
+  (shortlist: regex + `:%s`, jumplist, OSC 52 clipboard, autoindent, LSP
+  references/formatting/cross-file edits, cmdline completion, paragraph
+  objects, inline diagnostics, auto-completion, snippets). Large-file open is
+  14.3 ms vs nvim's 10.7 (was 36.6) after the copy-on-write buffer; the last
+  ~4 ms is the eager read+scan nvim defers — mmap or lazy line indexing if it
+  ever matters.
