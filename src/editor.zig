@@ -173,6 +173,9 @@ const Win = struct {
     gh: usize = 1,
 };
 
+/// One jumplist entry: where the cursor was before a jump-motion.
+const Jump = struct { doc: *Doc, pos: Pos };
+
 /// Everything a window needs to render one frame, resolved from either the
 /// Editor mirror (active window) or the window's stored Doc (inactive).
 const View = struct {
@@ -235,6 +238,10 @@ pub const Editor = struct {
     // surround pending state
     surr_span: ?Span,
     surr_from: u8,
+
+    // jumplist (Ctrl-o / Ctrl-i): positions recorded before jump-motions.
+    jumps: std.ArrayList(Jump),
+    jump_idx: usize, // == jumps.len when at the "live" end
 
     // search
     last_search: std.ArrayList(u8),
@@ -394,6 +401,8 @@ pub const Editor = struct {
             .extra = .empty,
             .surr_span = null,
             .surr_from = 0,
+            .jumps = .empty,
+            .jump_idx = 0,
             .last_search = .empty,
             .last_search_forward = true,
             .search_re = null,
@@ -455,6 +464,7 @@ pub const Editor = struct {
     pub fn deinit(self: *Editor) void {
         self.registers.deinit();
         self.history.deinit();
+        self.jumps.deinit(self.gpa);
         self.last_search.deinit(self.gpa);
         if (self.search_re) |*re| re.deinit(self.gpa);
         self.search_re_pat.deinit(self.gpa);
@@ -650,6 +660,7 @@ pub const Editor = struct {
             .backspace => self.moveAndReset(.{ .pos = self.left1(), .kind = .exclusive, .col_mode = .exact }),
             .page_up => self.pageMove(true),
             .page_down => self.pageMove(false),
+            .tab => self.jumpForward(), // Ctrl-i arrives as Tab; vim treats them alike
             .escape => self.resetPending(),
             else => self.resetPending(),
         }
@@ -678,7 +689,10 @@ pub const Editor = struct {
             'e' => self.doMotion(self.repeatWord(.e, false)),
             'E' => self.doMotion(self.repeatWord(.e, true)),
             'G' => self.doMotion(self.gotoLineMotion(if (self.count > 0) self.count - 1 else self.buf.lineCount() - 1)),
-            '%' => if (motion.matchPair(self.buf, self.cursor())) |p| self.doMotion(.{ .pos = p, .kind = .inclusive, .col_mode = .exact }) else self.resetPending(),
+            '%' => if (motion.matchPair(self.buf, self.cursor())) |p| {
+                if (self.operator == .none) self.addJump();
+                self.doMotion(.{ .pos = p, .kind = .inclusive, .col_mode = .exact });
+            } else self.resetPending(),
             'H' => self.doMotion(self.gotoLineMotion(self.top)),
             'M' => self.doMotion(self.gotoLineMotion(self.top + self.textRows() / 2)),
             'L' => self.doMotion(self.gotoLineMotion(@min(self.top + self.textRows() - 1, self.buf.lineCount() - 1))),
@@ -767,6 +781,7 @@ pub const Editor = struct {
                 self.resetPending();
             },
             'w' => self.await_arg = .ctrl_w, // window command prefix
+            'o' => self.jumpBack(), // jumplist back
             'c' => self.setStatus("Type :q then Enter to quit", .{}),
             else => self.resetPending(),
         }
@@ -788,11 +803,15 @@ pub const Editor = struct {
                 self.resetPending();
             },
             .mark_jump_back => {
-                if (markIndex(k)) |idx| if (self.marks[idx]) |p| self.setCursor(p);
+                if (markIndex(k)) |idx| if (self.marks[idx]) |p| {
+                    self.addJump();
+                    self.setCursor(p);
+                };
                 self.resetPending();
             },
             .mark_jump_line => {
                 if (markIndex(k)) |idx| if (self.marks[idx]) |p| {
+                    self.addJump();
                     self.cy = @min(p.row, self.buf.lineCount() - 1);
                     self.cx = motion.firstNonBlank(self.curLine());
                     self.updateGoal();
@@ -1200,6 +1219,7 @@ pub const Editor = struct {
     }
 
     fn gotoLineMotion(self: *Editor, row: usize) MotionResult {
+        if (self.operator == .none) self.addJump(); // jump-motion, not an operator target
         return .{ .pos = .{ .row = @min(row, self.buf.lineCount() - 1), .col = 0 }, .kind = .linewise, .col_mode = .first_non_blank };
     }
 
@@ -2345,7 +2365,56 @@ pub const Editor = struct {
         return self.last_search.items;
     }
 
+    /// Record the current position (vim: before G/gg/H/M/L/%/search/marks/
+    /// buffer switches). Entries on the same line are replaced; a new jump
+    /// truncates the forward (Ctrl-i) tail.
+    fn addJump(self: *Editor) void {
+        self.addJumpAt(self.d, self.cursor());
+    }
+
+    fn addJumpAt(self: *Editor, doc: *Doc, pos: Pos) void {
+        self.jumps.shrinkRetainingCapacity(@min(self.jump_idx, self.jumps.items.len));
+        var i: usize = 0;
+        while (i < self.jumps.items.len) {
+            const j = self.jumps.items[i];
+            if (j.doc == doc and j.pos.row == pos.row) {
+                _ = self.jumps.orderedRemove(i);
+            } else i += 1;
+        }
+        if (self.jumps.items.len >= 100) _ = self.jumps.orderedRemove(0);
+        self.jumps.append(self.gpa, .{ .doc = doc, .pos = pos }) catch {};
+        self.jump_idx = self.jumps.items.len;
+    }
+
+    /// Ctrl-o: go to the previous jumplist position (recording the live
+    /// position first, so Ctrl-i can come back to it).
+    fn jumpBack(self: *Editor) void {
+        self.resetPending();
+        if (self.jump_idx == 0) return self.setStatus("at oldest jump", .{});
+        if (self.jump_idx == self.jumps.items.len) {
+            self.jumps.append(self.gpa, .{ .doc = self.d, .pos = self.cursor() }) catch return;
+        }
+        self.jump_idx -= 1;
+        self.gotoJump(self.jumps.items[self.jump_idx]);
+    }
+
+    /// Ctrl-i / Tab: go forward again.
+    fn jumpForward(self: *Editor) void {
+        self.resetPending();
+        if (self.jump_idx + 1 >= self.jumps.items.len) return self.setStatus("at newest jump", .{});
+        self.jump_idx += 1;
+        self.gotoJump(self.jumps.items[self.jump_idx]);
+    }
+
+    fn gotoJump(self: *Editor, j: Jump) void {
+        if (j.doc != self.d) self.focusDoc(j.doc);
+        self.cy = @min(j.pos.row, self.buf.lineCount() - 1);
+        self.cx = @min(j.pos.col, self.curLine().len);
+        self.updateGoal();
+    }
+
     fn repeatSearch(self: *Editor, same_dir: bool) void {
+        self.addJump();
         const fwd = if (same_dir) self.last_search_forward else !self.last_search_forward;
         self.jumpSearch(fwd);
         self.resetPending();
@@ -2368,6 +2437,7 @@ pub const Editor = struct {
             pat.append(self.gpa, ch) catch return;
         }
         pat.appendSlice(self.gpa, "\\>") catch return;
+        self.addJump();
         self.runSearch(pat.items, forward);
         self.resetPending();
     }
@@ -2732,6 +2802,7 @@ pub const Editor = struct {
             const idx = it.line; // the doc index stashed at population time
             self.closePicker();
             if (idx < self.docs.items.len) {
+                self.addJump();
                 self.focusDoc(self.docs.items[idx]);
                 self.placeAt(self.cy);
             }
@@ -2863,6 +2934,7 @@ pub const Editor = struct {
     fn cycleDoc(self: *Editor, forward: bool) void {
         const n = self.docs.items.len;
         if (n <= 1) return;
+        self.addJump();
         var idx: usize = 0;
         for (self.docs.items, 0..) |doc, i| if (doc == self.d) {
             idx = i;
@@ -2876,6 +2948,7 @@ pub const Editor = struct {
     /// Open `path` in the active window: focus its doc if already open, else
     /// load it into a new doc (with its own LSP/tree-sitter/undo).
     fn openFile(self: *Editor, path: []const u8, line: usize) void {
+        self.addJump();
         for (self.docs.items) |doc| {
             const p = doc.buf.path orelse continue;
             if (std.mem.eql(u8, p, path)) {
@@ -3063,8 +3136,9 @@ pub const Editor = struct {
                 self.mode = .normal;
                 switch (kind) {
                     .ex => try self.execEx(),
-                    // Search was already applied incrementally; nothing to do.
-                    .search_forward, .search_backward => {},
+                    // The cursor already moved live; record the origin so
+                    // Ctrl-o returns to where the search began.
+                    .search_forward, .search_backward => self.addJumpAt(self.d, self.search_origin),
                     .rename => self.lspRename(),
                 }
             },
@@ -3107,12 +3181,14 @@ pub const Editor = struct {
         // :<number> jumps to a line.
         if (raw[0] >= '0' and raw[0] <= '9') {
             const ln = std.fmt.parseInt(usize, raw, 10) catch return;
+            self.addJump();
             self.cy = if (ln == 0) 0 else @min(ln - 1, self.buf.lineCount() - 1);
             self.cx = motion.firstNonBlank(self.curLine());
             self.updateGoal();
             return;
         }
         if (eql(raw, "$")) {
+            self.addJump();
             self.cy = self.buf.lineCount() - 1;
             self.cx = motion.firstNonBlank(self.curLine());
             return;
@@ -3362,6 +3438,14 @@ pub const Editor = struct {
             if (w.doc == victim) w.doc = repl;
         }
         _ = self.docs.orderedRemove(self.docIndex(victim));
+        var ji: usize = 0;
+        while (ji < self.jumps.items.len) {
+            if (self.jumps.items[ji].doc == victim) {
+                _ = self.jumps.orderedRemove(ji);
+                if (self.jump_idx > ji) self.jump_idx -= 1;
+            } else ji += 1;
+        }
+        if (self.jump_idx > self.jumps.items.len) self.jump_idx = self.jumps.items.len;
         victim.buf.deinit();
         freeDocState(victim, self.gpa);
         self.gpa.destroy(victim);
@@ -3529,6 +3613,7 @@ pub const Editor = struct {
         }
         if (client.takeDefinition()) |loc| {
             defer self.gpa.free(loc.uri);
+            self.addJump();
             self.cy = @min(loc.line, self.buf.lineCount() - 1);
             self.cx = @min(loc.col, self.curLine().len);
             self.updateGoal();
@@ -3599,6 +3684,7 @@ pub const Editor = struct {
         const client = if (self.lsp) |*c| c else return;
         if (idx >= client.symbols.items.len) return;
         const sym = client.symbols.items[idx];
+        self.addJump();
         self.cy = @min(sym.line, self.buf.lineCount() - 1);
         self.cx = @min(byteAtCharCol(self.curLine(), sym.col), self.curLine().len);
         self.updateGoal();

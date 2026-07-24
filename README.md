@@ -39,6 +39,8 @@ runtime dependencies**.
   - `:%s/pat/rep/g` substitution with ranges (`%`, `n,m`), flags `g`/`i`,
     `&` and `\1`–`\9` in replacements — behaviour pinned to real-nvim outputs
   - Marks `m` `` ` `` `'` and macros `q…q` / `@`
+  - Jumplist: `Ctrl-o` / `Ctrl-i` walk back and forward through jumps
+    (searches, `G`, marks, `gd`, buffer switches — cross-buffer)
   - Built-ins (no plugins): auto-pairs, comment toggle (`gcc` / `gc{motion}`),
     surround (`ys`/`cs`/`ds`, visual `S`), blockwise visual (`Ctrl-v` + `I`/`A`),
     multiple cursors (`Ctrl-n` / `Ctrl-p` add carets; edits apply to all)

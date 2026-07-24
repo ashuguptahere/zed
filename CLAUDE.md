@@ -169,6 +169,12 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   vim's magic mode); a plain word behaves exactly as before.
 - **Marks/macros:** `m{a-z}`, `` `{a-z} ``, `'{a-z}`; `q{a-z}…q` records, `@{a-z}`
   / `{n}@a` replays.
+- **Jumplist:** `Ctrl-o` / `Ctrl-i` (also `Tab`) walk back/forward through
+  jump-motions — `G`/`gg`/`{n}G`, `H M L`, `%`, committed searches (back to the
+  origin), `n N * #`, mark jumps, `:{n}`, and every buffer switch (`:e`,
+  `:bn/:bp`, pickers, `gd`). Entries are per position across buffers (capped at
+  100, same-line entries replaced); closing a buffer purges its entries.
+  Behaviour pinned to nvim ground truth in `vim_compat`.
 - **Insert:** `i I a A o O` (and `c`/`s` entries), `Esc` to normal. Auto-pairs:
   typing an opener inserts its closer; typing the closer steps over it.
 - **Built-ins (no plugins):** `gcc` / `gc{motion}` comment toggling, auto-pairs.

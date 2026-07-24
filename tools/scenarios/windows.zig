@@ -83,6 +83,17 @@ pub fn run(ctx: *h.Ctx) !void {
         defer ctx.gpa.free(bt2);
         ctx.check("]b cycles to the next buffer", std.mem.eql(u8, bt2, "b\n"));
 
+        // Ctrl-o jumps back across buffers (b -> a), Ctrl-i (Tab) forward again.
+        s.send("\x0f"); // back to a.txt
+        s.drain(300);
+        s.send("x:w\r"); // a.txt is "aa" here: x makes it "a"
+        s.drain(300);
+        const at3 = h.readFile(ctx.gpa, ctx.io, a);
+        defer ctx.gpa.free(at3);
+        ctx.check("Ctrl-o jumps back across buffers", std.mem.eql(u8, at3, "a\n"));
+        s.send("u:w\r"); // undo so the later picker check still sees "aa"
+        s.drain(300);
+
         // Space f b opens the buffer picker; pick a.txt and edit it.
         s.send(" fb");
         s.drain(300);

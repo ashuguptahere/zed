@@ -60,6 +60,11 @@ pub fn run(ctx: *h.Ctx) !void {
     case(ctx, "nvim#s7 character classes", &.{ ":%s/[0-9][0-9]*/N/g\r", ":wq", CR }, "a1 b22 c333\n", "aN bN cN\n");
     case(ctx, "nvim#s8 no match leaves file unchanged", &.{ ":%s/xyz/Q/g\r", ":wq", CR }, "no match here\n", "no match here\n");
 
+    // Jumplist (Ctrl-o = \x0f back, Ctrl-i = Tab forward) — nvim-verified.
+    case(ctx, "nvim#j1 G then Ctrl-o returns", &.{ "G\x0fx", ":wq", CR }, "aaa\nbbb\nccc\nddd\neee\n", "aa\nbbb\nccc\nddd\neee\n");
+    case(ctx, "nvim#j2 search then Ctrl-o returns to origin", &.{ "/ddd\r\x0fx", ":wq", CR }, "aaa\nbbb\nccc\nddd\neee\n", "aa\nbbb\nccc\nddd\neee\n");
+    case(ctx, "nvim#j3 Ctrl-o then Ctrl-i goes forward again", &.{ "G\x0f\tx", ":wq", CR }, "aaa\nbbb\nccc\nddd\neee\n", "aaa\nbbb\nccc\nddd\nee\n");
+
     // Regex `/` search: the pattern jumps, then x edits at the match.
     case(ctx, "regex / search jumps to match", &.{ "/b.d\r", "x", ":wq", CR }, "xxx\nbad\n", "xxx\nad\n");
     // Capture groups in the replacement swap two words.

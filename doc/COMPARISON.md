@@ -13,8 +13,8 @@ batteries-included editor.
 1. ~~**Regex search + `:%s` substitution**~~ — **DONE** (regex.zig Pike VM;
    `/ ? n N * #` are regex, `:[range]s/pat/rep/[gi]` with captures; grep
    picker still literal).
-2. **Jumplist** `Ctrl-o`/`Ctrl-i` (both, high) — LSP-driven navigation is
-   currently a one-way trip.
+2. ~~**Jumplist** `Ctrl-o`/`Ctrl-i`~~ — **DONE** (cross-buffer, nvim-verified;
+   records G/search/marks/%/buffer switches/gd).
 3. **System clipboard** (both, high) — OSC 52 fits zedit's zero-dependency
    design perfectly (nvim 0.11 made it a default fallback).
 4. **Autoindent** on `o`/`O`/Enter (both, high — already in Known gaps).
