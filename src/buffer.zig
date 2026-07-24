@@ -31,13 +31,18 @@ pub const Buffer = struct {
     revision: u64,
     /// Whether the on-disk file ends with a trailing newline; preserved on save.
     final_newline: bool,
+    /// True when the document is genuinely empty (new/0-byte buffer, or every
+    /// line was deleted) as opposed to one line whose text was emptied. Matches
+    /// vim: `ggVGd` then `:w` writes 0 bytes, but `d$` on a one-line file
+    /// writes "\n". Cleared by any text insertion.
+    emptied: bool,
 
     pub fn initEmpty(gpa: Allocator) !Buffer {
         var lines: std.ArrayList(Line) = .empty;
         try lines.append(gpa, .empty);
         // New buffers follow the POSIX convention: once they hold content they
         // are saved with a trailing newline. A still-empty buffer writes 0 bytes.
-        return .{ .gpa = gpa, .lines = lines, .path = null, .dirty = false, .revision = 0, .final_newline = true };
+        return .{ .gpa = gpa, .lines = lines, .path = null, .dirty = false, .revision = 0, .final_newline = true, .emptied = true };
     }
 
     pub fn deinit(self: *Buffer) void {
@@ -73,9 +78,10 @@ pub const Buffer = struct {
             // should keep ending with a newline.
             final_newline = true;
         }
-        if (lines.items.len == 0) try lines.append(gpa, .empty);
+        const was_empty = lines.items.len == 0;
+        if (was_empty) try lines.append(gpa, .empty);
 
-        return .{ .gpa = gpa, .lines = lines, .path = null, .dirty = false, .revision = 0, .final_newline = final_newline };
+        return .{ .gpa = gpa, .lines = lines, .path = null, .dirty = false, .revision = 0, .final_newline = final_newline, .emptied = was_empty };
     }
 
     /// Load `path` into a new buffer. A missing file yields an empty buffer
@@ -98,8 +104,9 @@ pub const Buffer = struct {
     /// Serialise the buffer back to bytes, restoring line endings and the
     /// original trailing-newline convention. Caller owns the result.
     pub fn toBytes(self: *const Buffer, gpa: Allocator) ![]u8 {
-        // A lone empty line is an empty document: write 0 bytes, not "\n".
-        if (self.lines.items.len == 1 and self.lines.items[0].items.len == 0) {
+        // A genuinely empty document writes 0 bytes; a single line whose text
+        // was merely emptied still writes its "\n" (vim semantics).
+        if (self.emptied and self.lines.items.len == 1 and self.lines.items[0].items.len == 0) {
             return gpa.alloc(u8, 0);
         }
         var out: std.ArrayList(u8) = .empty;
@@ -141,6 +148,7 @@ pub const Buffer = struct {
         var enc: [4]u8 = undefined;
         const n = std.unicode.utf8Encode(cp, &enc) catch return col;
         try self.lines.items[row].insertSlice(self.gpa, col, enc[0..n]);
+        self.emptied = false;
         self.dirty = true;
         self.revision +%= 1;
         return col + n;
@@ -154,6 +162,7 @@ pub const Buffer = struct {
         try new_line.appendSlice(self.gpa, tail);
         try self.lines.insert(self.gpa, row + 1, new_line);
         self.lines.items[row].items.len = col; // truncate, keep capacity
+        self.emptied = false;
         self.dirty = true;
         self.revision +%= 1;
     }
@@ -205,12 +214,14 @@ pub const Buffer = struct {
         self.lines.deinit(self.gpa);
         self.lines = tmp.lines; // take ownership; tmp.path is null
         self.final_newline = tmp.final_newline;
+        self.emptied = tmp.emptied;
         self.revision +%= 1;
     }
 
     /// Insert raw bytes into a line at a byte offset.
     pub fn insertBytes(self: *Buffer, row: usize, col: usize, bytes: []const u8) !void {
         try self.lines.items[row].insertSlice(self.gpa, col, bytes);
+        self.emptied = false;
         self.dirty = true;
         self.revision +%= 1;
     }
@@ -228,6 +239,7 @@ pub const Buffer = struct {
         const target = &self.lines.items[row];
         target.clearRetainingCapacity();
         try target.appendSlice(self.gpa, bytes);
+        self.emptied = false;
         self.dirty = true;
         self.revision +%= 1;
     }
@@ -238,6 +250,7 @@ pub const Buffer = struct {
         errdefer new_line.deinit(self.gpa);
         try new_line.appendSlice(self.gpa, bytes);
         try self.lines.insert(self.gpa, at, new_line);
+        self.emptied = false;
         self.dirty = true;
         self.revision +%= 1;
     }
@@ -246,7 +259,10 @@ pub const Buffer = struct {
     pub fn removeLineAt(self: *Buffer, at: usize) void {
         var removed = self.lines.orderedRemove(at);
         removed.deinit(self.gpa);
-        if (self.lines.items.len == 0) self.lines.append(self.gpa, .empty) catch {};
+        if (self.lines.items.len == 0) {
+            self.lines.append(self.gpa, .empty) catch {};
+            self.emptied = true; // every line deleted -> truly empty document
+        }
         self.dirty = true;
         self.revision +%= 1;
     }

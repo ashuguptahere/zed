@@ -54,7 +54,7 @@ pub fn run(ctx: *h.Ctx) !void {
         });
         defer s.finish();
         s.drain(500);
-        s.send(" t");
+        s.send(" ft");
         s.drain(400);
         ctx.check("theme picker lists themes", s.containsPlain(ctx.gpa, "THEMES") and
             s.containsPlain(ctx.gpa, "catppuccin"));

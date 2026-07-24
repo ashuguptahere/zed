@@ -276,7 +276,16 @@ pub fn objWord(buf: *const buffer.Buffer, pos: Pos, big: bool, around: bool) ?Sp
 /// `i(`/`a(` and friends: the range enclosed by a bracket pair. `around`
 /// includes the brackets themselves.
 pub fn objPair(buf: *const buffer.Buffer, pos: Pos, open: u8, close: u8, around: bool) ?Span {
-    const o = findOpen(buf, pos, open, close) orelse return null;
+    // Like vim: prefer the enclosing pair; when the cursor is outside one,
+    // seek forward on the current line for the next opener.
+    const o = findOpen(buf, pos, open, close) orelse fwd: {
+        const line = buf.line(pos.row);
+        var col = pos.col;
+        while (col < line.len) : (col += 1) {
+            if (line[col] == open) break :fwd Pos{ .row = pos.row, .col = col };
+        }
+        return null;
+    };
     const c = findClose(buf, o, open, close) orelse return null;
     if (around) return .{ .start = o, .end = c };
 

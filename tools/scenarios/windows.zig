@@ -73,6 +73,27 @@ pub fn run(ctx: *h.Ctx) !void {
         defer ctx.gpa.free(bt);
         ctx.check("buffer a edited independently", std.mem.eql(u8, at, "aa\n"));
         ctx.check("buffer b edited independently", std.mem.eql(u8, bt, "bb\n"));
+
+        // ]b cycles to the next buffer (AstroNvim binding).
+        s.send("]b"); // a -> b
+        s.drain(300);
+        s.send("x:w\r"); // bb -> b
+        s.drain(300);
+        const bt2 = h.readFile(ctx.gpa, ctx.io, b);
+        defer ctx.gpa.free(bt2);
+        ctx.check("]b cycles to the next buffer", std.mem.eql(u8, bt2, "b\n"));
+
+        // Space f b opens the buffer picker; pick a.txt and edit it.
+        s.send(" fb");
+        s.drain(300);
+        s.send("a.txt\r");
+        s.drain(300);
+        s.send("x:w\r"); // aa -> a
+        s.drain(300);
+        const at2 = h.readFile(ctx.gpa, ctx.io, a);
+        defer ctx.gpa.free(at2);
+        ctx.check("buffer picker switches buffers", std.mem.eql(u8, at2, "a\n"));
+
         s.send(":qa\r");
         s.drain(200);
     }

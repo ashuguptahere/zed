@@ -65,7 +65,7 @@ pub fn run(ctx: *h.Ctx) !void {
             .{ .name = "a.txt", .content = "aaa\n" },
             .{ .name = "b.txt", .content = "bbb\n" },
         };
-        const result = try run_picker(ctx, &files, "a.txt", &.{ " f", "b", CR, "x", ":wq", CR });
+        const result = try run_picker(ctx, &files, "a.txt", &.{ " ff", "b", CR, "x", ":wq", CR });
         defer freeResult(ctx, result);
         ctx.check("file picker opened b.txt and edited it", std.mem.eql(u8, result[1], "bb\n"));
         ctx.check("file picker left a.txt untouched", std.mem.eql(u8, result[0], "aaa\n"));
@@ -77,7 +77,7 @@ pub fn run(ctx: *h.Ctx) !void {
             .{ .name = "a.txt", .content = "nothing\n" },
             .{ .name = "c.txt", .content = "one\ntwo\nfind me\n" },
         };
-        const result = try run_picker(ctx, &files, "a.txt", &.{ " /", "find", CR, "x", ":wq", CR });
+        const result = try run_picker(ctx, &files, "a.txt", &.{ " fw", "find", CR, "x", ":wq", CR });
         defer freeResult(ctx, result);
         ctx.check("grep picker opened match at correct line", std.mem.eql(u8, result[1], "one\ntwo\nind me\n"));
     }

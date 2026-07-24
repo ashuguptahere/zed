@@ -71,7 +71,7 @@ pub const Mode = enum {
     }
 };
 
-const PickerKind = enum { files, grep, code_action, symbol, theme };
+const PickerKind = enum { files, grep, code_action, symbol, theme, buffer };
 const PickItem = struct { display: []u8, path: []u8, line: usize };
 
 const Operator = enum { none, delete, change, yank, indent_right, indent_left, comment, surround };
@@ -98,6 +98,8 @@ const Await = enum {
     macro_record, // q{reg}
     macro_play, // @{reg}
     space_leader, // <space> menu (which-key)
+    space_find, // <space>f — the AstroNvim Find group
+    space_lang, // <space>l — the AstroNvim Language-tools group
     surround_add_char, // ys{motion}{char} / visual S{char}
     surround_delete, // ds{char}
     surround_change_from, // cs{old}...
@@ -773,6 +775,7 @@ pub const Editor = struct {
             },
             .bracket_next, .bracket_prev => {
                 if (k == .char and k.char == 'd') self.gotoDiagnostic(a == .bracket_next);
+                if (k == .char and k.char == 'b') self.cycleDoc(a == .bracket_next); // ]b / [b buffers
                 self.resetPending();
             },
             .ctrl_w => {
@@ -810,19 +813,36 @@ pub const Editor = struct {
                 self.resetPending();
                 try self.playMacro(reg, n);
             },
+            // AstroNvim-style leader tree: <space>f Find…, <space>l Language…,
+            // plus the flat <space>w/q/c leaves.
             .space_leader => {
                 self.resetPending();
                 if (k == .char) switch (k.char) {
-                    'f' => self.openFilePicker(),
-                    '/', 's' => self.openGrepPicker(),
-                    'd' => self.lspDefinition(), // go to definition
-                    'r' => self.enterRename(), // rename symbol
-                    'a' => self.lspCodeAction(), // code action
-                    'o' => self.lspDocumentSymbol(), // document symbols (outline)
-                    't' => self.openThemePicker(), // switch colour theme
-                    'k' => self.lspHover(), // hover
+                    'f' => self.await_arg = .space_find,
+                    'l' => self.await_arg = .space_lang,
                     'w' => _ = try self.write(""),
                     'q' => self.doQuit(),
+                    'c' => self.closeDoc(), // close buffer (AstroNvim <leader>c)
+                    else => {},
+                };
+            },
+            .space_find => {
+                self.resetPending();
+                if (k == .char) switch (k.char) {
+                    'f' => self.openFilePicker(), // find files
+                    'w' => self.openGrepPicker(), // find words
+                    'b' => self.openBufferPicker(), // find buffers
+                    't' => self.openThemePicker(), // find themes
+                    else => {},
+                };
+            },
+            .space_lang => {
+                self.resetPending();
+                if (k == .char) switch (k.char) {
+                    'a' => self.lspCodeAction(), // code action
+                    'r' => self.enterRename(), // rename symbol
+                    's' => self.lspDocumentSymbol(), // document symbols
+                    'd' => self.lineDiagnostic(), // show the line's diagnostic
                     else => {},
                 };
             },
@@ -1122,14 +1142,26 @@ pub const Editor = struct {
 
     fn repeatWord(self: *Editor, which: WordKind, big: bool) MotionResult {
         var p = self.cursor();
+        var prev = p;
         var i: usize = 0;
         const n = if (self.operator != .none) self.total() else self.eff();
         while (i < n) : (i += 1) {
+            prev = p;
             p = switch (which) {
                 .f => motion.wordForward(self.buf, p, big),
                 .b => motion.wordBackward(self.buf, p, big),
                 .e => motion.wordEnd(self.buf, p, big),
             };
+        }
+        // Vim's operator+w special case (:help word-motions): when the last
+        // word moved over sits at the end of a line, the operated text ends at
+        // that line's end instead of crossing to the next line — so `dw` on the
+        // line's last word never joins. Starting on a blank tail or an empty
+        // line is not "moving over a word", and does cross (vim joins there).
+        if (which == .f and self.operator != .none and p.row > prev.row) {
+            const pl = self.buf.line(prev.row);
+            const has_word = std.mem.indexOfNone(u8, pl[@min(prev.col, pl.len)..], " \t") != null;
+            if (has_word) p = .{ .row = prev.row, .col = pl.len };
         }
         return .{ .pos = p, .kind = if (which == .e) .inclusive else .exclusive, .col_mode = .exact };
     }
@@ -1777,6 +1809,9 @@ pub const Editor = struct {
                 'I' => if (self.mode == .visual_block) try self.blockInsert(false),
                 'A' => if (self.mode == .visual_block) try self.blockInsert(true),
                 'S' => self.visualSurround(),
+                'U' => try self.visualCase(.upper),
+                'u' => try self.visualCase(.lower),
+                '~' => try self.visualCase(.toggle),
                 '>' => try self.visualOperator(.indent_right),
                 '<' => try self.visualOperator(.indent_left),
                 'V' => self.mode = .visual_line,
@@ -1805,6 +1840,40 @@ pub const Editor = struct {
     fn setCursorKeep(self: *Editor, p: Pos) void {
         self.cy = @min(p.row, self.buf.lineCount() - 1);
         self.cx = p.col;
+    }
+
+    /// Visual-mode `U`/`u`/`~`: set or toggle the case of the selection
+    /// (charwise and linewise; ASCII, like `~` in normal mode).
+    fn visualCase(self: *Editor, how: enum { upper, lower, toggle }) !void {
+        self.pushUndo();
+        const linewise = self.mode == .visual_line;
+        var start = self.vstart;
+        var end = self.cursor();
+        if (cmpPos(end, start) < 0) std.mem.swap(Pos, &start, &end);
+
+        var row = start.row;
+        while (row <= end.row) : (row += 1) {
+            const line = self.buf.line(row);
+            var lo: usize = 0;
+            var hi: usize = line.len;
+            if (!linewise) {
+                if (row == start.row) lo = start.col;
+                if (row == end.row) hi = @min(unicode.nextBoundary(line, end.col), line.len);
+            }
+            const mut = self.buf.lines.items[row].items;
+            for (mut[lo..hi]) |*ch| {
+                ch.* = switch (how) {
+                    .upper => std.ascii.toUpper(ch.*),
+                    .lower => std.ascii.toLower(ch.*),
+                    .toggle => if (std.ascii.isUpper(ch.*)) std.ascii.toLower(ch.*) else std.ascii.toUpper(ch.*),
+                };
+            }
+        }
+        self.buf.dirty = true;
+        self.buf.revision +%= 1;
+        self.mode = .normal;
+        self.setCursor(.{ .row = start.row, .col = if (linewise) 0 else start.col });
+        self.resetPending();
     }
 
     fn visualOperator(self: *Editor, op: Operator) !void {
@@ -2284,6 +2353,31 @@ pub const Editor = struct {
         self.refilter();
     }
 
+    /// Populate the picker with the open buffers (`Space f b`); the doc index
+    /// is stashed in `PickItem.line`.
+    fn openBufferPicker(self: *Editor) void {
+        self.freePicker();
+        self.picker_kind = .buffer;
+        self.picker_sel = 0;
+        self.picker_scroll = 0;
+        for (self.docs.items, 0..) |doc, i| {
+            const name = doc.buf.path orelse "[No Name]";
+            const mark: []const u8 = if (doc == self.d) "* " else "  ";
+            const dirty: []const u8 = if (doc.buf.dirty) " \u{25CF}" else "";
+            const disp = std.fmt.allocPrint(self.gpa, "{s}{s}{s}", .{ mark, name, dirty }) catch continue;
+            const p = self.gpa.dupe(u8, name) catch {
+                self.gpa.free(disp);
+                continue;
+            };
+            self.picker_items.append(self.gpa, .{ .display = disp, .path = p, .line = i }) catch {
+                self.gpa.free(disp);
+                self.gpa.free(p);
+            };
+        }
+        self.mode = .picker;
+        self.refilter();
+    }
+
     /// Populate the picker with the built-in theme names and open it.
     fn openThemePicker(self: *Editor) void {
         self.freePicker();
@@ -2484,6 +2578,15 @@ pub const Editor = struct {
             self.closePicker();
             _ = theme.set(name_buf[0..n]);
             self.setStatus("theme: {s}", .{name_buf[0..n]});
+            return;
+        }
+        if (self.picker_kind == .buffer) {
+            const idx = it.line; // the doc index stashed at population time
+            self.closePicker();
+            if (idx < self.docs.items.len) {
+                self.focusDoc(self.docs.items[idx]);
+                self.placeAt(self.cy);
+            }
             return;
         }
         const path = self.gpa.dupe(u8, it.path) catch return;
@@ -2700,6 +2803,7 @@ pub const Editor = struct {
             .code_action => " ACTIONS ",
             .symbol => " SYMBOLS ",
             .theme => " THEMES ",
+            .buffer => " BUFFERS ",
         };
         try self.setBg(th.mode_command);
         try self.setFg(th.bg);
@@ -3235,6 +3339,17 @@ pub const Editor = struct {
         self.updateGoal();
     }
 
+    /// Show the current line's diagnostic in the statusline (`Space l d`).
+    fn lineDiagnostic(self: *Editor) void {
+        const client = if (self.lsp) |*c| c else return self.setStatus("no language server", .{});
+        if (client.messageAt(self.cy)) |msg| {
+            const end = std.mem.indexOfScalar(u8, msg, '\n') orelse msg.len;
+            self.setStatus("{s}", .{msg[0..end]});
+        } else {
+            self.setStatus("no diagnostic on this line", .{});
+        }
+    }
+
     /// Send the rename request with the name typed on the command line.
     fn lspRename(self: *Editor) void {
         const name = std.mem.trim(u8, self.cmd.items, " ");
@@ -3657,7 +3772,10 @@ pub const Editor = struct {
         // Bottom command/status line.
         try self.emitFmt("\x1b[{d};1H", .{self.win.rows});
         try self.renderStatus();
-        if (self.await_arg == .space_leader) try self.renderWhichKey();
+        switch (self.await_arg) {
+            .space_leader, .space_find, .space_lang => try self.renderWhichKey(),
+            else => {},
+        }
         if (self.sig_open) try self.renderSignature(gutter);
         if (self.comp_open) try self.renderCompletion(gutter);
         try self.emit(ansi.reset_attrs);
@@ -3667,26 +3785,47 @@ pub const Editor = struct {
         sp.lap("render");
     }
 
+    // The AstroNvim-style leader tree, shown by the which-key popup.
     const WhichKey = struct { key: []const u8, desc: []const u8 };
     const leader_keys = [_]WhichKey{
-        .{ .key = "f", .desc = "find file" },
-        .{ .key = "s", .desc = "search in files" },
-        .{ .key = "d", .desc = "go to definition" },
-        .{ .key = "r", .desc = "rename symbol" },
-        .{ .key = "a", .desc = "code action" },
-        .{ .key = "o", .desc = "document symbols" },
-        .{ .key = "t", .desc = "theme" },
-        .{ .key = "k", .desc = "hover" },
+        .{ .key = "f", .desc = "Find \u{2026}" },
+        .{ .key = "l", .desc = "Language tools \u{2026}" },
+        .{ .key = "c", .desc = "close buffer" },
         .{ .key = "w", .desc = "write (save)" },
         .{ .key = "q", .desc = "quit" },
     };
+    const find_keys = [_]WhichKey{
+        .{ .key = "f", .desc = "find files" },
+        .{ .key = "w", .desc = "find words" },
+        .{ .key = "b", .desc = "find buffers" },
+        .{ .key = "t", .desc = "find themes" },
+    };
+    const lang_keys = [_]WhichKey{
+        .{ .key = "a", .desc = "code action" },
+        .{ .key = "r", .desc = "rename symbol" },
+        .{ .key = "s", .desc = "document symbols" },
+        .{ .key = "d", .desc = "line diagnostic" },
+    };
 
-    /// Draw the which-key popup for the Space leader, anchored above the status bar.
+    /// Draw the which-key popup for the pending leader menu (`Space`, `Space f`
+    /// or `Space l`), anchored above the status bar.
     fn renderWhichKey(self: *Editor) !void {
         const th = theme.current;
+        const menu: []const WhichKey = switch (self.await_arg) {
+            .space_leader => &leader_keys,
+            .space_find => &find_keys,
+            .space_lang => &lang_keys,
+            else => return,
+        };
+        const title: []const u8 = switch (self.await_arg) {
+            .space_leader => " SPACE",
+            .space_find => " SPACE f",
+            .space_lang => " SPACE l",
+            else => unreachable,
+        };
         const width: usize = 26;
         const rows: usize = self.win.rows;
-        const height = leader_keys.len + 1;
+        const height = menu.len + 1;
         if (rows < height + 2) return;
         const top = rows - height - 1; // 1-based; leave the status bar at the bottom
 
@@ -3694,17 +3833,17 @@ pub const Editor = struct {
         try self.emit(try std.fmt.bufPrint(&b, "\x1b[{d};1H", .{top}));
         try self.setBg(th.mode_command);
         try self.setFg(th.bg);
-        try self.emit(" SPACE");
-        try self.emitSpaces(width - 6);
+        try self.emit(title);
+        try self.emitSpaces(width - title.len);
 
-        for (leader_keys, 0..) |it, i| {
+        for (menu, 0..) |it, i| {
             try self.emit(try std.fmt.bufPrint(&b, "\x1b[{d};1H", .{top + 1 + i}));
             try self.setBg(th.status_seg_bg);
             try self.setFg(th.mode_normal);
             try self.emitFmt("  {s}  ", .{it.key});
             try self.setFg(th.status_seg_fg);
             try self.emit(it.desc);
-            const used = 2 + it.key.len + 2 + it.desc.len;
+            const used = 2 + it.key.len + 2 + unicode.displayWidth(it.desc);
             if (used < width) try self.emitSpaces(width - used);
         }
     }

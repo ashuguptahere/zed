@@ -7,6 +7,7 @@ const h = @import("harness.zig");
 
 const scenarios = .{
     .{ "vim", @import("scenarios/vim.zig") },
+    .{ "vim_compat", @import("scenarios/vim_compat.zig") },
     .{ "feature", @import("scenarios/feature.zig") },
     .{ "multicursor", @import("scenarios/multicursor.zig") },
     .{ "extra", @import("scenarios/extra.zig") },

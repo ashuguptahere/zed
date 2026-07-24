@@ -46,7 +46,9 @@ pub fn run(ctx: *h.Ctx) !void {
     // ---- auto-pairs ----
     case(ctx, "autopair inserts closer", &.{ "i", "(", "x", ESC, ":wq", CR }, "", "(x)\n");
     case(ctx, "autopair steps over closer", &.{ "i", "(", ")", ESC, ":wq", CR }, "", "()\n");
-    case(ctx, "backspace deletes empty pair", &.{ "i", "(", BS, ESC, ":wq", CR }, "", "");
+    // The emptied (but once-edited) line writes "\n", not 0 bytes — verified
+    // against nvim (see vim_compat.zig and Buffer.emptied).
+    case(ctx, "backspace deletes empty pair", &.{ "i", "(", BS, ESC, ":wq", CR }, "", "\n");
     case(ctx, "autopair quotes", &.{ "i", "\"", "hi", ESC, ":wq", CR }, "", "\"hi\"\n");
 
     // ---- comment toggle ----

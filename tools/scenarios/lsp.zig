@@ -176,7 +176,7 @@ pub fn run(ctx: *h.Ctx) !void {
     // filtering to "main" and Enter jumps to line 2 col 6, where x deletes.
     {
         const r = drive(ctx, &.{
-            .{ .keys = " o", .ms = 800 },
+            .{ .keys = " ls", .ms = 800 },
             .{ .keys = "main", .ms = 300 },
             .{ .keys = "\r", .ms = 300 },
             .{ .keys = "x", .ms = 300 },
