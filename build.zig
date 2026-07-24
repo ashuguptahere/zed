@@ -45,6 +45,9 @@ pub fn build(b: *std.Build) void {
         exe_mod.addAnonymousImport("ts_highlights_" ++ g.name, .{ .root_source_file = b.path(g.highlights) });
     }
 
+    // The interactive tutorial, embedded so `zed --tutor` works anywhere.
+    exe_mod.addAnonymousImport("tutor_text", .{ .root_source_file = b.path("doc/tutor.txt") });
+
     const exe = b.addExecutable(.{ .name = "zed", .root_module = exe_mod });
     b.installArtifact(exe);
 

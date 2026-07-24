@@ -34,6 +34,58 @@ Write timestamped diagnostic logs (including microsecond render/input timings)
 to
 .IR path .
 Logging is off by default.
+.TP
+.BI \-\-lsp " cmd"
+Use
+.I cmd
+as the language server for the opened file instead of the per-filetype default.
+.TP
+.BI \-\-config " path"
+Read configuration from
+.I path
+instead of the standard location (see
+.BR CONFIGURATION ).
+.TP
+.B \-\-init\-config
+Write the fully documented default configuration file to the standard location
+and exit. Refuses to overwrite an existing file.
+.TP
+.B \-\-tutor
+Open the interactive tutorial (in the tradition of
+.BR vimtutor (1)).
+The tutor is a scratch buffer: edit it freely.
+.SH CONFIGURATION
+zed reads a single configuration file at
+.I $XDG_CONFIG_HOME/zed/config
+(falling back to
+.IR ~/.config/zed/config ).
+The format is one
+.B key = value
+per line;
+.B #
+starts a comment; unknown keys are ignored; a missing file means defaults.
+Generate a fully documented copy with
+.BR "zed \-\-init\-config" .
+.TP
+.B theme
+Colour theme:
+.BR tokyonight " (default), " gruvbox ", " catppuccin ", " nord ", " onedark .
+Switch at runtime with
+.B :theme
+or the
+.B Space t
+picker.
+.TP
+.B tab_width
+Cells a tab occupies when rendered (1\-16, default 4). Tabs are stored
+verbatim.
+.TP
+.B nerd_font
+.BR true / false
+(default true). The powerline statusline separators are Nerd Font private-use
+glyphs; set
+.B false
+for a flat statusline that renders correctly in any font.
 .SH MODES
 zed is modal: NORMAL for movement and commands, INSERT for typing, VISUAL and
 V\-LINE and V\-BLOCK for selections, COMMAND for the
@@ -187,6 +239,10 @@ open buffers.
 .B :split :vsplit :close :only
 Split the view horizontally / vertically, close the active window, close all
 but the active window.
+.TP
+.B :theme \fR[\fPname\fR]\fP
+Switch the colour theme (with no argument, opens the theme picker; also on
+.BR "Space t" ).
 .TP
 .B Ctrl-w \fR{\fPv s c o w h j k l\fR}\fP
 Window commands: \fBv\fP/\fBs\fP split vertically/horizontally, \fBc\fP close,

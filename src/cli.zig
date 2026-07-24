@@ -13,12 +13,15 @@ pub const Config = struct {
     file: ?[]const u8 = null,
     log_path: ?[]const u8 = null,
     lsp_cmd: ?[]const u8 = null,
+    config_path: ?[]const u8 = null,
+    tutor: bool = false,
 };
 
 pub const Parsed = union(enum) {
     run: Config,
     help,
     version,
+    init_config,
     err: []const u8,
 };
 
@@ -49,6 +52,16 @@ pub fn parse(argv: []const [:0]const u8) Parsed {
                 cfg.lsp_cmd = argv[i];
             } else if (prefix(arg, "--lsp=")) {
                 cfg.lsp_cmd = arg["--lsp=".len..];
+            } else if (eql(arg, "--config")) {
+                i += 1;
+                if (i >= argv.len) return .{ .err = "--config requires a file path" };
+                cfg.config_path = argv[i];
+            } else if (prefix(arg, "--config=")) {
+                cfg.config_path = arg["--config=".len..];
+            } else if (eql(arg, "--tutor")) {
+                cfg.tutor = true;
+            } else if (eql(arg, "--init-config")) {
+                return .init_config;
             } else {
                 return .{ .err = "unknown option (try --help)" };
             }
@@ -67,10 +80,13 @@ const help_text =
     \\  zed [options] [file]
     \\
     \\Options:
-    \\  -h, --help        Show this help and exit
-    \\  -V, --version     Show version and exit
-    \\      --log <path>  Write diagnostic logs to <path>
-    \\      --lsp <cmd>   Language server command (e.g. "zls"); defaults per filetype
+    \\  -h, --help           Show this help and exit
+    \\  -V, --version        Show version and exit
+    \\      --log <path>     Write diagnostic logs to <path>
+    \\      --lsp <cmd>      Language server command (e.g. "zls"); defaults per filetype
+    \\      --config <path>  Use <path> instead of ~/.config/zed/config
+    \\      --init-config    Write the documented default config file and exit
+    \\      --tutor          Open the interactive tutorial (like vimtutor)
     \\
     \\Keys (normal mode):
     \\  h j k l           Move left/down/up/right
@@ -101,6 +117,13 @@ pub fn printError(message: []const u8) void {
     writeFd(posix.STDERR_FILENO, "zed: ");
     writeFd(posix.STDERR_FILENO, message);
     writeFd(posix.STDERR_FILENO, "\n");
+}
+
+/// Print a normal (non-error) one-liner, e.g. where --init-config wrote to.
+pub fn printNote(message: []const u8) void {
+    writeFd(posix.STDOUT_FILENO, "zed: wrote ");
+    writeFd(posix.STDOUT_FILENO, message);
+    writeFd(posix.STDOUT_FILENO, "\n");
 }
 
 fn writeFd(fd: posix.fd_t, bytes: []const u8) void {

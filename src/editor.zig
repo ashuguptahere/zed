@@ -27,18 +27,27 @@ const fuzzy = @import("fuzzy.zig");
 const git = @import("git.zig");
 const lsp = @import("lsp.zig");
 const treesitter = @import("treesitter.zig");
+const config = @import("config.zig");
 const ansi = term.ansi;
 const Allocator = std.mem.Allocator;
 const Pos = buffer.Pos;
 const Color = theme.Color;
 
-// Powerline separators and the indent-guide glyph (nerd font recommended).
-const sep_right = "\u{E0B0}";
-const sep_left = "\u{E0B2}";
+// Powerline separators (private-use glyphs that need a Nerd Font; the config's
+// `nerd_font = false` swaps them for a flat statusline) and the indent guide.
+fn sepRight() []const u8 {
+    return if (config.settings.nerd_font) "\u{E0B0}" else "";
+}
+fn sepLeft() []const u8 {
+    return if (config.settings.nerd_font) "\u{E0B2}" else "";
+}
 const indent_glyph = "\u{2502}";
 
-/// Spaces a tab advances to. Tabs are stored verbatim and expanded on render.
-const tab_width = 4;
+/// Cells a tab advances to (config `tab_width`). Tabs are stored verbatim and
+/// expanded on render.
+fn tabWidth() usize {
+    return config.settings.tab_width;
+}
 
 pub const Mode = enum {
     normal,
@@ -62,7 +71,7 @@ pub const Mode = enum {
     }
 };
 
-const PickerKind = enum { files, grep, code_action, symbol };
+const PickerKind = enum { files, grep, code_action, symbol, theme };
 const PickItem = struct { display: []u8, path: []u8, line: usize };
 
 const Operator = enum { none, delete, change, yank, indent_right, indent_left, comment, surround };
@@ -287,7 +296,7 @@ pub const Editor = struct {
         const doc = try gpa.create(Doc);
         doc.* = .{
             .buf = b,
-            .lang = .none,
+            .lang = syntax.detect(b.path),
             .history = undo.History.init(gpa),
             .marks = [_]?Pos{null} ** 26,
             .git_signs = git.Signs.init(gpa),
@@ -810,6 +819,7 @@ pub const Editor = struct {
                     'r' => self.enterRename(), // rename symbol
                     'a' => self.lspCodeAction(), // code action
                     'o' => self.lspDocumentSymbol(), // document symbols (outline)
+                    't' => self.openThemePicker(), // switch colour theme
                     'k' => self.lspHover(), // hover
                     'w' => _ = try self.write(""),
                     'q' => self.doQuit(),
@@ -1249,7 +1259,7 @@ pub const Editor = struct {
                 if (line.len > 0) self.buf.insertBytes(r, 0, "    ") catch {};
             } else {
                 var rm: usize = 0;
-                while (rm < tab_width and rm < line.len and line[rm] == ' ') rm += 1;
+                while (rm < tabWidth() and rm < line.len and line[rm] == ' ') rm += 1;
                 if (rm > 0) self.buf.deleteInLine(r, 0, rm) catch {};
             }
         }
@@ -2274,6 +2284,27 @@ pub const Editor = struct {
         self.refilter();
     }
 
+    /// Populate the picker with the built-in theme names and open it.
+    fn openThemePicker(self: *Editor) void {
+        self.freePicker();
+        self.picker_kind = .theme;
+        self.picker_sel = 0;
+        self.picker_scroll = 0;
+        for (theme.themes) |t| {
+            const disp = self.gpa.dupe(u8, t.name) catch continue;
+            const p = self.gpa.dupe(u8, t.name) catch {
+                self.gpa.free(disp);
+                continue;
+            };
+            self.picker_items.append(self.gpa, .{ .display = disp, .path = p, .line = 0 }) catch {
+                self.gpa.free(disp);
+                self.gpa.free(p);
+            };
+        }
+        self.mode = .picker;
+        self.refilter();
+    }
+
     fn freePicker(self: *Editor) void {
         for (self.picker_items.items) |it| {
             self.gpa.free(it.display);
@@ -2444,6 +2475,15 @@ pub const Editor = struct {
             const idx = it.line; // the symbol index stashed at population time
             self.closePicker();
             self.jumpToSymbol(idx);
+            return;
+        }
+        if (self.picker_kind == .theme) {
+            var name_buf: [64]u8 = undefined;
+            const n = @min(it.path.len, name_buf.len);
+            @memcpy(name_buf[0..n], it.path[0..n]);
+            self.closePicker();
+            _ = theme.set(name_buf[0..n]);
+            self.setStatus("theme: {s}", .{name_buf[0..n]});
             return;
         }
         const path = self.gpa.dupe(u8, it.path) catch return;
@@ -2659,6 +2699,7 @@ pub const Editor = struct {
             .grep => " SEARCH ",
             .code_action => " ACTIONS ",
             .symbol => " SYMBOLS ",
+            .theme => " THEMES ",
         };
         try self.setBg(th.mode_command);
         try self.setFg(th.bg);
@@ -2853,6 +2894,14 @@ pub const Editor = struct {
             self.closeDoc();
         } else if (eql(cmd, "ls") or eql(cmd, "buffers")) {
             self.listBuffers();
+        } else if (eql(cmd, "theme")) {
+            if (arg.len == 0) {
+                self.openThemePicker();
+            } else if (theme.set(arg)) {
+                self.setStatus("theme: {s}", .{arg});
+            } else {
+                self.setStatus("unknown theme: {s} (try :theme with no argument)", .{arg});
+            }
         } else {
             self.setStatus("unknown command: {s}", .{cmd});
         }
@@ -3626,6 +3675,7 @@ pub const Editor = struct {
         .{ .key = "r", .desc = "rename symbol" },
         .{ .key = "a", .desc = "code action" },
         .{ .key = "o", .desc = "document symbols" },
+        .{ .key = "t", .desc = "theme" },
         .{ .key = "k", .desc = "hover" },
         .{ .key = "w", .desc = "write (save)" },
         .{ .key = "q", .desc = "quit" },
@@ -3898,7 +3948,7 @@ pub const Editor = struct {
             if (d.cp == '\t' or d.cp == ' ' or start < left or start + w > right) {
                 var c = if (start < left) left else start;
                 while (c < start + w and c < right) : (c += 1) {
-                    if (byte < first_nb and c % tab_width == 0 and c < indent_cols) {
+                    if (byte < first_nb and c % tabWidth() == 0 and c < indent_cols) {
                         try self.setFg(th.indent_guide);
                         try self.emit(indent_glyph);
                     } else {
@@ -4034,7 +4084,7 @@ pub const Editor = struct {
         try self.emitFmt(" {s} ", .{label});
         try self.setBg(th.status_seg_bg);
         try self.setFg(accent);
-        try self.emit(sep_right);
+        try self.emit(sepRight());
 
         var fb: [320]u8 = undefined;
         const fname = self.buf.path orelse "[No Name]";
@@ -4045,7 +4095,7 @@ pub const Editor = struct {
         try self.emit(fileseg);
         try self.setBg(th.status_bg);
         try self.setFg(th.status_seg_bg);
-        try self.emit(sep_right);
+        try self.emit(sepRight());
 
         const left_w = (label.len + 2) + 1 + unicode.displayWidth(fileseg) + 1;
 
@@ -4079,13 +4129,13 @@ pub const Editor = struct {
 
         try self.setBg(th.status_bg);
         try self.setFg(th.status_seg_bg);
-        try self.emit(sep_left);
+        try self.emit(sepLeft());
         try self.setBg(th.status_seg_bg);
         try self.setFg(th.status_seg_fg);
         try self.emit(rseg);
         try self.setBg(th.status_seg_bg);
         try self.setFg(accent);
-        try self.emit(sep_left);
+        try self.emit(sepLeft());
         try self.setBg(accent);
         try self.setFg(th.bg);
         try self.emit(pctseg);
@@ -4379,7 +4429,7 @@ fn eql(a: []const u8, b: []const u8) bool {
 }
 
 fn cellWidth(cp: u21, col: usize) usize {
-    if (cp == '\t') return tab_width - (col % tab_width);
+    if (cp == '\t') return tabWidth() - (col % tabWidth());
     return unicode.width(cp);
 }
 
@@ -4408,14 +4458,14 @@ fn byteAtDisplayCol(line: []const u8, target: usize) usize {
 }
 
 test "displayCol expands tabs" {
-    try std.testing.expectEqual(@as(usize, tab_width), displayCol("\tx", 1));
+    try std.testing.expectEqual(@as(usize, tabWidth()), displayCol("\tx", 1));
     try std.testing.expectEqual(@as(usize, 2), displayCol("ab", 2));
     try std.testing.expectEqual(@as(usize, 2), displayCol("世", 3));
 }
 
 test "byteAtDisplayCol round-trips with displayCol" {
     const line = "a\tbc";
-    const off = byteAtDisplayCol(line, tab_width);
+    const off = byteAtDisplayCol(line, tabWidth());
     try std.testing.expectEqual(@as(usize, 2), off);
-    try std.testing.expectEqual(@as(usize, tab_width), displayCol(line, off));
+    try std.testing.expectEqual(@as(usize, tabWidth()), displayCol(line, off));
 }

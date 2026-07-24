@@ -11,6 +11,9 @@ const log = @import("log.zig");
 const term = @import("term.zig");
 const buffer = @import("buffer.zig");
 const editor = @import("editor.zig");
+const config = @import("config.zig");
+
+const tutor_text = @embedFile("tutor_text");
 
 /// Route std.log through our file logger.
 pub const std_options = log.options;
@@ -23,6 +26,19 @@ pub fn main(init: std.process.Init) !void {
     const cfg = switch (cli.parse(argv)) {
         .help => return cli.printHelp(),
         .version => return cli.printVersion(),
+        .init_config => {
+            var pbuf: [512]u8 = undefined;
+            const path = config.writeDefault(io, &pbuf) catch |err| {
+                switch (err) {
+                    error.PathAlreadyExists => cli.printError("config file already exists — edit it instead"),
+                    error.NoHome => cli.printError("cannot locate a config directory (no $HOME)"),
+                    else => cli.printError("cannot write the config file"),
+                }
+                std.process.exit(1);
+            };
+            cli.printNote(path);
+            return;
+        },
         .err => |message| {
             cli.printError(message);
             std.process.exit(2);
@@ -34,7 +50,12 @@ pub fn main(init: std.process.Init) !void {
     defer log.disable();
     std.log.scoped(.main).info("starting zed, file={s}", .{cfg.file orelse "<none>"});
 
-    var buf = openBuffer(gpa, io, cfg.file) catch std.process.exit(1);
+    config.load(gpa, io, cfg.config_path);
+
+    var buf = if (cfg.tutor)
+        buffer.Buffer.fromBytes(gpa, tutor_text) catch std.process.exit(1)
+    else
+        openBuffer(gpa, io, cfg.file) catch std.process.exit(1);
 
     var terminal = term.Terminal.init() catch |err| {
         buf.deinit();
@@ -97,6 +118,7 @@ test {
     _ = @import("theme.zig");
     _ = @import("syntax.zig");
     _ = @import("fuzzy.zig");
+    _ = @import("config.zig");
     _ = @import("git.zig");
     _ = @import("lsp.zig");
     _ = @import("treesitter.zig");

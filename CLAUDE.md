@@ -85,7 +85,8 @@ Source is `src/`, one responsibility per module:
 | `register.zig`| Vim registers (named/unnamed, linewise flag) for yank/delete/paste. |
 | `undo.zig`    | Undo/redo as capped buffer snapshots. |
 | `search.zig`  | Literal substring search (`/ ? n N * #`). |
-| `theme.zig`   | Colour palette (Tokyo Night) and 24-bit SGR helpers. |
+| `theme.zig`   | Colour palettes (Tokyo Night default + Gruvbox/Catppuccin/Nord/One Dark), the active-theme global, 24-bit SGR helpers. |
+| `config.zig`  | The single documented config file (`~/.config/zed/config`): parse, apply, standard path, `--init-config` default text. |
 | `syntax.zig`  | Dependency-free per-line lexer producing per-byte styles. |
 | `fuzzy.zig`   | Subsequence scorer for the pickers. |
 | `git.zig`     | Git change signs for the gutter (parses `git diff -U0`). |
@@ -169,9 +170,9 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 - **Pickers (which-key leader = `Space`):** pressing `Space` shows a which-key
   popup; `Space f` fuzzy file finder, `Space /` (or `Space s`) global literal
   content search, `Space d` go to definition, `Space r` rename, `Space a` code
-  action, `Space o` document symbols (jump via a picker), `Space k` hover (the
-  LSP entries mirror `gd`/`gr`/`ga`/`K`), `Space w` write, `Space q` quit. In a
-  picker: type to filter,
+  action, `Space o` document symbols (jump via a picker), `Space t` theme
+  picker, `Space k` hover (the LSP entries mirror `gd`/`gr`/`ga`/`K`),
+  `Space w` write, `Space q` quit. In a picker: type to filter,
   `Ctrl-n`/`Ctrl-p` or arrows to move, `Enter` to open, `Esc` to cancel.
   Opening a file is blocked while the current buffer has unsaved changes.
   Note the three search scopes: `/` searches the current buffer, `Space /`
@@ -210,15 +211,23 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 
 ## Appearance
 
-The renderer aims for an AstroNvim/Helix look: a Tokyo Night true-colour theme
-(`theme.zig`), a powerline statusline (coloured mode block, separators,
+The renderer aims for an AstroNvim/Helix look: true-colour themes in
+`theme.zig` (Tokyo Night default, plus Gruvbox, Catppuccin Mocha, Nord and One
+Dark — set in the config, or live via `:theme` / the `Space t` picker), a
+powerline statusline (coloured mode block, separators,
 file/filetype/position/percent segments — a nerd font is recommended for the
-glyphs), syntax highlighting (tree-sitter for 10 languages (Zig/C/Python/JSON/JS/TS/Rust/Go/HTML/Markdown) via
+glyphs, and the config's `nerd_font = false` swaps in a flat statusline for
+any font), syntax highlighting (tree-sitter for 10 languages (Zig/C/Python/JSON/JS/TS/Rust/Go/HTML/Markdown) via
 `treesitter.zig`, the `syntax.zig` lexer otherwise), relative+absolute line numbers, a
 cursorline, indent guides, and a git change gutter (add/change/delete signs
 from `git diff`, recomputed on load and save). All colour is emitted as 24-bit
 SGR; the frame is still built once and written in a single syscall, and
 rendering still only happens on change.
+
+Runtime configuration is one documented file (see `config.zig`): theme,
+`tab_width`, `nerd_font`; `zed --init-config` writes the annotated default.
+`zed --tutor` opens the embedded interactive tutorial (`doc/tutor.txt`,
+embedded via `build.zig`).
 
 Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
 `editor.zig`.
@@ -284,4 +293,9 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   uses two highlight layers (block grammar + inline grammar, the latter filling
   bytes the block layer left plain), and HTML doesn't highlight embedded JS/CSS.
   Adding a grammar = vendor its `parser.c` + `highlights.scm` and extend
-  `treesitter.zig`. Config files — not yet built.
+  `treesitter.zig`.
+- Roadmap (agreed with the owner, not yet built): a file-tree sidebar with a
+  configurable side, git diff views (side-by-side and inline), an exact
+  AstroNvim-style nested leader tree (`Space f f`, `Space l a`, …), selective
+  ports of Helix/Neovim behavioural test cases, and a benchmark suite backing
+  the performance claims (startup, input latency, large files vs helix/nvim).

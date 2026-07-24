@@ -1,0 +1,326 @@
+==============================================================================
+=                 W e l c o m e   t o   t h e   z e d   t u t o r            =
+==============================================================================
+
+     Welcome to the zed tutor!  zed is a modal editor: in Normal mode the
+     keys are commands, not text.  This file is a scratch copy: edit it
+     freely.  Practice each command right here.
+
+     Work through the lessons in order; each one builds on the last.
+     Remember: learning comes from doing, not from reading.  Do the
+     exercises.  If you ever get stuck in a strange state, press Esc a
+     few times to get back to Normal mode.
+
+     Lines starting with ---> are practice lines meant to be changed.
+
+------------------------------------------------------------------------------
+                         Lesson 1: MOVING THE CURSOR
+------------------------------------------------------------------------------
+
+  In Normal mode the cursor is moved with the h, j, k and l keys:
+
+            k              Hint: h is on the left and moves left,
+        h       l                l is on the right and moves right,
+            j                    j points down like a hook.
+
+  1. Move the cursor around the screen until you feel comfortable.
+     (The arrow keys work too, but h j k l keep your hand on the row.)
+
+  2. Word motions: press  w  to jump to the start of the next word,
+     b  to jump back a word, and  e  to jump to the end of a word.
+
+  3. Line motions:  0  jumps to the first column,  $  to the line's end.
+
+  4. File motions:  gg  jumps to the first line of the file,  G  to the
+     last line, and a count makes it absolute:  1G  or  gg  is line one.
+
+  5. Counts multiply any motion: type  3w  to move three words at once,
+     or  5j  to go five lines down.
+
+---> Practice here: hop between the words of this line with w, b and e,
+---> then bounce between 0 and $ a few times, then try 3w and 2b.
+
+  Try  gg  now, then come back with  G  or a count like  20G.
+
+------------------------------------------------------------------------------
+                          Lesson 2: INSERTING TEXT
+------------------------------------------------------------------------------
+
+  To type text you enter Insert mode.  Esc always returns to Normal mode.
+
+     i   insert before the cursor          a   append after the cursor
+     o   open a new line BELOW and insert  O   open a new line ABOVE
+
+  1. Move onto the practice line below, position the cursor where text
+     is missing, press  i , type the missing letters, then press Esc.
+
+---> Some text is miing from ths line.  Fix it with i.
+
+  2. Now use  a  to append: put the cursor on the last letter of the
+     short word and press  a  to add what is missing after it.
+
+---> This sentence stops too soo
+
+  3. Press  o  on the line below to open a new line under it and type a
+     line of your own.  Then press Esc, and try  O  to open a line above.
+
+---> Open a new line below this one with o, and above it with O.
+
+  NOTE: the statusline shows the current mode.  When in doubt, Esc.
+
+------------------------------------------------------------------------------
+                      Lesson 3: DELETING AND CHANGING
+------------------------------------------------------------------------------
+
+  Deletion commands work in Normal mode:
+
+     x     delete the character under the cursor
+     dw    delete from the cursor to the start of the next word
+     dd    delete the whole line
+     d$    delete from the cursor to the end of the line
+     cw    change a word: deletes it and drops you into Insert mode
+
+  1. Fix the line below by moving onto each doubled letter and pressing x.
+
+---> The ccow jumpedd ovverr thhe mooon.
+
+  2. This line has an extra word.  Put the cursor at the start of the
+     duplicate and press  dw .
+
+---> This line has an extra extra word.
+
+  3. Change a wrong word: put the cursor on it, press  cw , type the
+     right word, press Esc.
+
+---> Somebody typed the wrong wrod on this lnie.
+
+  4. Move somewhere in the middle of the line below and press  d$  to
+     delete everything from the cursor to the end of the line.
+
+---> This line is fine up to here. junk junk junk junk junk junk junk
+
+  5. Delete this whole line with  dd :
+
+---> This line serves no purpose and should be removed with dd.
+
+  UNDO AND REDO:  press  u  to undo your last change, and  Ctrl-r  to
+  redo it.  Undo a few of the edits you just made, then redo them.
+
+  THE DOT COMMAND:  .  repeats your last change.  Delete one trailing
+  "!" below with  $x , move to the next line with  j$ , and press  .
+
+---> Every line in this group ends with one extra bang!!
+---> Every line in this group ends with one extra bang!!
+---> Every line in this group ends with one extra bang!!
+
+------------------------------------------------------------------------------
+                    Lesson 4: YANK, PASTE AND VISUAL MODE
+------------------------------------------------------------------------------
+
+     yy    yank (copy) the current line
+     p     paste after the cursor / below the current line
+     P     paste before / above
+     v     Visual mode: select by character
+     V     Visual mode: select whole lines
+
+  1. Put the cursor on the line below, press  yy , then press  p  to
+     paste a copy under it.
+
+---> Yank me with yy and paste me with p.
+
+  2. Deleting also fills the paste register:  dd  a line, move somewhere
+     else, and  p  drops it there.  Use this to move the misplaced line
+     below back under its header.
+
+---> HEADER: the line belonging here has wandered two lines down.
+---> This line is an innocent bystander.
+---> MISPLACED: dd me, move up one line with k, then P me into place.
+
+  3. Visual mode: press  v , extend the selection with any motion (w, e,
+     $ ...), then press  d  to delete it or  y  to yank it.
+
+---> Select the middle of this line with v and delete ONLY this part.
+
+  4. Line-wise Visual: press  V , extend with j, and delete both junk
+     lines below in one go with  d .
+
+---> junk line one: select me with V, press j to add the next line,
+---> junk line two: then press d to delete us both together.
+
+------------------------------------------------------------------------------
+                            Lesson 5: SEARCHING
+------------------------------------------------------------------------------
+
+     /text   search forward for text        n   jump to the next match
+     ?text   search backward                N   jump to the previous one
+     *       search for the word under the cursor
+
+  Searches are LITERAL, not regular expressions: /a.c matches the three
+  characters "a.c", nothing else.  Search is incremental (the view jumps
+  as you type; Esc cancels and puts the cursor back) and wraps around
+  the end of the file.  Matches are highlighted.
+
+  1. Type  /wombat  and press Enter.  Then press  n  a few times to
+     visit every wombat in this lesson, and  N  to walk backwards.
+
+---> A wild wombat appears on this line.
+---> No marsupials here, keep going.
+---> Two wombat sightings on one line: wombat.
+
+  2. Put the cursor on the word "wombat" above and press  *  to search
+     for it directly, without typing it.
+
+  3. The same misspelling appears three times below.  Search for it with
+     /teh  and fix each match with  cw  (remember  n  to hop along and
+     .  to repeat the change).
+
+---> Somewhere in teh middle of this line.
+---> And again in teh middle of this one.
+---> One last teh to hunt down and fix.
+
+------------------------------------------------------------------------------
+                Lesson 6: TEXT OBJECTS, SURROUND AND COMMENTS
+------------------------------------------------------------------------------
+
+  Text objects let an operator act on the thing AROUND the cursor, so
+  you don't have to move to its start first:
+
+     ciw    change the whole word under the cursor
+     di"    delete everything inside the surrounding double quotes
+     da(    delete a parenthesised group, parentheses included
+
+  1. Put the cursor ANYWHERE inside the wrong word and press  ciw :
+
+---> The quick brown elephant jumps over the lazy dog.
+
+  2. Put the cursor between the quotes below and press  di" , then use
+     i  to type a better message:
+
+---> error: "this message is wrong and misleading"
+
+  Surround commands add, change and delete the pair around something:
+
+     ysiw)   surround the word under the cursor with ( )
+     cs"'    change surrounding "double" quotes to 'single' quotes
+     ds"     delete the surrounding quotes entirely
+
+  3. Put the cursor on the word marked below and press  ysiw) :
+
+---> The result of the call is retval and nobody can tell.
+
+  4. Change the quoting style of this string with  cs"' :
+
+---> name = "double quoted, but style demands single quotes"
+
+  5. Strip the needless quotes below with  ds" :
+
+---> count = "42"
+
+  COMMENTS:  gcc  toggles the comment state of the current line, using
+  the comment syntax of the file's language.  Press  gcc  twice on the
+  line below and watch it toggle (this file has no language, so try it
+  later in a source file; gc with a motion comments a whole range).
+
+---> const answer = 42;
+
+------------------------------------------------------------------------------
+                        Lesson 7: FILES AND WINDOWS
+------------------------------------------------------------------------------
+
+  Commands starting with  :  are typed on the command line; Enter runs
+  them and Esc cancels.
+
+     :w          write (save) the file        :q    quit
+     :wq         write and quit               :q!   quit without saving
+     :e file     open a file in this window
+
+  1. Type  :w  now to save your tutor progress.  (This copy is yours —
+     saving is safe.)
+
+  Several files can be open at once, each keeping its own cursor and
+  undo history:
+
+     :ls         list the open buffers
+     :bn / :bp   switch to the next / previous buffer
+     :bd         close the current buffer
+
+  Windows split the screen so two buffers (or two views of one) are
+  visible at the same time:
+
+     :split  or  :vsplit    split horizontally / vertically
+     Ctrl-w w                jump to the next window
+     Ctrl-w c                close the current window
+
+  2. Try it: type  :vsplit , press  Ctrl-w w  a couple of times to hop
+     between the windows, then close one with  Ctrl-w c .
+
+  3. Open another file with  :e <path> , look around, then come back to
+     the tutor with  :bp  (or  :bn ), and check  :ls  along the way.
+
+------------------------------------------------------------------------------
+                         Lesson 8: PICKERS AND LSP
+------------------------------------------------------------------------------
+
+  The Space key is the leader: press  Space  and a which-key popup lists
+  what can follow.  In any picker: type to filter, move with Ctrl-n and
+  Ctrl-p (or the arrows), open with Enter, cancel with Esc.
+
+     Space f    fuzzy file finder (matches file NAMES)
+     Space /    project-wide content search (greps file CONTENTS)
+     Space o    document symbols — jump to a function or type
+
+  1. Press  Space f , type a few letters of a file name, then press Esc
+     to cancel (or Enter to open it — remember :bp brings you back).
+
+  2. Press  Space /  and search the project for the word  wombat .
+     This very file should show up.
+
+  When a language server is installed for the file type (zls, clangd,
+  pylsp, typescript-language-server), zed starts it automatically:
+
+     gd         go to the definition of the symbol under the cursor
+     K          show hover documentation for it
+     gr         rename the symbol (prompts on the command line)
+     ga         list code actions for the current line in a picker
+     ]d / [d    jump to the next / previous diagnostic line
+
+  In Insert mode,  Ctrl-n  requests completion: a popup opens, Ctrl-n
+  and Ctrl-p (or the arrows) move through it, Tab or Enter accepts, and
+  Esc dismisses it.
+
+  This tutor file has no language server, so try these keys later in a
+  real source file — diagnostics appear as gutter signs on their own.
+
+------------------------------------------------------------------------------
+                            Lesson 9: GOING FURTHER
+------------------------------------------------------------------------------
+
+  You now know enough to do real work.  A few directions to grow next,
+  all covered by the full documentation:
+
+   - Precision motions:  f F t T  jump to a character in the line
+     (repeat with ; and ,), and  %  bounces between matching brackets.
+   - Marks:  ma  remembers a spot,  `a  jumps back to it.
+   - Macros:  qa ... q  records your keystrokes,  @a  replays them.
+   - Registers:  "ayy  yanks into register a,  "ap  pastes from it.
+   - Multiple cursors:  Ctrl-n / Ctrl-p  add a caret on the line below
+     or above; typing edits every line at once; Esc collapses them.
+   - Scrolling:  Ctrl-d / Ctrl-u  move by half a page.
+
+  For the complete reference:
+
+   - the man page:  man zed  (or  man ./doc/zed.1  from the repo),
+   - CLAUDE.md in the repository root: the full, honest list of every
+     motion, operator, text object, picker and LSP feature.
+
+------------------------------------------------------------------------------
+
+  You made it!  That was the whole tour: moving, editing, searching,
+  text objects, files, windows, pickers and LSP.  The habits form fast:
+  use zed for your everyday editing and within days the keys will be
+  muscle memory.  Happy editing!
+
+  (Feel free to delete this file, or keep practicing on it — it is
+  yours.  Reopen a fresh copy any time from doc/tutor.txt.)
+
+==============================================================================
