@@ -241,7 +241,12 @@ pub const Editor = struct {
     // picker (fuzzy file finder / global search)
     picker_kind: PickerKind,
     picker_items: std.ArrayList(PickItem),
-    picker_files: std.ArrayList([]u8),
+    // Warm file-list cache (the Zed trick: opening the picker does no
+    // filesystem work after the first walk; Ctrl-r in the picker refreshes).
+    fcache: std.ArrayList([]u8), // project file paths, walked once per session
+    fcache_masks: std.ArrayList(u64), // fuzzy.charMask per path, for prefiltering
+    fcache_ready: bool,
+    prev_query: std.ArrayList(u8), // last filtered query (incremental narrowing)
     picker_filtered: std.ArrayList(usize),
     picker_query: std.ArrayList(u8),
     picker_sel: usize,
@@ -371,7 +376,10 @@ pub const Editor = struct {
             .cmd_kind = .ex,
             .picker_kind = .files,
             .picker_items = .empty,
-            .picker_files = .empty,
+            .fcache = .empty,
+            .fcache_masks = .empty,
+            .fcache_ready = false,
+            .prev_query = .empty,
             .picker_filtered = .empty,
             .picker_query = .empty,
             .picker_sel = 0,
@@ -431,7 +439,10 @@ pub const Editor = struct {
         self.extra.deinit(self.gpa);
         self.freePicker();
         self.picker_items.deinit(self.gpa);
-        self.picker_files.deinit(self.gpa);
+        for (self.fcache.items) |f| self.gpa.free(f);
+        self.fcache.deinit(self.gpa);
+        self.fcache_masks.deinit(self.gpa);
+        self.prev_query.deinit(self.gpa);
         self.picker_filtered.deinit(self.gpa);
         self.picker_query.deinit(self.gpa);
         // The active doc's real state was freed above (the Editor mirror); each
@@ -2289,9 +2300,26 @@ pub const Editor = struct {
         self.picker_kind = .files;
         self.picker_sel = 0;
         self.picker_scroll = 0;
-        self.walkInto(.files);
+        self.ensureFileCache();
+        self.fillFileItems();
         self.refilter();
         self.mode = .picker;
+    }
+
+    /// Build picker items from the cached file list; `.line` holds the cache
+    /// index so the filter can consult the precomputed mask.
+    fn fillFileItems(self: *Editor) void {
+        for (self.fcache.items, 0..) |path, i| {
+            const disp = self.gpa.dupe(u8, path) catch continue;
+            const p = self.gpa.dupe(u8, path) catch {
+                self.gpa.free(disp);
+                continue;
+            };
+            self.picker_items.append(self.gpa, .{ .display = disp, .path = p, .line = i }) catch {
+                self.gpa.free(disp);
+                self.gpa.free(p);
+            };
+        }
     }
 
     fn openGrepPicker(self: *Editor) void {
@@ -2299,7 +2327,7 @@ pub const Editor = struct {
         self.picker_kind = .grep;
         self.picker_sel = 0;
         self.picker_scroll = 0;
-        self.walkInto(.grep);
+        self.ensureFileCache();
         self.mode = .picker;
         self.refilter();
     }
@@ -2405,10 +2433,9 @@ pub const Editor = struct {
             self.gpa.free(it.path);
         }
         self.picker_items.clearRetainingCapacity();
-        for (self.picker_files.items) |f| self.gpa.free(f);
-        self.picker_files.clearRetainingCapacity();
         self.picker_filtered.clearRetainingCapacity();
         self.picker_query.clearRetainingCapacity();
+        self.prev_query.clearRetainingCapacity();
     }
 
     fn closePicker(self: *Editor) void {
@@ -2416,8 +2443,12 @@ pub const Editor = struct {
         self.mode = .normal;
     }
 
-    /// Collect candidate files under the cwd, skipping build/VCS directories.
-    fn walkInto(self: *Editor, kind: PickerKind) void {
+    /// Walk the cwd once per session into the warm cache (files + fuzzy masks),
+    /// skipping build/VCS directories. Subsequent picker opens are free of
+    /// filesystem work; `Ctrl-r` in a picker refreshes.
+    fn ensureFileCache(self: *Editor) void {
+        if (self.fcache_ready) return;
+        var sp = log.Span.start();
         var dir = std.Io.Dir.cwd().openDir(self.io, ".", .{ .iterate = true }) catch return;
         defer dir.close(self.io);
         var w = dir.walkSelectively(self.gpa) catch return;
@@ -2430,22 +2461,24 @@ pub const Editor = struct {
                 continue;
             }
             if (entry.kind != .file) continue;
-            const count = if (kind == .files) self.picker_items.items.len else self.picker_files.items.len;
-            if (count >= 5000) break;
+            if (self.fcache.items.len >= 20000) break;
             const p = self.gpa.dupe(u8, entry.path) catch continue;
-            if (kind == .files) {
-                const disp = self.gpa.dupe(u8, entry.path) catch {
-                    self.gpa.free(p);
-                    continue;
-                };
-                self.picker_items.append(self.gpa, .{ .display = disp, .path = p, .line = 0 }) catch {
-                    self.gpa.free(p);
-                    self.gpa.free(disp);
-                };
-            } else {
-                self.picker_files.append(self.gpa, p) catch self.gpa.free(p);
-            }
+            self.fcache.append(self.gpa, p) catch {
+                self.gpa.free(p);
+                break;
+            };
+            self.fcache_masks.append(self.gpa, fuzzy.charMask(p)) catch break;
         }
+        self.fcache_ready = true;
+        sp.lap("file-walk");
+    }
+
+    fn refreshFileCache(self: *Editor) void {
+        for (self.fcache.items) |f| self.gpa.free(f);
+        self.fcache.clearRetainingCapacity();
+        self.fcache_masks.clearRetainingCapacity();
+        self.fcache_ready = false;
+        self.ensureFileCache();
     }
 
     fn onQueryChange(self: *Editor) void {
@@ -2455,8 +2488,9 @@ pub const Editor = struct {
     }
 
     fn refilter(self: *Editor) void {
-        self.picker_filtered.clearRetainingCapacity();
+        var sp = log.Span.start();
         if (self.picker_kind == .grep) {
+            self.picker_filtered.clearRetainingCapacity();
             self.regrep();
             var i: usize = 0;
             while (i < self.picker_items.items.len) : (i += 1) self.picker_filtered.append(self.gpa, i) catch {};
@@ -2464,19 +2498,39 @@ pub const Editor = struct {
             return;
         }
         const q = self.picker_query.items;
+        // Incremental narrowing: extending the query can only shrink the match
+        // set, so rescore just the current survivors instead of every item.
+        const narrow = self.picker_kind == .files and self.prev_query.items.len > 0 and
+            q.len > self.prev_query.items.len and std.mem.startsWith(u8, q, self.prev_query.items);
+        var survivors: std.ArrayList(usize) = .empty;
+        defer survivors.deinit(self.gpa);
+        if (narrow) survivors.appendSlice(self.gpa, self.picker_filtered.items) catch {};
+
+        self.picker_filtered.clearRetainingCapacity();
         if (q.len == 0) {
             var i: usize = 0;
             while (i < self.picker_items.items.len) : (i += 1) self.picker_filtered.append(self.gpa, i) catch {};
         } else {
+            const qmask = fuzzy.charMask(q);
             var scored: std.ArrayList(Scored) = .empty;
             defer scored.deinit(self.gpa);
-            for (self.picker_items.items, 0..) |it, i| {
+            const n = if (narrow) survivors.items.len else self.picker_items.items.len;
+            var k: usize = 0;
+            while (k < n) : (k += 1) {
+                const i = if (narrow) survivors.items[k] else k;
+                const it = self.picker_items.items[i];
+                // Char-bag prefilter (files only — `.line` indexes the cache).
+                if (self.picker_kind == .files and it.line < self.fcache_masks.items.len and
+                    !fuzzy.maskMatches(self.fcache_masks.items[it.line], qmask)) continue;
                 if (fuzzy.score(it.path, q)) |s| scored.append(self.gpa, .{ .idx = i, .score = s }) catch {};
             }
             std.mem.sort(Scored, scored.items, {}, scoredLess);
             for (scored.items) |s| self.picker_filtered.append(self.gpa, s.idx) catch {};
         }
+        self.prev_query.clearRetainingCapacity();
+        self.prev_query.appendSlice(self.gpa, q) catch {};
         self.clampSel();
+        sp.lap("refilter");
     }
 
     fn regrep(self: *Editor) void {
@@ -2487,7 +2541,7 @@ pub const Editor = struct {
         self.picker_items.clearRetainingCapacity();
         const q = self.picker_query.items;
         if (q.len == 0) return;
-        for (self.picker_files.items) |fpath| {
+        for (self.fcache.items) |fpath| {
             if (self.picker_items.items.len >= 500) break;
             const data = std.Io.Dir.cwd().readFileAlloc(self.io, fpath, self.gpa, .limited(1 << 20)) catch continue;
             defer self.gpa.free(data);
@@ -2548,6 +2602,21 @@ pub const Editor = struct {
                 'p' => self.selDelta(false),
                 'n' => self.selDelta(true),
                 'c' => self.closePicker(),
+                'r' => if (self.picker_kind == .files or self.picker_kind == .grep) {
+                    // Re-walk the project (picks up files created since the
+                    // session's cached walk) and refilter with the same query.
+                    self.refreshFileCache();
+                    if (self.picker_kind == .files) {
+                        for (self.picker_items.items) |it| {
+                            self.gpa.free(it.display);
+                            self.gpa.free(it.path);
+                        }
+                        self.picker_items.clearRetainingCapacity();
+                        self.fillFileItems();
+                    }
+                    self.prev_query.clearRetainingCapacity(); // force a full rescore
+                    self.onQueryChange();
+                },
                 else => {},
             },
             else => {},

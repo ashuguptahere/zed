@@ -45,15 +45,19 @@ runtime dependencies**.
   - completion (`Ctrl-n` in insert), signature help (on `(` and `,`),
     hover (`K` / `Ctrl-k`), goto definition (`gd`)
   - rename (`gr`), code actions (`ga`, including `executeCommand`/`applyEdit`),
-    document symbols (`Space o`), inlay hints rendered as virtual text
-- **Pickers** via the `Space` which-key menu: `Space f` fuzzy file finder,
-  `Space /` project-wide content search, `Space o` symbols, `Space t` themes —
-  one consistent UI (`Ctrl-n/p` move, `Enter` opens, `Esc` cancels)
+    document symbols (`Space l s`), inlay hints rendered as virtual text
+- **Pickers** via the AstroNvim-style `Space` leader tree with nested
+  which-key menus: `Space f f` find files, `Space f w` find words (grep),
+  `Space f b` buffers, `Space f t` themes; `Space l …` language tools — one
+  consistent UI (`Ctrl-n/p` move, `Enter` opens, `Esc` cancels, `Ctrl-r`
+  refreshes). The file list is cached per session with per-path char-bitmask
+  prefiltering and incremental query narrowing — the same tricks that make
+  Zed's finder feel instant
 - **Multiple buffers and windows**: `:e`, `:bn`/`:bp`/`:bd`/`:ls`;
   `:split`/`:vsplit` and `Ctrl-w` navigation; every buffer keeps its own
   cursor, undo history, highlighting and language server
 - **Themes**: `tokyonight` (default), `gruvbox`, `catppuccin`, `nord`,
-  `onedark` — set in the config, switch live with `:theme <name>` or `Space t`
+  `onedark` — set in the config, switch live with `:theme <name>` or `Space f t`
 - AstroNvim/Helix-style look: true-colour syntax highlighting (tree-sitter for
   Zig/C/Python/JSON/JS/TS/Rust/Go/HTML/Markdown, a built-in lexer otherwise),
   a powerline statusline, relative+absolute line numbers, cursorline, indent
@@ -111,6 +115,23 @@ missing file just means defaults. Settings today: `theme`, `tab_width`,
 > your terminal emulator picks the font — so either select a
 > [Nerd Font](https://www.nerdfonts.com) in your terminal, or set
 > `nerd_font = false` for a flat statusline that renders correctly in any font.
+
+## Benchmarks
+
+`zig build bench -Doptimize=ReleaseFast` measures zedit against helix and
+neovim through real pseudo-terminals (clean configs for all). On this
+machine (medians):
+
+| metric | zedit | helix 25.07.1 | nvim 0.12.4 |
+|---|---|---|---|
+| startup → interactive | **7.5 ms** | 28.4 ms | 10.5 ms |
+| open 10 MB / 200k lines | 36.6 ms | 36.6 ms | **10.8 ms** |
+| keypress → response | **0.13 ms** | 0.57 ms | **0.13 ms** |
+| file picker open (this repo) | 5.9 cold / **4.6 ms** warm | 5.2 ms | n/a (no builtin) |
+
+Honest notes: nvim wins large-file open (flat line array vs their tree —
+a rope is on our roadmap); the warm-picker advantage grows with project size
+since zedit skips the filesystem walk entirely after the first open.
 
 ## Project layout
 

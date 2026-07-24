@@ -118,6 +118,7 @@ zig build -Doptimize=ReleaseFast
 zig build run -- [file]         # run the editor
 zig build test                  # unit tests (pure logic; no tty needed)
 zig build itest                 # pty integration tests (drives the built editor)
+zig build bench -Doptimize=ReleaseFast   # benchmark vs helix/nvim (if installed)
 ```
 
 `zig build` also installs the man page to `zig-out/share/man/man1/zedit.1`
@@ -133,8 +134,14 @@ itest` builds `zedit` plus a `mock_lsp` server, then runs the `itest` harness:
   capture + ANSI stripping, temp dirs, file helpers, `/proc` CPU sampling).
 - `tools/mock_lsp.zig` — a stub language server for the LSP scenario.
 - `tools/itest.zig` — the runner; `tools/scenarios/*.zig` are the suites (vim,
-  feature, multicursor, extra, search, treesitter, picker, git, lsp, cpu),
-  each a `pub fn run(ctx: *harness.Ctx) !void`.
+  vim_compat, feature, multicursor, extra, search, treesitter, picker, git,
+  windows, config, lsp, cpu), each a `pub fn run(ctx: *harness.Ctx) !void`.
+  `vim_compat` asserts byte-for-byte agreement with expected outputs generated
+  by driving real Neovim headlessly — extend it the same way when porting more
+  upstream behaviours (ask nvim, not memory).
+- `tools/bench.zig` — `zig build bench -Doptimize=ReleaseFast` compares zedit
+  with helix/nvim (if on PATH) through real ptys: startup, 10 MB file open,
+  keypress latency, picker-open (cold/warm).
 
 The editor itself has no runtime dependencies.
 
@@ -167,16 +174,19 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 - **Multiple cursors:** `Ctrl-n` / `Ctrl-p` add a caret on the line below/above
   (one per line); movement, `x`, and `i`/`a`/`I`/`A` + typing apply to every
   caret; `Esc` collapses back to one.
-- **Pickers (which-key leader = `Space`):** pressing `Space` shows a which-key
-  popup; `Space f` fuzzy file finder, `Space /` (or `Space s`) global literal
-  content search, `Space d` go to definition, `Space r` rename, `Space a` code
-  action, `Space o` document symbols (jump via a picker), `Space t` theme
-  picker, `Space k` hover (the LSP entries mirror `gd`/`gr`/`ga`/`K`),
-  `Space w` write, `Space q` quit. In a picker: type to filter,
-  `Ctrl-n`/`Ctrl-p` or arrows to move, `Enter` to open, `Esc` to cancel.
-  Opening a file is blocked while the current buffer has unsaved changes.
-  Note the three search scopes: `/` searches the current buffer, `Space /`
-  searches file *contents* across the project, `Space f` matches file *names*.
+- **Pickers (AstroNvim-style leader tree, leader = `Space`):** pressing `Space`
+  shows a which-key popup with nested groups (submenus get their own popup):
+  `Space f` = Find (`f f` files, `f w` words/grep, `f b` buffers, `f t`
+  themes); `Space l` = Language tools (`l a` code action, `l r` rename, `l s`
+  document symbols, `l d` line diagnostic); `Space c` close buffer, `Space w`
+  write, `Space q` quit. In a picker: type to filter, `Ctrl-n`/`Ctrl-p` or
+  arrows to move, `Enter` to open, `Esc` to cancel, and `Ctrl-r` re-walks the
+  project (the file list is cached per session — the Zed-style warm picker:
+  opening does no filesystem work after the first walk, candidates are
+  prefiltered with per-path char bitmasks, and extending the query narrows the
+  previous result set instead of rescoring everything).
+  Note the three search scopes: `/` searches the current buffer, `Space f w`
+  searches file *contents* across the project, `Space f f` matches file *names*.
 - **Command line:** `:w` write, `:q` quit (closes the window if more than one;
   blocked if unsaved on the last), `:wq`/`:x`, `:q!`, `:qa` quit all,
   `:w <name>`, `:{number}` goto line, `:$`; `ZZ`/`ZQ`.
@@ -213,7 +223,7 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 
 The renderer aims for an AstroNvim/Helix look: true-colour themes in
 `theme.zig` (Tokyo Night default, plus Gruvbox, Catppuccin Mocha, Nord and One
-Dark — set in the config, or live via `:theme` / the `Space t` picker), a
+Dark — set in the config, or live via `:theme` / the `Space f t` picker), a
 powerline statusline (coloured mode block, separators,
 file/filetype/position/percent segments — a nerd font is recommended for the
 glyphs, and the config's `nerd_font = false` swaps in a flat statusline for

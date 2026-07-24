@@ -92,4 +92,19 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| run_itest.addArgs(args);
     const itest_step = b.step("itest", "Run pty integration tests");
     itest_step.dependOn(&run_itest.step);
+
+    // `zig build bench -Doptimize=ReleaseFast` compares zedit against helix and
+    // neovim (if installed) through real ptys: startup, big-file open,
+    // keypress latency, picker-open.
+    const bench_mod = b.createModule(.{
+        .root_source_file = b.path("tools/bench.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    bench_mod.link_libc = true;
+    const bench_exe = b.addExecutable(.{ .name = "bench", .root_module = bench_mod });
+    const run_bench = b.addRunArtifact(bench_exe);
+    run_bench.addArtifactArg(exe);
+    const bench_step = b.step("bench", "Benchmark zedit against helix/nvim");
+    bench_step.dependOn(&run_bench.step);
 }

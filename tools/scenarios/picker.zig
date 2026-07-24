@@ -81,4 +81,34 @@ pub fn run(ctx: *h.Ctx) !void {
         defer freeResult(ctx, result);
         ctx.check("grep picker opened match at correct line", std.mem.eql(u8, result[1], "one\ntwo\nind me\n"));
     }
+
+    // The file list is cached per session (Zed-style warm picker): a file
+    // created after the first walk appears only after Ctrl-r refreshes.
+    {
+        const dir = try h.tempDir(ctx.gpa);
+        defer ctx.gpa.free(dir);
+        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const a = try std.fmt.allocPrint(ctx.gpa, "{s}/a.txt", .{dir});
+        defer ctx.gpa.free(a);
+        const late = try std.fmt.allocPrint(ctx.gpa, "{s}/latecomer.txt", .{dir});
+        defer ctx.gpa.free(late);
+        h.writeFile(ctx.io, a, "aaa\n");
+
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "a.txt" }, .cwd = dir, .term = "xterm" });
+        defer s.finish();
+        s.drain(400);
+        s.send(" ff"); // first open warms the cache
+        s.drain(400);
+        s.send("\x1b"); // close the picker
+        s.drain(200);
+        h.writeFile(ctx.io, late, "new\n"); // created after the walk
+        s.send(" ff");
+        s.drain(400);
+        ctx.check("picker list is cached (new file absent)", !s.containsPlain(ctx.gpa, "latecomer"));
+        s.send("\x12"); // Ctrl-r: re-walk
+        s.drain(400);
+        ctx.check("Ctrl-r refreshes the cached file list", s.containsPlain(ctx.gpa, "latecomer"));
+        s.send("\x1b:q!\r");
+        s.drain(200);
+    }
 }

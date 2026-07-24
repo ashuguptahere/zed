@@ -270,7 +270,7 @@ pub const onedark: Theme = .{
 };
 
 /// The built-in themes, selectable in the config file (`theme = <name>`), with
-/// `:theme <name>`, or via the `Space t` picker.
+/// `:theme <name>`, or via the `Space f t` picker.
 pub const themes = [_]struct { name: []const u8, palette: *const Theme }{
     .{ .name = "tokyonight", .palette = &tokyonight },
     .{ .name = "gruvbox", .palette = &gruvbox },

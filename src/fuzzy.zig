@@ -53,3 +53,35 @@ test "boundary and consecutive beat scattered" {
 test "empty query matches" {
     try std.testing.expectEqual(@as(?i32, 0), score("anything", ""));
 }
+
+/// A cheap 64-bit "character bag" for prefiltering (the trick Zed's fuzzy
+/// matcher uses): one bit per letter/digit class, case-insensitive. A
+/// candidate can only match a query if the query's bag is a subset of the
+/// candidate's — checked with two ANDs before running the real scorer.
+pub fn charMask(s: []const u8) u64 {
+    var m: u64 = 0;
+    for (s) |raw| {
+        const c = lower(raw);
+        if (c >= 'a' and c <= 'z') {
+            m |= @as(u64, 1) << @intCast(c - 'a');
+        } else if (c >= '0' and c <= '9') {
+            m |= @as(u64, 1) << @intCast(26 + (c - '0'));
+        } else {
+            m |= @as(u64, 1) << 36; // any other byte
+        }
+    }
+    return m;
+}
+
+/// True when `query_mask` chars all appear in the candidate's mask.
+pub fn maskMatches(candidate_mask: u64, query_mask: u64) bool {
+    return (query_mask & ~candidate_mask) == 0;
+}
+
+test "charMask prefilters" {
+    const path = charMask("src/main.zig");
+    try std.testing.expect(maskMatches(path, charMask("main")));
+    try std.testing.expect(maskMatches(path, charMask("SMZ"))); // case-insensitive
+    try std.testing.expect(!maskMatches(path, charMask("query"))); // q,e,y absent
+    try std.testing.expect(maskMatches(charMask("a1/b2.txt"), charMask("12")));
+}

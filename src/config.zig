@@ -35,7 +35,7 @@ pub const default_text =
     \\#   catppuccin
     \\#   nord
     \\#   onedark
-    \\# Switch at runtime with `:theme <name>` or the `Space t` picker.
+    \\# Switch at runtime with `:theme <name>` or the `Space f t` picker.
     \\theme = tokyonight
     \\
     \\# How many cells a tab character occupies (1-16). Tabs are stored

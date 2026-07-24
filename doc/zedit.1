@@ -73,7 +73,7 @@ Colour theme:
 Switch at runtime with
 .B :theme
 or the
-.B Space t
+.B Space f t
 picker.
 .TP
 .B tab_width
@@ -193,16 +193,34 @@ and
 insert at the left/right edge of every selected line. Press
 .B S{char}
 to surround the selection.
-.SH "PICKERS (Space leader)"
+.SH "PICKERS (Space leader, AstroNvim-style groups)"
+Pressing
+.B Space
+shows a which\-key popup; the
+.B f
+and
+.B l
+groups open a nested popup of their own.
 .TP
-.B Space f
-Fuzzy file finder (file names).
+.B Space f f
+Fuzzy file finder (file names). The file list is cached per session;
+.B Ctrl-r
+inside the picker re\-walks the project.
 .TP
-.B Space /\fR, \fPSpace s
-Global search across file \fIcontents\fP.
+.B Space f w
+Global search across file \fIcontents\fP (find words).
 .TP
-.B Space w\fR, \fPSpace q
-Write, quit.
+.B Space f b
+Open-buffer picker.
+.TP
+.B Space f t
+Theme picker.
+.TP
+.B Space l a\fR, \fPSpace l r\fR, \fPSpace l s\fR, \fPSpace l d
+Code action, rename symbol, document symbols, line diagnostic.
+.TP
+.B Space c\fR, \fPSpace w\fR, \fPSpace q
+Close buffer, write, quit.
 .PP
 In a picker, type to filter,
 .B Ctrl-n
@@ -217,7 +235,7 @@ to cancel. The in\-buffer
 and
 .B ?
 search the current file; use
-.B Space /
+.B Space f w
 to search across files.
 .SH "COMMAND LINE"
 .TP
@@ -242,7 +260,7 @@ but the active window.
 .TP
 .B :theme \fR[\fPname\fR]\fP
 Switch the colour theme (with no argument, opens the theme picker; also on
-.BR "Space t" ).
+.BR "Space f t" ).
 .TP
 .B Ctrl-w \fR{\fPv s c o w h j k l\fR}\fP
 Window commands: \fBv\fP/\fBs\fP split vertically/horizontally, \fBc\fP close,
