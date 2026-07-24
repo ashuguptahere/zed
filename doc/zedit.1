@@ -1,12 +1,12 @@
-.TH ZED 1 "2026-06-15" "zed 0.1.0" "User Commands"
+.TH ZEDIT 1 "2026-06-15" "zedit 0.1.0" "User Commands"
 .SH NAME
-zed \- a fast, terminal-based, modal code editor written in Zig
+zedit \- a fast, terminal-based, modal code editor written in Zig
 .SH SYNOPSIS
-.B zed
+.B zedit
 .RI [ options ]
 .RI [ file ]
 .SH DESCRIPTION
-.B zed
+.B zedit
 (\(lqzig-editor\(rq) is a modal terminal editor in the spirit of
 .BR nvim (1)
 and
@@ -55,17 +55,17 @@ Open the interactive tutorial (in the tradition of
 .BR vimtutor (1)).
 The tutor is a scratch buffer: edit it freely.
 .SH CONFIGURATION
-zed reads a single configuration file at
-.I $XDG_CONFIG_HOME/zed/config
+zedit reads a single configuration file at
+.I $XDG_CONFIG_HOME/zedit/config
 (falling back to
-.IR ~/.config/zed/config ).
+.IR ~/.config/zedit/config ).
 The format is one
 .B key = value
 per line;
 .B #
 starts a comment; unknown keys are ignored; a missing file means defaults.
 Generate a fully documented copy with
-.BR "zed \-\-init\-config" .
+.BR "zedit \-\-init\-config" .
 .TP
 .B theme
 Colour theme:
@@ -87,7 +87,7 @@ glyphs; set
 .B false
 for a flat statusline that renders correctly in any font.
 .SH MODES
-zed is modal: NORMAL for movement and commands, INSERT for typing, VISUAL and
+zedit is modal: NORMAL for movement and commands, INSERT for typing, VISUAL and
 V\-LINE and V\-BLOCK for selections, COMMAND for the
 .RB \(lq : \(rq
 line, and PICKER for the fuzzy finders.

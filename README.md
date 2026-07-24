@@ -1,4 +1,4 @@
-# zed
+# zedit
 
 A fast, terminal-based, modal code editor written in **Zig**, inspired by
 `nvim` and `helix`. Batteries included — the features you'd install plugins
@@ -7,7 +7,7 @@ library plus a vendored tree-sitter runtime + grammars (C, compiled by the
 build) for structural syntax highlighting. The editor itself has **zero
 runtime dependencies**.
 
-> `zed` here means **zig-editor**.
+> `zedit` here means **zig-editor**.
 
 ## Philosophy
 
@@ -16,7 +16,7 @@ runtime dependencies**.
   No plugin manager, no setup.
 - **Vim/AstroNvim keybindings** (unlike Helix): the classic
   operator-then-motion grammar, plus a `Space` leader with a which-key popup.
-- **One documented config file**, everything optional: `zed --init-config`
+- **One documented config file**, everything optional: `zedit --init-config`
   writes it with every setting, its default, and an explanation.
 - **Fast and idle-free**: an event-driven core that blocks in `poll(2)` — an
   idle editor uses **zero CPU**; each frame is built once and written with one
@@ -71,35 +71,35 @@ runtime dependencies**.
 Requires Zig `0.16.0`.
 
 ```sh
-zig build                          # -> zig-out/bin/zed (+ man page under share/man)
+zig build                          # -> zig-out/bin/zedit (+ man page under share/man)
 zig build -Doptimize=ReleaseFast   # optimized build
 zig build run -- path/to/file      # build and run
 zig build test                     # unit tests (pure logic)
 zig build itest                    # pty integration tests (drive the real editor)
-man ./doc/zed.1                    # read the manual
+man ./doc/zedit.1                    # read the manual
 ```
 
 ## Usage
 
 ```sh
-zed                 # empty buffer
-zed file.txt        # open a file (created on save if missing)
-zed --tutor         # interactive tutorial, in the vimtutor tradition
-zed --log zed.log file.txt   # open with diagnostics written to zed.log
+zedit                 # empty buffer
+zedit file.txt        # open a file (created on save if missing)
+zedit --tutor         # interactive tutorial, in the vimtutor tradition
+zedit --log zedit.log file.txt   # open with diagnostics written to zedit.log
 ```
 
 Keys are vim-style — `h j k l` move, `dd`/`dw`/`ciw`/`yyp` edit, `v`/`V`
 select, `/` searches, `u`/`Ctrl-r` undo/redo, `.` repeats, `q`/`@`
 record/replay macros, `Space` opens the leader menu. The full keymap is in
-[`CLAUDE.md`](CLAUDE.md#editor-usage) and `man zed`.
+[`CLAUDE.md`](CLAUDE.md#editor-usage) and `man zedit`.
 
 ## Configuration
 
-One file: `~/.config/zed/config` (or `$XDG_CONFIG_HOME/zed/config`;
+One file: `~/.config/zedit/config` (or `$XDG_CONFIG_HOME/zedit/config`;
 `--config <path>` overrides). Create it fully documented with:
 
 ```sh
-zed --init-config
+zedit --init-config
 ```
 
 Format is `key = value` with `#` comments; unknown keys are ignored and a

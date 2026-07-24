@@ -6,7 +6,7 @@ const h = @import("../harness.zig");
 
 const ESC = "\x1b";
 const CR = "\r";
-const target = "/tmp/zed_it_search.txt";
+const target = "/tmp/zedit_it_search.txt";
 
 fn case(ctx: *h.Ctx, name: []const u8, chunks: []const []const u8, initial: []const u8, want: []const u8) void {
     const got = h.runEdit(ctx, target, initial, chunks);
@@ -27,7 +27,7 @@ pub fn run(ctx: *h.Ctx) !void {
     // Live highlight uses the match colour while typing (theme.match = 61;89;161).
     {
         h.writeFile(ctx.io, target, "alpha\nbeta\ngamma\n");
-        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zed, target }, .term = "xterm-256color" });
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, target }, .term = "xterm-256color" });
         defer s.finish();
         s.drain(400); // first frame
         s.send("/beta");

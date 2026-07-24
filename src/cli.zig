@@ -74,17 +74,17 @@ pub fn parse(argv: []const [:0]const u8) Parsed {
 }
 
 const help_text =
-    \\zed — a terminal code editor in Zig
+    \\zedit — a terminal code editor in Zig
     \\
     \\Usage:
-    \\  zed [options] [file]
+    \\  zedit [options] [file]
     \\
     \\Options:
     \\  -h, --help           Show this help and exit
     \\  -V, --version        Show version and exit
     \\      --log <path>     Write diagnostic logs to <path>
     \\      --lsp <cmd>      Language server command (e.g. "zls"); defaults per filetype
-    \\      --config <path>  Use <path> instead of ~/.config/zed/config
+    \\      --config <path>  Use <path> instead of ~/.config/zedit/config
     \\      --init-config    Write the documented default config file and exit
     \\      --tutor          Open the interactive tutorial (like vimtutor)
     \\
@@ -99,9 +99,9 @@ const help_text =
     \\Insert mode: type to edit, Esc returns to normal mode.
     \\
     \\Examples:
-    \\  zed                 Start with an empty buffer
-    \\  zed src/main.zig    Open a file
-    \\  zed --log zed.log notes.txt
+    \\  zedit                 Start with an empty buffer
+    \\  zedit src/main.zig    Open a file
+    \\  zedit --log zedit.log notes.txt
     \\
 ;
 
@@ -110,18 +110,18 @@ pub fn printHelp() void {
 }
 
 pub fn printVersion() void {
-    writeFd(posix.STDOUT_FILENO, "zed " ++ version ++ "\n");
+    writeFd(posix.STDOUT_FILENO, "zedit " ++ version ++ "\n");
 }
 
 pub fn printError(message: []const u8) void {
-    writeFd(posix.STDERR_FILENO, "zed: ");
+    writeFd(posix.STDERR_FILENO, "zedit: ");
     writeFd(posix.STDERR_FILENO, message);
     writeFd(posix.STDERR_FILENO, "\n");
 }
 
 /// Print a normal (non-error) one-liner, e.g. where --init-config wrote to.
 pub fn printNote(message: []const u8) void {
-    writeFd(posix.STDOUT_FILENO, "zed: wrote ");
+    writeFd(posix.STDOUT_FILENO, "zedit: wrote ");
     writeFd(posix.STDOUT_FILENO, message);
     writeFd(posix.STDOUT_FILENO, "\n");
 }
@@ -147,7 +147,7 @@ fn prefix(a: []const u8, p: []const u8) bool {
 }
 
 test "parse file and flags" {
-    const argv = [_][:0]const u8{ "zed", "--log", "x.log", "file.txt" };
+    const argv = [_][:0]const u8{ "zedit", "--log", "x.log", "file.txt" };
     const r = parse(&argv);
     try std.testing.expect(r == .run);
     try std.testing.expectEqualStrings("file.txt", r.run.file.?);
@@ -155,18 +155,18 @@ test "parse file and flags" {
 }
 
 test "parse help and version" {
-    try std.testing.expect(parse(&[_][:0]const u8{ "zed", "--help" }) == .help);
-    try std.testing.expect(parse(&[_][:0]const u8{ "zed", "-V" }) == .version);
+    try std.testing.expect(parse(&[_][:0]const u8{ "zedit", "--help" }) == .help);
+    try std.testing.expect(parse(&[_][:0]const u8{ "zedit", "-V" }) == .version);
 }
 
 test "parse errors" {
-    try std.testing.expect(parse(&[_][:0]const u8{ "zed", "--nope" }) == .err);
-    try std.testing.expect(parse(&[_][:0]const u8{ "zed", "--log" }) == .err);
-    try std.testing.expect(parse(&[_][:0]const u8{ "zed", "a", "b" }) == .err);
+    try std.testing.expect(parse(&[_][:0]const u8{ "zedit", "--nope" }) == .err);
+    try std.testing.expect(parse(&[_][:0]const u8{ "zedit", "--log" }) == .err);
+    try std.testing.expect(parse(&[_][:0]const u8{ "zedit", "a", "b" }) == .err);
 }
 
 test "double dash forces positional" {
-    const r = parse(&[_][:0]const u8{ "zed", "--", "-weird-name" });
+    const r = parse(&[_][:0]const u8{ "zedit", "--", "-weird-name" });
     try std.testing.expect(r == .run);
     try std.testing.expectEqualStrings("-weird-name", r.run.file.?);
 }

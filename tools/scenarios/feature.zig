@@ -7,7 +7,7 @@ const h = @import("../harness.zig");
 const ESC = "\x1b";
 const CR = "\r";
 const BS = "\x7f";
-const target = "/tmp/zed_it_feat.txt";
+const target = "/tmp/zedit_it_feat.txt";
 
 fn case(ctx: *h.Ctx, name: []const u8, chunks: []const []const u8, initial: []const u8, want: []const u8) void {
     const got = h.runEdit(ctx, target, initial, chunks);
@@ -17,7 +17,7 @@ fn case(ctx: *h.Ctx, name: []const u8, chunks: []const []const u8, initial: []co
 
 pub fn run(ctx: *h.Ctx) !void {
     // ---- visual rendering (needs a .zig file for language detection) ----
-    const zig_target = "/tmp/zed_it_feat.zig";
+    const zig_target = "/tmp/zedit_it_feat.zig";
     const zig_src =
         "const std = @import(\"std\");\n" ++
         "pub fn main() void {\n" ++
@@ -25,7 +25,7 @@ pub fn run(ctx: *h.Ctx) !void {
         "}\n";
     h.writeFile(ctx.io, zig_target, zig_src);
     {
-        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zed, zig_target }, .term = "xterm-256color" });
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, zig_target }, .term = "xterm-256color" });
         defer s.finish();
         s.drain(800); // first frame; let colours be emitted
 

@@ -1,10 +1,10 @@
 //! Runtime configuration from a single documented file.
 //!
-//! The file lives at `$XDG_CONFIG_HOME/zed/config` (falling back to
-//! `~/.config/zed/config`) and can be overridden with `--config <path>`.
+//! The file lives at `$XDG_CONFIG_HOME/zedit/config` (falling back to
+//! `~/.config/zedit/config`) and can be overridden with `--config <path>`.
 //! Format: one `key = value` per line, `#` starts a comment, blank lines and
 //! unknown keys are ignored (so configs stay forward/backward compatible).
-//! `zed --init-config` writes `default_text` — the fully documented default —
+//! `zedit --init-config` writes `default_text` — the fully documented default —
 //! to the standard path. Parsed once at startup; no file watching.
 
 const std = @import("std");
@@ -22,10 +22,10 @@ pub const Settings = struct {
 /// is no config file.
 pub var settings: Settings = .{};
 
-/// The documented default configuration, written by `zed --init-config`.
+/// The documented default configuration, written by `zedit --init-config`.
 pub const default_text =
-    \\# zed configuration
-    \\# Location: ~/.config/zed/config  (or $XDG_CONFIG_HOME/zed/config)
+    \\# zedit configuration
+    \\# Location: ~/.config/zedit/config  (or $XDG_CONFIG_HOME/zedit/config)
     \\# One `key = value` per line; `#` starts a comment. Unknown keys are
     \\# ignored, so it is safe to keep settings for newer/older versions here.
     \\
@@ -42,7 +42,7 @@ pub const default_text =
     \\# verbatim in the file; this affects rendering only.
     \\tab_width = 4
     \\
-    \\# Nerd Font glyphs. zed's powerline statusline separators are private-use
+    \\# Nerd Font glyphs. zedit's powerline statusline separators are private-use
     \\# glyphs that only patched "Nerd Fonts" contain. If your terminal font is
     \\# not a Nerd Font they render as boxes — set this to false for a flat
     \\# statusline that works with any font.
@@ -74,18 +74,18 @@ pub fn apply(text: []const u8) void {
     }
 }
 
-/// The standard config path, built into `buf`: $XDG_CONFIG_HOME/zed/config or
-/// ~/.config/zed/config. Null when neither env var exists. (libc getenv — the
+/// The standard config path, built into `buf`: $XDG_CONFIG_HOME/zedit/config or
+/// ~/.config/zedit/config. Null when neither env var exists. (libc getenv — the
 /// editor links libc for tree-sitter anyway.)
 pub fn standardPath(buf: []u8) ?[]const u8 {
     if (std.c.getenv("XDG_CONFIG_HOME")) |xdg_z| {
         const xdg = std.mem.sliceTo(xdg_z, 0);
         if (xdg.len > 0)
-            return std.fmt.bufPrint(buf, "{s}/zed/config", .{xdg}) catch null;
+            return std.fmt.bufPrint(buf, "{s}/zedit/config", .{xdg}) catch null;
     }
     const home_z = std.c.getenv("HOME") orelse return null;
     const home = std.mem.sliceTo(home_z, 0);
-    return std.fmt.bufPrint(buf, "{s}/.config/zed/config", .{home}) catch null;
+    return std.fmt.bufPrint(buf, "{s}/.config/zedit/config", .{home}) catch null;
 }
 
 /// Load the config file (from `override` if given, else the standard path) and

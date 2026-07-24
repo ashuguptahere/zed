@@ -450,7 +450,7 @@ pub const Editor = struct {
         try self.term.enterAltScreen();
         self.win = self.term.size();
         self.refreshGit();
-        self.setStatus("zed {s} — :q to quit, i to insert", .{@import("cli.zig").version});
+        self.setStatus("zedit {s} — :q to quit, i to insert", .{@import("cli.zig").version});
 
         self.startTs();
 

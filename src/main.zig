@@ -1,4 +1,4 @@
-//! zed — a terminal code editor in Zig.
+//! zedit — a terminal code editor in Zig.
 //!
 //! `main` is the composition root: it parses the command line, optionally turns
 //! on logging, loads the buffer, puts the terminal into editing mode and runs
@@ -48,7 +48,7 @@ pub fn main(init: std.process.Init) !void {
 
     if (cfg.log_path) |path| log.enable(path);
     defer log.disable();
-    std.log.scoped(.main).info("starting zed, file={s}", .{cfg.file orelse "<none>"});
+    std.log.scoped(.main).info("starting zedit, file={s}", .{cfg.file orelse "<none>"});
 
     config.load(gpa, io, cfg.config_path);
 
@@ -60,7 +60,7 @@ pub fn main(init: std.process.Init) !void {
     var terminal = term.Terminal.init() catch |err| {
         buf.deinit();
         switch (err) {
-            error.NotATerminal => cli.printError("not a terminal — run zed in an interactive terminal"),
+            error.NotATerminal => cli.printError("not a terminal — run zedit in an interactive terminal"),
             else => cli.printError(@errorName(err)),
         }
         std.process.exit(1);

@@ -42,7 +42,7 @@ fn capture(
     h.writeFile(ctx.io, path, content);
 
     var s = try h.Session.spawn(ctx.gpa, .{
-        .argv = &.{ ctx.zed, name },
+        .argv = &.{ ctx.zedit, name },
         .cwd = dir,
         .term = "xterm-256color",
     });

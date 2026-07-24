@@ -1,6 +1,6 @@
-# zed — guidance for working in this repo
+# zedit — guidance for working in this repo
 
-`zed` (zig-editor) is a terminal-based, modal code editor written in Zig, in the
+`zedit` (zig-editor) is a terminal-based, modal code editor written in Zig, in the
 spirit of nvim and helix. This file is the contract for every change made here.
 
 ## Engineering principles (read first, applies to every change)
@@ -46,7 +46,7 @@ work", they win.
 - **No dead code.** Remove unused code, scaffolding and TODO stubs as soon as
   they stop earning their place. Don't keep a "legacy" path alongside a new one.
 - **Human-friendly errors.** User-facing messages are plain English with a hint
-  ("not a terminal — run zed in an interactive terminal"), never a raw error
+  ("not a terminal — run zedit in an interactive terminal"), never a raw error
   enum dumped at the user.
 - **Traceable via logs.** Diagnostics go through `std.log` into a file enabled
   with `--log <path>` (off by default, costs one null check when off). Keep the
@@ -86,7 +86,7 @@ Source is `src/`, one responsibility per module:
 | `undo.zig`    | Undo/redo as capped buffer snapshots. |
 | `search.zig`  | Literal substring search (`/ ? n N * #`). |
 | `theme.zig`   | Colour palettes (Tokyo Night default + Gruvbox/Catppuccin/Nord/One Dark), the active-theme global, 24-bit SGR helpers. |
-| `config.zig`  | The single documented config file (`~/.config/zed/config`): parse, apply, standard path, `--init-config` default text. |
+| `config.zig`  | The single documented config file (`~/.config/zedit/config`): parse, apply, standard path, `--init-config` default text. |
 | `syntax.zig`  | Dependency-free per-line lexer producing per-byte styles. |
 | `fuzzy.zig`   | Subsequence scorer for the pickers. |
 | `git.zig`     | Git change signs for the gutter (parses `git diff -U0`). |
@@ -113,21 +113,21 @@ and renders a frame back through `term`. `unicode` is shared by `buffer` and
 ## Build, test, run
 
 ```sh
-zig build                       # debug build -> zig-out/bin/zed
+zig build                       # debug build -> zig-out/bin/zedit
 zig build -Doptimize=ReleaseFast
 zig build run -- [file]         # run the editor
 zig build test                  # unit tests (pure logic; no tty needed)
 zig build itest                 # pty integration tests (drives the built editor)
 ```
 
-`zig build` also installs the man page to `zig-out/share/man/man1/zed.1`
-(source: `doc/zed.1`); view it with `man ./doc/zed.1`. The first build compiles
+`zig build` also installs the man page to `zig-out/share/man/man1/zedit.1`
+(source: `doc/zedit.1`); view it with `man ./doc/zedit.1`. The first build compiles
 the vendored tree-sitter C (~6s extra cold; cached afterwards).
 
 Interactive behaviour can't be unit-tested without a terminal, so integration
 checks live in `tools/` and drive the built editor through a real pseudo-terminal
 (all Zig — no runtime or test-time dependency beyond the toolchain). `zig build
-itest` builds `zed` plus a `mock_lsp` server, then runs the `itest` harness:
+itest` builds `zedit` plus a `mock_lsp` server, then runs the `itest` harness:
 
 - `tools/harness.zig` — the pty harness (`Session.spawn`/`drain`/`send`, output
   capture + ANSI stripping, temp dirs, file helpers, `/proc` CPU sampling).
@@ -225,8 +225,8 @@ SGR; the frame is still built once and written in a single syscall, and
 rendering still only happens on change.
 
 Runtime configuration is one documented file (see `config.zig`): theme,
-`tab_width`, `nerd_font`; `zed --init-config` writes the annotated default.
-`zed --tutor` opens the embedded interactive tutorial (`doc/tutor.txt`,
+`tab_width`, `nerd_font`; `zedit --init-config` writes the annotated default.
+`zedit --tutor` opens the embedded interactive tutorial (`doc/tutor.txt`,
 embedded via `build.zig`).
 
 Tabs are stored verbatim and rendered at `tab_width` (currently 4) in

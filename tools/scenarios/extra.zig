@@ -7,7 +7,7 @@ const h = @import("../harness.zig");
 const ESC = "\x1b";
 const CR = "\r";
 const CV = "\x16"; // Ctrl-v: blockwise visual
-const target = "/tmp/zed_it_extra.txt";
+const target = "/tmp/zedit_it_extra.txt";
 
 fn case(ctx: *h.Ctx, name: []const u8, chunks: []const []const u8, initial: []const u8, want: []const u8) void {
     const got = h.runEdit(ctx, target, initial, chunks);

@@ -35,7 +35,7 @@ pub fn enable(path: []const u8) void {
     }, 0o644) catch return;
     sink = fd;
     start_ns = nowNanos();
-    std.log.info("zed log started", .{});
+    std.log.info("zedit log started", .{});
 }
 
 pub fn disable() void {

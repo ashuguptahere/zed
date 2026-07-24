@@ -1,17 +1,17 @@
-//! Idle-CPU and profiling-log end-to-end: confirm zed burns no CPU while idle
+//! Idle-CPU and profiling-log end-to-end: confirm zedit burns no CPU while idle
 //! and writes profiling lines to its log. Port of tools/cpu_test.py.
 
 const std = @import("std");
 const h = @import("../harness.zig");
 
-const target = "/tmp/zed_it_cpu.txt";
-const logpath = "/tmp/zed_it_cpu.log";
+const target = "/tmp/zedit_it_cpu.txt";
+const logpath = "/tmp/zedit_it_cpu.log";
 
 pub fn run(ctx: *h.Ctx) !void {
     h.writeFile(ctx.io, target, "line\n" ** 50);
     h.removeFile(ctx.io, logpath);
 
-    var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zed, "--log", logpath, target } });
+    var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "--log", logpath, target } });
     defer s.finish();
 
     s.drain(500); // let it draw the first frame

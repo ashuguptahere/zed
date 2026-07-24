@@ -24,7 +24,7 @@ pub fn run(ctx: *h.Ctx) !void {
         h.writeFile(ctx.io, a, "alpha\n");
         h.writeFile(ctx.io, b, "bravo\n");
 
-        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zed, "a.txt" }, .cwd = dir, .term = "xterm-256color" });
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "a.txt" }, .cwd = dir, .term = "xterm-256color" });
         defer s.finish();
         s.drain(500);
         s.send(":vsplit\r");
@@ -51,7 +51,7 @@ pub fn run(ctx: *h.Ctx) !void {
         h.writeFile(ctx.io, a, "aaa\n");
         h.writeFile(ctx.io, b, "bbb\n");
 
-        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zed, "a.txt" }, .cwd = dir });
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "a.txt" }, .cwd = dir });
         defer s.finish();
         s.drain(500);
         s.send(":e b.txt\r"); // active window -> b
@@ -86,7 +86,7 @@ pub fn run(ctx: *h.Ctx) !void {
         defer ctx.gpa.free(a);
         h.writeFile(ctx.io, a, "aaa\n");
 
-        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zed, "a.txt" }, .cwd = dir });
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "a.txt" }, .cwd = dir });
         defer s.finish();
         s.drain(500);
         s.send(CTRL_W ++ "v"); // vertical split

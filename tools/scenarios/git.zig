@@ -1,6 +1,6 @@
 //! Git change gutter end-to-end: add/change/delete signs render in their
 //! colours. Port of tools/git_test.py. Sets up a real git repo in a temp dir,
-//! commits a file, makes a working-tree change, opens zed, and checks the
+//! commits a file, makes a working-tree change, opens zedit, and checks the
 //! rendered output for the sign colours. Uses .txt files so the only colours
 //! present come from the git gutter (no syntax highlighting).
 
@@ -25,7 +25,7 @@ fn git(ctx: *h.Ctx, argv: []const []const u8) void {
 }
 
 /// Build a fresh repo with `committed` committed and `modified` in the working
-/// tree, open zed on the file, drain the first frames, run the checks against
+/// tree, open zedit on the file, drain the first frames, run the checks against
 /// the live session, then quit and clean up.
 fn capture(
     ctx: *h.Ctx,
@@ -48,7 +48,7 @@ fn capture(
     h.writeFile(ctx.io, file, modified); // working-tree change
 
     var s = try h.Session.spawn(ctx.gpa, .{
-        .argv = &.{ ctx.zed, name },
+        .argv = &.{ ctx.zedit, name },
         .cwd = dir,
         .term = "xterm-256color",
     });

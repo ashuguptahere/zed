@@ -45,20 +45,20 @@ pub fn build(b: *std.Build) void {
         exe_mod.addAnonymousImport("ts_highlights_" ++ g.name, .{ .root_source_file = b.path(g.highlights) });
     }
 
-    // The interactive tutorial, embedded so `zed --tutor` works anywhere.
+    // The interactive tutorial, embedded so `zedit --tutor` works anywhere.
     exe_mod.addAnonymousImport("tutor_text", .{ .root_source_file = b.path("doc/tutor.txt") });
 
-    const exe = b.addExecutable(.{ .name = "zed", .root_module = exe_mod });
+    const exe = b.addExecutable(.{ .name = "zedit", .root_module = exe_mod });
     b.installArtifact(exe);
 
-    // Install the man page so `man zed` works after `zig build --prefix ...`.
-    b.installFile("doc/zed.1", "share/man/man1/zed.1");
+    // Install the man page so `man zedit` works after `zig build --prefix ...`.
+    b.installFile("doc/zedit.1", "share/man/man1/zedit.1");
 
     // `zig build run [-- args]` builds and runs the editor.
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_cmd.addArgs(args);
-    const run_step = b.step("run", "Build and run zed");
+    const run_step = b.step("run", "Build and run zedit");
     run_step.dependOn(&run_cmd.step);
 
     // `zig build test` runs every test block reachable from src/main.zig.
@@ -87,7 +87,7 @@ pub fn build(b: *std.Build) void {
     const itest_exe = b.addExecutable(.{ .name = "itest", .root_module = itest_mod });
 
     const run_itest = b.addRunArtifact(itest_exe);
-    run_itest.addArtifactArg(exe); // argv[1] = zed
+    run_itest.addArtifactArg(exe); // argv[1] = zedit
     run_itest.addArtifactArg(mock_exe); // argv[2] = mock_lsp
     if (b.args) |args| run_itest.addArgs(args);
     const itest_step = b.step("itest", "Run pty integration tests");

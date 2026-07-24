@@ -6,7 +6,7 @@
 const std = @import("std");
 const h = @import("../harness.zig");
 
-const target = "/tmp/zed_it_lsp.zig";
+const target = "/tmp/zedit_it_lsp.zig";
 const initial = "const a = 1;\nconst b = 2;\nconst c = 3;\n";
 const quit = "\x1b:q!\r";
 
@@ -39,7 +39,7 @@ const Result = struct {
 /// Drive a fresh session against the mock and capture the screen + saved file.
 fn drive(ctx: *h.Ctx, steps: []const Step, final: []const u8) Result {
     h.writeFile(ctx.io, target, initial);
-    var s = h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zed, "--lsp", ctx.mock, target } }) catch return .{
+    var s = h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "--lsp", ctx.mock, target } }) catch return .{
         .out = ctx.gpa.dupe(u8, "") catch unreachable,
         .plain = ctx.gpa.dupe(u8, "") catch unreachable,
         .text = ctx.gpa.dupe(u8, "") catch unreachable,

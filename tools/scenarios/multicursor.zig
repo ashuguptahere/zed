@@ -8,7 +8,7 @@ const ESC = "\x1b";
 const CR = "\r";
 const CN = "\x0e"; // Ctrl-n: add cursor below
 const CP = "\x10"; // Ctrl-p: add cursor above
-const target = "/tmp/zed_it_mc.txt";
+const target = "/tmp/zedit_it_mc.txt";
 
 fn case(ctx: *h.Ctx, name: []const u8, chunks: []const []const u8, initial: []const u8, want: []const u8) void {
     const got = h.runEdit(ctx, target, initial, chunks);

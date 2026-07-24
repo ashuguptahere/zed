@@ -1,8 +1,8 @@
 ==============================================================================
-=                 W e l c o m e   t o   t h e   z e d   t u t o r            =
+=               W e l c o m e   t o   t h e   z e d i t   t u t o r            =
 ==============================================================================
 
-     Welcome to the zed tutor!  zed is a modal editor: in Normal mode the
+     Welcome to the zedit tutor!  zedit is a modal editor: in Normal mode the
      keys are commands, not text.  This file is a scratch copy: edit it
      freely.  Practice each command right here.
 
@@ -276,7 +276,7 @@
      This very file should show up.
 
   When a language server is installed for the file type (zls, clangd,
-  pylsp, typescript-language-server), zed starts it automatically:
+  pylsp, typescript-language-server), zedit starts it automatically:
 
      gd         go to the definition of the symbol under the cursor
      K          show hover documentation for it
@@ -309,7 +309,7 @@
 
   For the complete reference:
 
-   - the man page:  man zed  (or  man ./doc/zed.1  from the repo),
+   - the man page:  man zedit  (or  man ./doc/zedit.1  from the repo),
    - CLAUDE.md in the repository root: the full, honest list of every
      motion, operator, text object, picker and LSP feature.
 
@@ -317,7 +317,7 @@
 
   You made it!  That was the whole tour: moving, editing, searching,
   text objects, files, windows, pickers and LSP.  The habits form fast:
-  use zed for your everyday editing and within days the keys will be
+  use zedit for your everyday editing and within days the keys will be
   muscle memory.  Happy editing!
 
   (Feel free to delete this file, or keep practicing on it — it is

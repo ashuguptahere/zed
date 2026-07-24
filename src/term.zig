@@ -14,7 +14,7 @@ const posix = std.posix;
 
 comptime {
     if (builtin.os.tag == .windows) {
-        @compileError("zed's terminal layer is POSIX-only for now; Windows console support is not yet implemented");
+        @compileError("zedit's terminal layer is POSIX-only for now; Windows console support is not yet implemented");
     }
 }
 

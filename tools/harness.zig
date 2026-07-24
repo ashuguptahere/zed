@@ -1,4 +1,4 @@
-//! A pseudo-terminal test harness for driving `zed` end-to-end.
+//! A pseudo-terminal test harness for driving `zedit` end-to-end.
 //!
 //! `Session.spawn` forks a child attached to a pty (so the editor sees a real
 //! terminal), and exposes `send`/`drain` to push keystrokes and accumulate the
@@ -22,7 +22,7 @@ const c = @cImport({
 pub const Ctx = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
-    zed: []const u8, // path to the built zed binary
+    zedit: []const u8, // path to the built zedit binary
     mock: []const u8, // path to the built mock_lsp binary
     passed: usize = 0,
     failed: usize = 0,
@@ -189,7 +189,7 @@ pub fn removeFile(io: std.Io, path: []const u8) void {
 /// Create a fresh temp directory and return its path (caller frees with `gpa`).
 pub fn tempDir(gpa: std.mem.Allocator) ![]u8 {
     var tmpl = [_]u8{0} ** 32;
-    const base = "/tmp/zedtestXXXXXX";
+    const base = "/tmp/zedittestXXXXXX";
     @memcpy(tmpl[0..base.len], base);
     if (c.mkdtemp(&tmpl) == null) return error.Mkdtemp;
     return gpa.dupe(u8, std.mem.sliceTo(&tmpl, 0));
@@ -201,11 +201,11 @@ pub fn removeTree(gpa: std.mem.Allocator, io: std.Io, path: []const u8) void {
     gpa.free(res.stderr);
 }
 
-/// Write `initial` to `target`, run `zed target`, send `chunks`, then return the
+/// Write `initial` to `target`, run `zedit target`, send `chunks`, then return the
 /// saved file contents (caller frees). The workhorse for editing scenarios.
 pub fn runEdit(ctx: *Ctx, target: []const u8, initial: []const u8, chunks: []const []const u8) []u8 {
     writeFile(ctx.io, target, initial);
-    var s = Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zed, target } }) catch
+    var s = Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, target } }) catch
         return ctx.gpa.dupe(u8, "") catch unreachable;
     defer s.finish();
     s.drain(400); // first frame

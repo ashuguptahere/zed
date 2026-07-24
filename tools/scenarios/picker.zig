@@ -1,5 +1,5 @@
 //! Fuzzy file picker and global search picker end-to-end. Port of
-//! tools/picker_test.py. Sets up a temp directory of files, opens zed there,
+//! tools/picker_test.py. Sets up a temp directory of files, opens zedit there,
 //! drives the pickers via the space-leader menu, then edits + saves to confirm
 //! the right file/line was opened.
 
@@ -10,7 +10,7 @@ const CR = "\r";
 
 const File = struct { name: []const u8, content: []const u8 };
 
-/// Create a temp dir, write `files`, open `open_arg` in zed there, replay
+/// Create a temp dir, write `files`, open `open_arg` in zedit there, replay
 /// `chunks`, then read each file back (before removing the tree). The read-back
 /// contents are returned in the same order as `files` (caller frees each, and
 /// the slice).
@@ -30,7 +30,7 @@ fn run_picker(
     }
 
     var s = try h.Session.spawn(ctx.gpa, .{
-        .argv = &.{ ctx.zed, open_arg },
+        .argv = &.{ ctx.zedit, open_arg },
         .cwd = dir,
         .term = "xterm",
     });

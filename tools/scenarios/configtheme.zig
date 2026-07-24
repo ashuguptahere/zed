@@ -31,7 +31,7 @@ pub fn run(ctx: *h.Ctx) !void {
     {
         h.writeFile(ctx.io, cfg_path, "# test config\ntheme = gruvbox\n");
         var s = try h.Session.spawn(ctx.gpa, .{
-            .argv = &.{ ctx.zed, "--config", cfg_path, "a.txt" },
+            .argv = &.{ ctx.zedit, "--config", cfg_path, "a.txt" },
             .cwd = dir,
             .term = "xterm-256color",
         });
@@ -48,7 +48,7 @@ pub fn run(ctx: *h.Ctx) !void {
     // Space t opens the theme picker listing the built-ins.
     {
         var s = try h.Session.spawn(ctx.gpa, .{
-            .argv = &.{ ctx.zed, "a.txt" },
+            .argv = &.{ ctx.zedit, "a.txt" },
             .cwd = dir,
             .term = "xterm-256color",
         });
@@ -66,7 +66,7 @@ pub fn run(ctx: *h.Ctx) !void {
     {
         h.writeFile(ctx.io, cfg_path, "nerd_font = false\n");
         var s = try h.Session.spawn(ctx.gpa, .{
-            .argv = &.{ ctx.zed, "--config", cfg_path, "a.txt" },
+            .argv = &.{ ctx.zedit, "--config", cfg_path, "a.txt" },
             .cwd = dir,
             .term = "xterm-256color",
         });
@@ -80,7 +80,7 @@ pub fn run(ctx: *h.Ctx) !void {
     // :e detects the opened file's language (highlighting for the .zig file).
     {
         var s = try h.Session.spawn(ctx.gpa, .{
-            .argv = &.{ ctx.zed, "a.txt" },
+            .argv = &.{ ctx.zedit, "a.txt" },
             .cwd = dir,
             .term = "xterm-256color",
         });
@@ -96,12 +96,12 @@ pub fn run(ctx: *h.Ctx) !void {
     // --tutor opens the embedded tutorial.
     {
         var s = try h.Session.spawn(ctx.gpa, .{
-            .argv = &.{ ctx.zed, "--tutor" },
+            .argv = &.{ ctx.zedit, "--tutor" },
             .term = "xterm-256color",
         });
         defer s.finish();
         s.drain(600);
-        ctx.check("--tutor opens the tutorial", s.containsPlain(ctx.gpa, "zed tutor"));
+        ctx.check("--tutor opens the tutorial", s.containsPlain(ctx.gpa, "zedit tutor"));
         s.send(":q!\r");
         s.drain(200);
     }

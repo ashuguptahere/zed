@@ -1,6 +1,6 @@
-//! Integration-test runner: drives the built `zed` through a pty (and a mock
+//! Integration-test runner: drives the built `zedit` through a pty (and a mock
 //! language server) to verify the interactive behaviour that unit tests can't.
-//! Run with `zig build itest`, which passes the zed and mock_lsp binary paths.
+//! Run with `zig build itest`, which passes the zedit and mock_lsp binary paths.
 
 const std = @import("std");
 const h = @import("harness.zig");
@@ -24,7 +24,7 @@ pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const argv = try init.minimal.args.toSlice(arena);
     if (argv.len < 3) {
-        std.debug.print("usage: itest <zed-binary> <mock_lsp-binary>\n", .{});
+        std.debug.print("usage: itest <zedit-binary> <mock_lsp-binary>\n", .{});
         std.process.exit(2);
     }
     // The build passes relative artifact paths; make them absolute so scenarios
@@ -33,7 +33,7 @@ pub fn main(init: std.process.Init) !void {
     var ctx = h.Ctx{
         .gpa = init.gpa,
         .io = init.io,
-        .zed = try absolute(arena, cwd, argv[1]),
+        .zedit = try absolute(arena, cwd, argv[1]),
         .mock = try absolute(arena, cwd, argv[2]),
     };
 
