@@ -17,7 +17,8 @@ batteries-included editor.
    records G/search/marks/%/buffer switches/gd).
 3. ~~**System clipboard**~~ — **DONE** (`"+`/`"*` via OSC 52 + bracketed
    paste in; works over SSH with zero dependencies).
-4. **Autoindent** on `o`/`O`/Enter (both, high — already in Known gaps).
+4. ~~**Autoindent**~~ — **DONE** (`o`/`O`/Enter/`cc` inherit indent, blank
+   auto-indents stripped, nvim-verified; smartindent/TS indent still open).
 5. **LSP: find references, formatting (+ format-on-save), cross-file /
    multi-line WorkspaceEdits** (both, high).
 6. **Command-line completion** for `:e`/`:theme`/commands + history (nvim,

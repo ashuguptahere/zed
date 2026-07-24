@@ -121,6 +121,28 @@ pub fn run(ctx: *h.Ctx) !void {
         s.drain(200);
     }
 
+    // autoindent = false restores the plain behaviour (new lines at column 0).
+    {
+        const ind = try std.fmt.allocPrint(ctx.gpa, "{s}/ind.txt", .{dir});
+        defer ctx.gpa.free(ind);
+        h.writeFile(ctx.io, ind, "    foo\n");
+        h.writeFile(ctx.io, cfg_path, "autoindent = false\n");
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ ctx.zedit, "--config", cfg_path, "ind.txt" },
+            .cwd = dir,
+            .term = "xterm-256color",
+        });
+        defer s.finish();
+        s.drain(400);
+        s.send("obar");
+        s.drain(250);
+        s.send("\x1b:wq\r");
+        s.drain(300);
+        const text = h.readFile(ctx.gpa, ctx.io, ind);
+        defer ctx.gpa.free(text);
+        ctx.check("autoindent = false disables inheritance", std.mem.eql(u8, text, "    foo\nbar\n"));
+    }
+
     // :e detects the opened file's language (highlighting for the .zig file).
     {
         var s = try h.Session.spawn(ctx.gpa, .{

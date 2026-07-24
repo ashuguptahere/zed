@@ -65,6 +65,17 @@ pub fn run(ctx: *h.Ctx) !void {
     case(ctx, "nvim#j2 search then Ctrl-o returns to origin", &.{ "/ddd\r\x0fx", ":wq", CR }, "aaa\nbbb\nccc\nddd\neee\n", "aa\nbbb\nccc\nddd\neee\n");
     case(ctx, "nvim#j3 Ctrl-o then Ctrl-i goes forward again", &.{ "G\x0f\tx", ":wq", CR }, "aaa\nbbb\nccc\nddd\neee\n", "aaa\nbbb\nccc\nddd\nee\n");
 
+    // Autoindent (nvim has 'autoindent' on by default; ours matches).
+    case(ctx, "nvim#a1 o inherits indent", &.{ "obar", ESC, ":wq", CR }, "    foo\n", "    foo\n    bar\n");
+    case(ctx, "nvim#a2 O inherits indent", &.{ "Obar", ESC, ":wq", CR }, "    foo\n", "    bar\n    foo\n");
+    case(ctx, "nvim#a3 Enter inherits indent", &.{ "A\rbar", ESC, ":wq", CR }, "    foo\n", "    foo\n    bar\n");
+    case(ctx, "nvim#a4 blank o-line is stripped on Esc", &.{ "o", ESC, ":wq", CR }, "    foo\n", "    foo\n\n");
+    case(ctx, "nvim#a5 blank intermediate stripped, indent carries", &.{ "A\r\rbar", ESC, ":wq", CR }, "    foo\n", "    foo\n\n    bar\n");
+    case(ctx, "nvim#a6 Enter mid-line moves tail with indent", &.{ "fbi\r", ESC, ":wq", CR }, "    foo bar\n", "    foo \n    bar\n");
+    case(ctx, "nvim#a7 cc keeps the indent", &.{ "ccbar", ESC, ":wq", CR }, "    foo\n", "    bar\n");
+    case(ctx, "nvim#a8 tab indent copied verbatim", &.{ "obar", ESC, ":wq", CR }, "\tfoo\n", "\tfoo\n\tbar\n");
+    case(ctx, "nvim#a9 blank Enter-line stripped on Esc", &.{ "A\r", ESC, ":wq", CR }, "    foo\n", "    foo\n\n");
+
     // Regex `/` search: the pattern jumps, then x edits at the match.
     case(ctx, "regex / search jumps to match", &.{ "/b.d\r", "x", ":wq", CR }, "xxx\nbad\n", "xxx\nad\n");
     // Capture groups in the replacement swap two words.

@@ -27,6 +27,9 @@ pub const Settings = struct {
     /// highlighting, LSP and git signs are skipped so the file opens instantly
     /// and nothing chokes on it. 0 treats every file as large.
     large_file_mb: usize = 64,
+    /// Inherit the current line's indentation on `o`, `O`, Enter and `cc`
+    /// (vim 'autoindent'; an auto-indent left blank is stripped on leaving).
+    autoindent: bool = true,
 };
 
 /// The live settings, read by the editor/renderer. Defaults apply when there
@@ -71,6 +74,10 @@ pub const default_text =
     \\# instantly and nothing chokes on them.
     \\large_file_mb = 64
     \\
+    \\# Inherit the current line's indentation on o / O / Enter / cc
+    \\# (vim's 'autoindent'). An auto-indent left blank is stripped.
+    \\autoindent = true
+    \\
 ;
 
 /// Apply `key = value` lines to the live settings. Forgiving by design:
@@ -102,6 +109,9 @@ pub fn apply(text: []const u8) void {
         } else if (std.mem.eql(u8, key, "large_file_mb")) {
             const n = std.fmt.parseInt(usize, value, 10) catch continue;
             settings.large_file_mb = n;
+        } else if (std.mem.eql(u8, key, "autoindent")) {
+            if (std.mem.eql(u8, value, "true")) settings.autoindent = true;
+            if (std.mem.eql(u8, value, "false")) settings.autoindent = false;
         }
     }
 }

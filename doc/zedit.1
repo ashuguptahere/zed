@@ -101,6 +101,13 @@ for absolute numbers everywhere.
 .B large_file_mb
 Files larger than this many megabytes (default 64) open in large-file mode:
 highlighting, LSP and git signs are skipped so huge files open instantly.
+.TP
+.B autoindent
+.BR true / false
+(default true).
+.BR o / O /Enter/ cc
+inherit the current line's indentation; an auto\-indent left blank is
+stripped, like vim.
 .SH MODES
 zedit is modal: NORMAL for movement and commands, INSERT for typing, VISUAL and
 V\-LINE and V\-BLOCK for selections, COMMAND for the

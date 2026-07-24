@@ -42,7 +42,7 @@ runtime dependencies**.
   - Marks `m` `` ` `` `'` and macros `q…q` / `@`
   - Jumplist: `Ctrl-o` / `Ctrl-i` walk back and forward through jumps
     (searches, `G`, marks, `gd`, buffer switches — cross-buffer)
-  - Built-ins (no plugins): auto-pairs, comment toggle (`gcc` / `gc{motion}`),
+  - Built-ins (no plugins): autoindent, auto-pairs, comment toggle (`gcc` / `gc{motion}`),
     surround (`ys`/`cs`/`ds`, visual `S`), blockwise visual (`Ctrl-v` + `I`/`A`),
     multiple cursors (`Ctrl-n` / `Ctrl-p` add carets; edits apply to all)
 - **LSP**, auto-launched per filetype (`zls`, `clangd`, `pylsp`,
@@ -120,7 +120,7 @@ zedit --init-config
 
 Format is `key = value` with `#` comments; unknown keys are ignored and a
 missing file just means defaults. Settings today: `theme`, `tab_width`,
-`nerd_font`, `sidebar`, `relative_numbers`, `large_file_mb`.
+`nerd_font`, `sidebar`, `relative_numbers`, `large_file_mb`, `autoindent`.
 
 > **Icons look broken?** The powerline statusline separators are Nerd Font
 > glyphs (private-use codepoints). Terminal applications cannot ship fonts —

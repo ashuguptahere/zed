@@ -182,6 +182,9 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   Behaviour pinned to nvim ground truth in `vim_compat`.
 - **Insert:** `i I a A o O` (and `c`/`s` entries), `Esc` to normal. Auto-pairs:
   typing an opener inserts its closer; typing the closer steps over it.
+  Autoindent (config `autoindent`, on by default): `o`/`O`/Enter/`cc` inherit
+  the current line's leading whitespace, and an auto-indent left blank is
+  stripped on leaving the line (vim's rule; nvim-verified in `vim_compat`).
 - **Built-ins (no plugins):** `gcc` / `gc{motion}` comment toggling, auto-pairs.
 - **Surround:** `ys{motion}{char}` (e.g. `ysiw)`), `cs{old}{new}` (e.g. `cs"'`),
   `ds{char}`, `yss{char}` for the whole line, and `S{char}` in visual mode.
@@ -269,7 +272,7 @@ decoding.
 
 Runtime configuration is one documented file (see `config.zig`): theme,
 `tab_width`, `nerd_font`, `sidebar` (left/right), `relative_numbers`,
-`large_file_mb`; `zedit --init-config` writes
+`large_file_mb`, `autoindent`; `zedit --init-config` writes
 the annotated default.
 `zedit --tutor` opens the embedded interactive tutorial (`doc/tutor.txt`,
 embedded via `build.zig`).
@@ -303,8 +306,9 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   adopt that (or a rope) only if it matters in practice.
 - A resize landing in the tiny window between the resize check and entering
   `poll` is noticed on the next keypress (a self-pipe would close the race).
-- Vim gaps: autoindent and the trickier dot-repeat/macro interactions are not
-  (fully) implemented. In-buffer search/`:s` are regex, but the syntax is
+- Vim gaps: the trickier dot-repeat/macro interactions are not (fully)
+  implemented; autoindent is vim's 'autoindent' only (no smartindent/
+  tree-sitter indent queries). In-buffer search/`:s` are regex, but the syntax is
   modern ("very magic"-like), not vim's magic mode — `\(` groups etc. differ.
 - Highlighting is a per-line lexer (no cross-line block comments; a handful of
   languages). Tree-sitter is the upgrade path now that deps are allowed.

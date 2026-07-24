@@ -334,6 +334,12 @@ pub const Editor = struct {
     comp_sel: usize,
     sig_open: bool, // signature-help popup is showing (reads lsp.signature)
 
+    // Autoindent: the row whose auto-inserted indent is still untouched (it
+    // is stripped when left blank, like vim), and the indent text itself
+    // (carried across consecutive Enters even after a strip).
+    ai_row: ?usize,
+    ai_indent: std.ArrayList(u8),
+
     // Bracketed paste (terminal paste, incl. over SSH): content arrives fenced
     // in \x1b[200~ ... \x1b[201~ and is inserted literally.
     pasting: bool,
@@ -482,6 +488,8 @@ pub const Editor = struct {
             .comp_filtered = .empty,
             .comp_sel = 0,
             .sig_open = false,
+            .ai_row = null,
+            .ai_indent = .empty,
             .pasting = false,
             .paste_carry = undefined,
             .paste_carry_len = 0,
@@ -502,6 +510,7 @@ pub const Editor = struct {
         self.macro_buf.deinit(self.gpa);
         self.dot_keys.deinit(self.gpa);
         self.dot_temp.deinit(self.gpa);
+        self.ai_indent.deinit(self.gpa);
         self.frame.deinit(self.gpa);
         self.seg_marks.deinit(self.gpa);
         self.prev_frame.deinit(self.gpa);
@@ -1449,11 +1458,13 @@ pub const Editor = struct {
 
         self.pushUndo();
         if (op == .change and span.lines) {
-            self.buf.setLine(span.top, "") catch {};
+            const keep = if (config.settings.autoindent) leadingIndent(self.buf.line(span.top)) else "";
+            self.setAutoIndent(span.top, keep);
+            self.buf.setLine(span.top, self.ai_indent.items) catch {};
             var i: usize = 0;
             while (i < span.bot - span.top) : (i += 1) self.buf.removeLineAt(span.top + 1);
             self.cy = span.top;
-            self.cx = 0;
+            self.cx = self.buf.line(span.top).len;
             self.goal_col = 0;
             self.mode = .insert;
             return;
@@ -1789,11 +1800,14 @@ pub const Editor = struct {
 
     fn openLine(self: *Editor, below: bool) !void {
         self.pushUndo();
+        const inherit = if (config.settings.autoindent) leadingIndent(self.curLine()) else "";
+        self.setAutoIndent(self.cy, inherit); // copy before the insert shifts rows
         const at = if (below) self.cy + 1 else self.cy;
-        try self.buf.insertLineAt(at, "");
+        try self.buf.insertLineAt(at, self.ai_indent.items);
         self.cy = at;
-        self.cx = 0;
-        self.goal_col = 0;
+        self.cx = self.buf.line(at).len;
+        self.updateGoal();
+        self.ai_row = if (config.settings.autoindent) at else null;
         self.mode = .insert;
         self.resetPending();
     }
@@ -1888,8 +1902,13 @@ pub const Editor = struct {
 
     fn insertKeyOne(self: *Editor, k: key.Key) !void {
         if (self.moveKey(k)) return;
+        // Any key other than Enter/Esc means the auto-indent got company;
+        // those two check `was_ai` to apply vim's strip-if-left-blank rule.
+        const was_ai = self.ai_row;
+        self.ai_row = null;
         switch (k) {
             .escape => {
+                self.stripBlankAutoIndent(was_ai);
                 self.mode = .normal;
                 self.comp_open = false;
                 self.sig_open = false;
@@ -1897,10 +1916,26 @@ pub const Editor = struct {
                 self.updateGoal();
             },
             .enter => {
+                // The indent to carry: the pending one when this line is still
+                // an untouched auto-indent (which then gets stripped, like
+                // vim), else this line's own leading whitespace.
+                if (config.settings.autoindent) {
+                    if (was_ai != self.cy or !lineIsBlank(self.curLine())) {
+                        self.ai_indent.clearRetainingCapacity();
+                        self.ai_indent.appendSlice(self.gpa, leadingIndent(self.curLine())) catch {};
+                    }
+                    self.stripBlankAutoIndent(was_ai);
+                }
                 try self.buf.splitLine(self.cy, self.cx);
                 self.cy += 1;
                 self.cx = 0;
                 self.goal_col = 0;
+                if (config.settings.autoindent and self.ai_indent.items.len > 0) {
+                    try self.buf.insertBytes(self.cy, 0, self.ai_indent.items);
+                    self.cx = self.ai_indent.items.len;
+                    self.ai_row = self.cy;
+                    self.updateGoal();
+                }
             },
             .backspace => try self.insertBackspace(),
             .delete => try self.buf.deleteForward(self.cy, self.cx),
@@ -1924,6 +1959,25 @@ pub const Editor = struct {
 
     /// Insert a codepoint with auto-pairing: opening brackets/quotes insert
     /// their closer, and typing a closer in front of one just steps over it.
+    /// Remember that `row` holds a freshly auto-inserted `indent` (copied),
+    /// still untouched by the user.
+    fn setAutoIndent(self: *Editor, row: usize, text: []const u8) void {
+        self.ai_indent.clearRetainingCapacity();
+        self.ai_indent.appendSlice(self.gpa, text) catch {};
+        self.ai_row = if (config.settings.autoindent) row else null;
+    }
+
+    /// vim's autoindent rule: leaving an auto-indented line without typing on
+    /// it strips the indent, leaving a truly empty line.
+    fn stripBlankAutoIndent(self: *Editor, was_ai: ?usize) void {
+        const row = was_ai orelse return;
+        if (row != self.cy) return;
+        if (!lineIsBlank(self.curLine())) return;
+        if (self.curLine().len == 0) return;
+        self.buf.setLine(self.cy, "") catch {};
+        self.cx = 0;
+    }
+
     fn insertChar(self: *Editor, c: u21) !void {
         const line = self.curLine();
         const next: ?u21 = if (self.cx < line.len) unicode.decode(line[self.cx..]).cp else null;
@@ -5320,6 +5374,17 @@ fn incompleteEscapeTail(buf: []const u8) bool {
         if (b >= 0x40 and b <= 0x7e) return false; // CSI final byte seen
     }
     return true;
+}
+
+/// The leading whitespace (spaces/tabs) of a line.
+fn leadingIndent(line: []const u8) []const u8 {
+    var i: usize = 0;
+    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
+    return line[0..i];
+}
+
+fn lineIsBlank(line: []const u8) bool {
+    return leadingIndent(line).len == line.len;
 }
 
 fn charByte(k: key.Key) ?u8 {
