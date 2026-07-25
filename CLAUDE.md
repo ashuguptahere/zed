@@ -219,6 +219,16 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   and text selection still works with the terminal's Shift+drag.
 - **Operators:** `d` `c` `y`, `> <` (indent), doubled `dd cc yy >> <<`; `D C Y`,
   `x X s S`, `r` `~` `J`. `cw`/`cW` act like `ce`/`cE`.
+- **Structural objects (tree-sitter):** `af`/`if` select a function (whole, or
+  just its body) and `ac`/`ic` a class/struct/impl/enum, resolved from the
+  syntax tree rather than by counting braces — so `daf`, `dif`, `yac`, `vif`
+  work per the language's real grammar. `]f`/`[f` jump to the next/previous
+  function (jump motions, so `Ctrl-o` returns). The node names come from the
+  vendored grammars themselves; languages without a grammar simply have no
+  such objects. The search prunes subtrees that cannot contain a match and
+  returns at the first hit, comparing grammar symbol ids rather than type
+  names — `]f` on a 320 KB file costs ~0.4 ms, against 12 ms for a naive
+  full-tree walk.
 - **Text objects:** `iw aw iW aW`, `ip ap` (paragraph, linewise — `ap` takes
   the trailing blank lines, or the leading ones when nothing trails),
   `i( i[ i{ i< i" i' i\`` and `a…` variants (plus `b`/`B` aliases), e.g.
@@ -526,7 +536,10 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   uses two highlight layers (block grammar + inline grammar, the latter filling
   bytes the block layer left plain), and HTML doesn't highlight embedded JS/CSS.
   Adding a grammar = vendor its `parser.c` + `highlights.scm` and extend
-  `treesitter.zig`.
+  `treesitter.zig` (and, for `af`/`ac` to work there, its node names in
+  `functionKinds`/`typeKinds` in `editor.zig`). Structural objects currently
+  cover Zig, C, Python, Rust, Go, JavaScript and TypeScript; there is no
+  parameter/argument object (`ia`/`aa`) yet.
 - The picker preview is a glance, not a view: capped at 256 KB per file,
   tree-sitter only up to 64 KB (the lexer covers bigger files), and skipped for
   remote entries. The parse happens *after* the picker's first frame, so

@@ -14,8 +14,9 @@ behind the roadmap items.
 The shortlist is done; these are the next-highest gaps from
 `doc/COMPARISON.md`, in rough priority order.
 
-- [ ] Tree-sitter textobjects (function/class/parameter) and structural motions.
 - [ ] Soft-wrap; undo tree (`:earlier`/`:later`).
+- [ ] Parameter/argument text object (`ia`/`aa`) and a comment object, now
+      that the structural-object machinery exists.
 
 
 ## Next (in order)
@@ -113,6 +114,8 @@ The shortlist is done; these are the next-highest gaps from
 - [x] `:update` / `--check-update` against the newest release tag.
 - [x] Shortlist #8: inline diagnostics (dim severity-coloured virtual text
       after the code; `inline_diagnostics` config, on by default).
+- [x] Tree-sitter structural objects `af`/`if`, `ac`/`ic` and `]f`/`[f`
+      (node names read off the vendored grammars).
 - [x] Workspace symbols picker (`Space l S`, server-side query) and
       diagnostics picker (`Space l D`), built on a rewritten picker store:
       one offset-addressed arena, stack formatting, retained capacity

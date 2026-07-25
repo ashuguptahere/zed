@@ -131,4 +131,79 @@ pub fn run(ctx: *h.Ctx) !void {
     // Markdown exercises the two-layer path: the heading comes from the block
     // layer and the bold from the inline (secondary) layer.
     try capture(ctx, "# Title\n\nsome **bold** text\n", "sample.md", &.{}, checkMarkdown);
+
+    // --- structural text objects, resolved from the syntax tree ---------
+    // Node names come from the grammars themselves, so these assert the real
+    // structure: `af` takes the whole function, `if` only its body, `ac` a
+    // whole type, and `]f` / `[f` step between functions.
+    const zig_src =
+        \\const std = @import("std");
+        \\
+        \\pub fn alpha(a: u8) u8 {
+        \\    return a;
+        \\}
+        \\
+        \\pub fn beta() void {}
+        \\
+    ;
+    const Case = struct { name: []const u8, keys: []const []const u8, want: []const u8 };
+    const cases = [_]Case{
+        .{
+            .name = "daf deletes the whole function",
+            .keys = &.{ "3G", "daf" },
+            .want = "const std = @import(\"std\");\n\n\n\npub fn beta() void {}\n",
+        },
+        .{
+            .name = "dif deletes only the function body",
+            .keys = &.{ "4G", "dif" },
+            .want = "const std = @import(\"std\");\n\npub fn alpha(a: u8) u8 {}\n\npub fn beta() void {}\n",
+        },
+        .{
+            .name = "]f jumps to the next function",
+            .keys = &.{ "1G", "]f", "x" },
+            .want = "const std = @import(\"std\");\n\nub fn alpha(a: u8) u8 {\n    return a;\n}\n\npub fn beta() void {}\n",
+        },
+        .{
+            .name = "]f twice reaches the second function",
+            .keys = &.{ "1G", "]f", "]f", "x" },
+            .want = "const std = @import(\"std\");\n\npub fn alpha(a: u8) u8 {\n    return a;\n}\n\nub fn beta() void {}\n",
+        },
+        .{
+            .name = "[f steps back to the previous function",
+            .keys = &.{ "G", "[f", "x" },
+            .want = "const std = @import(\"std\");\n\nub fn alpha(a: u8) u8 {\n    return a;\n}\n\npub fn beta() void {}\n",
+        },
+    };
+    for (cases) |cs| {
+        const path = "/tmp/zedit_it_tsobj.zig";
+        h.writeFile(ctx.io, path, zig_src);
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, path } });
+        defer s.finish();
+        s.drain(500);
+        s.sendKeys(cs.keys);
+        s.drain(300);
+        s.send(":wq\r");
+        s.drain(400);
+        const got = h.readFile(ctx.gpa, ctx.io, path);
+        defer ctx.gpa.free(got);
+        const ok = std.mem.eql(u8, got, cs.want);
+        if (!ok) std.debug.print("       got  \"{f}\"\n", .{std.zig.fmtString(got)});
+        ctx.check(cs.name, ok);
+    }
+
+    // Python: the same objects follow that grammar's own node names.
+    {
+        const path = "/tmp/zedit_it_tsobj.py";
+        h.writeFile(ctx.io, path, "class Widget:\n    def draw(self):\n        return 1\n\n    def hide(self):\n        return 2\n");
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, path } });
+        defer s.finish();
+        s.drain(500);
+        s.sendKeys(&.{ "1G", "dac" }); // the whole class
+        s.drain(300);
+        s.send(":wq\r");
+        s.drain(400);
+        const got = h.readFile(ctx.gpa, ctx.io, path);
+        defer ctx.gpa.free(got);
+        ctx.check("dac deletes a python class", std.mem.eql(u8, got, "\n"));
+    }
 }

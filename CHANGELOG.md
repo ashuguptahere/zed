@@ -43,6 +43,7 @@ Notable changes to zedit. Dates are commit dates.
 - Renamed the editor from `zed` to `zedit` (zig-editor).
 - Ported the pty test harnesses from Python to Zig — `zig build itest` now needs nothing beyond the toolchain.
 
+- Tree-sitter structural text objects: `af`/`if` (function), `ac`/`ic` (class, struct, impl, enum) and `]f`/`[f` to jump between functions, resolved from the syntax tree instead of brace counting. Covers Zig, C, Python, Rust, Go, JavaScript and TypeScript; the search is pruned so `]f` costs ~0.4 ms on a 320 KB file.
 - Workspace symbol search (`Space l S`): the typed query goes to the language server, which matches across files that were never opened, and Enter jumps to the symbol.
 - Diagnostics picker (`Space l D`): every diagnostic across the open buffers, tagged by severity, with Enter jumping to the line.
 - Picker rows now live in one byte arena addressed by offsets instead of two heap allocations each, are formatted into stack buffers, and keep their capacity when the picker closes. Measured over a 4000-file tree: peak memory across picker cycles −22% (984 KB → 768 KB) and filtering slightly faster.

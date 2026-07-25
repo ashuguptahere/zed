@@ -87,7 +87,7 @@ below and prioritised in `TODO.md`.
 - Undo tree with time travel — Helix's history is a tree (`:earlier`/`:later`, `Alt-u`/`Alt-U`); zedit is capped linear snapshots (note: on-disk undo *persistence* is not in Helix stable either) — **medium**
 - Soft-wrap (with wrap indicators, indent retention, `text-width`) — **medium**
 - Smart-case search + configurable wrap-around — **medium**
-- Tree-sitter textobjects — function/class/parameter/comment/entry objects (`mif`, `maf`) and `]f`/`[f`-style structural navigation; zedit textobjects are word/bracket/quote only — **medium**
+- ~~Tree-sitter textobjects~~ — **DONE** for functions and types (`af`/`if`, `ac`/`ic`, `]f`/`[f`); parameter/comment objects remain — **low**
 - EditorConfig support (25.07) — **low**
 - Surround on auto-detected *closest* pair (Helix `m`-mode pair detection via tree-sitter; zedit surround requires naming the char) — **low**
 - DAP debugging (breakpoints, step, variables — experimental even in Helix) — **low**

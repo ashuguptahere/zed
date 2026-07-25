@@ -1265,6 +1265,7 @@ pub const Editor = struct {
             .bracket_next, .bracket_prev => {
                 if (k == .char and k.char == 'd') self.gotoDiagnostic(a == .bracket_next);
                 if (k == .char and k.char == 'b') self.cycleDoc(a == .bracket_next); // ]b / [b buffers
+                if (k == .char and k.char == 'f') self.gotoFunction(a == .bracket_next); // ]f / [f functions
                 self.resetPending();
             },
             .ctrl_w => {
@@ -1537,6 +1538,7 @@ pub const Editor = struct {
     }
 
     fn textObjectSpan(self: *Editor, around: bool, c: u8) ?Span {
+        if (c == 'f' or c == 'c') return self.treeObjectSpan(around, c == 'f');
         if (c == 'p') { // paragraph: a linewise object (nvim-verified)
             const r = motion.paraObject(self.buf, self.cy, around, self.total());
             return .{ .lines = true, .top = r.top, .bot = r.bot };
@@ -1556,6 +1558,60 @@ pub const Editor = struct {
         const o = obj orelse return null;
         const end_excl = if (o.empty) o.end else Pos{ .row = o.end.row, .col = unicode.nextBoundary(self.buf.line(o.end.row), o.end.col) };
         return .{ .lines = false, .start = o.start, .end = end_excl };
+    }
+
+    /// `af`/`if` (function) and `ac`/`ic` (class, struct, impl…) resolved from
+    /// the syntax tree, so they follow the language's real structure rather
+    /// than brace counting. Null when the language has no grammar or the
+    /// cursor is not inside such a node — the caller then does nothing.
+    fn treeObjectSpan(self: *Editor, around: bool, want_fn: bool) ?Span {
+        var h = if (self.ts) |*x| x else return null;
+        const kinds = if (want_fn) functionKinds(self.lang) else typeKinds(self.lang);
+        if (kinds.len == 0) return null;
+        const at = self.byteOffset(self.cy, self.cx) orelse return null;
+        const span = h.enclosing(at, kinds, !around) orelse return null;
+        const start = self.posOfByte(span.start) orelse return null;
+        const end = self.posOfByte(span.end) orelse return null;
+        return .{ .lines = false, .start = start, .end = end };
+    }
+
+    /// `]f` / `[f`: jump to the next or previous function in the file.
+    fn gotoFunction(self: *Editor, forward: bool) void {
+        var h = if (self.ts) |*x| x else return self.setStatus("no syntax tree for this file", .{});
+        const kinds = functionKinds(self.lang);
+        if (kinds.len == 0) return self.setStatus("no functions known for this filetype", .{});
+        var at = self.byteOffset(self.cy, self.cx) orelse return;
+        var n = self.eff();
+        while (n > 0) : (n -= 1) {
+            const next = h.seekNode(at, kinds, forward) orelse break;
+            at = next;
+        }
+        const p = self.posOfByte(at) orelse return;
+        self.addJump();
+        self.cy = @min(p.row, self.buf.lineCount() - 1);
+        self.cx = @min(p.col, self.curLine().len);
+        self.updateGoal();
+    }
+
+    /// Document byte offset of (row, col), using the line table tree-sitter
+    /// already maintains.
+    fn byteOffset(self: *Editor, row: usize, col: usize) ?usize {
+        if (row >= self.ts_line_starts.items.len) return null;
+        return self.ts_line_starts.items[row] + col;
+    }
+
+    /// The inverse: which (row, col) a document byte offset lands on.
+    fn posOfByte(self: *Editor, byte: usize) ?Pos {
+        const starts = self.ts_line_starts.items;
+        if (starts.len == 0) return null;
+        var lo: usize = 0;
+        var hi: usize = starts.len - 1;
+        while (lo < hi) { // binary search: the last line starting at or before `byte`
+            const mid = (lo + hi + 1) / 2;
+            if (starts[mid] <= byte) lo = mid else hi = mid - 1;
+        }
+        const line = self.buf.line(lo);
+        return .{ .row = lo, .col = @min(byte - starts[lo], line.len) };
     }
 
     // === motions ===========================================================
@@ -7656,6 +7712,33 @@ fn mixColor(a: theme.Color, b: theme.Color, pct: u16) theme.Color {
         .r = @intCast((@as(u16, a.r) * (100 - pct) + @as(u16, b.r) * pct) / 100),
         .g = @intCast((@as(u16, a.g) * (100 - pct) + @as(u16, b.g) * pct) / 100),
         .b = @intCast((@as(u16, a.b) * (100 - pct) + @as(u16, b.b) * pct) / 100),
+    };
+}
+
+/// Grammar node names for the structural text objects, taken from the
+/// vendored grammars themselves (dumped with `ts_node_string`, not guessed).
+/// `af`/`if` use the function list, `ac`/`ic` the type list.
+fn functionKinds(lang: syntax.Language) []const []const u8 {
+    return switch (lang) {
+        .zig => &.{"function_declaration"},
+        .c => &.{"function_definition"},
+        .python => &.{"function_definition"},
+        .rust => &.{"function_item"},
+        .go => &.{ "function_declaration", "method_declaration" },
+        .javascript, .typescript => &.{ "function_declaration", "method_definition", "arrow_function", "function_expression" },
+        else => &.{},
+    };
+}
+
+fn typeKinds(lang: syntax.Language) []const []const u8 {
+    return switch (lang) {
+        .zig => &.{"struct_declaration"},
+        .c => &.{ "struct_specifier", "union_specifier", "enum_specifier" },
+        .python => &.{"class_definition"},
+        .rust => &.{ "struct_item", "enum_item", "impl_item", "trait_item" },
+        .go => &.{"type_declaration"},
+        .javascript, .typescript => &.{ "class_declaration", "class_body" },
+        else => &.{},
     };
 }
 

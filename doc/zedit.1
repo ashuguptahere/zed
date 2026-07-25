@@ -246,6 +246,22 @@ quits, and any other key dismisses the screen. The list is kept in
 (default
 .IR ~/.local/state/zedit/recent ),
 newest first, capped at 30 entries, with vanished paths pruned on load.
+.SH "STRUCTURAL OBJECTS (tree-sitter)"
+.TP
+.B af if
+The function around the cursor \(em whole, or just its body.
+.TP
+.B ac ic
+The class, struct, impl or enum around the cursor.
+.TP
+.B ]f [f
+Jump to the next or previous function. Both are jump motions, so
+.B Ctrl\-o
+returns.
+.PP
+These read the real syntax tree, so they follow the language's grammar rather
+than brace counting. Files whose language has no vendored grammar have no
+structural objects.
 .SH MOUSE
 The wheel scrolls the focused window three lines per notch and moves the
 cursor with it, so the cursor keeps its position on screen. At the very top or
