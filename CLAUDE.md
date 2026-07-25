@@ -197,8 +197,11 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   more than half a window away redraws with the cursor **centred** (vim's rule,
   nvim-verified) — so it is not glued to the bottom row where every wheel notch
   would drag it along. The mouse wheel
-  scrolls the viewport 3 lines (SGR mouse reporting; wheel only — clicks are
-  ignored, and text selection still works with the terminal's Shift+drag).
+  scrolls the viewport 3 lines and carries the cursor with it, keeping its
+  screen row (owner's choice over nvim's drag-at-the-edge rule, which stranded
+  the cursor at the bottom of the page; at the top or bottom of the file
+  nothing moves at all). SGR mouse reporting, wheel only — clicks are ignored,
+  and text selection still works with the terminal's Shift+drag.
 - **Operators:** `d` `c` `y`, `> <` (indent), doubled `dd cc yy >> <<`; `D C Y`,
   `x X s S`, `r` `~` `J`. `cw`/`cW` act like `ce`/`cE`.
 - **Text objects:** `iw aw iW aW`, `ip ap` (paragraph, linewise — `ap` takes
@@ -276,7 +279,8 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   (config `sidebar = left|right`), which carves its width off the window
   tiling. Focused keys: `j`/`k` move, `Enter`/`l` expand a directory or open a
   file (focus returns to the buffer), `h` collapse/parent, `g`/`G` top/bottom,
-  `R` refresh, `Esc` unfocus (stays open), `q` or `Space e` close. Hidden and
+  `R` refresh, `Space` opens the leader menu (it works the same with the tree
+  focused), `Esc` unfocus (stays open), `q` or `Space e` close. Hidden and
   ignored directories (`.git`, `zig-out`, …) are skipped, like the picker.
 - **Git diff views:** `Space g d` / `:diff` opens the file's unified diff
   (worktree vs index) in a horizontal split, coloured by the `.diff` lexer
@@ -365,9 +369,10 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 The renderer aims for an AstroNvim/Helix look: true-colour themes in
 `theme.zig` (Tokyo Night default, plus Gruvbox, Catppuccin Mocha, Nord and One
 Dark — set in the config, or live via `:theme` / the `Space f t` picker), a
-powerline statusline (coloured mode block, separators, the partial command as
-typed right-aligned beside the position — vim's 'showcmd', cleared the moment
-the command executes — plus file/filetype/position/percent segments — a nerd font is recommended for the
+powerline statusline (coloured mode block, separators, the command as typed
+right-aligned beside the position — vim's 'showcmd', but the finished command
+stays readable until the next one starts, and yields its width to a status
+message — plus file/filetype/position/percent segments — a nerd font is recommended for the
 glyphs, and the config's `nerd_font = false` swaps in a flat statusline for
 any font), syntax highlighting (tree-sitter for 10 languages (Zig/C/Python/JSON/JS/TS/Rust/Go/HTML/Markdown) via
 `treesitter.zig`, the `syntax.zig` lexer otherwise), relative+absolute line numbers, a
@@ -376,8 +381,11 @@ from `git diff`, recomputed on load and save). All colour is emitted as 24-bit
 SGR; the frame is still built once and written in a single syscall, and
 rendering still only happens on change. Frames are built as positioned,
 colour-independent row segments and diffed against the previous frame — only
-changed rows are written (full frames when popups overlay rows, in the picker,
-or after a resize), which keeps slow SSH links snappy. Input reads complete
+changed rows are written. A popup is painted over rows the diff cannot know
+about, so those rows — and only those — are invalidated for the next frame:
+dismissing the which-key menu costs ~1.5 KB instead of a full 3.2 KB repaint.
+Full frames are still written in the picker and after a resize, which keeps
+slow SSH links snappy. Input reads complete
 escape sequences split across chunks (SSH delivers small reads) before
 decoding.
 

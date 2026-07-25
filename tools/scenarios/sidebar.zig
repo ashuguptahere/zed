@@ -51,6 +51,16 @@ pub fn run(ctx: *h.Ctx) !void {
         defer ctx.gpa.free(it);
         ctx.check("sidebar opens the selected file", std.mem.eql(u8, it, "nner\n"));
 
+        // The leader menu works with the explorer focused, too.
+        s.send(" e"); // refocus the tree
+        s.drain(300);
+        s.send(" ");
+        s.drain(300);
+        ctx.check("Space opens the leader menu in the explorer", s.containsPlain(ctx.gpa, "Find") and
+            s.containsPlain(ctx.gpa, "explorer"));
+        s.send("\x1b");
+        s.drain(200);
+
         s.send(" e"); // toggle closed
         s.drain(300);
         s.send(":qa\r");

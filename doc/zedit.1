@@ -177,8 +177,8 @@ replace the server's own range, and any
 .B additionalTextEdits
 (auto\-imports) are applied with them.
 .SH "PARTIAL COMMANDS"
-The command being typed appears at the right of the statusline until it
-executes \(em
+The command being typed appears at the right of the statusline, and the
+finished command stays there until the next one begins \(em
 .BR d ,
 .BR di ,
 .BR 2d ,
@@ -242,8 +242,9 @@ quits, and any other key dismisses the screen. The list is kept in
 .IR ~/.local/state/zedit/recent ),
 newest first, capped at 30 entries, with vanished paths pruned on load.
 .SH MOUSE
-The wheel scrolls the focused window three lines per notch (the cursor is
-dragged along only when the viewport would leave it off screen). A jump further
+The wheel scrolls the focused window three lines per notch and moves the
+cursor with it, so the cursor keeps its position on screen. At the very top or
+bottom of the file nothing moves. A jump further
 than half a window \(em
 .BR G ,
 .BR 100G ,

@@ -43,6 +43,10 @@ Notable changes to zedit. Dates are commit dates.
 - Renamed the editor from `zed` to `zedit` (zig-editor).
 - Ported the pty test harnesses from Python to Zig — `zig build itest` now needs nothing beyond the toolchain.
 
+- Mouse-wheel scrolling now carries the cursor with the viewport, keeping its screen row, so scrolling to the top of a file no longer strands it at the bottom of the page.
+- The statusline keeps the finished command visible (`diw`, `2dd`, `"ayy`) until the next one starts, instead of clearing the instant it runs; a status message still takes precedence for the space.
+- `Space` opens the leader menu while the file explorer has focus, as it does everywhere else.
+- Dismissing a popup repaints only the rows it covered rather than the whole screen (3155 → 1481 bytes for the which-key menu), which is what made it feel sluggish over SSH.
 - `gi` and `gy` jump to a symbol's implementation and type definition.
 - Snippet tabstops now survive line splits and joins, and choice placeholders (`${1|a,b,c|}`) offer their alternatives on `Ctrl-n`/`Ctrl-p` instead of silently using the first.
 - Snippet completions: items the server marks as snippets expand their placeholders and start a tabstop session — `Tab`/`Shift-Tab` walk the stops, the first keystroke at an untouched placeholder replaces it, `Esc` ends the session. Completion items also honour the server's `textEdit` range instead of guessing the identifier prefix, and apply `additionalTextEdits` (auto-imports). zedit now advertises `snippetSupport`, so servers offer them at all.

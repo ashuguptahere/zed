@@ -290,10 +290,17 @@ pub const Editor = struct {
     // and disarms — so an idle editor still blocks indefinitely (zero CPU).
     comp_due_ms: ?i64,
 
+    // Rows an overlay (popup) painted over this frame. The next frame must
+    // repaint exactly these — the rest can still be diffed, so dismissing a
+    // popup costs a few rows instead of the whole screen.
+    overlay_top: usize,
+    overlay_bot: usize,
+
     // showcmd: the partial command as typed (vim's 'showcmd'), shown at the
     // right of the statusline and cleared the moment the command completes.
     showcmd: [12]u8,
     showcmd_len: usize,
+    showcmd_done: bool, // holds the finished command until the next one begins
 
     // command/search line
     cmd: std.ArrayList(u8),
@@ -493,9 +500,12 @@ pub const Editor = struct {
             .snip_stops = .empty,
             .snip_idx = 0,
             .snip_pristine = false,
+            .overlay_top = 0,
+            .overlay_bot = 0,
             .comp_due_ms = null,
             .showcmd = undefined,
             .showcmd_len = 0,
+            .showcmd_done = false,
             .cmd = .empty,
             .ex_hist = .empty,
             .search_hist = .empty,
@@ -869,6 +879,10 @@ pub const Editor = struct {
             .normal, .visual, .visual_line, .visual_block => {},
             .insert, .command, .picker => return,
         }
+        if (self.showcmd_done) { // the previous command is still displayed
+            self.showcmd_len = 0;
+            self.showcmd_done = false;
+        }
         for (raw) |b| {
             // Printable keys read back as themselves; control bytes as ^X so
             // Ctrl-w or Esc stay legible in the indicator.
@@ -892,28 +906,34 @@ pub const Editor = struct {
         }
     }
 
-    /// Drop the indicator once the command has been executed (or abandoned):
-    /// what remains on screen is only ever a *pending* command.
+    /// After a command finishes, keep it on screen (so a whole `diw` or `2dd`
+    /// stays readable) and only clear it when the *next* command starts.
     fn showcmdSettle(self: *Editor) void {
         switch (self.mode) {
             .normal, .visual, .visual_line, .visual_block => if (self.atNeutral()) {
-                self.showcmd_len = 0;
+                self.showcmd_done = self.showcmd_len > 0;
             },
-            .insert, .command, .picker => self.showcmd_len = 0,
+            .insert, .command, .picker => {
+                self.showcmd_len = 0;
+                self.showcmd_done = false;
+            },
         }
     }
 
-    /// Wheel scrolling: move the viewport three lines (nvim's default),
-    /// dragging the cursor only as far as needed to keep it on-screen.
+    /// Wheel scrolling: move the viewport three lines (nvim's step) and carry
+    /// the cursor with it, so it keeps its row on screen. Scrolling to the top
+    /// of the file therefore leaves the cursor near the top, not pinned to the
+    /// bottom of the first page (owner's choice over nvim's drag-at-the-edge
+    /// rule, which left it stranded).
     fn mouseScroll(self: *Editor, up: bool) void {
-        const n = 3;
-        const max_top = self.buf.lineCount() -| 1;
-        self.top = if (up) self.top -| n else @min(self.top + n, max_top);
-        if (self.cy < self.top) self.cy = self.top;
-        const last = self.top + self.textRows() -| 1;
-        if (self.cy > last) self.cy = last;
-        self.cy = @min(self.cy, self.buf.lineCount() - 1);
-        self.cx = @min(self.cx, self.curLine().len);
+        const step = 3;
+        const last_line = self.buf.lineCount() - 1;
+        const before = self.top;
+        self.top = if (up) self.top -| step else @min(self.top + step, last_line);
+        const moved = if (self.top > before) self.top - before else before - self.top;
+        if (moved == 0) return; // already at an end: nothing moves, cursor included
+        self.cy = if (self.top > before) @min(self.cy + moved, last_line) else self.cy -| moved;
+        self.cx = @min(self.cx, lastColumn(self.curLine()));
         self.updateGoal();
     }
 
@@ -949,7 +969,9 @@ pub const Editor = struct {
             if (try self.dashboardKey(k)) return;
             self.dashboard = false;
         }
-        if (self.sb_focus and self.mode == .normal) return self.sidebarKey(k);
+        // A pending leader menu owns the keyboard even while the explorer has
+        // focus, so `Space` works the same in both places.
+        if (self.sb_focus and self.mode == .normal and self.await_arg == .none) return self.sidebarKey(k);
         switch (self.mode) {
             .normal => try self.normalKey(k),
             .insert => try self.insertKey(k),
@@ -5480,6 +5502,7 @@ pub const Editor = struct {
                 'l' => try self.sbActivate(),
                 'h' => self.sbCollapse(),
                 'R' => self.sbRebuild(),
+                ' ' => self.await_arg = .space_leader, // the leader menu works here too
                 'q' => {
                     self.sb_open = false;
                     self.sb_focus = false;
@@ -5778,15 +5801,23 @@ pub const Editor = struct {
     /// Write the built frame: whole when the previous frame can't be diffed
     /// against, else only the segments whose bytes changed.
     fn writeFrame(self: *Editor, diffable: bool) !void {
-        defer if (diffable) {
+        defer {
             std.mem.swap(std.ArrayList(u8), &self.frame, &self.prev_frame);
             std.mem.swap(std.ArrayList(Seg), &self.seg_marks, &self.prev_marks);
-            self.prev_valid = true;
-        } else {
-            self.prev_valid = false;
-        };
+            if (diffable) {
+                self.prev_valid = true;
+            } else {
+                // An overlay was painted over the recorded rows, so the screen
+                // no longer matches them: drop just those from the diff base.
+                // Everything else still diffs, which keeps dismissing a popup
+                // cheap on a slow link.
+                self.dropOverlayMarks();
+                self.prev_valid = true;
+            }
+        }
 
-        if (!diffable or !self.prev_valid or self.seg_marks.items.len == 0) {
+        const full = !diffable or !self.prev_valid or self.seg_marks.items.len == 0;
+        if (full) {
             try self.term.write(self.frame.items);
             return;
         }
@@ -5802,6 +5833,20 @@ pub const Editor = struct {
         }
         try self.out_frame.appendSlice(self.gpa, self.frame.items[self.segs_end..]);
         try self.term.write(self.out_frame.items);
+    }
+
+    /// Forget the diff base for rows an overlay covered (see `writeFrame`).
+    fn dropOverlayMarks(self: *Editor) void {
+        if (self.overlay_bot == 0) return;
+        var i: usize = 0;
+        while (i < self.prev_marks.items.len) {
+            const row = self.prev_marks.items[i].key / 100000;
+            if (row >= self.overlay_top and row <= self.overlay_bot) {
+                _ = self.prev_marks.orderedRemove(i);
+            } else i += 1;
+        }
+        self.overlay_top = 0;
+        self.overlay_bot = 0;
     }
 
     fn prevSegBytes(self: *Editor, seg_key: usize) ?[]const u8 {
@@ -6171,6 +6216,7 @@ pub const Editor = struct {
         // Anchor at the column of the token being completed (nvim's pum).
         const anchor = @min(self.cmdPrompt().len + items[0].show + 1, self.win.cols -| width);
 
+        self.markOverlayRows(rows - height, rows - 1);
         var b: [24]u8 = undefined;
         var i: usize = 0;
         while (i < height) : (i += 1) {
@@ -6211,6 +6257,7 @@ pub const Editor = struct {
         const height = menu.len + 1;
         if (rows < height + 2) return;
         const top = rows - height - 1; // 1-based; leave the status bar at the bottom
+        self.markOverlayRows(top, top + height);
 
         var b: [16]u8 = undefined;
         try self.emit(try std.fmt.bufPrint(&b, "\x1b[{d};1H", .{top}));
@@ -6244,6 +6291,7 @@ pub const Editor = struct {
 
         const cur_row = self.cur.gy + (self.cy - self.top); // 1-based screen row of cursor
         const row = if (cur_row > 1) cur_row - 1 else cur_row + 1;
+        self.markOverlayRows(row, row);
         const cur_col = self.cur.gx + gutter + (displayCol(self.curLine(), self.cx) - self.left);
         const col = @max(@as(usize, 1), cur_col);
         if (col > self.win.cols) return;
@@ -6312,6 +6360,7 @@ pub const Editor = struct {
         else
             self.cur.gy;
         const col = @max(@as(usize, 1), self.cur.gx + gutter + (displayCol(self.curLine(), self.cx) - self.left));
+        self.markOverlayRows(start_row, start_row + height - 1);
 
         var b: [16]u8 = undefined;
         var i: usize = 0;
@@ -6706,7 +6755,12 @@ pub const Editor = struct {
         else
             "";
         var pb2: [32]u8 = undefined;
-        const pending = self.pendingKeys(&pb2);
+        // A *finished* command yields the width to a status message; a pending
+        // one keeps its slot, since it tells you the editor is waiting on you.
+        const pending = if (middle.len > 0 and self.showcmd_done and self.recording == null)
+            ""
+        else
+            self.pendingKeys(&pb2);
         const mid_w = if (cols > left_w + right_w) cols - left_w - right_w else 0;
         try self.setBg(th.status_bg);
         try self.setFg(th.fg_dim);
@@ -6792,6 +6846,18 @@ pub const Editor = struct {
             col = self.cur.gx + gutter + (cur - self.left);
         }
         try self.emitFmt("\x1b[{d};{d}H", .{ row, col });
+    }
+
+    /// Record that an overlay covered screen rows [top, bot] (1-based), so the
+    /// next frame repaints them instead of trusting the diff.
+    fn markOverlayRows(self: *Editor, top: usize, bot: usize) void {
+        if (self.overlay_bot == 0) {
+            self.overlay_top = top;
+            self.overlay_bot = bot;
+            return;
+        }
+        self.overlay_top = @min(self.overlay_top, top);
+        self.overlay_bot = @max(self.overlay_bot, bot);
     }
 
     fn emit(self: *Editor, bytes: []const u8) !void {

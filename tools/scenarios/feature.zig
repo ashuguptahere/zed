@@ -98,6 +98,17 @@ pub fn run(ctx: *h.Ctx) !void {
         ctx.check("executing clears the indicator", !s.containsPlainSince(ctx.gpa, m, "\"ay "));
 
         m = s.mark();
+        s.send("d");
+        s.drain(200);
+        s.send("iw"); // completes diw
+        s.drain(300);
+        ctx.check("finished command stays visible", s.containsPlainSince(ctx.gpa, m, "diw "));
+        m = s.mark();
+        s.send("j"); // the next command clears the previous one
+        s.drain(250);
+        ctx.check("the next command clears the previous", !s.containsPlainSince(ctx.gpa, m, "diw "));
+
+        m = s.mark();
         s.send("\x17"); // Ctrl-w: a pending window command shows as ^W
         s.drain(250);
         ctx.check("control keys show in caret notation", s.containsPlainSince(ctx.gpa, m, "^W "));
@@ -130,11 +141,16 @@ pub fn run(ctx: *h.Ctx) !void {
         const WHEEL_UP = "\x1b[<64;5;5M";
         const WHEEL_DOWN = "\x1b[<65;5;5M";
         const Case = struct { name: []const u8, keys: []const []const u8, line: usize };
+        // The cursor rides along with the viewport, keeping its screen row
+        // (the owner's choice over nvim's drag-only-at-the-edge rule): each
+        // notch is 3 lines, so the cursor line moves by 3 per notch.
         const cases = [_]Case{
-            .{ .name = "one wheel notch leaves the cursor put", .keys = &.{ "100G", WHEEL_UP, "x" }, .line = 100 },
-            .{ .name = "wheel up drags only at the window edge", .keys = &.{ "100G", WHEEL_UP ** 5, "x" }, .line = 96 },
-            .{ .name = "wheel up to the top drags the cursor with it", .keys = &.{ "100G", WHEEL_UP ** 20, "x" }, .line = 51 },
-            .{ .name = "wheel down drags the cursor at the top edge", .keys = &.{ "100G", WHEEL_DOWN ** 5, "x" }, .line = 104 },
+            .{ .name = "one wheel notch moves the cursor with the view", .keys = &.{ "100G", WHEEL_UP, "x" }, .line = 97 },
+            .{ .name = "five notches up move the cursor 15 lines", .keys = &.{ "100G", WHEEL_UP ** 5, "x" }, .line = 85 },
+            .{ .name = "cursor keeps its screen row scrolling to the top", .keys = &.{ "100G", WHEEL_UP ** 20, "x" }, .line = 40 },
+            .{ .name = "wheel down moves the cursor down too", .keys = &.{ "100G", WHEEL_DOWN ** 5, "x" }, .line = 115 },
+            // Already at the top: the view cannot move, so neither does the cursor.
+            .{ .name = "scrolling stops dead at the top of the file", .keys = &.{ "3G", WHEEL_UP ** 5, "x" }, .line = 3 },
         };
         for (cases) |c| {
             h.writeFile(ctx.io, path, content.items);

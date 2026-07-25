@@ -12,14 +12,20 @@ behind the roadmap items.
 ## Next (in order)
 
 The shortlist is done; these are the next-highest gaps from
-`doc/COMPARISON.md`, in rough priority order. Pick one and it moves to
-"In progress".
+`doc/COMPARISON.md`, in rough priority order.
 
 - [ ] Workspace symbols picker (zedit has document symbols only).
 - [ ] Buffer/workspace diagnostics picker.
 - [ ] Tree-sitter textobjects (function/class/parameter) and structural motions.
 - [ ] Soft-wrap; undo tree (`:earlier`/`:later`).
 
+
+## Next (in order)
+
+- [ ] Explorer + picker layout: `zedit .` opens the tree on the left and the
+      picker on the right with a file preview (Helix-style), consistently for
+      every picker.
+- [ ] Buffers as tabs along the top.
 
 ## Recurring (every feature / significant change)
 
@@ -109,6 +115,9 @@ The shortlist is done; these are the next-highest gaps from
 - [x] `:update` / `--check-update` against the newest release tag.
 - [x] Shortlist #8: inline diagnostics (dim severity-coloured virtual text
       after the code; `inline_diagnostics` config, on by default).
+- [x] UX batch: wheel scrolling carries the cursor (owner's choice), the
+      finished command stays on the statusline, `Space` works in the explorer,
+      and dismissing a popup repaints only its rows (3155 → 1481 bytes).
 - [x] Snippet polish: tabstops survive splits/joins; choice placeholders
       cycle with Ctrl-n/Ctrl-p. Goto implementation (`gi`) / type
       definition (`gy`).
