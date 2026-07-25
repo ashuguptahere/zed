@@ -24,7 +24,17 @@ pub const Diagnostic = struct {
 
 pub const Location = struct { uri: []u8, line: usize, col: usize };
 
-pub const Completion = struct { label: []u8, insert: []u8 };
+/// A completion candidate. `insert` is the text (or snippet source) to put in
+/// the buffer; `edit` is the server's own replacement range when it sent a
+/// `textEdit`, which beats our identifier-prefix guess. `extra` holds
+/// `additionalTextEdits` (auto-imports and the like), applied alongside.
+pub const Completion = struct {
+    label: []u8,
+    insert: []u8,
+    is_snippet: bool = false, // insertTextFormat == 2
+    edit: ?TextEdit = null,
+    extra: []TextEdit = &.{},
+};
 
 pub const Signature = struct {
     label: []u8,
@@ -258,6 +268,9 @@ pub const Client = struct {
         for (self.completions.items) |it| {
             self.gpa.free(it.label);
             self.gpa.free(it.insert);
+            if (it.edit) |e| self.gpa.free(e.text);
+            for (it.extra) |e| self.gpa.free(e.text);
+            if (it.extra.len > 0) self.gpa.free(it.extra);
         }
         self.completions.clearRetainingCapacity();
     }
@@ -300,7 +313,7 @@ pub const Client = struct {
         defer body.deinit(self.gpa);
         body.appendSlice(self.gpa, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"processId\":null,\"rootUri\":\"file://") catch return;
         appendEscaped(&body, self.gpa, root) catch return;
-        body.appendSlice(self.gpa, "\",\"capabilities\":{\"textDocument\":{\"publishDiagnostics\":{},\"hover\":{},\"definition\":{},\"completion\":{},\"signatureHelp\":{},\"rename\":{},\"codeAction\":{},\"inlayHint\":{},\"documentSymbol\":{},\"references\":{},\"formatting\":{}}}}}") catch return;
+        body.appendSlice(self.gpa, "\",\"capabilities\":{\"textDocument\":{\"publishDiagnostics\":{},\"hover\":{},\"definition\":{},\"completion\":{\"completionItem\":{\"snippetSupport\":true}},\"signatureHelp\":{},\"rename\":{},\"codeAction\":{},\"inlayHint\":{},\"documentSymbol\":{},\"references\":{},\"formatting\":{}}}}}") catch return;
         self.writeMessage(body.items);
     }
 
@@ -654,15 +667,39 @@ pub const Client = struct {
         for (items.array.items) |it| {
             if (self.completions.items.len >= 400) break;
             const label = asStr(getField(it, "label")) orelse continue;
-            const insert = asStr(getField(it, "insertText")) orelse label;
-            const l = self.gpa.dupe(u8, label) catch continue;
-            const ins = self.gpa.dupe(u8, insert) catch {
-                self.gpa.free(l);
+
+            // A textEdit (or the insert side of an InsertReplaceEdit) carries
+            // both the text and the exact range it replaces.
+            var edit: ?TextEdit = null;
+            if (getField(it, "textEdit")) |te| {
+                const range = getField(te, "range") orelse getField(te, "insert") orelse getField(te, "replace");
+                if (range) |r| edit = parseRangeEdit(self, r, asStr(getField(te, "newText")) orelse "");
+            }
+            const insert = if (edit) |e| e.text else (asStr(getField(it, "insertText")) orelse label);
+
+            const l = self.gpa.dupe(u8, label) catch {
+                if (edit) |e| self.gpa.free(e.text);
                 continue;
             };
-            self.completions.append(self.gpa, .{ .label = l, .insert = ins }) catch {
+            const ins = self.gpa.dupe(u8, insert) catch {
+                self.gpa.free(l);
+                if (edit) |e| self.gpa.free(e.text);
+                continue;
+            };
+            var extra: std.ArrayList(TextEdit) = .empty;
+            if (getField(it, "additionalTextEdits")) |arr| self.collectEdits(arr, &extra);
+            const fmt = asInt(getField(it, "insertTextFormat")) orelse 1;
+
+            self.completions.append(self.gpa, .{
+                .label = l,
+                .insert = ins,
+                .is_snippet = fmt == 2,
+                .edit = edit,
+                .extra = extra.toOwnedSlice(self.gpa) catch &.{},
+            }) catch {
                 self.gpa.free(l);
                 self.gpa.free(ins);
+                if (edit) |e| self.gpa.free(e.text);
             };
         }
         self.comp_ready = true;
@@ -871,6 +908,19 @@ pub const Client = struct {
             return null;
         };
         return &into.items[into.items.len - 1];
+    }
+
+    /// One LSP range + text as a TextEdit (the text is owned by the caller).
+    fn parseRangeEdit(self: *Client, range: std.json.Value, new_text: []const u8) ?TextEdit {
+        const s = getField(range, "start") orelse return null;
+        const e = getField(range, "end") orelse return null;
+        return .{
+            .start_line = u32From(getField(s, "line")),
+            .start_char = u32From(getField(s, "character")),
+            .end_line = u32From(getField(e, "line")),
+            .end_char = u32From(getField(e, "character")),
+            .text = self.gpa.dupe(u8, new_text) catch return null,
+        };
     }
 
     fn collectEdits(self: *Client, arr: std.json.Value, into: *std.ArrayList(TextEdit)) void {

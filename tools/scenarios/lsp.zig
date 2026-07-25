@@ -171,6 +171,50 @@ pub fn run(ctx: *h.Ctx) !void {
         ctx.check("fuzzy filter excludes non-matches", !r.plainHas("mockOther"));
     }
 
+    // Snippet completion: "snip" uniquely selects the snippet item, whose
+    // insertText is "call(${1:first}, ${2:second})$0". Accepting expands the
+    // placeholders, puts the cursor on the first one, and typing replaces it;
+    // Tab jumps to the second; a final Tab lands on $0 past the ")".
+    {
+        const r = drive(ctx, &.{
+            .{ .keys = "osnip", .ms = 800 },
+            .{ .keys = "\t", .ms = 500 }, // accept -> expands, cursor on "first"
+            .{ .keys = "AAA", .ms = 400 }, // replaces the pristine placeholder
+            .{ .keys = "\t", .ms = 300 }, // jump to "second"
+            .{ .keys = "BBB", .ms = 400 },
+            .{ .keys = "\x1b", .ms = 300 },
+        }, "\x1b:wq\r");
+        defer r.deinit(ctx.gpa);
+        ctx.check("snippet placeholders expand", r.plainHas("call(first, second)"));
+        ctx.check("typing replaces the first placeholder", r.textHas("call(AAA, BBB)"));
+    }
+
+    // Tab to the final stop ($0) leaves the text alone and ends the session.
+    {
+        const r = drive(ctx, &.{
+            .{ .keys = "osnip", .ms = 800 },
+            .{ .keys = "\t", .ms = 500 },
+            .{ .keys = "\t\t", .ms = 400 }, // through $2 to $0
+            .{ .keys = "!", .ms = 300 }, // typed at the final stop, after ")"
+            .{ .keys = "\x1b", .ms = 300 },
+        }, "\x1b:wq\r");
+        defer r.deinit(ctx.gpa);
+        ctx.check("final tabstop sits after the snippet", r.textHas("call(first, second)!"));
+    }
+
+    // A textEdit item replaces the server's own range (the four characters
+    // before the cursor), and its additionalTextEdits are applied too.
+    {
+        const r = drive(ctx, &.{
+            .{ .keys = "oedit", .ms = 800 },
+            .{ .keys = "\t", .ms = 600 },
+            .{ .keys = "\x1b", .ms = 300 },
+        }, "\x1b:wq\r");
+        defer r.deinit(ctx.gpa);
+        ctx.check("textEdit range replaces the typed text", r.textHas("EDITED") and !r.textHas("edit\n"));
+        ctx.check("additionalTextEdits are applied", r.textHas("IMPORT"));
+    }
+
     // Signature help + overload cycling: type "(", then Ctrl-p to cycle.
     {
         const r = drive(ctx, &.{ .{ .keys = "omockFn(", .ms = 900 }, .{ .keys = "\x10", .ms = 600 } }, quit);

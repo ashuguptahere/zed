@@ -111,6 +111,7 @@ Source is `src/`, one responsibility per module:
 | `syntax.zig`  | Dependency-free per-line lexer producing per-byte styles. |
 | `fuzzy.zig`   | Subsequence scorer for the pickers. |
 | `git.zig`     | Git change signs for the gutter (parses `git diff -U0`). |
+| `snippet.zig` | LSP snippet parsing: `$1`, `${1:placeholder}`, `${1|a,b|}`, `$0`, escapes → plain text + tabstops. |
 | `recent.zig`  | The recently-opened list behind the startup screen (XDG state file). |
 | `remote.zig`  | Editing over SSH: `ssh://user@host/path` parsing, read/write/list via one `ssh` per operation. |
 | `lsp.zig`     | Minimal LSP client: JSON-RPC over a server's stdio (diagnostics, hover, goto, completion, signature help; incremental or full doc sync per the server's capabilities). |
@@ -344,7 +345,13 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   `Ctrl-n` requests it on demand either way (popup: `Ctrl-n`/`Ctrl-p` or
   arrows to move, `Tab`/`Enter` to accept, `Esc` to dismiss). The list is
   filtered **fuzzily** and ranked with the pickers' scorer (`fuzzy.zig`), so
-  `mplt` finds `mockComplete`. Typing `(` or `,`
+  `mplt` finds `mockComplete`. Accepting an item honours the server's own
+  `textEdit` range (rather than guessing the identifier prefix) and applies any
+  `additionalTextEdits` (auto-imports). **Snippets** (`insertTextFormat: 2`,
+  which zedit now advertises support for) expand their placeholders and start a
+  tabstop session: `Tab`/`Shift-Tab` walk the stops, the first keystroke at an
+  untouched placeholder replaces it, and `Esc` leaves the text as ordinary
+  content (`snippet.zig` does the parsing). Typing `(` or `,`
   in insert mode requests signature help, shown as a one-line popup above the
   cursor with the active parameter emphasized (`Ctrl-p` cycles overloads, with
   an `(i/n)` counter; dismissed with `Esc`). Edits are sent as incremental
@@ -435,7 +442,15 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   block `A` on lines shorter than the block does not pad with spaces.
 - LSP does diagnostics/hover/goto/references/completion/signature help/rename/
   code actions/formatting/inlay hints/document symbols with incremental (or
-  full) document sync; no snippets/`textEdit` completions yet. Document symbols
+  full) document sync, including `textEdit`/`additionalTextEdits` completions
+  and snippet expansion. Snippet tabstops are tracked with a deliberately
+  simple model: stops later on the *same line* shift as you type, and a line
+  split or join (Enter, a joining backspace) ends the session rather than
+  guessing; nested placeholders are flattened to their text, `${1|a,b|}` uses
+  the first choice, and variables (`$TM_FILENAME`) resolve to their default or
+  to nothing. Snippet text is remote input, so brace nesting is depth-capped
+  (a hostile server cannot recurse the parser into a stack overflow) and the
+  expanded text passes through the render sanitizer like any other content. Document symbols
   are flattened (nested `DocumentSymbol[]` or flat `SymbolInformation[]`) into a
   picker that jumps to the selected symbol. Inlay hints are
   requested for the whole document (re-requested per edit, not debounced) and
@@ -482,8 +497,8 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   `doc/COMPARISON.md` — the verified feature-gap analysis vs Helix/Neovim
   (shortlist: regex + `:%s`, jumplist, OSC 52 clipboard, autoindent, LSP
   references/formatting/cross-file edits, cmdline completion + history, and
-  paragraph objects/motions, inline diagnostics and auto/fuzzy completion are
-  done; next: snippets). `TODO.md` tracks the live order. Large-file open is
+  paragraph objects/motions, inline diagnostics, auto/fuzzy completion and
+  snippets — the whole shortlist is now done). `TODO.md` tracks what is next. Large-file open is
   14.3 ms vs nvim's 10.7 (was 36.6) after the copy-on-write buffer; the last
   ~4 ms is the eager read+scan nvim defers — mmap or lazy line indexing if it
   ever matters.

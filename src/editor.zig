@@ -30,6 +30,7 @@ const treesitter = @import("treesitter.zig");
 const config = @import("config.zig");
 const cli = @import("cli.zig");
 const recent = @import("recent.zig");
+const snippet = @import("snippet.zig");
 const remote = @import("remote.zig");
 const regex = @import("regex.zig");
 const ansi = term.ansi;
@@ -77,6 +78,10 @@ pub const Mode = enum {
 
 const PickerKind = enum { files, grep, code_action, symbol, theme, buffer, reference };
 const PickItem = struct { display: []u8, path: []u8, line: usize };
+
+/// A snippet tabstop resolved to a buffer position (`len` is the placeholder
+/// still sitting there, which the first keystroke at the stop removes).
+const SnipStop = struct { row: usize, col: usize, len: usize };
 
 /// One command-line completion candidate: `text` is the full replacement
 /// command line; `text[show..]` is what the wildmenu displays.
@@ -266,6 +271,13 @@ pub const Editor = struct {
     search_re_pat: std.ArrayList(u8),
     search_origin: Pos, // cursor when a / or ? search began (for incremental preview)
     prev_search: std.ArrayList(u8), // last_search saved on entry, restored if cancelled
+
+    // Active snippet session: the tabstops left to visit, where the cursor is
+    // in that list, and whether the current placeholder is still untouched (so
+    // the first keystroke replaces it, as every snippet-aware editor does).
+    snip_stops: std.ArrayList(SnipStop),
+    snip_idx: usize,
+    snip_pristine: bool,
 
     // Auto-completion: a deadline set while typing an identifier. The poll in
     // the main loop waits until then instead of forever, fires one request,
@@ -472,6 +484,9 @@ pub const Editor = struct {
             .search_re_pat = .empty,
             .search_origin = .{ .row = 0, .col = 0 },
             .prev_search = .empty,
+            .snip_stops = .empty,
+            .snip_idx = 0,
+            .snip_pristine = false,
             .comp_due_ms = null,
             .showcmd = undefined,
             .showcmd_len = 0,
@@ -551,6 +566,7 @@ pub const Editor = struct {
     }
 
     pub fn deinit(self: *Editor) void {
+        self.snip_stops.deinit(self.gpa);
         recent.save(&self.recents, self.io, self.recent_path);
         self.recents.deinit();
         if (self.remote_root) |r| self.gpa.free(r);
@@ -2008,6 +2024,30 @@ pub const Editor = struct {
         // While the completion popup is open it claims navigation/accept keys;
         // text edits fall through and then re-filter the list.
         if (self.comp_open and try self.completionIntercept(k)) return;
+        // Inside a snippet, Tab/Shift-Tab walk the tabstops (the popup above
+        // gets first refusal, so Tab still accepts a completion), and Esc
+        // leaves the snippet as ordinary text.
+        if (self.snippetActive()) {
+            switch (k) {
+                .tab => {
+                    self.snippetJump(true);
+                    return;
+                },
+                .shift_tab => {
+                    self.snippetJump(false);
+                    return;
+                },
+                .escape => self.endSnippet(), // then fall through to leave insert
+                .char, .backspace, .delete => self.snippetConsumePlaceholder(),
+                else => {},
+            }
+        }
+        // Remember where the edit is about to happen so the remaining
+        // tabstops can be shifted by whatever it inserts or removes.
+        const snip_row = self.cy;
+        const snip_col = self.cx;
+        const snip_rows = self.buf.lineCount();
+        const snip_len = self.buf.line(self.cy).len;
         // The signature popup only claims its overload-cycling key (Ctrl-p);
         // everything else falls through so typing/completion still work.
         if (self.sig_open and self.signatureIntercept(k)) return;
@@ -2029,6 +2069,7 @@ pub const Editor = struct {
         } else {
             try self.insertKeyOne(k);
         }
+        if (self.snippetActive()) self.snippetShift(snip_row, snip_col, snip_rows, snip_len);
         if (self.comp_open) self.filterCompletions();
         // Typing an identifier (re)arms the debounce; anything else — a space,
         // Esc, a motion — cancels it, so no stray request goes out.
@@ -4819,16 +4860,161 @@ pub const Editor = struct {
     }
 
     /// Replace the prefix under the cursor with the selected completion.
+    /// Insert the selected candidate. The server's own `textEdit` range wins
+    /// over our identifier-prefix guess; `additionalTextEdits` (auto-imports)
+    /// are applied too; and a snippet item expands its placeholders and starts
+    /// a tabstop session.
     fn acceptCompletion(self: *Editor) void {
         defer self.comp_open = false;
         const client = if (self.lsp) |*c| c else return;
         if (self.comp_sel >= self.comp_filtered.items.len) return;
         const item = client.completions.items[self.comp_filtered.items[self.comp_sel]];
-        const start = self.cx - self.completionPrefix().len;
-        self.buf.deleteInLine(self.cy, start, self.cx) catch {};
-        self.buf.insertBytes(self.cy, start, item.insert) catch {};
-        self.cx = start + item.insert.len;
+
+        // Where the completion replaces text.
+        var row = self.cy;
+        var start = self.cx - self.completionPrefix().len;
+        var end = self.cx;
+        if (item.edit) |e| {
+            if (e.start_line == e.end_line and e.start_line < self.buf.lineCount()) {
+                row = e.start_line;
+                const line = self.buf.line(row);
+                start = @min(byteAtCharCol(line, e.start_char), line.len);
+                end = @min(@max(byteAtCharCol(line, e.end_char), start), line.len);
+            }
+        }
+
+        // Snippet items expand first; plain items insert as-is.
+        var parsed: ?snippet.Parsed = null;
+        defer if (parsed) |*p| p.deinit(self.gpa);
+        var text = item.insert;
+        if (item.is_snippet and snippet.hasTabstops(item.insert)) {
+            parsed = snippet.parse(self.gpa, item.insert) catch null;
+            if (parsed) |p| text = p.text;
+        }
+
+        self.pushUndo();
+        self.buf.deleteInLine(row, start, end) catch {};
+        self.insertTextAt(row, start, text);
+
+        if (parsed) |p| {
+            self.beginSnippet(row, start, text, p.stops);
+        } else {
+            self.updateGoal();
+        }
+
+        // Auto-imports and friends land outside the completion range; apply
+        // them after, so the positions above are not disturbed.
+        if (item.extra.len > 0) _ = applyEditsToBuf(self.buf, item.extra);
+        self.syncLsp();
+    }
+
+    /// Insert `text` at (row, col), splitting lines on newlines, and leave the
+    /// cursor just past it.
+    fn insertTextAt(self: *Editor, row: usize, col: usize, text: []const u8) void {
+        var r = row;
+        var c = col;
+        var it = std.mem.splitScalar(u8, text, '\n');
+        var first = true;
+        while (it.next()) |part| {
+            if (!first) {
+                self.buf.splitLine(r, c) catch return;
+                r += 1;
+                c = 0;
+            }
+            first = false;
+            if (part.len > 0) {
+                self.buf.insertBytes(r, c, part) catch return;
+                c += part.len;
+            }
+        }
+        self.cy = r;
+        self.cx = c;
+    }
+
+    /// Start a tabstop session for text just inserted at (row, col), and jump
+    /// to the first stop.
+    fn beginSnippet(self: *Editor, row: usize, col: usize, text: []const u8, stops: []const snippet.Stop) void {
+        self.snip_stops.clearRetainingCapacity();
+        for (stops) |s| {
+            const pos = offsetToPos(row, col, text, s.offset);
+            self.snip_stops.append(self.gpa, .{ .row = pos.row, .col = pos.col, .len = s.len }) catch {};
+        }
+        self.snip_idx = 0;
+        if (self.snip_stops.items.len == 0) {
+            self.updateGoal();
+            return;
+        }
+        self.gotoSnipStop(0);
+    }
+
+    fn gotoSnipStop(self: *Editor, idx: usize) void {
+        if (idx >= self.snip_stops.items.len) return self.endSnippet();
+        const s = self.snip_stops.items[idx];
+        self.snip_idx = idx;
+        self.cy = @min(s.row, self.buf.lineCount() - 1);
+        self.cx = @min(s.col, self.buf.line(self.cy).len);
+        self.snip_pristine = s.len > 0;
         self.updateGoal();
+    }
+
+    fn endSnippet(self: *Editor) void {
+        self.snip_stops.clearRetainingCapacity();
+        self.snip_idx = 0;
+        self.snip_pristine = false;
+    }
+
+    fn snippetActive(self: *Editor) bool {
+        return self.snip_stops.items.len > 0;
+    }
+
+    /// Tab / Shift-Tab inside a snippet: move to the next / previous tabstop.
+    fn snippetJump(self: *Editor, forward: bool) void {
+        if (forward) {
+            if (self.snip_idx + 1 >= self.snip_stops.items.len) return self.endSnippet();
+            self.gotoSnipStop(self.snip_idx + 1);
+        } else if (self.snip_idx > 0) {
+            self.gotoSnipStop(self.snip_idx - 1);
+        }
+    }
+
+    /// Keep the remaining tabstops pointing at the right text after an edit at
+    /// (row, col): stops later on that line move by the number of bytes the
+    /// edit added or removed. A split or join (Enter, a joining backspace)
+    /// changes the line numbering, which this simple model does not track, so
+    /// it ends the session rather than jumping somewhere wrong.
+    fn snippetShift(self: *Editor, row: usize, col: usize, rows_before: usize, len_before: usize) void {
+        if (self.buf.lineCount() != rows_before) return self.endSnippet();
+        if (row >= self.buf.lineCount()) return self.endSnippet();
+        const len_after = self.buf.line(row).len;
+        if (len_after == len_before) return;
+        for (self.snip_stops.items) |*s| {
+            if (s.row != row or s.col < col) continue;
+            if (len_after > len_before) {
+                s.col += len_after - len_before;
+            } else {
+                s.col -|= len_before - len_after;
+            }
+        }
+    }
+
+    /// The first text typed at an untouched placeholder replaces it, so the
+    /// hint text never has to be deleted by hand. Later stops on the same line
+    /// shift by what was removed.
+    fn snippetConsumePlaceholder(self: *Editor) void {
+        if (!self.snip_pristine or !self.snippetActive()) return;
+        self.snip_pristine = false;
+        const s = self.snip_stops.items[self.snip_idx];
+        if (s.len == 0) return;
+        const line = self.buf.line(s.row);
+        const end = @min(s.col + s.len, line.len);
+        if (end <= s.col) return;
+        self.buf.deleteInLine(s.row, s.col, end) catch return;
+        self.cy = s.row;
+        self.cx = s.col;
+        for (self.snip_stops.items) |*o| {
+            if (o.row == s.row and o.col > s.col) o.col -= (end - s.col);
+        }
+        self.snip_stops.items[self.snip_idx].len = 0;
     }
 
     /// Store yanked/deleted text in the pending register. Writes to the
@@ -6782,6 +6968,21 @@ fn numPrefix(s: []const u8) usize {
 
 fn nowMs() i64 {
     return @intCast(@divTrunc(log.nowNanos(), std.time.ns_per_ms));
+}
+
+/// The buffer position `offset` bytes into text that was inserted at
+/// (row, col) — used to place snippet tabstops after insertion.
+fn offsetToPos(row: usize, col: usize, text: []const u8, offset: usize) Pos {
+    var r = row;
+    var c = col;
+    var i: usize = 0;
+    while (i < offset and i < text.len) : (i += 1) {
+        if (text[i] == '\n') {
+            r += 1;
+            c = 0;
+        } else c += 1;
+    }
+    return .{ .row = r, .col = c };
 }
 
 /// Linear blend of two colours: `pct`% of `b` into `a` (integer math, no

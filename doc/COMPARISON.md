@@ -38,7 +38,12 @@ batteries-included editor.
 9. ~~**Auto-triggered + fuzzy completion**~~ — **DONE** (debounced popup while
    typing, `auto_completion` / `completion_delay_ms` config; the list is fuzzy
    filtered and ranked with `fuzzy.zig`).
-10. **Snippets / `textEdit` completions** (both, med-high — in Known gaps).
+10. ~~**Snippets / `textEdit` completions**~~ — **DONE** (`snippet.zig` parses
+    the LSP grammar; Tab/Shift-Tab walk tabstops, typing replaces a
+    placeholder; `textEdit` ranges and `additionalTextEdits` honoured).
+
+**The shortlist is complete.** Remaining gaps are tracked in the sections
+below and prioritised in `TODO.md`.
 
 ---
 
@@ -63,7 +68,7 @@ batteries-included editor.
 - Goto implementation / type definition (`gi`, `gy`) — **medium**
 - Workspace symbols picker (`Space S`) — zedit has document symbols only — **medium**
 - Diagnostics pickers — buffer-wide and workspace-wide diagnostic lists; zedit only has gutter signs + `]d`/`[d` — **medium**
-- Snippets / `textEdit` completions with tabstop jumping — zedit inserts plain text only (named known gap) — **medium**
+- ~~Snippets / `textEdit` completions with tabstop jumping~~ — **DONE** (`snippet.zig`)
 - ~~Auto-triggered completion (idle timeout)~~ — **DONE** (debounced; `auto_completion` config)
 - Multiple language servers per language — zedit launches exactly one per filetype — **low**
 - LSP progress messages in statusline; document colors — **low** (inline/end-of-line diagnostic text is **DONE**)
@@ -95,7 +100,7 @@ batteries-included editor.
 3. **Incomplete LSP completion (`isIncomplete`) handling** (25.07) — correctness fix for zedit's existing completion popup.
 4. ~~**Inline display for LSP diagnostics**~~ (25.01) — **DONE** (`inline_diagnostics`).
 5. **Path completion in insert mode** (25.01) — server-independent completion win.
-6. **Snippet tabstop rendering and jumping** (25.01) — directly addresses zedit's "no snippets/textEdit" gap.
+6. ~~**Snippet tabstop rendering and jumping**~~ (25.01) — **DONE**.
 7. **Continue line comments on `o`/`O`/Enter** (25.01) — small polish on zedit's existing comment support.
 8. **Configurable/runtime-switchable clipboard providers** (25.01) — the clean way to add system clipboard.
 9. **Keybindings defined as macros in config** (25.01) — user remapping with zedit's existing macro machinery.

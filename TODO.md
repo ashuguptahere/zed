@@ -11,7 +11,18 @@ behind the roadmap items.
 
 ## Next (in order)
 
-- [ ] Shortlist #10: snippets / `textEdit` completions.
+The shortlist is done; these are the next-highest gaps from
+`doc/COMPARISON.md`, in rough priority order. Pick one and it moves to
+"In progress".
+
+- [ ] Snippet polish: multi-line tabstop tracking across line splits, and
+      choice placeholders (`${1|a,b|}`) offering the alternatives.
+- [ ] Goto implementation / type definition (`gi`, `gy`).
+- [ ] Workspace symbols picker (zedit has document symbols only).
+- [ ] Buffer/workspace diagnostics picker.
+- [ ] Tree-sitter textobjects (function/class/parameter) and structural motions.
+- [ ] Soft-wrap; undo tree (`:earlier`/`:later`).
+
 
 ## Recurring (every feature / significant change)
 
@@ -101,6 +112,9 @@ behind the roadmap items.
 - [x] `:update` / `--check-update` against the newest release tag.
 - [x] Shortlist #8: inline diagnostics (dim severity-coloured virtual text
       after the code; `inline_diagnostics` config, on by default).
+- [x] Shortlist #10: snippets (`snippet.zig` parser, tabstop session,
+      Tab/Shift-Tab, type-to-replace) + `textEdit` / `additionalTextEdits`.
+      **The COMPARISON shortlist is now complete.**
 - [x] Shortlist #9: auto-triggered (debounced) + fuzzy-ranked completion
       (`auto_completion`, `completion_delay_ms`; idle CPU still zero).
 - [x] Scroll/jump centring fixed (nvim-verified): wheel scrolling no longer

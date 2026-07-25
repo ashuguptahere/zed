@@ -59,9 +59,27 @@ pub fn main(init: std.process.Init) !void {
             const kind = if (changeHasRange(obj)) "INCREMENTAL" else "FULL";
             diag(gpa, kind, 0, 2);
         } else if (eql(method, "textDocument/completion")) {
+            // Plain items, a snippet item (insertTextFormat 2, with two
+            // placeholders and a final stop), and a textEdit item whose range
+            // the client must honour instead of guessing the prefix.
+            // Two plain items, a snippet item (insertTextFormat 2, two
+            // placeholders and a final stop), and a textEdit item whose range
+            // replaces the four characters before the cursor — the client must
+            // honour that range instead of guessing the identifier prefix —
+            // carrying an additionalTextEdits import line as well.
+            const pos = getField(getField(parsed.value, "params") orelse parsed.value, "position");
+            const pline: i64 = if (pos) |p| (intField(p, "line") orelse 0) else 0;
+            const pchar: i64 = if (pos) |p| (intField(p, "character") orelse 0) else 0;
+            const from = if (pchar >= 4) pchar - 4 else 0;
             send(gpa, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{{\"items\":[" ++
                 "{{\"label\":\"mockComplete\",\"insertText\":\"mockComplete\"}}," ++
-                "{{\"label\":\"mockOther\",\"insertText\":\"mockOther\"}}]}}}}", .{id orelse 0});
+                "{{\"label\":\"mockOther\",\"insertText\":\"mockOther\"}}," ++
+                "{{\"label\":\"snipItem\",\"insertTextFormat\":2," ++
+                "\"insertText\":\"call(${{1:first}}, ${{2:second}})$0\"}}," ++
+                "{{\"label\":\"editItem\",\"textEdit\":{{\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}}," ++
+                "\"end\":{{\"line\":{d},\"character\":{d}}}}},\"newText\":\"EDITED\"}}," ++
+                "\"additionalTextEdits\":[{{\"range\":{{\"start\":{{\"line\":0,\"character\":0}}," ++
+                "\"end\":{{\"line\":0,\"character\":0}}}},\"newText\":\"IMPORT\\n\"}}]}}]}}}}", .{ id orelse 0, pline, from, pline, pchar });
         } else if (eql(method, "textDocument/signatureHelp")) {
             send(gpa, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{{\"signatures\":[" ++
                 "{{\"label\":\"mockFn(a: int, b: int)\",\"parameters\":[{{\"label\":[7,13]}},{{\"label\":[15,21]}}]}}," ++

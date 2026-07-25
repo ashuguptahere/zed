@@ -13,6 +13,5 @@ zig-pkg/
 
 # Scratch files (never commit experiments — new.py and a file literally
 # named `"` were purged from history once already)
-*.py
 scratch/
 tmp/

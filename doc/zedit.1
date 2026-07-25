@@ -154,6 +154,20 @@ appear either way.
 when the server advertises formatting;
 .B :format
 formats on demand.
+.SH SNIPPETS
+A completion item the server marks as a snippet expands its placeholders and
+starts a tabstop session:
+.B Tab
+and
+.B Shift\-Tab
+move between the stops, the first character typed at an untouched placeholder
+replaces it, and
+.B Esc
+ends the session leaving ordinary text. Items carrying a
+.B textEdit
+replace the server's own range, and any
+.B additionalTextEdits
+(auto\-imports) are applied with them.
 .SH "PARTIAL COMMANDS"
 The command being typed appears at the right of the statusline until it
 executes \(em

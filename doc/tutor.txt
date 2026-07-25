@@ -320,6 +320,10 @@
   dismisses.  Matching is fuzzy, so typing  mplt  finds  mockComplete .
   Set  auto_completion = false  in your config for manual-only popups.
 
+  Some completions are snippets.  Accepting one fills in placeholder
+  text and drops the cursor on the first placeholder: just type to
+  replace it, press Tab to move to the next, and Esc when you are done.
+
   The command line completes too: type  :e   and press Tab to cycle
   through the files here (Shift-Tab goes backward), or  :the<Tab>  to
   get  :theme .  Up and Down recall earlier commands that start with

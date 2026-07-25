@@ -45,6 +45,8 @@
     `[d` navigation
   - completion that pops up as you type (debounced; `Ctrl-n` on demand) and
     is **fuzzy** matched — `mplt` finds `mockComplete`
+  - snippets with tabstops (`Tab`/`Shift-Tab` between placeholders, typing
+    replaces them), `textEdit` ranges and auto-import `additionalTextEdits`
   - signature help (on `(` and `,`),
     hover (`K` / `Ctrl-k`), goto definition (`gd`)
   - rename (`gr`), find references (`Space l R`), code actions (`ga`,
