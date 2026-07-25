@@ -314,9 +314,11 @@
   in (dap also takes the blank line after it).  Try  }  a few times in
   this file, then  Ctrl-o  to come back.
 
-  In Insert mode,  Ctrl-n  requests completion: a popup opens, Ctrl-n
-  and Ctrl-p (or the arrows) move through it, Tab or Enter accepts, and
-  Esc dismisses it.
+  In Insert mode the completion popup appears on its own when you pause
+  while typing a word; Ctrl-n requests it immediately.  Ctrl-n and
+  Ctrl-p (or the arrows) move through it, Tab or Enter accepts, Esc
+  dismisses.  Matching is fuzzy, so typing  mplt  finds  mockComplete .
+  Set  auto_completion = false  in your config for manual-only popups.
 
   The command line completes too: type  :e   and press Tab to cycle
   through the files here (Shift-Tab goes backward), or  :the<Tab>  to

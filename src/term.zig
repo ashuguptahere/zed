@@ -184,7 +184,10 @@ pub const Terminal = struct {
     /// that arrives while we are blocked. (A resize landing in the brief window
     /// between the resize check and entering poll is missed until the next key;
     /// closing that race needs a self-pipe and is left as future work.)
-    pub fn waitReady(self: *Terminal, other: ?posix.fd_t) Error!Ready {
+    /// Block until input (or `other`) is readable. `timeout_ms` of -1 blocks
+    /// forever — the idle case, costing zero CPU; a non-negative value is used
+    /// only while something is actually scheduled (the completion debounce).
+    pub fn waitReady(self: *Terminal, other: ?posix.fd_t, timeout_ms: i32) Error!Ready {
         var fds: [2]posix.pollfd = undefined;
         fds[0] = .{ .fd = self.in, .events = posix.POLL.IN, .revents = 0 };
         var n: posix.nfds_t = 1;
@@ -192,7 +195,7 @@ pub const Terminal = struct {
             fds[1] = .{ .fd = o, .events = posix.POLL.IN, .revents = 0 };
             n = 2;
         }
-        const rc = posix.system.poll(&fds, n, -1);
+        const rc = posix.system.poll(&fds, n, timeout_ms);
         return switch (posix.system.errno(rc)) {
             .SUCCESS => .{
                 .input = (fds[0].revents & posix.POLL.IN) != 0,

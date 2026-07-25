@@ -337,8 +337,14 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   a bounded ~1s wait, skipped when the server doesn't advertise formatting. Inlay hints (type/parameter annotations) render
   inline as dim virtual text — requested for the document on load and after each
   edit, drawn without touching the buffer (the cursor's screen column accounts
-  for hints to its left). `Ctrl-n` in insert mode requests completion (popup: `Ctrl-n`/`Ctrl-p` or
-  arrows to move, `Tab`/`Enter` to accept, `Esc` to dismiss). Typing `(` or `,`
+  for hints to its left). Completion pops up on its own while typing an identifier — the debounce
+  (config `completion_delay_ms`, 150 ms) is the only timer zedit ever arms, and
+  it is armed *only* while typing, so an idle editor still blocks in `poll(2)`
+  at zero CPU; `auto_completion = false` restores manual-only behaviour.
+  `Ctrl-n` requests it on demand either way (popup: `Ctrl-n`/`Ctrl-p` or
+  arrows to move, `Tab`/`Enter` to accept, `Esc` to dismiss). The list is
+  filtered **fuzzily** and ranked with the pickers' scorer (`fuzzy.zig`), so
+  `mplt` finds `mockComplete`. Typing `(` or `,`
   in insert mode requests signature help, shown as a one-line popup above the
   cursor with the active parameter emphasized (`Ctrl-p` cycles overloads, with
   an `(i/n)` counter; dismissed with `Esc`). Edits are sent as incremental
@@ -369,7 +375,8 @@ decoding.
 
 Runtime configuration is one documented file (see `config.zig`): theme,
 `tab_width`, `nerd_font`, `sidebar` (left/right), `relative_numbers`,
-`large_file_mb`, `autoindent`, `inline_diagnostics`, `format_on_save`; `zedit --init-config` writes
+`large_file_mb`, `autoindent`, `auto_completion`, `completion_delay_ms`,
+`inline_diagnostics`, `format_on_save`; `zedit --init-config` writes
 the annotated default.
 `zedit --tutor` opens the embedded interactive tutorial (`doc/tutor.txt`,
 embedded via `build.zig`).
@@ -475,8 +482,8 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   `doc/COMPARISON.md` — the verified feature-gap analysis vs Helix/Neovim
   (shortlist: regex + `:%s`, jumplist, OSC 52 clipboard, autoindent, LSP
   references/formatting/cross-file edits, cmdline completion + history, and
-  paragraph objects/motions and inline diagnostics are done; next:
-  auto-completion, snippets). `TODO.md` tracks the live order. Large-file open is
+  paragraph objects/motions, inline diagnostics and auto/fuzzy completion are
+  done; next: snippets). `TODO.md` tracks the live order. Large-file open is
   14.3 ms vs nvim's 10.7 (was 36.6) after the copy-on-write buffer; the last
   ~4 ms is the eager read+scan nvim defers — mmap or lazy line indexing if it
   ever matters.

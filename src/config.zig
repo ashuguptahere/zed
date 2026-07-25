@@ -30,6 +30,13 @@ pub const Settings = struct {
     /// Inherit the current line's indentation on `o`, `O`, Enter and `cc`
     /// (vim 'autoindent'; an auto-indent left blank is stripped on leaving).
     autoindent: bool = true,
+    /// Pop up completions on their own while typing, after a short pause,
+    /// instead of only on `Ctrl-n` (Helix and recent Neovim both do this).
+    auto_completion: bool = true,
+    /// How long typing must pause before an automatic completion request, in
+    /// milliseconds. Only armed while typing an identifier, so an idle editor
+    /// still blocks in poll() and burns no CPU.
+    completion_delay_ms: usize = 150,
     /// Show each diagnostic's message inline at the end of its line (dim,
     /// severity-coloured virtual text — helix/nvim call this virtual_text).
     /// The gutter sign and the statusline message appear either way.
@@ -86,6 +93,15 @@ pub const default_text =
     \\# (vim's 'autoindent'). An auto-indent left blank is stripped.
     \\autoindent = true
     \\
+    \\# Pop up completions while typing (after completion_delay_ms of pause),
+    \\# not just on Ctrl-n. The popup is fuzzy-matched: "mc" finds mockComplete.
+    \\auto_completion = true
+    \\
+    \\# Pause before an automatic completion request, in milliseconds. Raise it
+    \\# on a slow language server; the timer is only armed while you are typing
+    \\# an identifier, so an idle editor still uses no CPU.
+    \\completion_delay_ms = 150
+    \\
     \\# Show each diagnostic's message inline at the end of its line, as dim
     \\# severity-coloured text (the gutter sign and statusline message show
     \\# regardless). Set false for a quieter buffer.
@@ -130,6 +146,12 @@ pub fn apply(text: []const u8) void {
         } else if (std.mem.eql(u8, key, "autoindent")) {
             if (std.mem.eql(u8, value, "true")) settings.autoindent = true;
             if (std.mem.eql(u8, value, "false")) settings.autoindent = false;
+        } else if (std.mem.eql(u8, key, "auto_completion")) {
+            if (std.mem.eql(u8, value, "true")) settings.auto_completion = true;
+            if (std.mem.eql(u8, value, "false")) settings.auto_completion = false;
+        } else if (std.mem.eql(u8, key, "completion_delay_ms")) {
+            const n = std.fmt.parseInt(usize, value, 10) catch continue;
+            if (n <= 10_000) settings.completion_delay_ms = n;
         } else if (std.mem.eql(u8, key, "inline_diagnostics")) {
             if (std.mem.eql(u8, value, "true")) settings.inline_diagnostics = true;
             if (std.mem.eql(u8, value, "false")) settings.inline_diagnostics = false;

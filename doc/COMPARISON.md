@@ -35,8 +35,9 @@ batteries-included editor.
 8. ~~**Inline diagnostic text** at end of line~~ — **DONE** (dim,
    severity-coloured virtual text after the code; config
    `inline_diagnostics`, on by default).
-9. **Auto-triggered + fuzzy completion** (helix always-on; nvim 0.11/0.12) —
-   reuse `fuzzy.zig` for the popup.
+9. ~~**Auto-triggered + fuzzy completion**~~ — **DONE** (debounced popup while
+   typing, `auto_completion` / `completion_delay_ms` config; the list is fuzzy
+   filtered and ranked with `fuzzy.zig`).
 10. **Snippets / `textEdit` completions** (both, med-high — in Known gaps).
 
 ---
@@ -63,7 +64,7 @@ batteries-included editor.
 - Workspace symbols picker (`Space S`) — zedit has document symbols only — **medium**
 - Diagnostics pickers — buffer-wide and workspace-wide diagnostic lists; zedit only has gutter signs + `]d`/`[d` — **medium**
 - Snippets / `textEdit` completions with tabstop jumping — zedit inserts plain text only (named known gap) — **medium**
-- Auto-triggered completion (idle timeout) — zedit completion is manual `Ctrl-n` only — **medium**
+- ~~Auto-triggered completion (idle timeout)~~ — **DONE** (debounced; `auto_completion` config)
 - Multiple language servers per language — zedit launches exactly one per filetype — **low**
 - LSP progress messages in statusline; document colors — **low** (inline/end-of-line diagnostic text is **DONE**)
 

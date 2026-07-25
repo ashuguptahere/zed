@@ -11,7 +11,6 @@ behind the roadmap items.
 
 ## Next (in order)
 
-- [ ] Shortlist #9: auto-triggered + fuzzy completion (reuse fuzzy.zig).
 - [ ] Shortlist #10: snippets / `textEdit` completions.
 
 ## Recurring (every feature / significant change)
@@ -102,6 +101,8 @@ behind the roadmap items.
 - [x] `:update` / `--check-update` against the newest release tag.
 - [x] Shortlist #8: inline diagnostics (dim severity-coloured virtual text
       after the code; `inline_diagnostics` config, on by default).
+- [x] Shortlist #9: auto-triggered (debounced) + fuzzy-ranked completion
+      (`auto_completion`, `completion_delay_ms`; idle CPU still zero).
 - [x] Scroll/jump centring fixed (nvim-verified): wheel scrolling no longer
       drags the cursor from the bottom row; 4 pinned cases.
 - [x] `showcmd`: the partial command shown as typed in the statusline.

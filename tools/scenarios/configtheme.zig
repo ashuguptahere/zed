@@ -143,6 +143,28 @@ pub fn run(ctx: *h.Ctx) !void {
         ctx.check("autoindent = false disables inheritance", std.mem.eql(u8, text, "    foo\nbar\n"));
     }
 
+    // auto_completion = false restores manual completion: typing pops up
+    // nothing, but Ctrl-n still requests the list.
+    {
+        h.writeFile(ctx.io, cfg_path, "auto_completion = false\n");
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ ctx.zedit, "--config", cfg_path, "--lsp", ctx.mock, "b.zig" },
+            .cwd = dir,
+            .term = "xterm-256color",
+        });
+        defer s.finish();
+        s.drain(1500);
+        s.send("omock");
+        s.drain(700);
+        ctx.check("auto_completion=false stays quiet while typing", !s.containsPlain(ctx.gpa, "mockComplete"));
+        const m = s.mark();
+        s.send("\x0e"); // Ctrl-n still works on demand
+        s.drain(800);
+        ctx.check("manual Ctrl-n still completes", s.containsPlainSince(ctx.gpa, m, "mockComplete"));
+        s.send("\x1b:q!\r");
+        s.drain(200);
+    }
+
     // inline_diagnostics = false keeps the buffer quiet (the gutter sign and
     // the statusline message still work — those are separate paths).
     {

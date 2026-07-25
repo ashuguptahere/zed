@@ -267,6 +267,11 @@ pub const Editor = struct {
     search_origin: Pos, // cursor when a / or ? search began (for incremental preview)
     prev_search: std.ArrayList(u8), // last_search saved on entry, restored if cancelled
 
+    // Auto-completion: a deadline set while typing an identifier. The poll in
+    // the main loop waits until then instead of forever, fires one request,
+    // and disarms — so an idle editor still blocks indefinitely (zero CPU).
+    comp_due_ms: ?i64,
+
     // showcmd: the partial command as typed (vim's 'showcmd'), shown at the
     // right of the statusline and cleared the moment the command completes.
     showcmd: [12]u8,
@@ -467,6 +472,7 @@ pub const Editor = struct {
             .search_re_pat = .empty,
             .search_origin = .{ .row = 0, .col = 0 },
             .prev_search = .empty,
+            .comp_due_ms = null,
             .showcmd = undefined,
             .showcmd_len = 0,
             .cmd = .empty,
@@ -631,7 +637,11 @@ pub const Editor = struct {
                 needs_render = false;
             }
             const lsp_fd: ?std.posix.fd_t = if (self.lsp) |*c| (if (c.alive) c.out_fd else null) else null;
-            const ready = try self.term.waitReady(lsp_fd);
+            const ready = try self.term.waitReady(lsp_fd, self.pollTimeout());
+            if (self.completionDue()) {
+                self.lspCompletion();
+                needs_render = true;
+            }
             if (self.term.takeResize()) {
                 self.win = self.term.size();
                 self.prev_valid = false; // layout changed; diff base is stale
@@ -2020,6 +2030,13 @@ pub const Editor = struct {
             try self.insertKeyOne(k);
         }
         if (self.comp_open) self.filterCompletions();
+        // Typing an identifier (re)arms the debounce; anything else — a space,
+        // Esc, a motion — cancels it, so no stray request goes out.
+        switch (k) {
+            .char, .backspace => self.armCompletion(),
+            else => self.comp_due_ms = null,
+        }
+        if (self.mode != .insert) self.comp_due_ms = null;
     }
 
     /// Returns true if the key was consumed by the open completion popup.
@@ -4700,7 +4717,36 @@ pub const Editor = struct {
     }
 
     fn lspCompletion(self: *Editor) void {
+        self.comp_due_ms = null;
+        self.syncLsp(); // the server must see the text this completes against
         if (self.lsp) |*c| c.requestCompletion(self.cy, self.charCol());
+    }
+
+    /// How long the main loop may block: forever unless a completion request
+    /// is scheduled, which is the only timer zedit ever arms.
+    fn pollTimeout(self: *Editor) i32 {
+        const due = self.comp_due_ms orelse return -1;
+        const left = due - nowMs();
+        return if (left <= 0) 0 else @intCast(@min(left, std.math.maxInt(i32)));
+    }
+
+    /// True when the debounce has elapsed (the caller then sends the request).
+    fn completionDue(self: *Editor) bool {
+        const due = self.comp_due_ms orelse return false;
+        return nowMs() >= due;
+    }
+
+    /// Arm the auto-completion debounce after an identifier keystroke. Typing
+    /// on keeps pushing the deadline out, so a request only goes out when the
+    /// typist pauses — one round trip per pause, not per character.
+    fn armCompletion(self: *Editor) void {
+        if (!config.settings.auto_completion) return;
+        if (self.mode != .insert or self.lsp == null) return;
+        if (self.completionPrefix().len == 0) {
+            self.comp_due_ms = null;
+            return;
+        }
+        self.comp_due_ms = nowMs() + @as(i64, @intCast(config.settings.completion_delay_ms));
     }
 
     fn lspSignatureHelp(self: *Editor) void {
@@ -4734,6 +4780,9 @@ pub const Editor = struct {
 
     /// Rebuild the visible completion list from the prefix under the cursor;
     /// closes the popup if nothing matches.
+    /// Rebuild the visible list from the prefix under the cursor, fuzzily:
+    /// `mc` matches `mockComplete`, and candidates are ranked by the same
+    /// scorer the pickers use (consecutive runs and word starts win).
     fn filterCompletions(self: *Editor) void {
         self.comp_filtered.clearRetainingCapacity();
         const client = if (self.lsp) |*c| c else {
@@ -4741,8 +4790,26 @@ pub const Editor = struct {
             return;
         };
         const prefix = self.completionPrefix();
+        const qmask = fuzzy.charMask(prefix);
+        var scored: std.ArrayList(struct { idx: usize, score: i32 }) = .empty;
+        defer scored.deinit(self.gpa);
         for (client.completions.items, 0..) |it, i| {
-            if (prefix.len == 0 or std.ascii.startsWithIgnoreCase(it.label, prefix)) self.comp_filtered.append(self.gpa, i) catch {};
+            if (prefix.len == 0) {
+                self.comp_filtered.append(self.gpa, i) catch {};
+                continue;
+            }
+            if (!fuzzy.maskMatches(fuzzy.charMask(it.label), qmask)) continue; // cheap reject
+            const s = fuzzy.score(it.label, prefix) orelse continue;
+            scored.append(self.gpa, .{ .idx = i, .score = s }) catch {};
+        }
+        if (prefix.len > 0) {
+            const Item = @TypeOf(scored.items[0]);
+            std.mem.sort(Item, scored.items, {}, struct {
+                fn less(_: void, a: Item, b: Item) bool {
+                    return a.score > b.score; // best first
+                }
+            }.less);
+            for (scored.items) |s| self.comp_filtered.append(self.gpa, s.idx) catch {};
         }
         if (self.comp_filtered.items.len == 0) {
             self.comp_open = false;
@@ -6711,6 +6778,10 @@ fn numPrefix(s: []const u8) usize {
         n = n * 10 + (c - '0');
     }
     return n;
+}
+
+fn nowMs() i64 {
+    return @intCast(@divTrunc(log.nowNanos(), std.time.ns_per_ms));
 }
 
 /// Linear blend of two colours: `pct`% of `b` into `a` (integer math, no

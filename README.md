@@ -43,7 +43,9 @@
   - diagnostics in the gutter/statusline **and inline at end of line** (dim,
     severity-coloured; `inline_diagnostics = false` to silence), with `]d` /
     `[d` navigation
-  - completion (`Ctrl-n` in insert), signature help (on `(` and `,`),
+  - completion that pops up as you type (debounced; `Ctrl-n` on demand) and
+    is **fuzzy** matched — `mplt` finds `mockComplete`
+  - signature help (on `(` and `,`),
     hover (`K` / `Ctrl-k`), goto definition (`gd`)
   - rename (`gr`), find references (`Space l R`), code actions (`ga`,
     including `executeCommand`/`applyEdit`), document symbols (`Space l s`),
@@ -141,7 +143,8 @@ zedit --init-config
 Format is `key = value` with `#` comments; unknown keys are ignored and a
 missing file just means defaults. Settings today: `theme`, `tab_width`,
 `nerd_font`, `sidebar`, `relative_numbers`, `large_file_mb`, `autoindent`,
-`inline_diagnostics`, `format_on_save`.
+`auto_completion`, `completion_delay_ms`, `inline_diagnostics`,
+`format_on_save`.
 
 Every CLI option has a short and a long form (`-h/--help`, `-v/--version`,
 `-l/--log`, `-s/--lsp`, `-c/--config`, `-t/--tutor`, `-b/--benchmark`,

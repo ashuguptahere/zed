@@ -125,6 +125,22 @@ highlighting, LSP and git signs are skipped so huge files open instantly.
 inherit the current line's indentation; an auto\-indent left blank is
 stripped, like vim.
 .TP
+.B auto_completion
+.BR true / false
+(default true). Request completions while typing an identifier, after a pause,
+instead of only on
+.BR Ctrl\-n .
+The list is fuzzy\-matched and ranked, so
+.B mplt
+finds
+.BR mockComplete .
+.TP
+.B completion_delay_ms
+Pause before an automatic completion request (default 150). The timer is armed
+only while typing, so an idle editor still blocks in
+.BR poll (2)
+and uses no CPU.
+.TP
 .B inline_diagnostics
 .BR true / false
 (default true). Show each diagnostic's message inline at the end of its line,

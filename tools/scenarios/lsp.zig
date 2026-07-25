@@ -154,6 +154,23 @@ pub fn run(ctx: *h.Ctx) !void {
         ctx.check("accepted completion written to file", r.textHas("mockComplete\n"));
     }
 
+    // Auto-completion: typing an identifier and pausing pops the list up on
+    // its own (no Ctrl-n), after the configured debounce.
+    {
+        const r = drive(ctx, &.{.{ .keys = "omock", .ms = 900 }}, quit);
+        defer r.deinit(ctx.gpa);
+        ctx.check("completion pops up while typing", r.plainHas("mockComplete"));
+    }
+
+    // Fuzzy filtering: "mplt" is a subsequence of mockComplete but not a
+    // prefix, and is not a subsequence of mockOther — so exactly one survives.
+    {
+        const r = drive(ctx, &.{.{ .keys = "omplt", .ms = 900 }}, quit);
+        defer r.deinit(ctx.gpa);
+        ctx.check("completion matches fuzzily", r.plainHas("mockComplete"));
+        ctx.check("fuzzy filter excludes non-matches", !r.plainHas("mockOther"));
+    }
+
     // Signature help + overload cycling: type "(", then Ctrl-p to cycle.
     {
         const r = drive(ctx, &.{ .{ .keys = "omockFn(", .ms = 900 }, .{ .keys = "\x10", .ms = 600 } }, quit);
