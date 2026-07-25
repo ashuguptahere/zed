@@ -379,6 +379,11 @@ pub const Editor = struct {
     /// single-threaded and idle-blocked in poll()).
     walk_dir: ?std.Io.Dir,
     walker: ?std.Io.Dir.SelectiveWalker,
+    /// Which line `style_buf` currently holds styles for, and whose buffer —
+    /// a wrapped line is drawn a row at a time and must not be re-styled once
+    /// per row.
+    style_row: usize,
+    style_buf_of: ?*const buffer.Buffer,
     prev_query: std.ArrayList(u8), // last filtered query (incremental narrowing)
     /// How many `fcache` entries the current grep query has already read. The
     /// walk streams files in while the picker is open, so the grep resumes
@@ -589,6 +594,8 @@ pub const Editor = struct {
             .dashboard = false,
             .dash_sel = 0,
             .remote_root = null,
+            .style_row = 0,
+            .style_buf_of = null,
             .prev_query = .empty,
             .grep_scanned = 0,
             .picker_filtered = .empty,
@@ -1060,7 +1067,7 @@ pub const Editor = struct {
         const step = 3;
         const last_line = self.buf.lineCount() - 1;
         const before = self.top;
-        self.top = if (up) self.top -| step else @min(self.top + step, last_line);
+        self.top = self.lineAfterRows(self.top, step, up); // three *screen* rows
         const moved = if (self.top > before) self.top - before else before - self.top;
         if (moved == 0) return; // already at an end: nothing moves, cursor included
         self.cy = if (self.top > before) @min(self.cy + moved, last_line) else self.cy -| moved;
@@ -1171,8 +1178,8 @@ pub const Editor = struct {
             '{' => self.doMotion(self.paragraphMotion(false)),
             '}' => self.doMotion(self.paragraphMotion(true)),
             'H' => self.doMotion(self.gotoLineMotion(self.top)),
-            'M' => self.doMotion(self.gotoLineMotion(self.top + self.textRows() / 2)),
-            'L' => self.doMotion(self.gotoLineMotion(@min(self.top + self.textRows() - 1, self.buf.lineCount() - 1))),
+            'M' => self.doMotion(self.gotoLineMotion(self.lineAtScreenRow(self.textRows() / 2))),
+            'L' => self.doMotion(self.gotoLineMotion(self.lineAtScreenRow(self.textRows() - 1))),
             'f' => self.await_arg = .find_f,
             't' => self.await_arg = .find_t,
             'F' => self.await_arg = .find_cap_f,
@@ -1247,13 +1254,12 @@ pub const Editor = struct {
             'f' => self.pageMove(false),
             'b' => self.pageMove(true),
             'd' => {
-                self.cy = @min(self.cy + self.textRows() / 2, self.buf.lineCount() - 1);
+                self.cy = self.lineAfterRows(self.cy, self.textRows() / 2, false);
                 self.snapColumn();
                 self.resetPending();
             },
             'u' => {
-                const half = self.textRows() / 2;
-                self.cy = if (self.cy > half) self.cy - half else 0;
+                self.cy = self.lineAfterRows(self.cy, self.textRows() / 2, true);
                 self.snapColumn();
                 self.resetPending();
             },
@@ -1317,7 +1323,15 @@ pub const Editor = struct {
                 } else if (k == .char and k.char == 'a') {
                     self.lspCodeAction(); // ga: code actions for the current line
                     self.resetPending();
-                } else
+                } else if (k == .char and k.char == 'j')
+                    self.doMotion(self.screenVertical(false, self.total()))
+                else if (k == .char and k.char == 'k')
+                    self.doMotion(self.screenVertical(true, self.total()))
+                else if (k == .char and k.char == '0')
+                    self.doMotion(self.screenLineEdge(false))
+                else if (k == .char and k.char == '$')
+                    self.doMotion(self.screenLineEdge(true))
+                else
                     self.resetPending();
             },
             .z_prefix => {
@@ -1822,6 +1836,55 @@ pub const Editor = struct {
     fn vertical(self: *Editor, up: bool, n: usize) MotionResult {
         const row = if (up) (if (self.cy > n) self.cy - n else 0) else @min(self.cy + n, self.buf.lineCount() - 1);
         return .{ .pos = .{ .row = row, .col = 0 }, .kind = .linewise, .col_mode = .keep_goal };
+    }
+
+    /// `gj` / `gk`: down or up one *screen* row, keeping the column within the
+    /// row — so a wrapped line is walked a row at a time instead of skipped
+    /// whole. On a line that does not wrap (or with soft wrap off) they are
+    /// exactly `j` and `k`.
+    fn screenVertical(self: *Editor, up: bool, n: usize) MotionResult {
+        const cols = self.textCols();
+        if (!self.wrapping() or cols == 0) return self.vertical(up, n);
+        var row = self.cy;
+        var seg = self.cursorDisplayCol() / cols;
+        const off = self.cursorDisplayCol() % cols;
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            if (up) {
+                if (seg > 0) {
+                    seg -= 1;
+                } else {
+                    if (row == 0) break;
+                    row -= 1;
+                    seg = rowsForLine(self.buf, cols, row, null, true, @max(1, self.textRows())) - 1;
+                }
+            } else {
+                if (seg + 1 < rowsForLine(self.buf, cols, row, null, true, @max(1, self.textRows()))) {
+                    seg += 1;
+                } else {
+                    if (row + 1 >= self.buf.lineCount()) break;
+                    row += 1;
+                    seg = 0;
+                }
+            }
+        }
+        const col = byteAtDisplayCol(self.buf.line(row), seg * cols + off);
+        return .{ .pos = .{ .row = row, .col = col }, .kind = .exclusive, .col_mode = .exact };
+    }
+
+    /// `g0` / `g$`: the first or last character of the screen row.
+    fn screenLineEdge(self: *Editor, end: bool) MotionResult {
+        const cols = self.textCols();
+        const line = self.curLine();
+        if (!self.wrapping() or cols == 0)
+            return .{ .pos = .{ .row = self.cy, .col = if (end) line.len else 0 }, .kind = if (end) .inclusive else .exclusive, .col_mode = .exact };
+        const seg = self.cursorDisplayCol() / cols;
+        const target = if (end) (seg + 1) * cols - 1 else seg * cols;
+        return .{
+            .pos = .{ .row = self.cy, .col = @min(byteAtDisplayCol(line, target), line.len) },
+            .kind = if (end) .inclusive else .exclusive,
+            .col_mode = .exact,
+        };
     }
 
     fn endOfLineMotion(self: *Editor) MotionResult {
@@ -5939,13 +6002,30 @@ pub const Editor = struct {
         self.goal_col = displayCol(self.curLine(), self.cx);
     }
 
-    fn pageMove(self: *Editor, up: bool) void {
-        const delta = self.textRows();
-        if (up) {
-            self.cy = if (self.cy > delta) self.cy - delta else 0;
-        } else {
-            self.cy = @min(self.cy + delta, self.buf.lineCount() - 1);
+    /// The buffer line `n` screen rows away from `row`. With soft wrap a tall
+    /// line is worth several rows, so a page covers fewer lines than there are
+    /// rows on screen — which is what makes `Ctrl-f` land where it looks like
+    /// it should.
+    fn lineAfterRows(self: *Editor, row: usize, n: usize, up: bool) usize {
+        const last = self.buf.lineCount() - 1;
+        if (!self.wrapping()) return if (up) row -| n else @min(row + n, last);
+        var r = row;
+        var used: usize = 0;
+        while (used < n) {
+            if (up) {
+                if (r == 0) break;
+                r -= 1;
+            } else {
+                if (r >= last) break;
+                r += 1;
+            }
+            used += self.lineRows(r);
         }
+        return r;
+    }
+
+    fn pageMove(self: *Editor, up: bool) void {
+        self.cy = self.lineAfterRows(self.cy, self.textRows(), up);
         self.snapColumn();
         self.resetPending();
     }
@@ -5998,12 +6078,100 @@ pub const Editor = struct {
         return gutterFor(self.buf.lineCount());
     }
 
+    /// Soft-wrap: a line too long for the window continues on the next screen
+    /// row instead of scrolling the view sideways (vim's `wrap`). The top of a
+    /// window is always the start of a buffer line, which is also nvim's
+    /// default — partial scrolling of a tall line is its `smoothscroll`.
+    fn wrapping(_: *Editor) bool {
+        return config.settings.soft_wrap;
+    }
+
+    /// Screen rows buffer line `row` occupies. `cur_col` is the cursor's
+    /// display column when the cursor is on this line: at the wrap boundary
+    /// the caret needs a continuation row of its own to sit on, exactly as it
+    /// does in vim while you type past the edge.
+    /// `cap` bounds the answer: no caller can use more rows than the window
+    /// has, and stopping there keeps the width scan off the rest of a very
+    /// long line.
+    fn rowsForLine(buf: *const buffer.Buffer, cols: usize, row: usize, cur_col: ?usize, wrap: bool, cap: usize) usize {
+        if (!wrap or cols == 0 or row >= buf.lineCount()) return 1;
+        var w = displayWidthUpTo(buf.line(row), cap * cols);
+        if (cur_col) |cc| w = @max(w, cc + 1);
+        return @min(@max(1, (w + cols - 1) / cols), cap);
+    }
+
+    /// Rows the active window spends on buffer line `row`.
+    fn lineRows(self: *Editor, row: usize) usize {
+        return rowsForLine(self.buf, self.textCols(), row, if (row == self.cy) self.cursorDisplayCol() else null, self.wrapping(), @max(1, self.textRows()));
+    }
+
+    fn cursorDisplayCol(self: *Editor) usize {
+        return displayCol(self.curLine(), self.cx) + self.inlayCols(self.cy, self.cx);
+    }
+
+    /// Which wrapped segment of its own line the cursor sits on.
+    fn cursorSeg(self: *Editor) usize {
+        if (!self.wrapping()) return 0;
+        const cols = self.textCols();
+        return if (cols == 0) 0 else self.cursorDisplayCol() / cols;
+    }
+
+    /// The highest viewport top that still shows segment `seg` of line `row`,
+    /// given `rows` of space. Walks up from the cursor rather than down from
+    /// the current top, so a jump across a huge file costs O(rows), not
+    /// O(distance).
+    fn topShowing(self: *Editor, row: usize, seg: usize, rows: usize) usize {
+        var used = seg + 1;
+        var t = row;
+        while (t > 0) {
+            const h = self.lineRows(t - 1);
+            if (used + h > rows) break;
+            used += h;
+            t -= 1;
+        }
+        return t;
+    }
+
+    /// The buffer line displayed `n` screen rows below the top of the window
+    /// (clamped to the last line) — what `H`, `M` and `L` count in.
+    fn lineAtScreenRow(self: *Editor, n: usize) usize {
+        const last = self.buf.lineCount() - 1;
+        if (!self.wrapping()) return @min(self.top + n, last);
+        var row = self.top;
+        var used: usize = 0;
+        while (row < last) {
+            const h = self.lineRows(row);
+            if (used + h > n) break;
+            used += h;
+            row += 1;
+        }
+        return row;
+    }
+
+    /// Screen rows from the top of the window to the cursor.
+    fn cursorScreenRow(self: *Editor) usize {
+        if (!self.wrapping()) return self.cy -| self.top;
+        var used: usize = 0;
+        var row = self.top;
+        while (row < self.cy) : (row += 1) used += self.lineRows(row);
+        return used + self.cursorSeg();
+    }
+
+    /// The cursor's column within the window's text area.
+    fn cursorScreenCol(self: *Editor) usize {
+        const cur = self.cursorDisplayCol();
+        if (!self.wrapping()) return cur -| self.left;
+        const cols = self.textCols();
+        return if (cols == 0) 0 else cur % cols;
+    }
+
     /// Keep the cursor visible. Vim's rule (nvim-verified): a move that lands
     /// within half a window of the edge scrolls just far enough, but a longer
     /// jump redraws with the cursor *centred* — so after `100G` the cursor sits
     /// mid-screen, not glued to the bottom row where every wheel notch would
     /// drag it along.
     fn scroll(self: *Editor) void {
+        if (self.wrapping()) return self.scrollWrapped();
         const rows = self.textRows();
         const half = rows / 2;
         if (self.cy < self.top) {
@@ -6017,6 +6185,21 @@ pub const Editor = struct {
         const cur = displayCol(self.curLine(), self.cx) + self.inlayCols(self.cy, self.cx);
         if (cur < self.left) self.left = cur;
         if (cur >= self.left + cols) self.left = cur - cols + 1;
+    }
+
+    /// The same rule counted in screen rows: with wrap there is no horizontal
+    /// scrolling, and one buffer line can be worth many rows.
+    fn scrollWrapped(self: *Editor) void {
+        self.left = 0;
+        const rows = self.textRows();
+        const seg = self.cursorSeg();
+        if (self.cy < self.top) {
+            self.top = if (self.top - self.cy > rows / 2) self.topShowing(self.cy, seg, (rows + 1) / 2) else self.cy;
+            return;
+        }
+        const min_top = self.topShowing(self.cy, seg, rows);
+        if (self.top < min_top)
+            self.top = if (min_top - self.top > rows / 2) self.topShowing(self.cy, seg, (rows + 1) / 2) else min_top;
     }
 
     /// The viewport top that centres the cursor line: nvim keeps
@@ -6409,10 +6592,23 @@ pub const Editor = struct {
         const tinted = self.diffTinted(w);
         var b: [16]u8 = undefined;
         var r: usize = 0;
+        var file_row = view.top;
+        // With soft wrap one buffer line can fill several screen rows, so the
+        // walk is over (line, segment) pairs; without it every line is one row
+        // and `seg` never leaves 0.
+        var seg: usize = 0;
+        var height: usize = 1; // recomputed as each new buffer line starts
         while (r < text_rows) : (r += 1) {
-            const file_row = view.top + r;
             self.beginSeg(w.gy + r, w.gx);
             try self.emit(try std.fmt.bufPrint(&b, "\x1b[{d};{d}H", .{ w.gy + r, w.gx }));
+            if (file_row >= view.buf.lineCount()) {
+                try self.setBg(th.bg);
+                try self.setFg(th.fg_dim);
+                try self.emit("~");
+                try self.emitSpaces(w.gw - 1);
+                file_row += 1;
+                continue;
+            }
             const is_cur = view.active and file_row == view.cy;
             var row_bg = if (is_cur) th.cursorline else th.bg;
             if (tinted and !is_cur) {
@@ -6425,13 +6621,13 @@ pub const Editor = struct {
                 }
             }
             try self.setBg(row_bg);
-            if (file_row < view.buf.lineCount()) {
-                try self.emitGutter(&view, file_row);
-                try self.emitLine(&view, file_row, row_bg);
-            } else {
-                try self.setFg(th.fg_dim);
-                try self.emit("~");
-                try self.emitSpaces(w.gw - 1);
+            if (seg == 0) try self.emitGutter(&view, file_row) else try self.emitWrapGutter(&view);
+            try self.emitLine(&view, file_row, row_bg, seg);
+            if (seg == 0) height = rowsForLine(view.buf, view.cols, file_row, if (is_cur) self.cursorDisplayCol() else null, self.wrapping(), @max(1, text_rows));
+            seg += 1;
+            if (seg >= height) {
+                seg = 0;
+                file_row += 1;
             }
         }
         if (self.wins.items.len > 1) try self.emitWinStatus(w, view);
@@ -6454,6 +6650,17 @@ pub const Editor = struct {
         const shown = @min(seg.len, w.gw);
         try self.emit(seg[0..shown]);
         if (shown < w.gw) try self.emitSpaces(w.gw - shown);
+    }
+
+    /// The gutter of a wrapped continuation row: no line number (it is the
+    /// same line), just a dim marker so a wrapped line reads differently from
+    /// a new one.
+    fn emitWrapGutter(self: *Editor, view: *const View) !void {
+        if (view.gutter == 0) return;
+        try self.setFg(theme.current.indent_guide);
+        try self.emitSpaces(view.gutter - 2);
+        try self.emit("\u{21B3}"); // ↳
+        try self.emit(" ");
     }
 
     fn gutterFor(line_count: usize) usize {
@@ -6548,6 +6755,7 @@ pub const Editor = struct {
 
     fn render(self: *Editor) !void {
         var sp = log.Span.start();
+        self.style_buf_of = null; // styles are per frame; the text may have changed
         self.frame.clearRetainingCapacity();
         self.cur_fg = null;
         self.cur_bg = null;
@@ -7053,10 +7261,10 @@ pub const Editor = struct {
         const label = sig.label[0 .. std.mem.indexOfScalar(u8, sig.label, '\n') orelse sig.label.len];
         if (label.len == 0) return;
 
-        const cur_row = self.cur.gy + (self.cy - self.top); // 1-based screen row of cursor
+        const cur_row = self.cur.gy + self.cursorScreenRow(); // 1-based screen row of cursor
         const row = if (cur_row > 1) cur_row - 1 else cur_row + 1;
         self.markOverlayRows(row, row);
-        const cur_col = self.cur.gx + gutter + (displayCol(self.curLine(), self.cx) - self.left);
+        const cur_col = self.cur.gx + gutter + self.cursorScreenCol();
         const col = @max(@as(usize, 1), cur_col);
         if (col > self.win.cols) return;
         const avail = self.win.cols - col + 1; // cells from `col` to the screen edge
@@ -7115,7 +7323,7 @@ pub const Editor = struct {
             width = @max(width, @min(label.len + 2, 40));
         }
 
-        const rel = self.cy - self.top; // cursor row within the window (0-based)
+        const rel = self.cursorScreenRow(); // cursor row within the window (0-based)
         // Below the cursor if it fits in the window, else above.
         const start_row = if (rel + 1 + height <= rows)
             self.cur.gy + rel + 1
@@ -7123,7 +7331,7 @@ pub const Editor = struct {
             self.cur.gy + rel - height
         else
             self.cur.gy;
-        const col = @max(@as(usize, 1), self.cur.gx + gutter + (displayCol(self.curLine(), self.cx) - self.left));
+        const col = @max(@as(usize, 1), self.cur.gx + gutter + self.cursorScreenCol());
         self.markOverlayRows(start_row, start_row + height - 1);
 
         var b: [16]u8 = undefined;
@@ -7188,12 +7396,19 @@ pub const Editor = struct {
         try self.emit(" ");
     }
 
-    fn emitLine(self: *Editor, view: *const View, row: usize, row_bg: Color) !void {
+    fn emitLine(self: *Editor, view: *const View, row: usize, row_bg: Color, seg: usize) !void {
         const th = theme.current;
         const line = view.buf.line(row);
         const cols = view.cols;
-        self.style_buf.resize(self.gpa, line.len) catch {};
-        if (self.style_buf.items.len == line.len) {
+        // Styling a line is O(line); with soft wrap the same line is drawn once
+        // per screen row it fills, so the result is kept until another line (or
+        // another buffer) needs the buffer. On a 1.8 MB single-line file this
+        // is the difference between 430 ms and a few ms per frame.
+        const styled = self.style_row == row and self.style_buf_of == view.buf and self.style_buf.items.len == line.len;
+        if (!styled) self.style_buf.resize(self.gpa, line.len) catch {};
+        if (!styled and self.style_buf.items.len == line.len) {
+            self.style_row = row;
+            self.style_buf_of = view.buf;
             if (view.has_ts and row < view.ts_line_starts.len) {
                 // Tree-sitter: read this line's styles out of the visible-range
                 // buffer, which starts at document byte `ts_vis_start`.
@@ -7260,7 +7475,10 @@ pub const Editor = struct {
         }
         var mi: usize = 0;
 
-        const left = view.left;
+        // Wrapping renders the slice of the line belonging to this screen row;
+        // otherwise the window is the horizontal scroll position. Everything
+        // below already clips to [left, right), so this is the whole of it.
+        const left = if (self.wrapping()) seg * cols else view.left;
         const right = left + cols;
         var dc: usize = 0;
         var i: usize = 0;
@@ -7318,7 +7536,7 @@ pub const Editor = struct {
         // window never leaks stale cells or the contents of a neighbour to its
         // right. A secondary cursor sitting at end-of-line is drawn here.
         const eol_cursor = if (ecol) |ec| ec == line.len else false;
-        const eol_col = displayCol(line, line.len);
+        const eol_col = if (eol_cursor) displayCol(line, line.len) else 0; // O(line): only when needed
         var shown: usize = if (dc > left) @min(dc - left, cols) else 0;
         while (shown < cols) : (shown += 1) {
             const at_cursor = eol_cursor and (left + shown == eol_col);
@@ -7605,9 +7823,8 @@ pub const Editor = struct {
             col = self.sbX() + 1;
         } else {
             // Relative to the active window's screen region.
-            row = self.cur.gy + (self.cy - self.top);
-            const cur = displayCol(self.curLine(), self.cx) + self.inlayCols(self.cy, self.cx);
-            col = self.cur.gx + gutter + (cur - self.left);
+            row = self.cur.gy + self.cursorScreenRow();
+            col = self.cur.gx + gutter + self.cursorScreenCol();
         }
         try self.emitFmt("\x1b[{d};{d}H", .{ row, col });
     }
@@ -8154,6 +8371,21 @@ fn displayCol(line: []const u8, upto: usize) usize {
     var dc: usize = 0;
     var i: usize = 0;
     while (i < upto and i < line.len) {
+        const d = unicode.decode(line[i..]);
+        dc += cellWidth(d.cp, dc);
+        i += d.len;
+    }
+    return dc;
+}
+
+/// Display width of `line`, abandoned once it passes `limit`. Soft wrap only
+/// ever needs to know how many screen rows a line fills, and a window has a
+/// bounded number of rows — so a minified one-line file costs O(screen) per
+/// frame here instead of O(document).
+fn displayWidthUpTo(line: []const u8, limit: usize) usize {
+    var dc: usize = 0;
+    var i: usize = 0;
+    while (i < line.len and dc <= limit) {
         const d = unicode.decode(line[i..]);
         dc += cellWidth(d.cp, dc);
         i += d.len;

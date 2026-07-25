@@ -44,6 +44,10 @@ pub const Settings = struct {
     /// severity-coloured virtual text — helix/nvim call this virtual_text).
     /// The gutter sign and the statusline message appear either way.
     inline_diagnostics: bool = true,
+    /// Wrap a line too long for the window onto the next screen row instead
+    /// of scrolling sideways (vim's `wrap`, on by default there too). `j`/`k`
+    /// still move by buffer line, as in vim; `gj`/`gk` move by screen row.
+    soft_wrap: bool = true,
     /// Ask the language server to format the document before every `:w`
     /// (skipped when no server is running or it cannot format). AstroNvim and
     /// Helix both format on save by default; `:format` formats on demand.
@@ -114,6 +118,11 @@ pub const default_text =
     \\# regardless). Set false for a quieter buffer.
     \\inline_diagnostics = true
     \\
+    \\# Wrap long lines onto the next screen row instead of scrolling the view
+    \\# sideways (vim's 'wrap'). j/k still step whole buffer lines; gj/gk step
+    \\# screen rows. Set false to scroll horizontally instead.
+    \\soft_wrap = true
+    \\
     \\# Ask the language server to format the document on :w (format-on-save,
     \\# as AstroNvim and Helix do). Only applies when a server is running and
     \\# advertises formatting; :format always formats on demand.
@@ -162,6 +171,9 @@ pub fn apply(text: []const u8) void {
         } else if (std.mem.eql(u8, key, "completion_delay_ms")) {
             const n = std.fmt.parseInt(usize, value, 10) catch continue;
             if (n <= 10_000) settings.completion_delay_ms = n;
+        } else if (std.mem.eql(u8, key, "soft_wrap")) {
+            if (std.mem.eql(u8, value, "true")) settings.soft_wrap = true;
+            if (std.mem.eql(u8, value, "false")) settings.soft_wrap = false;
         } else if (std.mem.eql(u8, key, "inline_diagnostics")) {
             if (std.mem.eql(u8, value, "true")) settings.inline_diagnostics = true;
             if (std.mem.eql(u8, value, "false")) settings.inline_diagnostics = false;

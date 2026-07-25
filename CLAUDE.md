@@ -234,9 +234,14 @@ The editor itself has no runtime dependencies.
 Modal, vi-like, with a comprehensive vim keymap. A command is `[count]` then
 either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 
-- **Motions:** `h j k l`, `w W b B e E`, `0 ^ $`, `gg G {n}G`, `f F t T` + `; ,`,
+- **Motions:** `h j k l`, `w W b B e E`, `0 ^ $`, `gg G {n}G`, `f F t T` + `; ,`
+  (counted: `3fa` lands on the third, `d2fa` multiplies the counts),
   `%`, `{ }` (paragraph, jump motions), `H M L`, `Ctrl-d/u/f/b`,
-  arrows/Home/End/PageUp/Down. The normal-mode cursor never sits past the
+  arrows/Home/End/PageUp/Down. With soft wrap on, `gj`/`gk` step a *screen*
+  row and `g0`/`g$` reach the ends of one, while `j`/`k`/`0`/`$` keep their
+  buffer-line meaning (vim's split). `H M L`, `Ctrl-d/u/f/b` and the wheel all
+  count screen rows, so they land where they look like they should on wrapped
+  text. The normal-mode cursor never sits past the
   last character (vim's rule), so `$x`/`$dh`/`$d{` act on it. A jump landing
   more than half a window away redraws with the cursor **centred** (vim's rule,
   nvim-verified) — so it is not glued to the bottom row where every wheel notch
@@ -475,13 +480,25 @@ decoding.
 Runtime configuration is one documented file (see `config.zig`): theme,
 `tab_width`, `nerd_font`, `sidebar` (left/right), `relative_numbers`,
 `large_file_mb`, `autoindent`, `buffer_tabs`, `auto_completion`,
-`completion_delay_ms`, `inline_diagnostics`, `format_on_save`; `zedit --init-config` writes
+`completion_delay_ms`, `inline_diagnostics`, `soft_wrap`, `format_on_save`; `zedit --init-config` writes
 the annotated default.
 `zedit --tutor` opens the embedded interactive tutorial (`doc/tutor.txt`,
 embedded via `build.zig`).
 
 Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
 `editor.zig`.
+
+**Soft wrap** (`soft_wrap`, on by default as in vim) draws a line too long for
+the window on further screen rows, each marked with a dim `↳` in the gutter,
+instead of scrolling the view sideways; `soft_wrap = false` restores the
+horizontal scrolling. The top of a window is always the start of a buffer
+line — nvim's default too, its `smoothscroll` being the exception — which
+keeps the viewport a single `top` index. Two costs had to be contained,
+because a wrapped line is drawn once per row it fills: the per-line syntax
+styling is computed once and reused across the row's segments (`style_row`),
+and the line-width scan behind the row count stops after a window's worth of
+columns (`displayWidthUpTo`). Without the first, a 1.8 MB single-line file
+cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
 
 ## Zig 0.16 notes (the std API moved a lot here)
 
@@ -529,6 +546,10 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   modern ("very magic"-like), not vim's magic mode — `\(` groups etc. differ.
 - Highlighting is a per-line lexer (no cross-line block comments; a handful of
   languages). Tree-sitter is the upgrade path now that deps are allowed.
+- Soft wrap has no indent retention (a continuation row starts at column 0,
+  not at the line's indent) and no `text-width`/wrap column: it wraps at the
+  window edge, mid-word. `gj`/`gk` are cursor motions; as operator targets
+  (`dgj`) they act charwise rather than vim's screen-linewise.
 - Multi-cursor is one-caret-per-line (column editing); it does not do
   per-caret line splits/joins or arbitrary selection-based multi-edit.
 - The project-wide grep picker is literal, not regex (in-buffer search is

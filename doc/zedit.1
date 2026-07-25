@@ -146,6 +146,11 @@ only while typing, so an idle editor still blocks in
 .BR poll (2)
 and uses no CPU.
 .TP
+.B soft_wrap
+(default true). Continue a line too long for the window on the next screen
+row, marked with a dim arrow in the gutter, instead of scrolling the view
+sideways. Set false for horizontal scrolling.
+.TP
 .B inline_diagnostics
 .BR true / false
 (default true). Show each diagnostic's message inline at the end of its line,
@@ -201,6 +206,13 @@ V\-LINE and V\-BLOCK for selections, COMMAND for the
 line, and PICKER for the fuzzy finders.
 .B Esc
 returns to NORMAL mode.
+.TP
+.B gj gk g0 g$
+Move by screen row rather than buffer line: down, up, to the start and to
+the end of the row the cursor is on. With
+.B soft_wrap
+off, or on a line that fits, they are exactly
+.BR j ", " k ", " 0 " and " $ .
 .TP
 .B { }
 Previous / next paragraph (an empty line). Both are jump motions, so

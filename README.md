@@ -34,6 +34,8 @@
   - Jumplist: `Ctrl-o` / `Ctrl-i` walk back and forward through jumps
     (searches, `G`, marks, `gd`, buffer switches — cross-buffer)
   - Text objects incl. paragraphs (`ip`/`ap`, `{`/`}`), also in visual mode
+  - Soft wrap (on by default, `soft_wrap = false` to scroll sideways instead),
+    with `gj`/`gk`/`g0`/`g$` for screen-row movement
   - Tree-sitter structural objects: `af`/`if` (function), `ac`/`ic` (class,
     struct, impl), `aa`/`ia` (argument, with its comma), `aC`/`iC` (comment,
     across a run of comment lines), and `]f`/`[f` to step between functions
@@ -157,7 +159,7 @@ Format is `key = value` with `#` comments; unknown keys are ignored and a
 missing file just means defaults. Settings today: `theme`, `tab_width`,
 `nerd_font`, `sidebar`, `relative_numbers`, `large_file_mb`, `autoindent`,
 `buffer_tabs`, `auto_completion`, `completion_delay_ms`,
-`inline_diagnostics`, `format_on_save`.
+`inline_diagnostics`, `soft_wrap`, `format_on_save`.
 
 Every CLI option has a short and a long form (`-h/--help`, `-v/--version`,
 `-l/--log`, `-s/--lsp`, `-c/--config`, `-t/--tutor`, `-b/--benchmark`,

@@ -85,7 +85,9 @@ below and prioritised in `TODO.md`.
 
 **Other**
 - Undo tree with time travel — Helix's history is a tree (`:earlier`/`:later`, `Alt-u`/`Alt-U`); zedit is capped linear snapshots (note: on-disk undo *persistence* is not in Helix stable either) — **medium**
-- Soft-wrap (with wrap indicators, indent retention, `text-width`) — **medium**
+- ~~Soft-wrap~~ — **DONE** (`soft_wrap`, on by default, with a `↳` continuation
+  marker and `gj`/`gk`/`g0`/`g$`); indent retention and a `text-width` wrap
+  column are not there — **low**
 - Smart-case search + configurable wrap-around — **medium**
 - ~~Tree-sitter textobjects~~ — **DONE** for functions and types (`af`/`if`, `ac`/`ic`, `]f`/`[f`); parameter/comment objects remain — **low**
 - EditorConfig support (25.07) — **low**

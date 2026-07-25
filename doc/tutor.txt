@@ -372,6 +372,10 @@
      or above; typing edits every line at once; Esc collapses them.
    - Scrolling:  Ctrl-d / Ctrl-u  move by half a page, and the mouse
      wheel scrolls three lines at a time.
+   - Long lines wrap onto the next screen row, marked with a small arrow
+     in the gutter.  j and k still step whole lines, as in vim;  gj  and
+     gk  step one screen row, and  g0 / g$  reach the ends of one.  Put
+     soft_wrap = false  in your config to scroll sideways instead.
    - Themes:  :theme  or  Space f t  switches between the five built-in
      palettes;  zedit --init-config  writes a commented config file.
    - Staying current:  :update  asks whether a newer zedit was released

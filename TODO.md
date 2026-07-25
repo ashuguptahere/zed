@@ -15,7 +15,9 @@ behind the roadmap items.
 The shortlist is done; these are the next-highest gaps from
 `doc/COMPARISON.md`, in rough priority order.
 
-- [ ] Soft-wrap; undo tree (`:earlier`/`:later`).
+- [ ] Undo tree (`:earlier`/`:later`).
+- [ ] Soft wrap: indent retention on continuation rows, and a `text-width`
+      wrap column (it wraps at the window edge, mid-word).
 
 
 ## Next (in order)
@@ -155,6 +157,12 @@ The shortlist is done; these are the next-highest gaps from
       headless-nvim ground truth: visual-mode `a` objects behaved like `i`
       ones, counted find-char (`3fa`, `d3fa`, `2;`) ignored the count, and the
       grep picker missed every file the project walk had not yet delivered.
+- [x] Soft wrap (`soft_wrap`, on by default): continuation rows with a `↳`
+      gutter marker, `gj`/`gk`/`g0`/`g$`, and screen-row counting for `H`/`M`/
+      `L`, `Ctrl-d`/`u`/`f`/`b` and the wheel. Drawing a line once per row it
+      fills exposed two O(line) costs per row; caching the styling and
+      bounding the width scan took a 1.8 MB one-line file from 82 ms a frame
+      to 4 ms.
 - [x] Grep picker narrows instead of rescanning (~6 ms -> 4 µs per keystroke
       once the project has been scanned); equivalence pinned by tests that
       fail against a naive display-text filter.

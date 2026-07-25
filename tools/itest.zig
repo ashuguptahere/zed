@@ -24,6 +24,7 @@ const scenarios = .{
     .{ "ssh", @import("scenarios/ssh.zig") },
     .{ "lsp", @import("scenarios/lsp.zig") },
     .{ "cpu", @import("scenarios/cpu.zig") },
+    .{ "wrap", @import("scenarios/wrap.zig") },
 };
 
 pub fn main(init: std.process.Init) !void {
