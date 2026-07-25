@@ -156,6 +156,37 @@ pub const Session = struct {
         return o.toOwnedSlice(gpa);
     }
 
+    /// A mark into the output stream, for asserting on only what arrives next.
+    pub fn mark(self: *Session) usize {
+        return self.out.items.len;
+    }
+
+    /// Whether `needle` appears in the output produced since `from` (ANSI
+    /// stripped) — lets a test assert on one frame instead of the whole
+    /// session, e.g. that an indicator appears and then disappears.
+    pub fn containsPlainSince(self: *Session, gpa: std.mem.Allocator, from: usize, needle: []const u8) bool {
+        const s = self.out.items;
+        const start = @min(from, s.len);
+        var o: std.ArrayList(u8) = .empty;
+        defer o.deinit(gpa);
+        var i: usize = start;
+        while (i < s.len) {
+            if (s[i] == 0x1b and i + 1 < s.len and s[i + 1] == '[') {
+                i += 2;
+                while (i < s.len and !std.ascii.isAlphabetic(s[i])) i += 1;
+                i += 1;
+                continue;
+            }
+            if (s[i] == 0x1b) {
+                i += 2;
+                continue;
+            }
+            o.append(gpa, s[i]) catch return false;
+            i += 1;
+        }
+        return std.mem.indexOf(u8, o.items, needle) != null;
+    }
+
     pub fn containsPlain(self: *Session, gpa: std.mem.Allocator, needle: []const u8) bool {
         const p = self.plain(gpa) catch return false;
         defer gpa.free(p);

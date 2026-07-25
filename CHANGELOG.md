@@ -43,6 +43,7 @@ Notable changes to zedit. Dates are commit dates.
 - Renamed the editor from `zed` to `zedit` (zig-editor).
 - Ported the pty test harnesses from Python to Zig — `zig build itest` now needs nothing beyond the toolchain.
 
+- Partial commands are shown as you type them at the right of the statusline (vim's `showcmd`): `d`, `di`, `2d`, `"ay`, `^W`, cleared the instant the command executes; the macro-recording marker shares the slot.
 - Inline diagnostics: each LSP diagnostic's message renders after the code on its line as dim, severity-coloured virtual text (config `inline_diagnostics`, on by default), so every problem on screen is visible at once.
 - Remote editing over SSH: `zedit ssh://[user@]host[:port]/path`, `:e ssh://…` and `:ssh host[/dir]` edit files on another machine with nothing installed there — one `ssh` per operation (`cat` to read, `cat >` to write, `find` to list a directory into the fuzzy picker), remote paths shell-quoted, `BatchMode=yes` so a prompting host fails fast, and `ControlMaster` connection reuse.
 - Startup screen listing recently opened files and directories (`j`/`k`, `Enter`, `1`-`9`), backed by `$XDG_STATE_HOME/zedit/recent` — capped, de-duplicated, with vanished paths pruned on load.
@@ -55,6 +56,7 @@ Notable changes to zedit. Dates are commit dates.
 
 ### Fixed
 
+- Long jumps (`G`, `100G`, a search hit) now redraw with the cursor centred, as vim does. It used to land on the bottom row, so every mouse-wheel notch immediately dragged it — wheel scrolling now matches nvim exactly at equal window heights.
 - The normal-mode cursor no longer sits past the last character (vim's rule), fixing a whole class of off-by-one bugs after `$`: `$x` did nothing, and `$dh` / `$d0` / `$db` / `$dF` all deleted one character too many.
 - `:qa` now refuses to quit while any buffer has unsaved changes (nvim's E37 behaviour, pinned in `vim_compat`); `:qa!` discards.
 - `:wa` names failed saves ("1 written, 1 failed — ro.txt: permission denied") instead of skipping them silently; `:w` failures read as plain English instead of raw error enums.
@@ -63,6 +65,8 @@ Notable changes to zedit. Dates are commit dates.
 - Mangled roff escapes in the jumplist man-page entry.
 
 ### Performance
+
+- The vendored tree-sitter C is compiled once into a shared static library instead of once per artifact: `zig build test` no longer re-pays the whole C build (8-core measurements: 2.80 s → 1.38 s; cold build 3.13 s → 2.86 s; 22 → 11 parser objects).
 
 - Zero-copy buffer loading: lines borrow from one shared read buffer and copy on first edit.
 - Huge-file handling: files up to 2 GB open, and above `large_file_mb` (64 MB default) highlighting, LSP, and git signs are skipped; literal search takes a one-pass whole-source SIMD fast path (a 476 MB / 10M-line file opens in ~375 ms and searches in ~196 ms).

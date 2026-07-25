@@ -305,6 +305,10 @@
 
   :w writes back over the same connection.
 
+  Watch the right of the statusline while you type a command: it shows
+  what you have entered so far ( d , then di , then diw runs and it
+  clears), so a half-finished command is never a mystery.
+
   Paragraphs are text objects too:  }  and  {  jump to the next and
   previous blank line, and  dip  /  dap  delete the paragraph you are
   in (dap also takes the blank line after it).  Try  }  a few times in

@@ -102,5 +102,10 @@ behind the roadmap items.
 - [x] `:update` / `--check-update` against the newest release tag.
 - [x] Shortlist #8: inline diagnostics (dim severity-coloured virtual text
       after the code; `inline_diagnostics` config, on by default).
+- [x] Scroll/jump centring fixed (nvim-verified): wheel scrolling no longer
+      drags the cursor from the bottom row; 4 pinned cases.
+- [x] `showcmd`: the partial command shown as typed in the statusline.
+- [x] Build speed: tree-sitter C compiled once into a static library shared by
+      all artifacts (`zig build test` 2.80 s → 1.38 s on 8 cores).
 - [x] Confirmed the toolchain is current: Zig 0.16.0 is the latest stable
       (master is 0.17.0-dev), so no upgrade was needed.

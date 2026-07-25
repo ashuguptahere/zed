@@ -56,6 +56,104 @@ pub fn run(ctx: *h.Ctx) !void {
     case(ctx, "gcc twice toggles back", &.{ "gcc", "gcc", ":wq", CR }, "abc\n", "abc\n");
     case(ctx, "gcj comments two lines", &.{ "gcj", ":wq", CR }, "a\nb\nc\n", "// a\n// b\nc\n");
 
+    // ---- showcmd: the partial command as typed (vim's 'showcmd') ----
+    // The indicator accumulates keys while a command is incomplete and clears
+    // the instant it executes, matching nvim (whose 'showcmd' is on by
+    // default). Assertions look only at the frames each step produced.
+    {
+        const path = "/tmp/zedit_it_showcmd.txt";
+        h.writeFile(ctx.io, path, "xxx yyy zzz\nqqq\n");
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, path }, .term = "xterm-256color" });
+        defer s.finish();
+        s.drain(400);
+
+        var m = s.mark();
+        s.send("2");
+        s.drain(250);
+        ctx.check("showcmd shows a pending count", s.containsPlainSince(ctx.gpa, m, "2 "));
+
+        m = s.mark();
+        s.send("d");
+        s.drain(250);
+        ctx.check("showcmd shows count + operator", s.containsPlainSince(ctx.gpa, m, "2d "));
+
+        m = s.mark();
+        s.send("\x1b"); // abandon it
+        s.drain(250);
+        ctx.check("Esc clears the indicator", !s.containsPlainSince(ctx.gpa, m, "2d "));
+
+        m = s.mark();
+        s.send("\"a");
+        s.drain(250);
+        ctx.check("showcmd shows a pending register", s.containsPlainSince(ctx.gpa, m, "\"a "));
+
+        m = s.mark();
+        s.send("y");
+        s.drain(250);
+        ctx.check("showcmd shows register + operator", s.containsPlainSince(ctx.gpa, m, "\"ay "));
+
+        m = s.mark();
+        s.send("y"); // "ayy completes
+        s.drain(250);
+        ctx.check("executing clears the indicator", !s.containsPlainSince(ctx.gpa, m, "\"ay "));
+
+        m = s.mark();
+        s.send("\x17"); // Ctrl-w: a pending window command shows as ^W
+        s.drain(250);
+        ctx.check("control keys show in caret notation", s.containsPlainSince(ctx.gpa, m, "^W "));
+        s.send("\x1b");
+        s.drain(150);
+
+        m = s.mark();
+        s.send("qa"); // start recording into register a
+        s.drain(250);
+        ctx.check("recording marker still shows", s.containsPlainSince(ctx.gpa, m, "REC @a"));
+        s.send("q:q!\r");
+        s.drain(300);
+    }
+
+    // ---- viewport centring + wheel drag (nvim-verified) ----
+    // A jump further than half a window centres the cursor line, so it is not
+    // glued to the bottom row where every wheel notch would drag it along.
+    // Expected cursor lines came from real nvim given the same 23 text rows
+    // (nvim needs a 25-row terminal for that, since it spends a row on its
+    // separate command line).
+    {
+        const path = "/tmp/zedit_it_scroll.txt";
+        var content: std.ArrayList(u8) = .empty;
+        defer content.deinit(ctx.gpa);
+        var i: usize = 1;
+        while (i <= 200) : (i += 1) {
+            var lb: [8]u8 = undefined;
+            content.appendSlice(ctx.gpa, std.fmt.bufPrint(&lb, "L{d:0>3}\n", .{i}) catch break) catch break;
+        }
+        const WHEEL_UP = "\x1b[<64;5;5M";
+        const WHEEL_DOWN = "\x1b[<65;5;5M";
+        const Case = struct { name: []const u8, keys: []const []const u8, line: usize };
+        const cases = [_]Case{
+            .{ .name = "one wheel notch leaves the cursor put", .keys = &.{ "100G", WHEEL_UP, "x" }, .line = 100 },
+            .{ .name = "wheel up drags only at the window edge", .keys = &.{ "100G", WHEEL_UP ** 5, "x" }, .line = 96 },
+            .{ .name = "wheel up to the top drags the cursor with it", .keys = &.{ "100G", WHEEL_UP ** 20, "x" }, .line = 51 },
+            .{ .name = "wheel down drags the cursor at the top edge", .keys = &.{ "100G", WHEEL_DOWN ** 5, "x" }, .line = 104 },
+        };
+        for (cases) |c| {
+            h.writeFile(ctx.io, path, content.items);
+            var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, path } });
+            defer s.finish();
+            s.drain(400);
+            s.sendKeys(c.keys);
+            s.drain(300);
+            s.send(":wq\r");
+            s.drain(400);
+            const text = h.readFile(ctx.gpa, ctx.io, path);
+            defer ctx.gpa.free(text);
+            // The edited line lost its leading "L".
+            var lb: [16]u8 = undefined;
+            const edited = std.fmt.bufPrint(&lb, "\n{d:0>3}\n", .{c.line}) catch continue;
+            ctx.check(c.name, std.mem.indexOf(u8, text, edited) != null);
+        }
+    }
+
     // ---- mouse wheel ----
     // Three wheel-down reports (SGR mouse) scroll the viewport 9 lines,
     // bringing off-screen lines into view and dragging the cursor to stay

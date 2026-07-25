@@ -138,6 +138,19 @@ appear either way.
 when the server advertises formatting;
 .B :format
 formats on demand.
+.SH "PARTIAL COMMANDS"
+The command being typed appears at the right of the statusline until it
+executes \(em
+.BR d ,
+.BR di ,
+.BR 2d ,
+.BR \(dqay ,
+.B ^W
+\(em vim's
+.BR showcmd .
+A macro recording marker
+.RB ( REC\ @a )
+shares the same slot.
 .SH MODES
 zedit is modal: NORMAL for movement and commands, INSERT for typing, VISUAL and
 V\-LINE and V\-BLOCK for selections, COMMAND for the
@@ -191,8 +204,12 @@ quits, and any other key dismisses the screen. The list is kept in
 .IR ~/.local/state/zedit/recent ),
 newest first, capped at 30 entries, with vanished paths pruned on load.
 .SH MOUSE
-The wheel scrolls the focused window three lines per notch (cursor dragged
-along only as needed to stay visible). Clicks are ignored; select text with
+The wheel scrolls the focused window three lines per notch (the cursor is
+dragged along only when the viewport would leave it off screen). A jump further
+than half a window \(em
+.BR G ,
+.BR 100G ,
+a search hit \(em redraws with the cursor centred, as vim does. Clicks are ignored; select text with
 your terminal's usual
 .B Shift
 +drag.

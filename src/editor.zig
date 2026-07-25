@@ -267,6 +267,11 @@ pub const Editor = struct {
     search_origin: Pos, // cursor when a / or ? search began (for incremental preview)
     prev_search: std.ArrayList(u8), // last_search saved on entry, restored if cancelled
 
+    // showcmd: the partial command as typed (vim's 'showcmd'), shown at the
+    // right of the statusline and cleared the moment the command completes.
+    showcmd: [12]u8,
+    showcmd_len: usize,
+
     // command/search line
     cmd: std.ArrayList(u8),
     cmd_kind: CmdKind,
@@ -462,6 +467,8 @@ pub const Editor = struct {
             .search_re_pat = .empty,
             .search_origin = .{ .row = 0, .col = 0 },
             .prev_search = .empty,
+            .showcmd = undefined,
+            .showcmd_len = 0,
             .cmd = .empty,
             .ex_hist = .empty,
             .search_hist = .empty,
@@ -816,8 +823,51 @@ pub const Editor = struct {
             else => {},
         }
         if (!self.in_dot) self.dotCapturePre(raw);
+        self.showcmdPush(raw);
         try self.handleKey(k);
         if (!self.in_dot) self.dotCapturePost();
+        self.showcmdSettle();
+    }
+
+    /// Record a key as part of the command being typed. Only the buffer modes
+    /// build a command; insert mode and the prompts show their own text.
+    fn showcmdPush(self: *Editor, raw: []const u8) void {
+        switch (self.mode) {
+            .normal, .visual, .visual_line, .visual_block => {},
+            .insert, .command, .picker => return,
+        }
+        for (raw) |b| {
+            // Printable keys read back as themselves; control bytes as ^X so
+            // Ctrl-w or Esc stay legible in the indicator.
+            var enc: [2]u8 = undefined;
+            const bytes: []const u8 = if (b >= 0x20 and b != 0x7f)
+                enc[0..1]
+            else blk: {
+                enc[0] = '^';
+                enc[1] = if (b == 0x1b) '[' else b + '@';
+                break :blk enc[0..2];
+            };
+            if (bytes.len == 1) enc[0] = b;
+            if (self.showcmd_len + bytes.len > self.showcmd.len) {
+                // Keep the tail, like vim's 10-column indicator.
+                const drop = self.showcmd_len + bytes.len - self.showcmd.len;
+                std.mem.copyForwards(u8, self.showcmd[0 .. self.showcmd_len - drop], self.showcmd[drop..self.showcmd_len]);
+                self.showcmd_len -= drop;
+            }
+            @memcpy(self.showcmd[self.showcmd_len..][0..bytes.len], bytes);
+            self.showcmd_len += bytes.len;
+        }
+    }
+
+    /// Drop the indicator once the command has been executed (or abandoned):
+    /// what remains on screen is only ever a *pending* command.
+    fn showcmdSettle(self: *Editor) void {
+        switch (self.mode) {
+            .normal, .visual, .visual_line, .visual_block => if (self.atNeutral()) {
+                self.showcmd_len = 0;
+            },
+            .insert, .command, .picker => self.showcmd_len = 0,
+        }
     }
 
     /// Wheel scrolling: move the viewport three lines (nvim's default),
@@ -4877,15 +4927,31 @@ pub const Editor = struct {
         return gutterFor(self.buf.lineCount());
     }
 
+    /// Keep the cursor visible. Vim's rule (nvim-verified): a move that lands
+    /// within half a window of the edge scrolls just far enough, but a longer
+    /// jump redraws with the cursor *centred* — so after `100G` the cursor sits
+    /// mid-screen, not glued to the bottom row where every wheel notch would
+    /// drag it along.
     fn scroll(self: *Editor) void {
         const rows = self.textRows();
-        if (self.cy < self.top) self.top = self.cy;
-        if (self.cy >= self.top + rows) self.top = self.cy - rows + 1;
+        const half = rows / 2;
+        if (self.cy < self.top) {
+            self.top = if (self.top - self.cy > half) self.centredTop(rows) else self.cy;
+        } else if (self.cy >= self.top + rows) {
+            const bot = self.top + rows - 1;
+            self.top = if (self.cy - bot > half) self.centredTop(rows) else self.cy - rows + 1;
+        }
 
         const cols = self.textCols();
         const cur = displayCol(self.curLine(), self.cx) + self.inlayCols(self.cy, self.cx);
         if (cur < self.left) self.left = cur;
         if (cur >= self.left + cols) self.left = cur - cols + 1;
+    }
+
+    /// The viewport top that centres the cursor line: nvim keeps
+    /// `(rows-1)/2` lines above it, clamped at the start of the buffer.
+    fn centredTop(self: *Editor, rows: usize) usize {
+        return self.cy -| (rows -| 1) / 2;
     }
 
     // === git diff views ====================================================
@@ -6262,7 +6328,8 @@ pub const Editor = struct {
         const pctseg = std.fmt.bufPrint(&pb, " {d}% ", .{pct}) catch " ";
         const right_w = 1 + rseg.len + 1 + pctseg.len;
 
-        // Middle: status message, else the in-progress command (showcmd).
+        // Middle: status message on the left, the partial command (showcmd)
+        // right-aligned against the position segment, as vim places it.
         var mb: [256]u8 = undefined;
         const middle = if (self.status.items.len > 0)
             self.status.items
@@ -6271,13 +6338,24 @@ pub const Editor = struct {
         else if (self.extra.items.len > 0)
             (std.fmt.bufPrint(&mb, "{d} cursors", .{self.extra.items.len + 1}) catch "")
         else
-            self.pendingKeys(&mb);
+            "";
+        var pb2: [32]u8 = undefined;
+        const pending = self.pendingKeys(&pb2);
         const mid_w = if (cols > left_w + right_w) cols - left_w - right_w else 0;
         try self.setBg(th.status_bg);
         try self.setFg(th.fg_dim);
-        const mshow = @min(middle.len, mid_w);
+        // Reserve nothing when no command is pending, so status messages keep
+        // the full width they had before the indicator existed.
+        const pend_w = if (pending.len == 0) 0 else @min(pending.len + 1, mid_w);
+        const mshow = @min(middle.len, mid_w - pend_w);
         try self.emitSanitized(middle[0..mshow]);
-        try self.emitSpaces(mid_w - mshow);
+        try self.emitSpaces(mid_w - mshow - pend_w);
+        if (pend_w > 0) {
+            try self.setFg(th.builtin); // the indicator stands out from messages
+            try self.emitSanitized(pending[0 .. pend_w - 1]);
+            try self.setFg(th.fg_dim);
+            try self.emit(" ");
+        }
 
         try self.setBg(th.status_bg);
         try self.setFg(th.status_seg_bg);
@@ -6318,29 +6396,17 @@ pub const Editor = struct {
         };
     }
 
+    /// The statusline's right-hand indicator: a macro-recording marker plus the
+    /// keys of the command being typed (vim's 'showcmd' — `d`, `di`, `2d`,
+    /// `"a3y`, `^W` …), which clears as soon as the command runs.
     fn pendingKeys(self: *Editor, buf: []u8) []const u8 {
         var i: usize = 0;
         if (self.recording) |reg| i += (std.fmt.bufPrint(buf[i..], "REC @{c}  ", .{reg}) catch return buf[0..i]).len;
-        if (self.pending_register) |reg| i += (std.fmt.bufPrint(buf[i..], "\"{c}", .{reg}) catch return buf[0..i]).len;
-        if (self.count > 0) i += (std.fmt.bufPrint(buf[i..], "{d}", .{self.count}) catch return buf[0..i]).len;
-        const opc: ?u8 = switch (self.operator) {
-            .delete => 'd',
-            .change => 'c',
-            .yank => 'y',
-            .indent_right => '>',
-            .indent_left => '<',
-            .comment => 'g',
-            .surround => 's',
-            .none => null,
-        };
-        if (opc) |c| {
-            if (i < buf.len) {
-                buf[i] = c;
-                i += 1;
-            }
-        }
-        if (self.count2 > 0) i += (std.fmt.bufPrint(buf[i..], "{d}", .{self.count2}) catch return buf[0..i]).len;
-        return buf[0..i];
+        const keys = self.showcmd[0..self.showcmd_len];
+        const room = buf.len - i;
+        const n = @min(keys.len, room);
+        @memcpy(buf[i..][0..n], keys[keys.len - n ..]);
+        return buf[0 .. i + n];
     }
 
     fn placeCursor(self: *Editor, gutter: usize) !void {

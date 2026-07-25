@@ -149,9 +149,19 @@ CI runs `zig build test` + `zig build itest` on every push
 ReleaseFast binaries for Linux x86_64/aarch64 (static musl) and macOS
 x86_64/aarch64 and attaches them to a GitHub release (`release.yml`).
 
+Build times: the vendored tree-sitter C (19 translation units) is compiled
+**once** into a static library that every artifact links — attaching the C
+sources to each module instead made `zig build test` re-pay the whole C build
+(measured on 8 cores: cold build 3.13 s → 2.86 s, `zig build test` 2.80 s →
+1.38 s, parser objects 22 → 11). Keep it that way when adding grammars: they
+go on `ts_mod`, not on a consumer module. On Apple Silicon the same C compile
+dominates a cold build, so also check that Zig itself is the native aarch64
+build (an x86_64 Zig runs under Rosetta and is several times slower), and that
+`.zig-cache` sits on a local APFS volume excluded from Spotlight/antivirus
+scanning rather than in iCloud Drive or on a network share.
+
 `zig build` also installs the man page to `zig-out/share/man/man1/zedit.1`
-(source: `doc/zedit.1`); view it with `man ./doc/zedit.1`. The first build compiles
-the vendored tree-sitter C (~6s extra cold; cached afterwards).
+(source: `doc/zedit.1`); view it with `man ./doc/zedit.1`.
 
 Interactive behaviour can't be unit-tested without a terminal, so integration
 checks live in `tools/` and drive the built editor through a real pseudo-terminal
@@ -182,7 +192,10 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 - **Motions:** `h j k l`, `w W b B e E`, `0 ^ $`, `gg G {n}G`, `f F t T` + `; ,`,
   `%`, `{ }` (paragraph, jump motions), `H M L`, `Ctrl-d/u/f/b`,
   arrows/Home/End/PageUp/Down. The normal-mode cursor never sits past the
-  last character (vim's rule), so `$x`/`$dh`/`$d{` act on it. The mouse wheel
+  last character (vim's rule), so `$x`/`$dh`/`$d{` act on it. A jump landing
+  more than half a window away redraws with the cursor **centred** (vim's rule,
+  nvim-verified) — so it is not glued to the bottom row where every wheel notch
+  would drag it along. The mouse wheel
   scrolls the viewport 3 lines (SGR mouse reporting; wheel only — clicks are
   ignored, and text selection still works with the terminal's Shift+drag).
 - **Operators:** `d` `c` `y`, `> <` (indent), doubled `dd cc yy >> <<`; `D C Y`,
@@ -338,8 +351,9 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 The renderer aims for an AstroNvim/Helix look: true-colour themes in
 `theme.zig` (Tokyo Night default, plus Gruvbox, Catppuccin Mocha, Nord and One
 Dark — set in the config, or live via `:theme` / the `Space f t` picker), a
-powerline statusline (coloured mode block, separators,
-file/filetype/position/percent segments — a nerd font is recommended for the
+powerline statusline (coloured mode block, separators, the partial command as
+typed right-aligned beside the position — vim's 'showcmd', cleared the moment
+the command executes — plus file/filetype/position/percent segments — a nerd font is recommended for the
 glyphs, and the config's `nerd_font = false` swaps in a flat statusline for
 any font), syntax highlighting (tree-sitter for 10 languages (Zig/C/Python/JSON/JS/TS/Rust/Go/HTML/Markdown) via
 `treesitter.zig`, the `syntax.zig` lexer otherwise), relative+absolute line numbers, a

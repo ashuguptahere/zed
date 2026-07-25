@@ -13,16 +13,26 @@ pub fn build(b: *std.Build) void {
         .strip = if (strip) true else null,
     });
 
-    // Vendored tree-sitter runtime + grammar (see vendor/ and CLAUDE.md).
+    // Vendored tree-sitter runtime + grammars (see vendor/ and CLAUDE.md), all
+    // compiled into ONE static library that every artifact links. Attaching the
+    // C sources to each module instead would recompile all 19 translation units
+    // per artifact — `zig build test` alone used to re-pay the entire C build,
+    // which dominates a cold build on a laptop-class CPU.
     // The runtime needs libc; _GNU_SOURCE exposes endian/stdio helpers it uses,
     // and it builds without wasm (the wasm symbols have non-wasm stubs).
-    exe_mod.link_libc = true;
-    exe_mod.addIncludePath(b.path("vendor/tree-sitter/include"));
-    exe_mod.addIncludePath(b.path("vendor/tree-sitter/src"));
-    exe_mod.addCSourceFile(.{
+    const ts_mod = b.createModule(.{ .target = target, .optimize = optimize });
+    ts_mod.link_libc = true;
+    ts_mod.addIncludePath(b.path("vendor/tree-sitter/include"));
+    ts_mod.addIncludePath(b.path("vendor/tree-sitter/src"));
+    ts_mod.addCSourceFile(.{
         .file = b.path("vendor/tree-sitter/src/lib.c"),
         .flags = &.{ "-std=c11", "-D_GNU_SOURCE" },
     });
+
+    // The Zig side only needs the public header to @cImport; the grammar
+    // entry points are `extern fn`s resolved from the library at link time.
+    exe_mod.link_libc = true;
+    exe_mod.addIncludePath(b.path("vendor/tree-sitter/include"));
     // Each grammar: the dir holding its generated parser.c (+ optional C
     // scanner and tree_sitter/ headers), and its highlights query embedded via
     // @embedFile. `src` is explicit because tree-sitter-typescript keeps its
@@ -42,11 +52,14 @@ pub fn build(b: *std.Build) void {
         .{ .name = "markdown_inline", .src = "vendor/tree-sitter-markdown-inline/src", .scanner = true, .highlights = "vendor/tree-sitter-markdown-inline/highlights.scm" },
     };
     inline for (grammars) |g| {
-        exe_mod.addIncludePath(b.path(g.src));
-        exe_mod.addCSourceFile(.{ .file = b.path(g.src ++ "/parser.c"), .flags = &.{"-D_GNU_SOURCE"} });
-        if (g.scanner) exe_mod.addCSourceFile(.{ .file = b.path(g.src ++ "/scanner.c"), .flags = &.{"-D_GNU_SOURCE"} });
+        ts_mod.addIncludePath(b.path(g.src));
+        ts_mod.addCSourceFile(.{ .file = b.path(g.src ++ "/parser.c"), .flags = &.{"-D_GNU_SOURCE"} });
+        if (g.scanner) ts_mod.addCSourceFile(.{ .file = b.path(g.src ++ "/scanner.c"), .flags = &.{"-D_GNU_SOURCE"} });
         exe_mod.addAnonymousImport("ts_highlights_" ++ g.name, .{ .root_source_file = b.path(g.highlights) });
     }
+
+    const ts_lib = b.addLibrary(.{ .name = "tree-sitter", .root_module = ts_mod, .linkage = .static });
+    exe_mod.linkLibrary(ts_lib);
 
     // The interactive tutorial, embedded so `zedit --tutor` works anywhere.
     exe_mod.addAnonymousImport("tutor_text", .{ .root_source_file = b.path("doc/tutor.txt") });

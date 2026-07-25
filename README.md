@@ -65,7 +65,10 @@
   `:ssh host` — no agent installed on the remote, no extra dependencies; a
   remote directory opens the fuzzy picker over it and `:w` writes back
 - **Mouse wheel scrolling** (SGR mouse; Shift+drag still selects text in
-  your terminal)
+  your terminal), with vim's centring on long jumps so scrolling doesn't drag
+  the cursor around
+- **Partial commands shown as you type them** (`d`, `di`, `2d`, `"ay`, `^W`) in
+  the statusline, vim's `showcmd`
 - **Command line** with Tab completion (command names, `:e`/`:w` paths,
   `:theme` names — nvim wildmenu semantics, popup included) and per-kind
   history on Up/Down with vim's prefix filtering
