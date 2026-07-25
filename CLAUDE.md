@@ -317,7 +317,9 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   project (the file list is cached per session — the Zed-style warm picker:
   opening does no filesystem work after the first walk, candidates are
   prefiltered with per-path char bitmasks, and extending the query narrows the
-  previous result set instead of rescoring everything).
+  previous result set instead of rescoring everything — the grep picker narrows
+  the same way, filtering the hits it already has rather than re-reading every
+  file, so a keystroke costs 4 µs once the scan has covered the project).
   Every picker uses one layout: the file tree on its side (when open), the
   results next to it, and — for pickers that name a file (`f f`, `f b`,
   `f w`, references) — a **live preview** of the selection on the right,
@@ -529,7 +531,11 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   languages). Tree-sitter is the upgrade path now that deps are allowed.
 - Multi-cursor is one-caret-per-line (column editing); it does not do
   per-caret line splits/joins or arbitrary selection-based multi-edit.
-- The project-wide grep picker is literal, not regex (in-buffer search is regex). Statusline separators assume a nerd font.
+- The project-wide grep picker is literal, not regex (in-buffer search is
+  regex), and its narrowing compares against the row text as stored, which is
+  capped at 120 bytes — a match hiding past that column on a very long line is
+  dropped where a rescan would have kept it (the row could not have shown it
+  either). Statusline separators assume a nerd font.
 - Windows/splits use a flat even tiling in one orientation at a time (a split
   re-tiles all windows; no nested/mixed layouts or per-window resizing). Only
   the active window has live LSP polling and an editable selection/search/inlay

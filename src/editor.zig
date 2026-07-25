@@ -3338,6 +3338,7 @@ pub const Editor = struct {
         self.picker_filtered.clearRetainingCapacity();
         self.picker_query.clearRetainingCapacity();
         self.prev_query.clearRetainingCapacity();
+        self.grep_scanned = 0;
     }
 
     /// Append a row. `display` is what the list shows, `path` what opening it
@@ -3507,8 +3508,25 @@ pub const Editor = struct {
     fn refilter(self: *Editor) void {
         var sp = log.Span.start();
         if (self.picker_kind == .grep) {
-            self.regrep();
+            const gq = self.picker_query.items;
+            // Extending a grep can only shrink its hit set — a line holding
+            // the longer query already held the shorter one — so filter the
+            // hits already on screen instead of re-reading the project. That
+            // is the same narrowing the file picker does, and the difference
+            // between re-reading every file on every keystroke and touching
+            // no file at all.
+            const narrow = self.prev_query.items.len > 0 and gq.len > self.prev_query.items.len and
+                std.mem.startsWith(u8, gq, self.prev_query.items);
+            if (narrow) self.narrowGrepHits(gq) else self.regrep();
+            // Files the walk delivered since — and, when a narrowing freed
+            // room under the 500-hit cap, the ones an earlier pass stopped
+            // short of. Both are no-ops once the walk is done and nothing
+            // was capped, which is the common case.
+            self.grepMore();
             self.showAllGrepHits();
+            self.prev_query.clearRetainingCapacity();
+            self.prev_query.appendSlice(self.gpa, gq) catch {};
+            sp.lap("refilter");
             return;
         }
         const q = self.picker_query.items;
@@ -3552,6 +3570,35 @@ pub const Editor = struct {
         self.picker_text.clearRetainingCapacity();
         self.grep_scanned = 0;
         self.grepMore();
+    }
+
+    /// Drop the hits that no longer match the extended query, keeping the rest
+    /// in place. `grep_scanned` is untouched: the invariant is still "these are
+    /// the matches in the files scanned so far", now for the longer query.
+    ///
+    /// The comparison is against the line text as stored, which the row
+    /// formatting caps at 120 bytes — a match hiding past that column on a
+    /// very long line is dropped here where a rescan would have kept it. The
+    /// row could never have shown it either.
+    fn narrowGrepHits(self: *Editor, q: []const u8) void {
+        var kept: usize = 0;
+        for (self.picker_items.items) |it| {
+            if (std.mem.indexOf(u8, self.itemGrepText(it), q) == null) continue;
+            self.picker_items.items[kept] = it;
+            kept += 1;
+        }
+        self.picker_items.items.len = kept;
+    }
+
+    /// The line text of a grep row: its display is "path:line: text", and both
+    /// the path and the line number are on the item, so the prefix can be
+    /// stepped over exactly rather than searched for.
+    fn itemGrepText(self: *const Editor, it: PickItem) []const u8 {
+        const disp = self.itemDisplay(it);
+        var i: usize = @min(it.path_len + 1, disp.len); // past "path:"
+        while (i < disp.len and disp[i] >= '0' and disp[i] <= '9') i += 1;
+        if (i + 2 <= disp.len and disp[i] == ':' and disp[i + 1] == ' ') i += 2;
+        return disp[i..];
     }
 
     /// Grep the `fcache` entries not yet covered by the current query and

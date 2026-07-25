@@ -270,4 +270,49 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("\x1b:q!\r");
         s.drain(200);
     }
+
+    // Extending a grep query narrows the hits already found instead of
+    // re-reading the project. The results must be the ones a rescan would
+    // give: matched on the line text, not on the row's path prefix.
+    {
+        const dir = try h.tempDir(ctx.gpa);
+        defer ctx.gpa.free(dir);
+        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const files = [_][2][]const u8{
+            .{ "one.txt", "alpha beta\n" },
+            .{ "two.txt", "alphax gamma\n" },
+            .{ "alphax_named.txt", "alpha only\n" }, // path matches, text does not
+        };
+        for (files) |f| {
+            const p = try std.fmt.allocPrint(ctx.gpa, "{s}/{s}", .{ dir, f[0] });
+            defer ctx.gpa.free(p);
+            h.writeFile(ctx.io, p, f[1]);
+        }
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "one.txt" }, .cwd = dir, .cols = 110 });
+        defer s.finish();
+        s.drain(400);
+        s.send(" fw");
+        s.drain(300);
+
+        var m = s.mark();
+        s.send("alpha");
+        s.drain(500);
+        ctx.check("grep lists every file whose line matches", s.containsPlainSince(ctx.gpa, m, "one.txt:1") and
+            s.containsPlainSince(ctx.gpa, m, "two.txt:1") and s.containsPlainSince(ctx.gpa, m, "alphax_named.txt:1"));
+
+        m = s.mark();
+        s.send("x"); // -> "alphax": narrows the hits instead of rescanning
+        s.drain(500);
+        ctx.check("extending the query narrows to the still-matching line", s.containsPlainSince(ctx.gpa, m, "two.txt:1"));
+        ctx.check("narrowing drops a line that no longer matches", !s.containsPlainSince(ctx.gpa, m, "one.txt:1"));
+        ctx.check("narrowing matches the line text, not the row's path", !s.containsPlainSince(ctx.gpa, m, "alphax_named.txt:1"));
+
+        m = s.mark();
+        s.send("\x7f"); // backspace -> "alpha" again: a shorter query rescans
+        s.drain(500);
+        ctx.check("shortening the query brings the other hits back", s.containsPlainSince(ctx.gpa, m, "one.txt:1") and
+            s.containsPlainSince(ctx.gpa, m, "alphax_named.txt:1"));
+        s.send("\x1b:q!\r");
+        s.drain(200);
+    }
 }
