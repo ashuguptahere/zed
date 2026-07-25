@@ -75,6 +75,10 @@ pub const Mode = enum {
 const PickerKind = enum { files, grep, code_action, symbol, theme, buffer, reference };
 const PickItem = struct { display: []u8, path: []u8, line: usize };
 
+/// One command-line completion candidate: `text` is the full replacement
+/// command line; `text[show..]` is what the wildmenu displays.
+const WildItem = struct { text: []u8, show: usize };
+
 /// One visible row of the file-tree sidebar (a flattened view of the tree:
 /// expanded directories contribute their children right below themselves).
 const SbEntry = struct { path: []u8, depth: u8, is_dir: bool, expanded: bool };
@@ -260,6 +264,15 @@ pub const Editor = struct {
     // command/search line
     cmd: std.ArrayList(u8),
     cmd_kind: CmdKind,
+    // command-line history (`:` and `/ ?` kept separate, like vim) and
+    // Tab-completion state (the "wildmenu").
+    ex_hist: std.ArrayList([]u8),
+    search_hist: std.ArrayList([]u8),
+    hist_pos: ?usize, // index of the recalled entry; null = not navigating
+    hist_stash: std.ArrayList(u8), // the typed line: history filter + Down-restore
+    wild: std.ArrayList(WildItem),
+    wild_idx: ?usize, // selected candidate; null = original text shown
+    wild_stem: std.ArrayList(u8), // cmd content when completion started
 
     // picker (fuzzy file finder / global search)
     picker_kind: PickerKind,
@@ -436,6 +449,13 @@ pub const Editor = struct {
             .search_origin = .{ .row = 0, .col = 0 },
             .prev_search = .empty,
             .cmd = .empty,
+            .ex_hist = .empty,
+            .search_hist = .empty,
+            .hist_pos = null,
+            .hist_stash = .empty,
+            .wild = .empty,
+            .wild_idx = null,
+            .wild_stem = .empty,
             .cmd_kind = .ex,
             .picker_kind = .files,
             .picker_items = .empty,
@@ -506,6 +526,14 @@ pub const Editor = struct {
         if (self.search_re) |*re| re.deinit(self.gpa);
         self.search_re_pat.deinit(self.gpa);
         self.prev_search.deinit(self.gpa);
+        for (self.ex_hist.items) |h| self.gpa.free(h);
+        self.ex_hist.deinit(self.gpa);
+        for (self.search_hist.items) |h| self.gpa.free(h);
+        self.search_hist.deinit(self.gpa);
+        self.hist_stash.deinit(self.gpa);
+        self.wildClear();
+        self.wild.deinit(self.gpa);
+        self.wild_stem.deinit(self.gpa);
         self.cmd.deinit(self.gpa);
         self.macro_buf.deinit(self.gpa);
         self.dot_keys.deinit(self.gpa);
@@ -3271,6 +3299,8 @@ pub const Editor = struct {
         self.mode = .command;
         self.cmd_kind = kind;
         self.cmd.clearRetainingCapacity();
+        self.hist_pos = null;
+        self.wildClear();
         if (kind != .ex) {
             // Remember where we started so the search can preview live and be
             // cancelled, and save the previous pattern to restore on cancel.
@@ -3334,10 +3364,14 @@ pub const Editor = struct {
                     self.last_search.appendSlice(self.gpa, self.prev_search.items) catch {};
                     self.setCursor(self.search_origin);
                 }
+                self.pushHistory(); // an abandoned line is remembered too (vim)
+                self.wildClear();
                 self.mode = .normal;
             },
             .enter => {
                 const kind = self.cmd_kind;
+                self.pushHistory();
+                self.wildClear();
                 self.mode = .normal;
                 switch (kind) {
                     .ex => try self.execEx(),
@@ -3348,21 +3382,241 @@ pub const Editor = struct {
                 }
             },
             .backspace => {
+                self.wildClear();
                 if (self.cmd.items.len == 0) {
                     try self.commandKey(.escape);
                 } else {
                     self.cmd.items.len = unicode.prevBoundary(self.cmd.items, self.cmd.items.len);
+                    self.histEdited();
                     if (self.searching()) self.searchLive();
                 }
             },
+            .tab => self.wildNext(true),
+            .shift_tab => self.wildNext(false),
+            .up => self.histRecall(true, true),
+            .down => self.histRecall(false, true),
+            // vim's c_CTRL-P/c_CTRL-N: history without the prefix filter.
+            .ctrl => |c| switch (c) {
+                'p' => self.histRecall(true, false),
+                'n' => self.histRecall(false, false),
+                else => {},
+            },
             .char => |c| {
+                self.wildClear();
                 var enc: [4]u8 = undefined;
                 const len = std.unicode.utf8Encode(c, &enc) catch return;
                 try self.cmd.appendSlice(self.gpa, enc[0..len]);
+                self.histEdited();
                 if (self.searching()) self.searchLive();
             },
             else => {},
         }
+    }
+
+    /// Replace the command line's content (history recall / completion).
+    fn setCmd(self: *Editor, text: []const u8) void {
+        if (text.ptr != self.cmd.items.ptr) {
+            self.cmd.clearRetainingCapacity();
+            self.cmd.appendSlice(self.gpa, text) catch {};
+        }
+        if (self.searching()) self.searchLive();
+    }
+
+    /// Editing mid-browse updates the history filter to the new line but keeps
+    /// the browse position, so Up continues older from here (vim's rule).
+    fn histEdited(self: *Editor) void {
+        if (self.hist_pos == null) return;
+        self.hist_stash.clearRetainingCapacity();
+        self.hist_stash.appendSlice(self.gpa, self.cmd.items) catch {};
+    }
+
+    /// The history list for the current command-line kind (vim keeps `:` and
+    /// search histories separate); rename prompts have none.
+    fn historyList(self: *Editor) ?*std.ArrayList([]u8) {
+        return switch (self.cmd_kind) {
+            .ex => &self.ex_hist,
+            .search_forward, .search_backward => &self.search_hist,
+            .rename => null,
+        };
+    }
+
+    /// Record the executed command line: duplicates move to newest (vim's
+    /// rule), the list is capped, aborted lines are never added.
+    fn pushHistory(self: *Editor) void {
+        if (self.cmd.items.len == 0) return;
+        const list = self.historyList() orelse return;
+        for (list.items, 0..) |h, i| {
+            if (std.mem.eql(u8, h, self.cmd.items)) {
+                self.gpa.free(h);
+                _ = list.orderedRemove(i);
+                break;
+            }
+        }
+        const owned = self.gpa.dupe(u8, self.cmd.items) catch return;
+        list.append(self.gpa, owned) catch {
+            self.gpa.free(owned);
+            return;
+        };
+        if (list.items.len > 100) {
+            self.gpa.free(list.items[0]);
+            _ = list.orderedRemove(0);
+        }
+    }
+
+    /// Walk the history (Up/Down). `filtered` recalls only entries starting
+    /// with the line as typed before navigation began (vim's Up/Down);
+    /// Ctrl-p/Ctrl-n pass false for plain recall. Down past the newest entry
+    /// restores the typed line. All nvim-verified in `vim_compat`.
+    fn histRecall(self: *Editor, up: bool, filtered: bool) void {
+        const list = self.historyList() orelse return;
+        self.wildClear();
+        if (self.hist_pos == null) {
+            self.hist_stash.clearRetainingCapacity();
+            self.hist_stash.appendSlice(self.gpa, self.cmd.items) catch {};
+        }
+        const prefix = if (filtered) self.hist_stash.items else "";
+        if (up) {
+            var i = self.hist_pos orelse list.items.len;
+            while (i > 0) {
+                i -= 1;
+                if (std.mem.startsWith(u8, list.items[i], prefix)) {
+                    self.hist_pos = i;
+                    self.setCmd(list.items[i]);
+                    return;
+                }
+            }
+            // nothing older matches: keep the current line (vim beeps)
+        } else {
+            var i = (self.hist_pos orelse return) + 1;
+            while (i < list.items.len) : (i += 1) {
+                if (std.mem.startsWith(u8, list.items[i], prefix)) {
+                    self.hist_pos = i;
+                    self.setCmd(list.items[i]);
+                    return;
+                }
+            }
+            self.hist_pos = null;
+            self.setCmd(self.hist_stash.items);
+        }
+    }
+
+    fn wildClear(self: *Editor) void {
+        for (self.wild.items) |w| self.gpa.free(w.text);
+        self.wild.clearRetainingCapacity();
+        self.wild_idx = null;
+    }
+
+    /// Tab / Shift-Tab: complete the `:` line (vim 'wildmode=full'): the first
+    /// Tab computes the candidates and takes the first (last, backward); each
+    /// further Tab cycles, and stepping past the end restores the typed text.
+    fn wildNext(self: *Editor, forward: bool) void {
+        if (self.cmd_kind != .ex) return;
+        self.hist_pos = null;
+        if (self.wild.items.len == 0) {
+            self.wildCompute();
+            if (self.wild.items.len == 0) return;
+            if (self.wild.items.len == 1) {
+                // A unique match completes silently — no popup, no cycle ring
+                // (nvim); the next Tab recomputes from the new text, which is
+                // what descends into a just-completed directory.
+                self.setCmd(self.wild.items[0].text);
+                self.wildClear();
+                return;
+            }
+            self.wild_idx = if (forward) 0 else self.wild.items.len - 1;
+            self.setCmd(self.wild.items[self.wild_idx.?].text);
+            return;
+        }
+        const n = self.wild.items.len;
+        if (self.wild_idx) |i| {
+            if (forward) {
+                self.wild_idx = if (i + 1 < n) i + 1 else null;
+            } else {
+                self.wild_idx = if (i > 0) i - 1 else null;
+            }
+        } else {
+            self.wild_idx = if (forward) 0 else n - 1;
+        }
+        if (self.wild_idx) |i| self.setCmd(self.wild.items[i].text) else self.setCmd(self.wild_stem.items);
+    }
+
+    /// Build the completion candidates for the current `:` line: command names
+    /// for the first word, then per-command arguments (paths for :e/:w, theme
+    /// names for :theme).
+    fn wildCompute(self: *Editor) void {
+        self.wildClear();
+        self.wild_stem.clearRetainingCapacity();
+        self.wild_stem.appendSlice(self.gpa, self.cmd.items) catch return;
+        const raw = self.wild_stem.items;
+        if (std.mem.indexOfScalar(u8, raw, ' ')) |sp| {
+            const cmd0 = raw[0..sp];
+            const head = raw[0 .. sp + 1];
+            const arg = raw[sp + 1 ..];
+            if (eql(cmd0, "theme")) {
+                self.wildThemes(head, arg);
+            } else if (eql(cmd0, "e") or eql(cmd0, "edit") or eql(cmd0, "w") or eql(cmd0, "write")) {
+                self.wildPaths(head, arg);
+            }
+        } else {
+            self.wildCommands(raw);
+        }
+    }
+
+    fn wildAdd(self: *Editor, text: []const u8, show: usize) void {
+        const owned = self.gpa.dupe(u8, text) catch return;
+        self.wild.append(self.gpa, .{ .text = owned, .show = show }) catch self.gpa.free(owned);
+    }
+
+    /// Every completable command, by its full name (all are also accepted
+    /// spelled out by execEx; the short forms still work typed by hand).
+    const command_names = [_][]const u8{
+        "bdelete", "bnext",  "bprevious", "buffers", "close", "diff",  "edit",
+        "format",  "ls",     "only",      "quit",    "quitall", "split", "theme",
+        "vdiff",   "vsplit", "wall",      "wq",      "write", "x",
+    };
+
+    fn wildCommands(self: *Editor, prefix: []const u8) void {
+        for (command_names) |name| {
+            if (std.mem.startsWith(u8, name, prefix)) self.wildAdd(name, 0);
+        }
+    }
+
+    fn wildThemes(self: *Editor, head: []const u8, prefix: []const u8) void {
+        var buf: [64]u8 = undefined;
+        for (theme.themes) |t| {
+            if (!std.mem.startsWith(u8, t.name, prefix)) continue;
+            const text = std.fmt.bufPrint(&buf, "{s}{s}", .{ head, t.name }) catch continue;
+            self.wildAdd(text, head.len);
+        }
+    }
+
+    /// Path completion for `:e` / `:w`: list the argument's directory, keep
+    /// entries matching the basename typed so far (hidden ones only when the
+    /// prefix itself starts with '.'), mark directories with a trailing '/'.
+    fn wildPaths(self: *Editor, head: []const u8, arg: []const u8) void {
+        const slash = std.mem.lastIndexOfScalar(u8, arg, '/');
+        const dir_part = if (slash) |s| arg[0 .. s + 1] else "";
+        const prefix = if (slash) |s| arg[s + 1 ..] else arg;
+        const open_path = if (dir_part.len == 0) "." else dir_part;
+
+        var dir = std.Io.Dir.cwd().openDir(self.io, open_path, .{ .iterate = true }) catch return;
+        defer dir.close(self.io);
+        var it = dir.iterate();
+        while (it.next(self.io) catch null) |entry| {
+            if (entry.kind != .file and entry.kind != .directory) continue;
+            if (!std.mem.startsWith(u8, entry.name, prefix)) continue;
+            if (entry.name[0] == '.' and (prefix.len == 0 or prefix[0] != '.')) continue;
+            if (self.wild.items.len >= 500) break;
+            var buf: [1024]u8 = undefined;
+            const tail: []const u8 = if (entry.kind == .directory) "/" else "";
+            const text = std.fmt.bufPrint(&buf, "{s}{s}{s}{s}", .{ head, dir_part, entry.name, tail }) catch continue;
+            self.wildAdd(text, head.len + dir_part.len);
+        }
+        std.mem.sort(WildItem, self.wild.items, {}, struct {
+            fn less(_: void, a: WildItem, b: WildItem) bool {
+                return std.mem.lessThan(u8, a.text, b.text);
+            }
+        }.less);
     }
 
     /// Incremental search: jump to the first match from the original cursor as
@@ -3403,11 +3657,11 @@ pub const Editor = struct {
         const cmd = it.next() orelse return;
         const arg = std.mem.trim(u8, raw[cmd.len..], " ");
 
-        if (eql(cmd, "w")) {
+        if (eql(cmd, "w") or eql(cmd, "write")) {
             _ = try self.write(arg);
-        } else if (eql(cmd, "q")) {
+        } else if (eql(cmd, "q") or eql(cmd, "quit")) {
             self.doQuit();
-        } else if (eql(cmd, "q!")) {
+        } else if (eql(cmd, "q!") or eql(cmd, "quit!")) {
             if (self.wins.items.len > 1) self.closeWindow() else self.quit = true;
         } else if (eql(cmd, "qa") or eql(cmd, "qa!") or eql(cmd, "quitall")) {
             self.quit = true;
@@ -4892,6 +5146,10 @@ pub const Editor = struct {
         // Overlays draw on top of already-emitted rows, so frames showing one
         // are written whole (and the next plain frame repaints beneath them).
         var overlay = self.sig_open or self.comp_open;
+        if (self.mode == .command and self.wild.items.len > 0) {
+            try self.renderWildMenu();
+            overlay = true;
+        }
         switch (self.await_arg) {
             .space_leader, .space_find, .space_lang, .space_git => {
                 try self.renderWhichKey();
@@ -4937,6 +5195,45 @@ pub const Editor = struct {
         .{ .key = "d", .desc = "diff (inline)" },
         .{ .key = "s", .desc = "diff (side by side)" },
     };
+
+    /// Draw the completion candidates ("wildmenu") as a vertical popup just
+    /// above the command line, the selected one highlighted — the look of
+    /// nvim's cmdline popup menu.
+    fn renderWildMenu(self: *Editor) !void {
+        const th = theme.current;
+        const items = self.wild.items;
+        const rows: usize = self.win.rows;
+        const height = @min(items.len, 8);
+        if (rows < height + 2) return;
+
+        // Scroll the window to keep the selection visible.
+        const sel = self.wild_idx orelse 0;
+        var first: usize = 0;
+        if (sel >= height) first = sel - height + 1;
+        if (first + height > items.len) first = items.len - height;
+
+        var width: usize = 12;
+        for (items) |w| width = @max(width, unicode.displayWidth(w.text[w.show..]) + 2);
+        width = @min(width, self.win.cols -| 1);
+        // Anchor at the column of the token being completed (nvim's pum).
+        const anchor = @min(self.cmdPrompt().len + items[0].show + 1, self.win.cols -| width);
+
+        var b: [24]u8 = undefined;
+        var i: usize = 0;
+        while (i < height) : (i += 1) {
+            const idx = first + i;
+            try self.emit(try std.fmt.bufPrint(&b, "\x1b[{d};{d}H", .{ rows - height + i, anchor }));
+            const selected = self.wild_idx != null and idx == self.wild_idx.?;
+            try self.setBg(if (selected) th.mode_command else th.status_seg_bg);
+            try self.setFg(if (selected) th.bg else th.status_seg_fg);
+            const w = items[idx];
+            const shown = w.text[w.show..];
+            try self.emit(" ");
+            try self.emit(shown[0..@min(shown.len, width - 2)]);
+            const used = 1 + @min(unicode.displayWidth(shown), width - 2);
+            if (used < width) try self.emitSpaces(width - used);
+        }
+    }
 
     /// Draw the which-key popup for the pending leader menu (`Space`, `Space f`
     /// or `Space l`), anchored above the status bar.

@@ -292,6 +292,11 @@
   and Ctrl-p (or the arrows) move through it, Tab or Enter accepts, and
   Esc dismisses it.
 
+  The command line completes too: type  :e   and press Tab to cycle
+  through the files here (Shift-Tab goes backward), or  :the<Tab>  to
+  get  :theme .  Up and Down recall earlier commands that start with
+  what you have typed — try  :  then Up.
+
   This tutor file has no language server, so try these keys later in a
   real source file — diagnostics appear as gutter signs on their own.
 

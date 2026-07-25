@@ -325,6 +325,26 @@ or none (current line). Flags:
 .BR / ):
 .B . [..] * + ? ( ) | ^ $ \\ew \\ed \\es \\eb \\e< \\e>
 \(em Helix-style, not vim's magic mode.
+.TP
+.B Tab\fR/\fPShift\-Tab
+Complete the command line (nvim wildmenu semantics): command names, file
+paths for
+.BR :e / :w
+(a unique directory completes with a trailing
+.B /
+and the next Tab descends into it) and
+.B :theme
+names. Multiple matches show a popup; Tab cycles matches then the text as
+typed, Shift\-Tab cycles backward.
+.TP
+.B Up\fR/\fPDown\fR, \fPCtrl\-p\fR/\fPCtrl\-n
+Command\-line history:
+.B :
+and
+.BR / \| ?
+keep separate histories. Up/Down recall entries starting with the text
+already typed (vim's prefix filter); Down past the newest restores the typed
+line; Ctrl\-p/Ctrl\-n recall without filtering.
 .SH "BUFFERS & WINDOWS"
 Several files can be open at once, each with its own cursor, undo history and
 language server.

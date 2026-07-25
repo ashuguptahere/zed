@@ -209,7 +209,18 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 - **Command line:** `:w` write, `:q` quit (closes the window if more than one;
   blocked if unsaved on the last), `:wq`/`:x`, `:q!`, `:qa` quit all, `:wa`
   write all dirty buffers, `:w <name>`, `:format` LSP-format the document,
-  `:{number}` goto line, `:$`; `ZZ`/`ZQ`.
+  `:{number}` goto line, `:$`; `ZZ`/`ZQ`. **Tab completion** (nvim
+  `wildmode=full` semantics, pinned by pty probes of the real thing): Tab
+  completes command names, `:e`/`:w` file paths (a unique directory gets a
+  trailing `/` and the next Tab descends into it; hidden files only offered
+  when the prefix starts with `.`) and `:theme` names; multiple matches show a
+  vertical popup and Tab/Shift-Tab cycle the ring [matches…, original text]; a
+  unique match completes silently. **History** (nvim-verified in
+  `vim_compat`): `:` and `/ ?` keep separate 100-entry histories; Up/Down
+  recall entries filtered by the typed prefix (edits keep the browse position,
+  updating the filter), Down past the newest restores the typed line,
+  `Ctrl-p`/`Ctrl-n` recall unfiltered, duplicates move to newest, and an
+  Esc-abandoned line is remembered too (vim's rule).
 - **Sidebar (`Space e`):** a file-tree of the cwd on the configured side
   (config `sidebar = left|right`), which carves its width off the window
   tiling. Focused keys: `j`/`k` move, `Enter`/`l` expand a directory or open a
@@ -317,7 +328,12 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   `poll` is noticed on the next keypress (a self-pipe would close the race).
 - Vim gaps: the trickier dot-repeat/macro interactions are not (fully)
   implemented; autoindent is vim's 'autoindent' only (no smartindent/
-  tree-sitter indent queries). In-buffer search/`:s` are regex, but the syntax is
+  tree-sitter indent queries). Cmdline completion covers command names,
+  `:e`/`:w` paths and `:theme` (not every command's arguments), and the
+  wildmenu's special file-navigation keys (Down = enter directory, Up = parent
+  directory while the popup is open) are not implemented — Up/Down are always
+  history. The cmdline cursor is end-of-line only (no `Left`/`Right` editing
+  within the line). In-buffer search/`:s` are regex, but the syntax is
   modern ("very magic"-like), not vim's magic mode — `\(` groups etc. differ.
 - Highlighting is a per-line lexer (no cross-line block comments; a handful of
   languages). Tree-sitter is the upgrade path now that deps are allowed.
@@ -367,9 +383,10 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
 - Roadmap (agreed with the owner): port further tranches of Neovim behavioural
   tests via headless ground truth (see `vim_compat`), and work down
   `doc/COMPARISON.md` — the verified feature-gap analysis vs Helix/Neovim
-  (shortlist: regex + `:%s`, jumplist, OSC 52 clipboard, autoindent, and LSP
-  references/formatting/cross-file edits are done; next: cmdline completion,
-  paragraph objects, inline diagnostics, auto-completion, snippets). Large-file open is
+  (shortlist: regex + `:%s`, jumplist, OSC 52 clipboard, autoindent, LSP
+  references/formatting/cross-file edits, and cmdline completion + history are
+  done; next: paragraph objects, inline diagnostics, auto-completion,
+  snippets). Large-file open is
   14.3 ms vs nvim's 10.7 (was 36.6) after the copy-on-write buffer; the last
   ~4 ms is the eager read+scan nvim defers — mmap or lazy line indexing if it
   ever matters.

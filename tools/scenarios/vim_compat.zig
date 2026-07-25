@@ -76,6 +76,16 @@ pub fn run(ctx: *h.Ctx) !void {
     case(ctx, "nvim#a8 tab indent copied verbatim", &.{ "obar", ESC, ":wq", CR }, "\tfoo\n", "\tfoo\n\tbar\n");
     case(ctx, "nvim#a9 blank Enter-line stripped on Esc", &.{ "A\r", ESC, ":wq", CR }, "    foo\n", "    foo\n\n");
 
+    // Command-line history (Up = \x1b[A, Down = \x1b[B) — nvim-verified.
+    // ':' Up recalls the last ex command; Enter replays it.
+    case(ctx, "nvim#h1 : Up replays last command", &.{ ":s/a/X/\r", "j", ":", "\x1b[A", "\r", ":wq", CR }, "aa\naa\n", "Xa\nXa\n");
+    // Up filters by the typed prefix: ':s' skips the ':2' entry.
+    case(ctx, "nvim#h2 Up filters by typed prefix", &.{ ":s/a/X/\r", ":2\r", ":s", "\x1b[A", "\r", ":wq", CR }, "aa\naa\naa\n", "Xa\nXa\naa\n");
+    // '/' has its own history; Up recalls the last pattern.
+    case(ctx, "nvim#h3 / Up recalls last search", &.{ "/alpha\r", "gg", "/", "\x1b[A", "\r", "x", ":wq", CR }, "one\nalpha\ntwo\nalpha\n", "one\nlpha\ntwo\nalpha\n");
+    // Down past the newest entry restores the typed-but-unrun line.
+    case(ctx, "nvim#h4 Down restores the typed line", &.{ ":s/a/X/\r", "j", ":s/a/Y/", "\x1b[A", "\x1b[B", "\r", ":wq", CR }, "aa\naa\n", "Xa\nYa\n");
+
     // Regex `/` search: the pattern jumps, then x edits at the match.
     case(ctx, "regex / search jumps to match", &.{ "/b.d\r", "x", ":wq", CR }, "xxx\nbad\n", "xxx\nad\n");
     // Capture groups in the replacement swap two words.

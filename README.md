@@ -65,6 +65,9 @@ runtime dependencies**.
   refreshes). The file list is cached per session with per-path char-bitmask
   prefiltering and incremental query narrowing — the same tricks that make
   Zed's finder feel instant
+- **Command line** with Tab completion (command names, `:e`/`:w` paths,
+  `:theme` names — nvim wildmenu semantics, popup included) and per-kind
+  history on Up/Down with vim's prefix filtering
 - **Multiple buffers and windows**: `:e`, `:bn`/`:bp`/`:bd`/`:ls`;
   `:split`/`:vsplit` and `Ctrl-w` navigation; every buffer keeps its own
   cursor, undo history, highlighting and language server

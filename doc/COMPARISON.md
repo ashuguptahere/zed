@@ -24,8 +24,10 @@ batteries-included editor.
    `Space l f`/`:format`, `format_on_save` config; rename/code-action/applyEdit
    WorkspaceEdits apply to every file — open buffers in place, unopened files
    loaded as background buffers, saved with `:wa`).
-6. **Command-line completion** for `:e`/`:theme`/commands + history (nvim,
-   high) — `:e` without path completion barely works.
+6. ~~**Command-line completion** for `:e`/`:theme`/commands + history~~ —
+   **DONE** (Tab/Shift-Tab wildmenu with nvim `wildmode=full` ring semantics
+   pinned by pty probes; separate `:` / `/` histories on Up/Down with prefix
+   filtering, Ctrl-p/n unfiltered — nvim-verified in `vim_compat`).
 7. **Paragraph text objects/motions** `ip`/`ap`/`{`/`}` (nvim, high).
 8. **Inline diagnostic text** at end of line (helix 25.01, nvim 0.11) — zedit
    already renders inlay-hint virtual text, so the machinery exists.

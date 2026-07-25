@@ -14,6 +14,7 @@ pub const Key = union(enum) {
     ctrl: u8, // the associated lowercase letter, e.g. 0x03 -> 'c'
     enter,
     tab,
+    shift_tab,
     backspace,
     escape,
     up,
@@ -73,6 +74,7 @@ fn decodeEscape(bytes: []const u8) Decoded {
         'D' => return .{ .key = .left, .consumed = 3 },
         'H' => return .{ .key = .home, .consumed = 3 },
         'F' => return .{ .key = .end, .consumed = 3 },
+        'Z' => return .{ .key = .shift_tab, .consumed = 3 },
         '0'...'9' => return decodeCsiNumeric(bytes),
         else => return .{ .key = .unknown, .consumed = 3 },
     }
@@ -133,6 +135,11 @@ test "decode arrows and navigation" {
     try std.testing.expectEqual(Key.delete, del.key);
     try std.testing.expectEqual(@as(usize, 4), del.consumed);
     try std.testing.expectEqual(Key.page_down, decode("\x1b[6~").key);
+}
+
+test "decode shift-tab" {
+    try std.testing.expectEqual(Key.shift_tab, decode("\x1b[Z").key);
+    try std.testing.expectEqual(@as(usize, 3), decode("\x1b[Z").consumed);
 }
 
 test "decode utf8 char" {

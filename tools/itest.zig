@@ -18,6 +18,7 @@ const scenarios = .{
     .{ "windows", @import("scenarios/windows.zig") },
     .{ "sidebar", @import("scenarios/sidebar.zig") },
     .{ "config", @import("scenarios/configtheme.zig") },
+    .{ "cmdline", @import("scenarios/cmdline.zig") },
     .{ "ssh", @import("scenarios/ssh.zig") },
     .{ "lsp", @import("scenarios/lsp.zig") },
     .{ "cpu", @import("scenarios/cpu.zig") },
