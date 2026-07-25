@@ -6061,6 +6061,14 @@ pub const Editor = struct {
         while (hi < hint_n) : (hi += 1)
             try self.emitInlayText(htext[hi], &dc, left, right, row_bg);
 
+        // Inline diagnostic: the server's message for this line, dim and
+        // severity-coloured after the code (helix/nvim's virtual text).
+        if (view.active and config.settings.inline_diagnostics) {
+            if (self.diagnosticInline(row)) |diag| {
+                try self.emitDiagnosticText(diag.text, diag.severity, &dc, left, right, row_bg);
+            }
+        }
+
         // Pad the rest of the window's text width with the row background, so a
         // window never leaks stale cells or the contents of a neighbour to its
         // right. A secondary cursor sitting at end-of-line is drawn here.
@@ -6071,6 +6079,52 @@ pub const Editor = struct {
             const at_cursor = eol_cursor and (left + shown == eol_col);
             try self.setBg(if (at_cursor) th.mode_normal else row_bg);
             try self.emit(" ");
+        }
+    }
+
+    const InlineDiag = struct { text: []const u8, severity: u8 };
+
+    /// The diagnostic to show inline on `row`: the message's first line
+    /// (multi-line server messages would break the row).
+    fn diagnosticInline(self: *Editor, row: usize) ?InlineDiag {
+        const client = if (self.lsp) |*c| c else return null;
+        const msg = client.messageAt(row) orelse return null;
+        const end = std.mem.indexOfScalar(u8, msg, '\n') orelse msg.len;
+        if (end == 0) return null;
+        return .{ .text = msg[0..end], .severity = client.severityAt(row) orelse 1 };
+    }
+
+    /// Emit an inline diagnostic after the code: a separator, then the message
+    /// in a dimmed severity colour, clipped to the window like any virtual
+    /// text. Never touches the buffer, so it cannot be edited or saved.
+    fn emitDiagnosticText(self: *Editor, text: []const u8, severity: u8, dc: *usize, left: usize, right: usize, row_bg: Color) !void {
+        const th = theme.current;
+        const base = switch (severity) {
+            1 => th.git_delete, // error
+            2 => th.git_change, // warning
+            else => th.comment, // info / hint
+        };
+        try self.setBg(row_bg);
+        try self.setFg(mixColor(th.bg, base, 70)); // subordinate to the code
+        try self.emitVirtual("  \u{25B8} ", dc, left, right); // ▸
+        try self.emitVirtual(text, dc, left, right);
+    }
+
+    /// Emit virtual (non-buffer) text one codepoint at a time, advancing the
+    /// rendered column and clipping to [left, right). Control bytes are
+    /// sanitized — an LSP message is untrusted input.
+    fn emitVirtual(self: *Editor, text: []const u8, dc: *usize, left: usize, right: usize) !void {
+        var j: usize = 0;
+        while (j < text.len) {
+            const d = unicode.decode(text[j..]);
+            const w = cellWidth(d.cp, dc.*);
+            const start = dc.*;
+            dc.* += w;
+            const bytes = text[j .. j + d.len];
+            j += d.len;
+            if (start + w <= left) continue;
+            if (start >= right) break;
+            try self.emit(if (isControlCp(d.cp)) "?" else bytes);
         }
     }
 

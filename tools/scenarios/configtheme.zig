@@ -143,6 +143,22 @@ pub fn run(ctx: *h.Ctx) !void {
         ctx.check("autoindent = false disables inheritance", std.mem.eql(u8, text, "    foo\nbar\n"));
     }
 
+    // inline_diagnostics = false keeps the buffer quiet (the gutter sign and
+    // the statusline message still work — those are separate paths).
+    {
+        h.writeFile(ctx.io, cfg_path, "inline_diagnostics = false\n");
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ ctx.zedit, "--config", cfg_path, "--lsp", ctx.mock, "b.zig" },
+            .cwd = dir,
+            .term = "xterm-256color",
+        });
+        defer s.finish();
+        s.drain(1500);
+        ctx.check("inline_diagnostics=false hides the inline text", !s.containsPlain(ctx.gpa, "mock error"));
+        s.send(":q!\r");
+        s.drain(200);
+    }
+
     // :e detects the opened file's language (highlighting for the .zig file).
     {
         var s = try h.Session.spawn(ctx.gpa, .{

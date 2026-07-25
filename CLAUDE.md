@@ -310,7 +310,11 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   lists references in a picker ("path:line: text", Enter jumps there), `ga`
   lists code actions for the current line in a picker and applies the chosen
   one, and `]d`/`[d` jump to the next/previous diagnostic line (wrapping;
-  `[count]` repeats). WorkspaceEdits (rename, code actions, server-initiated
+  `[count]` repeats). Each diagnostic's message also renders inline at the end
+  of its line as dim, severity-coloured virtual text (config
+  `inline_diagnostics`, default on; errors red, warnings yellow, info/hints in
+  the comment colour) — so every problem on screen is visible at once, not just
+  the cursor's line. WorkspaceEdits (rename, code actions, server-initiated
   applyEdit) apply to **every** file they touch — the active buffer as one
   undoable change, other open buffers in place, unopened files loaded into
   background buffers (left dirty; `:wa` saves them) — and edits may be
@@ -351,7 +355,7 @@ decoding.
 
 Runtime configuration is one documented file (see `config.zig`): theme,
 `tab_width`, `nerd_font`, `sidebar` (left/right), `relative_numbers`,
-`large_file_mb`, `autoindent`; `zedit --init-config` writes
+`large_file_mb`, `autoindent`, `inline_diagnostics`, `format_on_save`; `zedit --init-config` writes
 the annotated default.
 `zedit --tutor` opens the embedded interactive tutorial (`doc/tutor.txt`,
 embedded via `build.zig`).
@@ -457,7 +461,7 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   `doc/COMPARISON.md` — the verified feature-gap analysis vs Helix/Neovim
   (shortlist: regex + `:%s`, jumplist, OSC 52 clipboard, autoindent, LSP
   references/formatting/cross-file edits, cmdline completion + history, and
-  paragraph objects/motions are done; next: inline diagnostics,
+  paragraph objects/motions and inline diagnostics are done; next:
   auto-completion, snippets). `TODO.md` tracks the live order. Large-file open is
   14.3 ms vs nvim's 10.7 (was 36.6) after the copy-on-write buffer; the last
   ~4 ms is the eager read+scan nvim defers — mmap or lazy line indexing if it

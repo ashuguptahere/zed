@@ -30,6 +30,10 @@ pub const Settings = struct {
     /// Inherit the current line's indentation on `o`, `O`, Enter and `cc`
     /// (vim 'autoindent'; an auto-indent left blank is stripped on leaving).
     autoindent: bool = true,
+    /// Show each diagnostic's message inline at the end of its line (dim,
+    /// severity-coloured virtual text — helix/nvim call this virtual_text).
+    /// The gutter sign and the statusline message appear either way.
+    inline_diagnostics: bool = true,
     /// Ask the language server to format the document before every `:w`
     /// (skipped when no server is running or it cannot format). AstroNvim and
     /// Helix both format on save by default; `:format` formats on demand.
@@ -82,6 +86,11 @@ pub const default_text =
     \\# (vim's 'autoindent'). An auto-indent left blank is stripped.
     \\autoindent = true
     \\
+    \\# Show each diagnostic's message inline at the end of its line, as dim
+    \\# severity-coloured text (the gutter sign and statusline message show
+    \\# regardless). Set false for a quieter buffer.
+    \\inline_diagnostics = true
+    \\
     \\# Ask the language server to format the document on :w (format-on-save,
     \\# as AstroNvim and Helix do). Only applies when a server is running and
     \\# advertises formatting; :format always formats on demand.
@@ -121,6 +130,9 @@ pub fn apply(text: []const u8) void {
         } else if (std.mem.eql(u8, key, "autoindent")) {
             if (std.mem.eql(u8, value, "true")) settings.autoindent = true;
             if (std.mem.eql(u8, value, "false")) settings.autoindent = false;
+        } else if (std.mem.eql(u8, key, "inline_diagnostics")) {
+            if (std.mem.eql(u8, value, "true")) settings.inline_diagnostics = true;
+            if (std.mem.eql(u8, value, "false")) settings.inline_diagnostics = false;
         } else if (std.mem.eql(u8, key, "format_on_save")) {
             if (std.mem.eql(u8, value, "true")) settings.format_on_save = true;
             if (std.mem.eql(u8, value, "false")) settings.format_on_save = false;

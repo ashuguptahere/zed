@@ -7,7 +7,7 @@ behind the roadmap items.
 
 ## In progress
 
-- [ ] Shortlist #8: inline diagnostic text at end of line.
+- (nothing — pick the next item below)
 
 ## Next (in order)
 
@@ -100,5 +100,7 @@ behind the roadmap items.
 - [x] Startup screen with recently opened files/directories (`recent.zig`,
       XDG state file, pruning + dedup).
 - [x] `:update` / `--check-update` against the newest release tag.
+- [x] Shortlist #8: inline diagnostics (dim severity-coloured virtual text
+      after the code; `inline_diagnostics` config, on by default).
 - [x] Confirmed the toolchain is current: Zig 0.16.0 is the latest stable
       (master is 0.17.0-dev), so no upgrade was needed.

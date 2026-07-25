@@ -43,6 +43,7 @@ Notable changes to zedit. Dates are commit dates.
 - Renamed the editor from `zed` to `zedit` (zig-editor).
 - Ported the pty test harnesses from Python to Zig — `zig build itest` now needs nothing beyond the toolchain.
 
+- Inline diagnostics: each LSP diagnostic's message renders after the code on its line as dim, severity-coloured virtual text (config `inline_diagnostics`, on by default), so every problem on screen is visible at once.
 - Remote editing over SSH: `zedit ssh://[user@]host[:port]/path`, `:e ssh://…` and `:ssh host[/dir]` edit files on another machine with nothing installed there — one `ssh` per operation (`cat` to read, `cat >` to write, `find` to list a directory into the fuzzy picker), remote paths shell-quoted, `BatchMode=yes` so a prompting host fails fast, and `ControlMaster` connection reuse.
 - Startup screen listing recently opened files and directories (`j`/`k`, `Enter`, `1`-`9`), backed by `$XDG_STATE_HOME/zedit/recent` — capped, de-duplicated, with vanished paths pruned on load.
 - `:update` / `--check-update`: compare this build with the newest published release tag (one `git ls-remote`), on demand only.

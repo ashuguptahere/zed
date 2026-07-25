@@ -88,6 +88,20 @@ pub fn run(ctx: *h.Ctx) !void {
         ctx.check("hover result shown", r.outHas("mock hover"));
     }
 
+    // Inline diagnostics: each diagnostic's message renders as dim virtual
+    // text after the code on its own line (config inline_diagnostics, on by
+    // default). Line 1 is an error, line 2 a warning — both show at once,
+    // unlike the statusline which only shows the cursor's line.
+    {
+        const r = drive(ctx, &.{.{ .keys = "0", .ms = 600 }}, quit);
+        defer r.deinit(ctx.gpa);
+        ctx.check("inline error text shown after the code", r.plainHas("mock error"));
+        ctx.check("inline warning shown on its own line", r.plainHas("mock warn"));
+        ctx.check("inline diagnostics use a separator glyph", r.plainHas("\u{25B8}"));
+        // The virtual text is not part of the buffer: writing must not save it.
+        ctx.check("inline text never enters the buffer", !r.textHas("mock error"));
+    }
+
     // Diagnostic navigation: ]d jumps to the next diagnostic line, [d to the
     // previous (wrapping). The landed line's message shows in the statusline.
     {

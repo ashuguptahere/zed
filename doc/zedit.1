@@ -125,6 +125,12 @@ highlighting, LSP and git signs are skipped so huge files open instantly.
 inherit the current line's indentation; an auto\-indent left blank is
 stripped, like vim.
 .TP
+.B inline_diagnostics
+.BR true / false
+(default true). Show each diagnostic's message inline at the end of its line,
+dimmed and coloured by severity. The gutter sign and the statusline message
+appear either way.
+.TP
 .B format_on_save
 .BR true / false
 (default true). Ask the language server to format the document before every

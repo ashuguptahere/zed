@@ -40,7 +40,9 @@
 - **LSP**, auto-launched per filetype (`zls`, `clangd`, `pylsp`,
   `typescript-language-server`; any server via `--lsp <cmd>`); one client per
   open buffer, so different languages run side by side:
-  - diagnostics in the gutter/statusline with `]d` / `[d` navigation
+  - diagnostics in the gutter/statusline **and inline at end of line** (dim,
+    severity-coloured; `inline_diagnostics = false` to silence), with `]d` /
+    `[d` navigation
   - completion (`Ctrl-n` in insert), signature help (on `(` and `,`),
     hover (`K` / `Ctrl-k`), goto definition (`gd`)
   - rename (`gr`), find references (`Space l R`), code actions (`ga`,
@@ -136,7 +138,7 @@ zedit --init-config
 Format is `key = value` with `#` comments; unknown keys are ignored and a
 missing file just means defaults. Settings today: `theme`, `tab_width`,
 `nerd_font`, `sidebar`, `relative_numbers`, `large_file_mb`, `autoindent`,
-`format_on_save`.
+`inline_diagnostics`, `format_on_save`.
 
 Every CLI option has a short and a long form (`-h/--help`, `-v/--version`,
 `-l/--log`, `-s/--lsp`, `-c/--config`, `-t/--tutor`, `-b/--benchmark`,

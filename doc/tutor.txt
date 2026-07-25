@@ -288,6 +288,11 @@
      ga         list code actions for the current line in a picker
      ]d / [d    jump to the next / previous diagnostic line
 
+  Problems the server reports appear three ways at once: a coloured sign
+  in the gutter, the message inline at the end of the offending line, and
+  the full text in the statusline when the cursor is on that line.  Put
+  inline_diagnostics = false in your config for a quieter buffer.
+
   Started with no file at all, zedit greets you with the files and
   directories you opened recently: j/k to select, Enter to open, or
   press 1-9 to jump straight to one.

@@ -32,8 +32,9 @@ batteries-included editor.
    (linewise `ip`/`ap` with counts, `{`/`}` as jump motions, visual-mode
    objects; 16 nvim-verified cases — which also uncovered and fixed the
    cursor-past-EOL bug behind `$x`/`$dh`/`$db`).
-8. **Inline diagnostic text** at end of line (helix 25.01, nvim 0.11) — zedit
-   already renders inlay-hint virtual text, so the machinery exists.
+8. ~~**Inline diagnostic text** at end of line~~ — **DONE** (dim,
+   severity-coloured virtual text after the code; config
+   `inline_diagnostics`, on by default).
 9. **Auto-triggered + fuzzy completion** (helix always-on; nvim 0.11/0.12) —
    reuse `fuzzy.zig` for the popup.
 10. **Snippets / `textEdit` completions** (both, med-high — in Known gaps).
@@ -64,7 +65,7 @@ batteries-included editor.
 - Snippets / `textEdit` completions with tabstop jumping — zedit inserts plain text only (named known gap) — **medium**
 - Auto-triggered completion (idle timeout) — zedit completion is manual `Ctrl-n` only — **medium**
 - Multiple language servers per language — zedit launches exactly one per filetype — **low**
-- LSP progress messages in statusline; inline/end-of-line diagnostic text; document colors — **low**
+- LSP progress messages in statusline; document colors — **low** (inline/end-of-line diagnostic text is **DONE**)
 
 **UI**
 - Jumplist — `Ctrl-o`/`Ctrl-i` navigation history plus a jumplist picker; zedit has nothing (vim muscle memory expects this) — **high**
@@ -91,7 +92,7 @@ batteries-included editor.
 1. **EditorConfig support** (25.07) — respect `.editorconfig` for tab width/final newline; cheap and standard.
 2. **Cycle multiple LSP hover responses `A-n`/`A-p`** (25.07) — zedit already has a hover popup to extend.
 3. **Incomplete LSP completion (`isIncomplete`) handling** (25.07) — correctness fix for zedit's existing completion popup.
-4. **Inline display for LSP diagnostics** (25.01) — show diagnostic text at end of line, not just gutter sign + statusline.
+4. ~~**Inline display for LSP diagnostics**~~ (25.01) — **DONE** (`inline_diagnostics`).
 5. **Path completion in insert mode** (25.01) — server-independent completion win.
 6. **Snippet tabstop rendering and jumping** (25.01) — directly addresses zedit's "no snippets/textEdit" gap.
 7. **Continue line comments on `o`/`O`/Enter** (25.01) — small polish on zedit's existing comment support.
