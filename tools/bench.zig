@@ -74,8 +74,8 @@ pub fn main(init: std.process.Init) !void {
         .{ .name = "nvim", .bin = "nvim", .argv_prefix = &.{ "nvim", "-u", "NONE", "-i", "NONE" }, .picker_key = null },
     };
 
-    std.debug.print("\n{s:<8} {s:>12} {s:>12} {s:>12} {s:>12} {s:>14}\n", .{ "editor", "startup", "bigfile", "keypress", "big-search", "picker-open" });
-    std.debug.print("{s:-<8} {s:->12} {s:->12} {s:->12} {s:->12} {s:->14}\n", .{ "", "", "", "", "", "" });
+    std.debug.print("\n{s:<8} {s:>12} {s:>12} {s:>12} {s:>12} {s:>12} {s:>14}\n", .{ "editor", "startup", "bigfile", "big-1stpaint", "keypress", "big-search", "picker-open" });
+    std.debug.print("{s:-<8} {s:->12} {s:->12} {s:->12} {s:->12} {s:->12} {s:->14}\n", .{ "", "", "", "", "", "", "" });
 
     for (editors) |ed| {
         if (!binaryWorks(gpa, io, ed.bin)) {
@@ -84,9 +84,10 @@ pub fn main(init: std.process.Init) !void {
         }
         const startup = median(measureStartup(gpa, ed, small_file, runs));
         const bigload = median(measureStartup(gpa, ed, big_file, 3));
+        const bigpaint = median(measureFirstPaint(gpa, ed, big_file, 3));
         const keypress = median(measureKeypress(gpa, ed, runs));
         const bigsearch = median(measureSearch(gpa, ed, 3));
-        std.debug.print("{s:<8} {d:>10.1}ms {d:>10.1}ms {d:>10.2}ms {d:>10.1}ms", .{ ed.name, startup, bigload, keypress, bigsearch });
+        std.debug.print("{s:<8} {d:>10.1}ms {d:>10.1}ms {d:>10.1}ms {d:>10.2}ms {d:>10.1}ms", .{ ed.name, startup, bigload, bigpaint, keypress, bigsearch });
         if (ed.picker_key) |pk| {
             const cold = measurePicker(gpa, ed, pk, false);
             std.debug.print(" {d:>8.1}ms cold", .{cold});
@@ -124,6 +125,23 @@ fn measureStartup(gpa: std.mem.Allocator, ed: Editor, file: []const u8, n: usize
         const t0 = nowNs();
         _ = waitQuiet(&s, 80, 8000);
         out.append(gpa, msBetween(t0, nowNs()) - 80.0) catch break;
+    }
+    return out.toOwnedSlice(gpa) catch &.{};
+}
+
+/// Time until the editor puts *something* on screen — what a user actually
+/// waits for. Reported next to the settled time because an editor that paints
+/// the text immediately and decorates it a frame later (zedit does: syntax,
+/// git signs and diagnostics arrive after the first frame) is quick to appear
+/// even when it settles no sooner.
+fn measureFirstPaint(gpa: std.mem.Allocator, ed: Editor, file: []const u8, n: usize) []f64 {
+    var out: std.ArrayList(f64) = .empty;
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        var s = spawnOn(gpa, ed, file) orelse break;
+        defer quitAndFinish(&s, ed);
+        if (firstByteMs(&s, 8000)) |ms| out.append(gpa, ms) catch break;
+        _ = waitQuiet(&s, 50, 4000);
     }
     return out.toOwnedSlice(gpa) catch &.{};
 }

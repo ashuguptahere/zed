@@ -83,6 +83,9 @@ Notable changes to zedit. Dates are commit dates.
 
 ### Performance
 
+- Startup paints the text before decorating it: syntax highlighting, git signs and the LSP handshake now run after the first frame instead of in front of it. First paint on a 320 KB source file went from 48 ms to 0 ms, and on an 8.2 MB file from 7 ms to 4 ms.
+- The benchmark reports first paint alongside settled time, since a settle-only number penalises exactly this kind of progressive rendering.
+
 - Literal search now uses a first-byte/last-byte SIMD scan, and the whole-source fast path is authoritative instead of falling through to a per-line rescan when there is no match: on an 8.2 MB file a miss went from 301 ms to 0.37 ms, and a search with 205k matches from 18.6 ms to 7.1 ms. The head-to-head 10 MB search dropped 7.9 → 5.1 ms.
 - Opening a file builds a lazy `u32` line index rather than a 32-byte record per line; per-line storage is materialised only by the first edit, so reading, searching, rendering and saving skip it entirely. An 8.2 MB file opens in 4.65 ms instead of 6.85 ms and uses 18.5 MB instead of 32.3 MB.
 

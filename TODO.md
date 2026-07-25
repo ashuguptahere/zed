@@ -11,6 +11,14 @@ behind the roadmap items.
 
 ## Next (in order)
 
+- [ ] Stream the initial read: paint from the first chunk instead of after the
+      whole file is in memory. This is the entire remaining big-file gap —
+      nvim shows an 8.2 MB file at 3.4 ms because it does not wait for the
+      read; our loader is faster (3.9 ms vs 8.4 ms) but runs first.
+- [ ] Asynchronous picker, the way helix does it: stream candidates from a
+      background walk into an already-visible picker and match incrementally
+      with a per-frame time budget, instead of walking synchronously.
+
 The shortlist is done; these are the next-highest gaps from
 `doc/COMPARISON.md`, in rough priority order.
 
@@ -20,6 +28,14 @@ The shortlist is done; these are the next-highest gaps from
 
 
 ## Next (in order)
+
+- [ ] Stream the initial read: paint from the first chunk instead of after the
+      whole file is in memory. This is the entire remaining big-file gap —
+      nvim shows an 8.2 MB file at 3.4 ms because it does not wait for the
+      read; our loader is faster (3.9 ms vs 8.4 ms) but runs first.
+- [ ] Asynchronous picker, the way helix does it: stream candidates from a
+      background walk into an already-visible picker and match incrementally
+      with a per-frame time budget, instead of walking synchronously.
 
 
 ## Recurring (every feature / significant change)

@@ -37,6 +37,12 @@ work", they win.
   lexer (`syntax.zig`) remains the fallback for languages without a grammar.
 - **Idiomatic, modern Zig.** Follow current Zig conventions for the toolchain in
   `build.zig.zon` (`minimum_zig_version`). No legacy/deprecated APIs.
+- **Paint first, decorate after.** Nothing that merely *annotates* the text may
+  sit between launch and the first frame: syntax highlighting, git signs and
+  the LSP handshake all run after the initial paint, and a second frame brings
+  them in. This took first paint on a 320 KB source file from 48 ms to 0 ms.
+  Benchmarks therefore report first paint *and* settled time — a settle-only
+  metric punishes progressive rendering.
 - **Fast to compile and fast to run.** Keep build times low; prefer plain data
   and functions over heavy comptime. Favour `ReleaseFast`/`ReleaseSafe` for
   shipping. Profile before optimising (see below).
@@ -154,6 +160,11 @@ zig build test                  # unit tests (pure logic; no tty needed)
 zig build itest                 # pty integration tests (drives the built editor)
 zig build bench -Doptimize=ReleaseFast   # benchmark vs helix/nvim (if installed)
 ```
+
+**Measure in ReleaseFast.** `zig build test` and `zig build itest` reinstall
+`zig-out/bin/zedit` as a *Debug* build, which is ~6x slower — rebuild with
+`zig build -Doptimize=ReleaseFast` before any ad-hoc timing, or the numbers
+are meaningless. (`zig build bench` builds its own ReleaseFast artifacts.)
 
 CI runs `zig build test` + `zig build itest` on every push
 (`.github/workflows/ci.yml`); pushing a `v*` tag cross-compiles stripped
