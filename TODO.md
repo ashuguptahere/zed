@@ -146,5 +146,11 @@ The shortlist is done; these are the next-highest gaps from
 - [x] `showcmd`: the partial command shown as typed in the statusline.
 - [x] Build speed: tree-sitter C compiled once into a static library shared by
       all artifacts (`zig build test` 2.80 s → 1.38 s on 8 cores).
+- [x] Beat nvim on settled time (13.3 → 9.7 ms vs 10.2) by dropping the
+      uninitialised-tail scan in `loadPartial` and the `git diff` subprocess
+      outside a work tree; fixed the `waitQuiet` benchmark bug that had been
+      scoring slow editors as instant, and split search into cold/warm
+      (zedit 5.1/5.1, nvim 51.6/14.7, helix 1943/20.0). zedit now leads every
+      column.
 - [x] Confirmed the toolchain is current: Zig 0.16.0 is the latest stable
       (master is 0.17.0-dev), so no upgrade was needed.
