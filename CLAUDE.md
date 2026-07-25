@@ -141,7 +141,7 @@ Source is `src/`, one responsibility per module:
 | `buffer.zig`  | The document: two-phase zero-copy load (`loadPartial` indexes a head so the screen can paint, `loadRest` fills the tail), a lazy `u32` line index over one shared buffer, per-line storage materialised on the first edit, save, UTF-8-aware edits. |
 | `motion.zig`  | Pure cursor motions, word/WORD rules, find-char, `%`, text objects. |
 | `register.zig`| Vim registers (named/unnamed, linewise flag) for yank/delete/paste. |
-| `undo.zig`    | Undo history as a tree of capped buffer snapshots (branches, `g-`/`g+`, `:earlier`/`:later`). |
+| `undo.zig`    | Undo history as a tree of edits — each state the diff from its parent (branches, `g-`/`g+`, `:earlier`/`:later`). |
 | `regex.zig`   | Regex engine: Pike VM (Thompson NFA), linear time, captures; modern "very magic" syntax. |
 | `search.zig`  | Buffer search (`/ ? n N * #`): regex-powered, with a whole-source SIMD memmem fast path for literal patterns while the buffer is unedited. |
 | `theme.zig`   | Colour palettes (Tokyo Night default + Gruvbox/Catppuccin/Nord/One Dark), the active-theme global, 24-bit SGR helpers. |
@@ -569,12 +569,14 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   not at the line's indent) and no `text-width`/wrap column: it wraps at the
   window edge, mid-word. `gj`/`gk` are cursor motions; as operator targets
   (`dgj`) they act charwise rather than vim's screen-linewise.
-- The undo tree holds whole-buffer snapshots, capped at 256 states: enough for
-  a long session, but memory is O(states x file size), and pruning drops the
-  oldest state (or, where the root has branched, the oldest dead-end branch)
-  rather than merging. History is per session — there is no `undofile`
-  persistence — and `:earlier 1f`, vim's file-write counting, is not
-  implemented.
+- The undo tree stores each state as the diff from its parent (prefix/suffix
+  trimmed), with the current text materialised beside it, so memory is O(sum of
+  edits) and a step costs one small edit. The root still holds the whole text,
+  and every edit still serialises the buffer to compute its diff — that last
+  O(file) cost per keystroke is the remaining one (10.9 ms on a 7.6 MB file),
+  and removing it means the edit path reporting its own ranges. Capped at 256
+  states. History is per session — there is no `undofile` persistence — and
+  `:earlier 1f`, vim's file-write counting, is not implemented.
 - Multi-cursor is one-caret-per-line (column editing); it does not do
   per-caret line splits/joins or arbitrary selection-based multi-edit.
 - The project-wide grep picker is literal, not regex (in-buffer search is

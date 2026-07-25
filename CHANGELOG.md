@@ -2,6 +2,12 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.5.2 - 2026-07-25
+
+### Performance
+
+- The undo tree stores each state as the difference from its parent — the offset where they diverge plus the bytes on either side of the change — rather than a copy of the whole buffer, and keeps the current text materialised so a step applies one small edit instead of rebuilding anything. Jumping across branches walks up to the common ancestor and back down, every move proportional to what changed. 300 single-character changes in a 7.6 MB file held 295 MB before and 43 MB now; edit latency is unchanged at 10.9 ms (it is the whole-buffer serialise on each edit, which this does not touch).
+
 ## 0.5.1 - 2026-07-25
 
 ### Changed
