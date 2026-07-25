@@ -1,20 +1,11 @@
 # zedit
 
-A fast, terminal-based, modal code editor written in **Zig**, inspired by
-`nvim` and `helix`. Batteries included — the features you'd install plugins
-for are built in — with no Zig package dependencies: just the standard
-library plus a vendored tree-sitter runtime + grammars (C, compiled by the
-build) for structural syntax highlighting. The editor itself has **zero
-runtime dependencies**.
 
 > `zedit` here means **zig-editor**.
 
 ## Philosophy
 
-- **Batteries included** (like Helix): LSP, tree-sitter, pickers, git signs,
-  surround, comments, multiple cursors, splits and themes work out of the box.
-  No plugin manager, no setup.
-- **Vim/AstroNvim keybindings** (unlike Helix): the classic
+ **Vim/AstroNvim keybindings** (unlike Helix): the classic
   operator-then-motion grammar, plus a `Space` leader with a which-key popup.
 - **One documented config file**, everything optional: `zedit --init-config`
   writes it with every setting, its default, and an explanation.
@@ -130,6 +121,13 @@ Format is `key = value` with `#` comments; unknown keys are ignored and a
 missing file just means defaults. Settings today: `theme`, `tab_width`,
 `nerd_font`, `sidebar`, `relative_numbers`, `large_file_mb`, `autoindent`,
 `format_on_save`.
+
+Every CLI option has a short and a long form (`-h/--help`, `-v/--version`,
+`-l/--log`, `-s/--lsp`, `-c/--config`, `-t/--tutor`, `-b/--benchmark`,
+`--init-config`); `zedit <dir>` opens the file picker in that directory, and
+`zedit --benchmark [file]` prints open/search/serialize timings without
+needing a terminal. Releases are versioned by the `VERSION` file and
+documented in [CHANGELOG.md](CHANGELOG.md).
 
 > **Icons look broken?** The powerline statusline separators are Nerd Font
 > glyphs (private-use codepoints). Terminal applications cannot ship fonts —

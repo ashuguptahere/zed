@@ -20,11 +20,14 @@ pub fn compute(gpa: std.mem.Allocator, io: std.Io, path: []const u8, signs: *Sig
         .argv = &.{ "git", "diff", "--no-color", "-U0", "--", path },
         .stdout_limit = .limited(8 << 20),
         .stderr_limit = .limited(64 << 10),
-    }) catch return;
+    }) catch |err| {
+        std.log.scoped(.git).debug("git diff failed to run: {s}", .{@errorName(err)});
+        return;
+    };
     defer gpa.free(res.stdout);
     defer gpa.free(res.stderr);
     switch (res.term) {
-        .exited => |code| if (code != 0) return, // not a repo / git error
+        .exited => |code| if (code != 0) return, // not a repo / git error (normal; not logged)
         else => return,
     }
     parse(res.stdout, signs);

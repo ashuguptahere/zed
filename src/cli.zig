@@ -7,7 +7,9 @@
 const std = @import("std");
 const posix = std.posix;
 
-pub const version = "0.1.0";
+/// The release version, read from the VERSION file at the repo root (the
+/// single source of truth; CHANGELOG.md documents each release).
+pub const version = std.mem.trim(u8, @embedFile("version_text"), " \n\r");
 
 pub const Config = struct {
     file: ?[]const u8 = null,
@@ -15,6 +17,7 @@ pub const Config = struct {
     lsp_cmd: ?[]const u8 = null,
     config_path: ?[]const u8 = null,
     tutor: bool = false,
+    benchmark: bool = false,
 };
 
 pub const Parsed = union(enum) {
@@ -38,28 +41,30 @@ pub fn parse(argv: []const [:0]const u8) Parsed {
                 positional_only = true;
             } else if (eql(arg, "-h") or eql(arg, "--help")) {
                 return .help;
-            } else if (eql(arg, "-V") or eql(arg, "--version")) {
+            } else if (eql(arg, "-v") or eql(arg, "-V") or eql(arg, "--version")) {
                 return .version;
-            } else if (eql(arg, "--log")) {
+            } else if (eql(arg, "-l") or eql(arg, "--log")) {
                 i += 1;
                 if (i >= argv.len) return .{ .err = "--log requires a file path" };
                 cfg.log_path = argv[i];
             } else if (prefix(arg, "--log=")) {
                 cfg.log_path = arg["--log=".len..];
-            } else if (eql(arg, "--lsp")) {
+            } else if (eql(arg, "-s") or eql(arg, "--lsp")) {
                 i += 1;
                 if (i >= argv.len) return .{ .err = "--lsp requires a server command" };
                 cfg.lsp_cmd = argv[i];
             } else if (prefix(arg, "--lsp=")) {
                 cfg.lsp_cmd = arg["--lsp=".len..];
-            } else if (eql(arg, "--config")) {
+            } else if (eql(arg, "-c") or eql(arg, "--config")) {
                 i += 1;
                 if (i >= argv.len) return .{ .err = "--config requires a file path" };
                 cfg.config_path = argv[i];
             } else if (prefix(arg, "--config=")) {
                 cfg.config_path = arg["--config=".len..];
-            } else if (eql(arg, "--tutor")) {
+            } else if (eql(arg, "-t") or eql(arg, "--tutor")) {
                 cfg.tutor = true;
+            } else if (eql(arg, "-b") or eql(arg, "--benchmark")) {
+                cfg.benchmark = true;
             } else if (eql(arg, "--init-config")) {
                 return .init_config;
             } else {
@@ -81,12 +86,13 @@ const help_text =
     \\
     \\Options:
     \\  -h, --help           Show this help and exit
-    \\  -V, --version        Show version and exit
-    \\      --log <path>     Write diagnostic logs to <path>
-    \\      --lsp <cmd>      Language server command (e.g. "zls"); defaults per filetype
-    \\      --config <path>  Use <path> instead of ~/.config/zedit/config
+    \\  -v, --version        Show version and exit
+    \\  -l, --log <path>     Write diagnostic logs to <path>
+    \\  -s, --lsp <cmd>      Language server command (e.g. "zls"); defaults per filetype
+    \\  -c, --config <path>  Use <path> instead of ~/.config/zedit/config
+    \\  -t, --tutor          Open the interactive tutorial (like vimtutor)
+    \\  -b, --benchmark      Time open/search/save on [file] (or synthetic data) and exit
     \\      --init-config    Write the documented default config file and exit
-    \\      --tutor          Open the interactive tutorial (like vimtutor)
     \\
     \\Keys (normal mode):
     \\  h j k l           Move left/down/up/right
@@ -101,6 +107,7 @@ const help_text =
     \\Examples:
     \\  zedit                 Start with an empty buffer
     \\  zedit src/main.zig    Open a file
+    \\  zedit .               Open a directory (file picker)
     \\  zedit --log zedit.log notes.txt
     \\
 ;
@@ -117,6 +124,11 @@ pub fn printError(message: []const u8) void {
     writeFd(posix.STDERR_FILENO, "zedit: ");
     writeFd(posix.STDERR_FILENO, message);
     writeFd(posix.STDERR_FILENO, "\n");
+}
+
+/// Print a block of normal output (the --benchmark report).
+pub fn printOut(text: []const u8) void {
+    writeFd(posix.STDOUT_FILENO, text);
 }
 
 /// Print a normal (non-error) one-liner, e.g. where --init-config wrote to.
@@ -157,6 +169,18 @@ test "parse file and flags" {
 test "parse help and version" {
     try std.testing.expect(parse(&[_][:0]const u8{ "zedit", "--help" }) == .help);
     try std.testing.expect(parse(&[_][:0]const u8{ "zedit", "-V" }) == .version);
+    try std.testing.expect(parse(&[_][:0]const u8{ "zedit", "-v" }) == .version);
+}
+
+test "short and long forms agree" {
+    const long = parse(&[_][:0]const u8{ "zedit", "--log", "x", "--config", "y", "--lsp", "z", "--tutor", "--benchmark" });
+    const short = parse(&[_][:0]const u8{ "zedit", "-l", "x", "-c", "y", "-s", "z", "-t", "-b" });
+    try std.testing.expect(long == .run and short == .run);
+    try std.testing.expectEqualStrings(long.run.log_path.?, short.run.log_path.?);
+    try std.testing.expectEqualStrings(long.run.config_path.?, short.run.config_path.?);
+    try std.testing.expectEqualStrings(long.run.lsp_cmd.?, short.run.lsp_cmd.?);
+    try std.testing.expectEqual(long.run.tutor, short.run.tutor);
+    try std.testing.expectEqual(long.run.benchmark, short.run.benchmark);
 }
 
 test "parse errors" {

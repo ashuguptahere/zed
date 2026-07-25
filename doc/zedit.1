@@ -18,7 +18,9 @@ themed interface \(em all with no external runtime dependencies.
 If
 .I file
 exists it is opened; otherwise a buffer with that name is created on the first
-write. With no
+write. If
+.I file
+is a directory, zedit enters it and starts in the fuzzy file picker. With no
 .I file
 argument an empty buffer is opened. The editor requires an interactive terminal.
 .SH OPTIONS
@@ -26,31 +28,38 @@ argument an empty buffer is opened. The editor requires an interactive terminal.
 .BR \-h ", " \-\-help
 Show usage and exit.
 .TP
-.BR \-V ", " \-\-version
-Show the version and exit.
+.BR \-v ", " \-V ", " \-\-version
+Show the version (from the VERSION file; see CHANGELOG.md) and exit.
 .TP
-.BI \-\-log " path"
+.BR \-l ", " \-\-log " " \fIpath\fP
 Write timestamped diagnostic logs (including microsecond render/input timings)
 to
 .IR path .
 Logging is off by default.
 .TP
-.BI \-\-lsp " cmd"
+.BR \-s ", " \-\-lsp " " \fIcmd\fP
 Use
 .I cmd
 as the language server for the opened file instead of the per-filetype default.
 .TP
-.BI \-\-config " path"
+.BR \-c ", " \-\-config " " \fIpath\fP
 Read configuration from
 .I path
 instead of the standard location (see
 .BR CONFIGURATION ).
 .TP
+.BR \-b ", " \-\-benchmark
+Time the hot paths (open, whole-buffer literal and regex search, serialize) on
+.I file
+\(em or on 10 MB of synthetic text when no file is given \(em print a report
+and exit. Runs headless; the comparative suite against helix/nvim is
+.BR "zig build bench" .
+.TP
 .B \-\-init\-config
 Write the fully documented default configuration file to the standard location
 and exit. Refuses to overwrite an existing file.
 .TP
-.B \-\-tutor
+.BR \-t ", " \-\-tutor
 Open the interactive tutorial (in the tradition of
 .BR vimtutor (1)).
 The tutor is a scratch buffer: edit it freely.
@@ -303,10 +312,13 @@ search the current file; use
 to search across files.
 .SH "COMMAND LINE"
 .TP
-.B :w \fR[\fPname\fR]\fP :q :wq :x :q! :qa :wa :format :{n} ZZ ZQ
+.B :w \fR[\fPname\fR]\fP :q :wq :x :q! :qa :qa! :wa :format :{n} ZZ ZQ
 Write, quit (closes the window when more than one is open, else quits; blocked
 on the last window with unsaved changes), write\-and\-quit, force quit, quit
-all, go to line \fIn\fP, write\-and\-quit, quit without writing.
+all (refuses while any buffer has unsaved changes;
+.B :qa!
+discards), write all dirty buffers (failed saves are reported by name),
+go to line \fIn\fP, write\-and\-quit, quit without writing.
 .TP
 .B :\fR[\fPrange\fR]\fPs/pat/rep/\fR[\fPflags\fR]\fP
 Substitute. Ranges:

@@ -2676,7 +2676,9 @@ pub const Editor = struct {
 
     // === picker (file finder / global search) ==============================
 
-    fn openFilePicker(self: *Editor) void {
+    /// Open the fuzzy file picker (`Space f f`; also the startup view when
+    /// zedit is launched on a directory).
+    pub fn openFilePicker(self: *Editor) void {
         self.freePicker();
         self.picker_kind = .files;
         self.picker_sel = 0;
@@ -3190,8 +3192,9 @@ pub const Editor = struct {
                 return;
             }
         }
-        const nb = buffer.Buffer.load(self.gpa, self.io, path) catch {
-            self.setStatus("cannot open {s}", .{path});
+        const nb = buffer.Buffer.load(self.gpa, self.io, path) catch |err| {
+            self.setStatus("cannot open {s}: {s}", .{ path, saveErrorReason(err) });
+            std.log.scoped(.editor).err("open failed: {s}: {s}", .{ path, @errorName(err) });
             return;
         };
         const doc = makeDoc(self.gpa, nb) catch {
@@ -3281,7 +3284,7 @@ pub const Editor = struct {
                 try self.emit(if (selected) "\u{25B6} " else "  ");
                 try self.setFg(if (selected) th.fg else th.fg_dim);
                 const maxw = if (cols > 2) cols - 2 else 0;
-                try self.emit(it.display[0..@min(it.display.len, maxw)]);
+                try self.emitSanitized(it.display[0..@min(it.display.len, maxw)]);
             }
             try self.setBg(if (selected) th.cursorline else th.bg);
             try self.emit(ansi.clear_line_right);
@@ -3663,7 +3666,12 @@ pub const Editor = struct {
             self.doQuit();
         } else if (eql(cmd, "q!") or eql(cmd, "quit!")) {
             if (self.wins.items.len > 1) self.closeWindow() else self.quit = true;
-        } else if (eql(cmd, "qa") or eql(cmd, "qa!") or eql(cmd, "quitall")) {
+        } else if (eql(cmd, "qa") or eql(cmd, "quitall")) {
+            for (self.docs.items) |doc| {
+                if (doc.buf.dirty) return self.setStatus("unsaved changes — :wa or :qa!", .{});
+            }
+            self.quit = true;
+        } else if (eql(cmd, "qa!") or eql(cmd, "quitall!")) {
             self.quit = true;
         } else if (eql(cmd, "wq") or eql(cmd, "x")) {
             if (try self.write(arg)) self.doQuit();
@@ -3846,6 +3854,18 @@ pub const Editor = struct {
         return "";
     }
 
+    /// A plain-English reason for a failed save (raw enum only as last resort).
+    fn saveErrorReason(err: anyerror) []const u8 {
+        return switch (err) {
+            error.AccessDenied, error.PermissionDenied => "permission denied",
+            error.NoSpaceLeft => "no space left on device",
+            error.IsDir => "that is a directory",
+            error.ReadOnlyFileSystem => "read-only file system",
+            error.FileTooBig => "file too large",
+            else => @errorName(err),
+        };
+    }
+
     fn write(self: *Editor, arg: []const u8) !bool {
         self.formatBeforeSave();
         if (arg.len > 0) try self.buf.setPath(arg);
@@ -3855,8 +3875,8 @@ pub const Editor = struct {
                 return false;
             },
             else => {
-                self.setStatus("write failed: {s}", .{@errorName(err)});
-                std.log.scoped(.editor).err("write failed: {s}", .{@errorName(err)});
+                self.setStatus("write failed: {s}", .{saveErrorReason(err)});
+                std.log.scoped(.editor).err("write failed: {s}: {s}", .{ self.buf.path orelse "<unnamed>", @errorName(err) });
                 return false;
             },
         };
@@ -3866,17 +3886,32 @@ pub const Editor = struct {
     }
 
     /// `:wa` — write every dirty, file-backed document (cross-file edits leave
-    /// background buffers dirty until saved).
+    /// background buffers dirty until saved). Failures are named, never silent.
     fn writeAll(self: *Editor) void {
         self.formatBeforeSave(); // format-on-save covers the active document
         var n: usize = 0;
+        var failed: usize = 0;
+        var why: []const u8 = "";
+        var who: []const u8 = "";
         for (self.docs.items) |doc| {
             if (!doc.buf.dirty) continue;
-            doc.buf.save(self.io) catch continue;
+            doc.buf.save(self.io) catch |err| {
+                failed += 1;
+                if (failed == 1) {
+                    why = saveErrorReason(err);
+                    who = doc.buf.path orelse docLabel(doc);
+                }
+                std.log.scoped(.editor).err("write failed: {s}: {s}", .{ doc.buf.path orelse "<unnamed>", @errorName(err) });
+                continue;
+            };
             n += 1;
         }
         self.refreshGit();
-        self.setStatus("{d} buffer(s) written", .{n});
+        if (failed > 0) {
+            self.setStatus("{d} written, {d} failed — {s}: {s}", .{ n, failed, who, why });
+        } else {
+            self.setStatus("{d} buffer(s) written", .{n});
+        }
     }
 
     fn doQuit(self: *Editor) void {
@@ -4460,7 +4495,7 @@ pub const Editor = struct {
         };
         const prefix = self.completionPrefix();
         for (client.completions.items, 0..) |it, i| {
-            if (prefix.len == 0 or startsWithCI(it.label, prefix)) self.comp_filtered.append(self.gpa, i) catch {};
+            if (prefix.len == 0 or std.ascii.startsWithIgnoreCase(it.label, prefix)) self.comp_filtered.append(self.gpa, i) catch {};
         }
         if (self.comp_filtered.items.len == 0) {
             self.comp_open = false;
@@ -4908,7 +4943,7 @@ pub const Editor = struct {
                 try self.emit(glyph);
                 var used = pad + 2;
                 const shown = @min(name.len, if (w > used) w - used else 0);
-                try self.emit(name[0..shown]);
+                try self.emitSanitized(name[0..shown]);
                 used += shown;
                 if (used < w) try self.emitSpaces(w - used);
             } else {
@@ -5229,7 +5264,7 @@ pub const Editor = struct {
             const w = items[idx];
             const shown = w.text[w.show..];
             try self.emit(" ");
-            try self.emit(shown[0..@min(shown.len, width - 2)]);
+            try self.emitSanitized(shown[0..@min(shown.len, width - 2)]);
             const used = 1 + @min(unicode.displayWidth(shown), width - 2);
             if (used < width) try self.emitSpaces(width - used);
         }
@@ -5310,7 +5345,7 @@ pub const Editor = struct {
             if (used + w >= avail) break;
             const in_param = sig.active_start != sig.active_end and i >= sig.active_start and i < sig.active_end;
             try self.setFg(if (in_param) th.builtin else th.status_seg_fg);
-            try self.emit(label[i .. i + d.len]);
+            try self.emit(if (isControlCp(d.cp)) "?" else label[i .. i + d.len]);
             used += w;
             i += d.len;
         }
@@ -5371,7 +5406,7 @@ pub const Editor = struct {
             const label = client.completions.items[items[idx]].label;
             try self.emit(" ");
             const shown = @min(label.len, width - 1);
-            try self.emit(label[0..shown]);
+            try self.emitSanitized(label[0..shown]);
             if (shown + 1 < width) try self.emitSpaces(width - shown - 1);
         }
     }
@@ -5533,7 +5568,7 @@ pub const Editor = struct {
             } else {
                 const stl = if (byte < self.style_buf.items.len) self.style_buf.items[byte] else .normal;
                 try self.setFg(if (is_extra) th.bg else if (in_match) th.fg else self.styleColor(stl));
-                try self.emit(bytes);
+                try self.emit(if (isControlCp(d.cp)) "?" else bytes);
             }
         }
         // Inlay hints anchored at end-of-line (e.g. return-type hints).
@@ -5569,7 +5604,7 @@ pub const Editor = struct {
             j += d.len;
             if (start + w <= left) continue;
             if (start >= right) break;
-            try self.emit(bytes);
+            try self.emit(if (isControlCp(d.cp)) "?" else bytes);
         }
     }
 
@@ -5647,7 +5682,7 @@ pub const Editor = struct {
             try self.emit(prompt);
             const room = if (cols > prompt.len) cols - prompt.len else 0;
             const shown = @min(self.cmd.items.len, room);
-            try self.emit(self.cmd.items[0..shown]);
+            try self.emitSanitized(self.cmd.items[0..shown]);
             try self.emitSpaces(room - shown);
             return;
         }
@@ -5669,7 +5704,7 @@ pub const Editor = struct {
         const fileseg = std.fmt.bufPrint(&fb, " {s}{s} ", .{ fname, dirty }) catch " ";
         try self.setBg(th.status_seg_bg);
         try self.setFg(th.status_seg_fg);
-        try self.emit(fileseg);
+        try self.emitSanitized(fileseg);
         try self.setBg(th.status_bg);
         try self.setFg(th.status_seg_bg);
         try self.emit(sepRight());
@@ -5701,7 +5736,7 @@ pub const Editor = struct {
         try self.setBg(th.status_bg);
         try self.setFg(th.fg_dim);
         const mshow = @min(middle.len, mid_w);
-        try self.emit(middle[0..mshow]);
+        try self.emitSanitized(middle[0..mshow]);
         try self.emitSpaces(mid_w - mshow);
 
         try self.setBg(th.status_bg);
@@ -5789,6 +5824,25 @@ pub const Editor = struct {
 
     fn emit(self: *Editor, bytes: []const u8) !void {
         try self.frame.appendSlice(self.gpa, bytes);
+    }
+
+    /// Emit text that originates outside the editor (buffer content, file
+    /// names, LSP labels, status text) with control codepoints replaced, so
+    /// untrusted bytes can never inject terminal escapes.
+    fn emitSanitized(self: *Editor, text: []const u8) !void {
+        var i: usize = 0;
+        while (i < text.len) {
+            const d = unicode.decode(text[i..]);
+            const bytes = text[i .. i + d.len];
+            i += d.len;
+            if (d.cp == '\t') {
+                try self.emit(" ");
+            } else if (isControlCp(d.cp)) {
+                try self.emit("?");
+            } else {
+                try self.emit(bytes);
+            }
+        }
     }
 
     fn emitFmt(self: *Editor, comptime fmt: []const u8, args: anytype) !void {
@@ -6006,21 +6060,17 @@ fn samePath(cwd: []const u8, doc_path: []const u8, abs: []const u8) bool {
         std.mem.endsWith(u8, abs, doc_path);
 }
 
+/// Codepoints that must never reach the terminal raw — C0 controls, DEL and
+/// C1 controls (U+0080–U+009F, 8-bit CSI et al.). A hostile file or language
+/// server could otherwise inject escape sequences whose terminal *replies*
+/// come back as synthetic keystrokes (the classic pager-injection class).
+fn isControlCp(cp: u21) bool {
+    return cp < 0x20 or cp == 0x7f or (cp >= 0x80 and cp <= 0x9f);
+}
+
 fn textEditAfter(_: void, a: lsp.TextEdit, b: lsp.TextEdit) bool {
     if (a.start_line != b.start_line) return a.start_line > b.start_line;
     return a.start_char > b.start_char;
-}
-
-fn startsWithCI(haystack: []const u8, prefix: []const u8) bool {
-    if (prefix.len > haystack.len) return false;
-    for (prefix, 0..) |c, i| {
-        if (lowerAscii(haystack[i]) != lowerAscii(c)) return false;
-    }
-    return true;
-}
-
-fn lowerAscii(c: u8) u8 {
-    return if (c >= 'A' and c <= 'Z') c - 'A' + 'a' else c;
 }
 
 fn toggleAscii(cp: u21) u21 {
@@ -6168,6 +6218,16 @@ fn byteAtDisplayCol(line: []const u8, target: usize) usize {
         i += d.len;
     }
     return i;
+}
+
+test "isControlCp classifies injection-capable codepoints" {
+    try std.testing.expect(isControlCp(0x1b)); // ESC
+    try std.testing.expect(isControlCp(0x9b)); // C1 CSI
+    try std.testing.expect(isControlCp(0x07)); // BEL
+    try std.testing.expect(isControlCp(0x7f)); // DEL
+    try std.testing.expect(!isControlCp('a'));
+    try std.testing.expect(!isControlCp(0xa0)); // NBSP is printable
+    try std.testing.expect(!isControlCp(0x4E16)); // CJK
 }
 
 test "applyEditsToBuf handles multi-line ranges and text" {

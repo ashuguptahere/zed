@@ -32,14 +32,11 @@ pub const ansi = struct {
     pub const leave_alt_screen = "\x1b[?1049l";
     pub const enable_bracketed_paste = "\x1b[?2004h";
     pub const disable_bracketed_paste = "\x1b[?2004l";
-    pub const clear_screen = "\x1b[2J";
     pub const clear_line_right = "\x1b[K";
     pub const cursor_home = "\x1b[H";
     pub const hide_cursor = "\x1b[?25l";
     pub const show_cursor = "\x1b[?25h";
     pub const reset_attrs = "\x1b[m";
-    pub const reverse_video = "\x1b[7m";
-    pub const dim = "\x1b[2m";
 };
 
 /// Window dimensions in character cells.
@@ -201,7 +198,7 @@ pub const Terminal = struct {
     }
 
     /// Read currently-available input into `buf`, returning the bytes read.
-    /// Assumes data is ready (call after `waitForInput`).
+    /// Assumes data is ready (call after `waitReady`).
     pub fn read(self: *Terminal, buf: []u8) Error![]u8 {
         const n = posix.read(self.in, buf) catch |err| switch (err) {
             error.WouldBlock => return buf[0..0],

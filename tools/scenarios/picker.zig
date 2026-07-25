@@ -71,6 +71,19 @@ pub fn run(ctx: *h.Ctx) !void {
         ctx.check("file picker left a.txt untouched", std.mem.eql(u8, result[0], "aaa\n"));
     }
 
+    // `zedit .` (a directory argument) enters it and starts in the file
+    // picker (regression: it used to die with "cannot open .: IsDir").
+    {
+        const files = [_]File{
+            .{ .name = "a.txt", .content = "aaa\n" },
+            .{ .name = "b.txt", .content = "bbb\n" },
+        };
+        const result = try run_picker(ctx, &files, ".", &.{ "b", CR, "x", ":wq", CR });
+        defer freeResult(ctx, result);
+        ctx.check("directory argument opens the file picker", std.mem.eql(u8, result[1], "bb\n"));
+        ctx.check("directory open leaves other files untouched", std.mem.eql(u8, result[0], "aaa\n"));
+    }
+
     // Grep picker: search 'find', open match in c.txt at line 3, delete a char.
     {
         const files = [_]File{

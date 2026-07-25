@@ -123,6 +123,15 @@ pub fn run(ctx: *h.Ctx) !void {
         s.drain(200);
     }
 
+    // --benchmark runs headless and prints the timing report to stdout.
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "--benchmark", "alpha.txt" }, .cwd = dir, .term = "xterm" });
+        defer s.finish();
+        s.drain(800);
+        ctx.check("--benchmark prints a timing report", s.containsPlain(ctx.gpa, "open") and
+            s.containsPlain(ctx.gpa, "serialize") and s.containsPlain(ctx.gpa, "alpha.txt"));
+    }
+
     // Theme-name completion: ":theme gru" Tab -> gruvbox, applied on Enter.
     {
         var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "alpha.txt" }, .cwd = dir, .term = "xterm-256color" });

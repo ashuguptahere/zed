@@ -51,12 +51,21 @@ work", they win.
 - **Traceable via logs.** Diagnostics go through `std.log` into a file enabled
   with `--log <path>` (off by default, costs one null check when off). Keep the
   editor fully diagnosable from the log alone.
-- **Great CLI experience.** `--help`/`--version` are complete and correct, exit
-  codes are meaningful (2 = usage error, 1 = runtime error), and the tool is
-  pleasant from the first run.
+- **Great CLI experience.** `--help`/`--version` are complete and correct,
+  every option has a short and a long form, exit codes are meaningful (2 =
+  usage error, 1 = runtime error), a directory argument opens the file picker
+  there, and `--benchmark` self-times the hot paths. The tool is pleasant from
+  the first run.
+- **Versioned + changelogged.** The `VERSION` file is the single source of
+  truth (embedded into `--version` at build time); every user-visible change
+  lands in `CHANGELOG.md` in the same commit.
 - **Unicode-correct.** Text is UTF-8 throughout. Cursor movement and rendering
   are codepoint- and display-width-aware (CJK = 2 cells, combining = 0). Never
   split a codepoint.
+- **Untrusted bytes stay inert.** Anything that reaches the terminal from
+  outside the editor (buffer content, file names, LSP text, pastes) goes
+  through the control-character sanitizer (`emitSanitized`/`isControlCp`) —
+  C0/C1/DEL render as `?`, never as live escape sequences.
 - **Profile, don't guess.** Use `log.Span` to time hot paths (render, input) in
   microseconds; it is a no-op when logging is off. Measure before and after any
   performance change.
@@ -136,7 +145,8 @@ itest` builds `zedit` plus a `mock_lsp` server, then runs the `itest` harness:
 - `tools/mock_lsp.zig` — a stub language server for the LSP scenario.
 - `tools/itest.zig` — the runner; `tools/scenarios/*.zig` are the suites (vim,
   vim_compat, feature, multicursor, extra, search, treesitter, picker, git,
-  windows, config, lsp, cpu), each a `pub fn run(ctx: *harness.Ctx) !void`.
+  windows, sidebar, config, cmdline, robust, ssh, lsp, cpu), each a
+  `pub fn run(ctx: *harness.Ctx) !void`.
   `vim_compat` asserts byte-for-byte agreement with expected outputs generated
   by driving real Neovim headlessly — extend it the same way when porting more
   upstream behaviours (ask nvim, not memory).
@@ -207,8 +217,10 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   Note the three search scopes: `/` searches the current buffer, `Space f w`
   searches file *contents* across the project, `Space f f` matches file *names*.
 - **Command line:** `:w` write, `:q` quit (closes the window if more than one;
-  blocked if unsaved on the last), `:wq`/`:x`, `:q!`, `:qa` quit all, `:wa`
-  write all dirty buffers, `:w <name>`, `:format` LSP-format the document,
+  blocked if unsaved on the last), `:wq`/`:x`, `:q!`, `:qa` quit all (refuses
+  while any buffer is dirty — nvim's E37, nvim-verified; `:qa!` discards),
+  `:wa` write all dirty buffers (failed saves are named, never silent),
+  `:w <name>`, `:format` LSP-format the document,
   `:{number}` goto line, `:$`; `ZZ`/`ZQ`. **Tab completion** (nvim
   `wildmode=full` semantics, pinned by pty probes of the real thing): Tab
   completes command names, `:e`/`:w` file paths (a unique directory gets a

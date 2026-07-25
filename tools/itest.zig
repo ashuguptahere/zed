@@ -19,6 +19,7 @@ const scenarios = .{
     .{ "sidebar", @import("scenarios/sidebar.zig") },
     .{ "config", @import("scenarios/configtheme.zig") },
     .{ "cmdline", @import("scenarios/cmdline.zig") },
+    .{ "robust", @import("scenarios/robust.zig") },
     .{ "ssh", @import("scenarios/ssh.zig") },
     .{ "lsp", @import("scenarios/lsp.zig") },
     .{ "cpu", @import("scenarios/cpu.zig") },
@@ -51,6 +52,6 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn absolute(arena: std.mem.Allocator, cwd: []const u8, path: []const u8) ![]const u8 {
-    if (path.len > 0 and path[0] == '/') return path;
-    return std.fmt.allocPrint(arena, "{s}/{s}", .{ cwd, path });
+    if (std.fs.path.isAbsolute(path)) return path;
+    return std.fs.path.join(arena, &.{ cwd, path });
 }

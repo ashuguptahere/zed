@@ -85,6 +85,8 @@ pub fn run(ctx: *h.Ctx) !void {
     case(ctx, "nvim#h3 / Up recalls last search", &.{ "/alpha\r", "gg", "/", "\x1b[A", "\r", "x", ":wq", CR }, "one\nalpha\ntwo\nalpha\n", "one\nlpha\ntwo\nalpha\n");
     // Down past the newest entry restores the typed-but-unrun line.
     case(ctx, "nvim#h4 Down restores the typed line", &.{ ":s/a/X/\r", "j", ":s/a/Y/", "\x1b[A", "\x1b[B", "\r", ":wq", CR }, "aa\naa\n", "Xa\nYa\n");
+    // :qa with unsaved changes refuses (nvim E37); the :wq still writes.
+    case(ctx, "nvim#h5 :qa refuses unsaved changes", &.{ "x", ":qa\r", ":wq", CR }, "aa\n", "a\n");
 
     // Regex `/` search: the pattern jumps, then x edits at the match.
     case(ctx, "regex / search jumps to match", &.{ "/b.d\r", "x", ":wq", CR }, "xxx\nbad\n", "xxx\nad\n");

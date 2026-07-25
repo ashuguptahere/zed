@@ -13,6 +13,7 @@
 const std = @import("std");
 const posix = std.posix;
 const unicode = @import("unicode.zig");
+const log = @import("log.zig");
 const Allocator = std.mem.Allocator;
 
 pub const Diagnostic = struct {
@@ -148,7 +149,10 @@ pub const Client = struct {
             .stdin = .pipe,
             .stdout = .pipe,
             .stderr = .ignore,
-        }) catch return null;
+        }) catch |err| {
+            std.log.scoped(.lsp).warn("cannot spawn {s}: {s}", .{ argv[0], @errorName(err) });
+            return null;
+        };
 
         var self: Client = .{
             .gpa = gpa,
@@ -200,14 +204,17 @@ pub const Client = struct {
 
         self.sendInitialize(root);
         // Pump until the server answers `initialize`, or give up.
-        const deadline = nowMs() + 4000;
+        const started = nowMs();
+        const deadline = started + 4000;
         while (!self.init_done and self.alive and nowMs() < deadline) {
             if (pollReadable(self.out_fd, 200)) self.readAvailable();
         }
         if (!self.init_done) {
+            std.log.scoped(.lsp).warn("{s}: no initialize response within 4s — giving up", .{argv[0]});
             self.deinit();
             return null;
         }
+        std.log.scoped(.lsp).info("{s}: handshake done in {d} ms", .{ argv[0], nowMs() - started });
         self.sendNotification("initialized", "{}");
         self.sendDidOpen(language_id, content);
         return self;
@@ -543,10 +550,12 @@ pub const Client = struct {
     fn readAvailable(self: *Client) void {
         var tmp: [4096]u8 = undefined;
         const n = posix.read(self.out_fd, &tmp) catch {
+            if (self.alive) std.log.scoped(.lsp).warn("server read failed — marking it dead", .{});
             self.alive = false;
             return;
         };
         if (n == 0) {
+            if (self.alive) std.log.scoped(.lsp).warn("server closed its stdout (exited?)", .{});
             self.alive = false;
             return;
         }
@@ -1228,9 +1237,7 @@ fn pollReadable(fd: posix.fd_t, timeout_ms: i32) bool {
 }
 
 fn nowMs() i64 {
-    var ts: posix.timespec = undefined;
-    if (posix.system.errno(posix.system.clock_gettime(posix.CLOCK.MONOTONIC, &ts)) != .SUCCESS) return 0;
-    return @as(i64, @intCast(ts.sec)) * 1000 + @as(i64, @intCast(@divTrunc(ts.nsec, std.time.ns_per_ms)));
+    return @intCast(@divTrunc(log.nowNanos(), std.time.ns_per_ms));
 }
 
 test "contentLength parsing" {

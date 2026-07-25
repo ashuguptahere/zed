@@ -59,9 +59,18 @@ pub fn main(init: std.process.Init) !void {
         h.writeFile(io, big_file, big.items);
     }
 
+    // A private (mkdtemp) config home for helix, so the benchmark sees a
+    // clean config and no other local user can pre-plant one.
+    const xdg_dir = try h.tempDir(gpa);
+    defer gpa.free(xdg_dir);
+    defer h.removeTree(gpa, io, xdg_dir);
+    const xdg_env = try std.fmt.allocPrint(gpa, "XDG_CONFIG_HOME={s}", .{xdg_dir});
+    defer gpa.free(xdg_env);
+    const helix_prefix = [_][]const u8{ "env", xdg_env, "hx" };
+
     const editors = [_]Editor{
         .{ .name = "zedit", .bin = zedit, .argv_prefix = &.{zedit}, .picker_key = " ff" },
-        .{ .name = "helix", .bin = "hx", .argv_prefix = &.{ "env", "XDG_CONFIG_HOME=/tmp/zedit_bench_xdg", "hx" }, .picker_key = " f" },
+        .{ .name = "helix", .bin = "hx", .argv_prefix = &helix_prefix, .picker_key = " f" },
         .{ .name = "nvim", .bin = "nvim", .argv_prefix = &.{ "nvim", "-u", "NONE", "-i", "NONE" }, .picker_key = null },
     };
 
@@ -94,7 +103,9 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn binaryWorks(gpa: std.mem.Allocator, io: std.Io, bin: []const u8) bool {
-    const res = std.process.run(gpa, io, .{ .argv = &.{ "sh", "-c", std.fmt.allocPrint(gpa, "command -v {s} >/dev/null || test -x {s}", .{ bin, bin }) catch return false } }) catch return false;
+    // Spawn directly (argv array, no shell): resolves via PATH exactly like
+    // the benchmark runs themselves, and shell metacharacters stay inert.
+    const res = std.process.run(gpa, io, .{ .argv = &.{ bin, "--version" } }) catch return false;
     gpa.free(res.stdout);
     gpa.free(res.stderr);
     return switch (res.term) {

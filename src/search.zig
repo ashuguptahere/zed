@@ -84,7 +84,7 @@ pub fn prevLiteral(buf: *const buffer.Buffer, from: Pos, needle: []const u8) ?Po
 
     const head = buf.line(from.row);
     const limit = @min(from.col, head.len);
-    if (lastIndexBefore(head[0..limit], needle)) |c|
+    if (std.mem.lastIndexOf(u8, head[0..limit], needle)) |c|
         return .{ .row = from.row, .col = c };
 
     var i: usize = 1;
@@ -158,10 +158,6 @@ fn fastPrev(buf: *const buffer.Buffer, from: Pos, needle: []const u8) ?Pos {
         if (p.col + needle.len <= buf.line(p.row).len) return p;
     }
     return null;
-}
-
-fn lastIndexBefore(haystack: []const u8, needle: []const u8) ?usize {
-    return std.mem.lastIndexOf(u8, haystack, needle);
 }
 
 /// The keyword under `pos` (alnum/underscore run), for `*` and `#`. Empty slice

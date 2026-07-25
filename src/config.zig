@@ -143,13 +143,20 @@ pub fn standardPath(buf: []u8) ?[]const u8 {
 }
 
 /// Load the config file (from `override` if given, else the standard path) and
-/// apply it. Best-effort: a missing or unreadable file just means defaults.
-pub fn load(gpa: std.mem.Allocator, io: std.Io, override: ?[]const u8) void {
+/// apply it. Best-effort: a missing or unreadable file just means defaults —
+/// but the caller learns whether it loaded, so an explicit `--config` that
+/// cannot be read can be reported instead of silently ignored.
+pub fn load(gpa: std.mem.Allocator, io: std.Io, override: ?[]const u8) bool {
     var pbuf: [512]u8 = undefined;
-    const path = override orelse (standardPath(&pbuf) orelse return);
-    const text = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(1 << 20)) catch return;
+    const path = override orelse (standardPath(&pbuf) orelse return false);
+    const text = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(1 << 20)) catch |err| {
+        std.log.scoped(.config).info("config not loaded: {s}: {s}", .{ path, @errorName(err) });
+        return false;
+    };
     defer gpa.free(text);
     apply(text);
+    std.log.scoped(.config).info("config loaded: {s}", .{path});
+    return true;
 }
 
 /// Write the documented default config to the standard path (creating the

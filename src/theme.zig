@@ -65,7 +65,6 @@ pub const Theme = struct {
 
     // statusline segment colours
     status_bg: Color,
-    status_fg: Color,
     status_seg_bg: Color,
     status_seg_fg: Color,
 };
@@ -104,7 +103,6 @@ pub const tokyonight: Theme = .{
     .mode_command = rgb(0xe0, 0xaf, 0x68),
 
     .status_bg = rgb(0x16, 0x16, 0x1e),
-    .status_fg = rgb(0xa9, 0xb1, 0xd6),
     .status_seg_bg = rgb(0x29, 0x2e, 0x42),
     .status_seg_fg = rgb(0xc0, 0xca, 0xf5),
 };
@@ -144,7 +142,6 @@ pub const gruvbox: Theme = .{
     .mode_command = rgb(0xfa, 0xbd, 0x2f),
 
     .status_bg = rgb(0x1d, 0x20, 0x21),
-    .status_fg = rgb(0xd5, 0xc4, 0xa1), // fg2
     .status_seg_bg = rgb(0x3c, 0x38, 0x36),
     .status_seg_fg = rgb(0xeb, 0xdb, 0xb2),
 };
@@ -184,7 +181,6 @@ pub const catppuccin: Theme = .{
     .mode_command = rgb(0xf9, 0xe2, 0xaf),
 
     .status_bg = rgb(0x18, 0x18, 0x25),
-    .status_fg = rgb(0xa6, 0xad, 0xc8), // subtext0
     .status_seg_bg = rgb(0x31, 0x32, 0x44),
     .status_seg_fg = rgb(0xcd, 0xd6, 0xf4),
 };
@@ -224,7 +220,6 @@ pub const nord: Theme = .{
     .mode_command = rgb(0xeb, 0xcb, 0x8b),
 
     .status_bg = rgb(0x3b, 0x42, 0x52),
-    .status_fg = rgb(0xd8, 0xde, 0xe9),
     .status_seg_bg = rgb(0x43, 0x4c, 0x5e),
     .status_seg_fg = rgb(0xec, 0xef, 0xf4), // nord6
 };
@@ -264,7 +259,6 @@ pub const onedark: Theme = .{
     .mode_command = rgb(0xe5, 0xc0, 0x7b),
 
     .status_bg = rgb(0x21, 0x25, 0x2b),
-    .status_fg = rgb(0xab, 0xb2, 0xbf),
     .status_seg_bg = rgb(0x2c, 0x31, 0x3c),
     .status_seg_fg = rgb(0xab, 0xb2, 0xbf),
 };

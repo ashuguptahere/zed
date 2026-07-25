@@ -26,16 +26,19 @@ pub const options: std.Options = .{
 /// Open `path` for logging (truncating any previous contents). Quietly does
 /// nothing useful if the file cannot be opened — diagnostics must never take
 /// the editor down.
-pub fn enable(path: []const u8) void {
+/// Open the log sink. Returns false when the path cannot be opened, so the
+/// caller can tell the user their --log flag was not honoured.
+pub fn enable(path: []const u8) bool {
     const fd = posix.openat(posix.AT.FDCWD, path, .{
         .ACCMODE = .WRONLY,
         .CREAT = true,
         .TRUNC = true,
         .CLOEXEC = true,
-    }, 0o644) catch return;
+    }, 0o644) catch return false;
     sink = fd;
     start_ns = nowNanos();
     std.log.info("zedit log started", .{});
+    return true;
 }
 
 pub fn disable() void {
@@ -45,11 +48,9 @@ pub fn disable() void {
     }
 }
 
-pub fn enabled() bool {
-    return sink != null;
-}
-
-fn nowNanos() i128 {
+/// Monotonic nanoseconds — the one clock for Span profiling and the
+/// `--benchmark` self-test.
+pub fn nowNanos() i128 {
     var ts: posix.timespec = undefined;
     if (posix.system.errno(posix.system.clock_gettime(posix.CLOCK.MONOTONIC, &ts)) != .SUCCESS) {
         return 0;

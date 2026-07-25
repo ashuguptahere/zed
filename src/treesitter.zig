@@ -58,7 +58,10 @@ const Layer = struct {
         if (!c.ts_parser_set_language(parser, language)) return null;
         var err_off: u32 = 0;
         var err_type: c.TSQueryError = 0;
-        const query = c.ts_query_new(language, query_src.ptr, @intCast(query_src.len), &err_off, &err_type) orelse return null;
+        const query = c.ts_query_new(language, query_src.ptr, @intCast(query_src.len), &err_off, &err_type) orelse {
+            std.log.scoped(.treesitter).err("highlights query failed to compile: error {d} at byte {d}", .{ err_type, err_off });
+            return null;
+        };
         errdefer c.ts_query_delete(query);
         const n = c.ts_query_capture_count(query);
         const styles = gpa.alloc(syntax.Style, n) catch return null;

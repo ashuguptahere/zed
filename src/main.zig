@@ -13,6 +13,9 @@ const buffer = @import("buffer.zig");
 const editor = @import("editor.zig");
 const config = @import("config.zig");
 
+const search = @import("search.zig");
+const regex = @import("regex.zig");
+
 const tutor_text = @embedFile("tutor_text");
 
 /// Route std.log through our file logger.
@@ -23,7 +26,7 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const argv = try init.minimal.args.toSlice(init.arena.allocator());
 
-    const cfg = switch (cli.parse(argv)) {
+    var cfg = switch (cli.parse(argv)) {
         .help => return cli.printHelp(),
         .version => return cli.printVersion(),
         .init_config => {
@@ -46,14 +49,39 @@ pub fn main(init: std.process.Init) !void {
         .run => |c| c,
     };
 
-    if (cfg.log_path) |path| log.enable(path);
+    if (cfg.log_path) |path| {
+        if (!log.enable(path)) cli.printError("cannot open the log file — logging disabled");
+    }
     defer log.disable();
     std.log.scoped(.main).info("starting zedit, file={s}", .{cfg.file orelse "<none>"});
 
-    config.load(gpa, io, cfg.config_path);
+    if (cfg.benchmark) return runBenchmark(gpa, io, cfg.file);
+
+    if (!config.load(gpa, io, cfg.config_path) and cfg.config_path != null) {
+        // An explicit --config that cannot be read is a mistake the user
+        // asked to be told about; the implicit path stays best-effort.
+        cli.printError("cannot read that config file — using defaults");
+    }
+
+    // A directory argument (e.g. `zedit .`) becomes the working directory and
+    // the session starts in the file picker — the nvim/helix habit.
+    var open_picker = false;
+    if (cfg.file) |p| {
+        if (isDirectory(io, p)) {
+            std.process.setCurrentPath(io, p) catch {
+                cli.printError("cannot enter that directory (permission denied?)");
+                std.process.exit(1);
+            };
+            cfg.file = null;
+            open_picker = true;
+        }
+    }
 
     var buf = if (cfg.tutor)
-        buffer.Buffer.fromBytes(gpa, tutor_text) catch std.process.exit(1)
+        buffer.Buffer.fromBytes(gpa, tutor_text) catch {
+            cli.printError("out of memory loading the tutorial");
+            std.process.exit(1);
+        }
     else
         openBuffer(gpa, io, cfg.file) catch std.process.exit(1);
 
@@ -61,8 +89,12 @@ pub fn main(init: std.process.Init) !void {
         buf.deinit();
         switch (err) {
             error.NotATerminal => cli.printError("not a terminal — run zedit in an interactive terminal"),
-            else => cli.printError(@errorName(err)),
+            else => {
+                var eb: [128]u8 = undefined;
+                cli.printError(std.fmt.bufPrint(&eb, "cannot set up the terminal ({s})", .{@errorName(err)}) catch "cannot set up the terminal");
+            },
         }
+        std.log.scoped(.main).err("terminal init failed: {s}", .{@errorName(err)});
         std.process.exit(1);
     };
 
@@ -70,11 +102,15 @@ pub fn main(init: std.process.Init) !void {
     var ed = editor.Editor.init(gpa, io, &terminal, buf, cfg.lsp_cmd) catch |err| {
         buf.deinit();
         terminal.restore();
-        cli.printError(@errorName(err));
+        var eb: [128]u8 = undefined;
+        cli.printError(std.fmt.bufPrint(&eb, "cannot start the editor ({s})", .{@errorName(err)}) catch "cannot start the editor");
+        std.log.scoped(.main).err("editor init failed: {s}", .{@errorName(err)});
         std.process.exit(1);
     };
     defer ed.deinit();
     defer terminal.restore();
+
+    if (open_picker) ed.openFilePicker();
 
     ed.run() catch |err| {
         terminal.restore();
@@ -84,6 +120,83 @@ pub fn main(init: std.process.Init) !void {
     };
 }
 
+fn isDirectory(io: std.Io, path: []const u8) bool {
+    var d = std.Io.Dir.cwd().openDir(io, path, .{}) catch return false;
+    d.close(io);
+    return true;
+}
+
+/// `--benchmark`: time the hot paths on a real file (or synthetic data) and
+/// print a small human-readable report. Needs no terminal, so it works in
+/// scripts and CI.
+fn runBenchmark(gpa: std.mem.Allocator, io: std.Io, path: ?[]const u8) void {
+    var out: [1024]u8 = undefined;
+    var n: usize = 0;
+
+    // Load (or synthesise ~10 MB of plausible source text).
+    const t_load = log.nowNanos();
+    var buf: buffer.Buffer = undefined;
+    if (path) |p| {
+        buf = buffer.Buffer.load(gpa, io, p) catch {
+            cli.printError("cannot open that file to benchmark it");
+            std.process.exit(1);
+        };
+    } else {
+        const line = "const value = compute(alpha, beta) + gamma[index];\n";
+        const reps = (10 << 20) / line.len;
+        const data = gpa.alloc(u8, reps * line.len) catch std.process.exit(1);
+        var i: usize = 0;
+        while (i < reps) : (i += 1) @memcpy(data[i * line.len ..][0..line.len], line);
+        buf = buffer.Buffer.fromOwnedBytes(gpa, data) catch std.process.exit(1);
+    }
+    defer buf.deinit();
+    const load_ms = msSince(t_load);
+
+    const bytes = if (buf.source) |s| s.len else 0;
+    n += (std.fmt.bufPrint(out[n..], "target      {s} ({d} lines, {Bi:.1})\n", .{
+        path orelse "synthetic", buf.lineCount(), bytes,
+    }) catch return).len;
+    n += (std.fmt.bufPrint(out[n..], "open        {d:.2} ms\n", .{load_ms}) catch return).len;
+
+    // Literal search across the whole buffer (the SIMD fast path).
+    const t_lit = log.nowNanos();
+    var matches: usize = 0;
+    var pos: search.Pos = .{ .row = 0, .col = 0 };
+    while (search.nextLiteral(&buf, pos, "gamma")) |m| {
+        if (m.row < pos.row or (m.row == pos.row and m.col <= pos.col and matches > 0)) break; // wrapped
+        matches += 1;
+        pos = m;
+        if (matches > 1_000_000) break;
+    }
+    n += (std.fmt.bufPrint(out[n..], "search      {d:.2} ms ({d} literal matches)\n", .{ msSince(t_lit), matches }) catch return).len;
+
+    // Regex search (Pike VM) over the same content.
+    var re = regex.Regex.compile(gpa, "ga\\w+a", false) catch std.process.exit(1);
+    defer re.deinit(gpa);
+    const t_re = log.nowNanos();
+    var re_matches: usize = 0;
+    var rpos: search.Pos = .{ .row = 0, .col = 0 };
+    while (search.next(&buf, rpos, &re)) |m| {
+        if (m.row < rpos.row or (m.row == rpos.row and m.col <= rpos.col and re_matches > 0)) break;
+        re_matches += 1;
+        rpos = m;
+        if (re_matches > 1_000_000) break;
+    }
+    n += (std.fmt.bufPrint(out[n..], "regex       {d:.2} ms ({d} matches)\n", .{ msSince(t_re), re_matches }) catch return).len;
+
+    // Serialise (what :w does before writing).
+    const t_ser = log.nowNanos();
+    const serialized = buf.toBytes(gpa) catch std.process.exit(1);
+    gpa.free(serialized);
+    n += (std.fmt.bufPrint(out[n..], "serialize   {d:.2} ms\n", .{msSince(t_ser)}) catch return).len;
+
+    cli.printOut(out[0..n]);
+}
+
+fn msSince(start: i128) f64 {
+    return @as(f64, @floatFromInt(log.nowNanos() - start)) / 1_000_000.0;
+}
+
 /// Load `path`, or start with an empty buffer when no file was given. On
 /// failure, print a friendly message and signal the caller to exit.
 fn openBuffer(gpa: std.mem.Allocator, io: std.Io, path: ?[]const u8) !buffer.Buffer {
@@ -91,8 +204,9 @@ fn openBuffer(gpa: std.mem.Allocator, io: std.Io, path: ?[]const u8) !buffer.Buf
     return buffer.Buffer.load(gpa, io, p) catch |err| {
         var b: [512]u8 = undefined;
         const reason: []const u8 = switch (err) {
-            error.StreamTooLong => "file is too large",
+            error.StreamTooLong => "file is too large (2 GB cap)",
             error.AccessDenied, error.PermissionDenied => "permission denied",
+            error.IsDir, error.NotDir => "that is a directory",
             error.OutOfMemory => "out of memory",
             else => @errorName(err),
         };

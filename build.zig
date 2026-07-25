@@ -47,6 +47,7 @@ pub fn build(b: *std.Build) void {
 
     // The interactive tutorial, embedded so `zedit --tutor` works anywhere.
     exe_mod.addAnonymousImport("tutor_text", .{ .root_source_file = b.path("doc/tutor.txt") });
+    exe_mod.addAnonymousImport("version_text", .{ .root_source_file = b.path("VERSION") });
 
     const exe = b.addExecutable(.{ .name = "zedit", .root_module = exe_mod });
     b.installArtifact(exe);
