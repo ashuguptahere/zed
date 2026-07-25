@@ -111,6 +111,8 @@ Source is `src/`, one responsibility per module:
 | `syntax.zig`  | Dependency-free per-line lexer producing per-byte styles. |
 | `fuzzy.zig`   | Subsequence scorer for the pickers. |
 | `git.zig`     | Git change signs for the gutter (parses `git diff -U0`). |
+| `recent.zig`  | The recently-opened list behind the startup screen (XDG state file). |
+| `remote.zig`  | Editing over SSH: `ssh://user@host/path` parsing, read/write/list via one `ssh` per operation. |
 | `lsp.zig`     | Minimal LSP client: JSON-RPC over a server's stdio (diagnostics, hover, goto, completion, signature help; incremental or full doc sync per the server's capabilities). |
 | `treesitter.zig` | Tree-sitter highlighting via the vendored C runtime + grammar (incremental parse, visible-range `highlights.scm` query). |
 | `editor.zig`  | State, the vim command interpreter, multiple cursors, multiple buffers + windows (splits), pickers, LSP, tree-sitter, viewport, themed rendering. |
@@ -161,7 +163,7 @@ itest` builds `zedit` plus a `mock_lsp` server, then runs the `itest` harness:
 - `tools/mock_lsp.zig` — a stub language server for the LSP scenario.
 - `tools/itest.zig` — the runner; `tools/scenarios/*.zig` are the suites (vim,
   vim_compat, feature, multicursor, extra, search, treesitter, picker, git,
-  windows, sidebar, config, cmdline, robust, ssh, lsp, cpu), each a
+  windows, sidebar, config, cmdline, robust, ssh, remote, lsp, cpu), each a
   `pub fn run(ctx: *harness.Ctx) !void`.
   `vim_compat` asserts byte-for-byte agreement with expected outputs generated
   by driving real Neovim headlessly — extend it the same way when porting more
@@ -272,6 +274,25 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   the index pane carries old-side signs from `git.computeOldSide`). Both are
   named scratch buffers (`[diff] name`, `name (index)`) closable with
   `:close`/`Space c`.
+- **Startup screen:** launched with no file, zedit shows the recently-opened
+  list (files and directories, newest first) with the leaf name first and the
+  location dimmed and middle-elided. `j`/`k` or arrows select, `Enter` opens,
+  `1`-`9` jump straight to an entry, `q` quits; any other key dismisses the
+  screen and acts normally. The list lives in `$XDG_STATE_HOME/zedit/recent`
+  (`~/.local/state/zedit/recent`), capped at 30, de-duplicated, and entries
+  whose local path has disappeared are pruned on load (`recent.zig`).
+- **Remote editing (SSH):** `zedit ssh://[user@]host[:port]/path` — or `:e
+  ssh://…`, or `:ssh [user@]host[/dir]` from inside the editor — edits files on
+  another machine with no agent installed there (unlike VS Code Remote-SSH):
+  each operation is one `ssh` invocation (`cat` to read, `cat >` to write,
+  `find` to list a directory for the picker). Remote paths are single-quoted
+  for the remote shell (`remote.shellQuote`), `BatchMode=yes` means a missing
+  key fails fast instead of hanging on a prompt, and `ControlMaster` reuses one
+  connection per session. A remote directory opens the file picker over it;
+  `:w` writes back to the same URL.
+- **Update check:** `:update` (or `--check-update`) compares this build with
+  the newest `v*` release tag via one `git ls-remote`. On demand only — zedit
+  never contacts the network by itself.
 - **Buffers & windows:** several files can be open at once, each with its own
   cursor, undo, tree-sitter and LSP. `:e <file>` opens (or, in the picker,
   `Enter`) a file in the active window — already-open files are reused, not
@@ -423,6 +444,14 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   synced scrolling like vimdiff. The inline diff buffer is a static snapshot.
   Mouse support is wheel-scrolling only (no click-to-move or drag selection),
   and the wheel scrolls the focused window, not the one under the pointer.
+- Remote editing is whole-file over ssh: every read/write moves the entire file
+  (no partial or incremental transfer), there is no remote LSP/tree-sitter
+  beyond what the local process computes on the fetched text, no remote git
+  signs, and no remote sidebar. Writes are `cat >` (not atomic — a failed
+  transfer can truncate; a temp-file-plus-rename upgrade is the fix if it
+  matters). `BatchMode=yes` means password-only hosts fail instead of
+  prompting: use keys or an agent. The update check reads tags from a
+  hard-coded release URL.
 - Roadmap (agreed with the owner): port further tranches of Neovim behavioural
   tests via headless ground truth (see `vim_compat`), and work down
   `doc/COMPARISON.md` — the verified feature-gap analysis vs Helix/Neovim

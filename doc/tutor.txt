@@ -288,6 +288,18 @@
      ga         list code actions for the current line in a picker
      ]d / [d    jump to the next / previous diagnostic line
 
+  Started with no file at all, zedit greets you with the files and
+  directories you opened recently: j/k to select, Enter to open, or
+  press 1-9 to jump straight to one.
+
+  Files on another machine work too, with no setup on that machine:
+
+     zedit ssh://server/etc/hosts        from the shell
+     :e ssh://server/var/log/app.log     from inside the editor
+     :ssh server/srv/www                 browse a remote directory
+
+  :w writes back over the same connection.
+
   Paragraphs are text objects too:  }  and  {  jump to the next and
   previous blank line, and  dip  /  dap  delete the paragraph you are
   in (dap also takes the blank line after it).  Try  }  a few times in

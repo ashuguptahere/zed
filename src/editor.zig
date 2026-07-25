@@ -28,6 +28,9 @@ const git = @import("git.zig");
 const lsp = @import("lsp.zig");
 const treesitter = @import("treesitter.zig");
 const config = @import("config.zig");
+const cli = @import("cli.zig");
+const recent = @import("recent.zig");
+const remote = @import("remote.zig");
 const regex = @import("regex.zig");
 const ansi = term.ansi;
 const Allocator = std.mem.Allocator;
@@ -288,6 +291,14 @@ pub const Editor = struct {
     sb_sel: usize,
     sb_scroll: usize,
 
+    // Recently-opened files/directories (the startup screen) and the remote
+    // root when the session was opened on an ssh:// directory.
+    recents: recent.List,
+    recent_path: ?[]const u8, // override for tests; null = the XDG state path
+    dashboard: bool, // showing the startup screen (empty session, no file yet)
+    dash_sel: usize,
+    remote_root: ?[]u8, // ssh://host/dir the picker lists, when remote
+
     // Warm file-list cache (the Zed trick: opening the picker does no
     // filesystem work after the first walk; Ctrl-r in the picker refreshes).
     fcache: std.ArrayList([]u8), // project file paths, walked once per session
@@ -471,6 +482,11 @@ pub const Editor = struct {
             .fcache = .empty,
             .fcache_masks = .empty,
             .fcache_ready = false,
+            .recents = .{ .gpa = gpa },
+            .recent_path = null,
+            .dashboard = false,
+            .dash_sel = 0,
+            .remote_root = null,
             .prev_query = .empty,
             .picker_filtered = .empty,
             .picker_query = .empty,
@@ -522,6 +538,9 @@ pub const Editor = struct {
     }
 
     pub fn deinit(self: *Editor) void {
+        recent.save(&self.recents, self.io, self.recent_path);
+        self.recents.deinit();
+        if (self.remote_root) |r| self.gpa.free(r);
         self.registers.deinit();
         self.history.deinit();
         self.jumps.deinit(self.gpa);
@@ -841,6 +860,12 @@ pub const Editor = struct {
 
     fn handleKey(self: *Editor, k: key.Key) !void {
         self.status.clearRetainingCapacity();
+        if (self.dashboard and self.mode == .normal) {
+            // Handled keys stay on the screen; anything else dismisses it and
+            // falls through to the normal dispatch below.
+            if (try self.dashboardKey(k)) return;
+            self.dashboard = false;
+        }
         if (self.sb_focus and self.mode == .normal) return self.sidebarKey(k);
         switch (self.mode) {
             .normal => try self.normalKey(k),
@@ -2783,6 +2808,28 @@ pub const Editor = struct {
 
     // === picker (file finder / global search) ==============================
 
+    /// Load the recently-opened list and, when the session started with no
+    /// file, show the startup screen. `state_path` overrides the XDG state
+    /// file (tests point it at a temp dir).
+    pub fn startSession(self: *Editor, state_path: ?[]const u8, show_dashboard: bool) void {
+        self.recent_path = state_path;
+        self.recents = recent.load(self.gpa, self.io, state_path);
+        self.dashboard = show_dashboard and self.recents.entries.items.len > 0;
+        self.dash_sel = 0;
+    }
+
+    /// Record a file or directory in the recently-opened list. Local paths are
+    /// stored absolute so the list is meaningful from any working directory.
+    pub fn noteRecent(self: *Editor, path: []const u8, kind: recent.Kind) void {
+        if (remote.isRemote(path)) return self.recents.touch(kind, path);
+        if (path.len > 0 and path[0] == '/') return self.recents.touch(kind, path);
+        const cwd = std.process.currentPathAlloc(self.io, self.gpa) catch return;
+        defer self.gpa.free(cwd);
+        const abs = std.fs.path.join(self.gpa, &.{ cwd, path }) catch return;
+        defer self.gpa.free(abs);
+        self.recents.touch(kind, abs);
+    }
+
     /// Open the fuzzy file picker (`Space f f`; also the startup view when
     /// zedit is launched on a directory).
     pub fn openFilePicker(self: *Editor) void {
@@ -2939,6 +2986,12 @@ pub const Editor = struct {
     fn ensureFileCache(self: *Editor) void {
         if (self.fcache_ready) return;
         var sp = log.Span.start();
+        if (self.remote_root) |root| {
+            self.fillRemoteCache(root);
+            self.fcache_ready = true;
+            sp.lap("remote-file-list");
+            return;
+        }
         var dir = std.Io.Dir.cwd().openDir(self.io, ".", .{ .iterate = true }) catch return;
         defer dir.close(self.io);
         var w = dir.walkSelectively(self.gpa) catch return;
@@ -2961,6 +3014,32 @@ pub const Editor = struct {
         }
         self.fcache_ready = true;
         sp.lap("file-walk");
+    }
+
+    /// Fill the picker cache from a remote directory (one ssh call). Entries
+    /// keep the full `ssh://host/dir/path` URL so opening one just works.
+    fn fillRemoteCache(self: *Editor, root: []const u8) void {
+        const target = remote.parse(root) orelse return;
+        const out = remote.listFiles(self.gpa, self.io, target) catch {
+            self.setStatus("cannot list {s} (ssh failed — see --log)", .{root});
+            return;
+        };
+        defer self.gpa.free(out);
+        const base = std.mem.trimEnd(u8, root, "/");
+        var it = std.mem.splitScalar(u8, out, '\n');
+        while (it.next()) |line| {
+            const rel = std.mem.trim(u8, line, " \r");
+            if (rel.len == 0) continue;
+            const tail = if (std.mem.startsWith(u8, rel, "./")) rel[2..] else rel;
+            if (tail.len == 0) continue;
+            if (self.fcache.items.len >= 20000) break;
+            const url = std.fmt.allocPrint(self.gpa, "{s}/{s}", .{ base, tail }) catch continue;
+            self.fcache.append(self.gpa, url) catch {
+                self.gpa.free(url);
+                break;
+            };
+            self.fcache_masks.append(self.gpa, fuzzy.charMask(url)) catch break;
+        }
     }
 
     fn refreshFileCache(self: *Editor) void {
@@ -3290,6 +3369,8 @@ pub const Editor = struct {
     /// load it into a new doc (with its own LSP/tree-sitter/undo).
     fn openFile(self: *Editor, path: []const u8, line: usize) void {
         self.addJump();
+        self.noteRecent(path, .file);
+        self.dashboard = false;
         for (self.docs.items) |doc| {
             const p = doc.buf.path orelse continue;
             if (std.mem.eql(u8, p, path)) {
@@ -3804,6 +3885,12 @@ pub const Editor = struct {
             self.writeAll();
         } else if (eql(cmd, "format") or eql(cmd, "fmt")) {
             self.lspFormat();
+        } else if (eql(cmd, "ssh")) {
+            // `:ssh host[:port][/dir]` — browse a remote machine's files.
+            if (arg.len == 0) return self.setStatus("usage: :ssh [user@]host[/dir]", .{});
+            self.openRemote(arg);
+        } else if (eql(cmd, "update") or eql(cmd, "checkupdate")) {
+            self.checkForUpdate();
         } else if (eql(cmd, "diff")) {
             self.gitDiffInline();
         } else if (eql(cmd, "vdiff")) {
@@ -5310,6 +5397,15 @@ pub const Editor = struct {
             return;
         }
 
+        if (self.dashboard) {
+            try self.renderDashboard();
+            try self.emit(ansi.reset_attrs);
+            try self.term.write(self.frame.items);
+            self.prev_valid = false; // the dashboard paints the whole screen
+            sp.lap("render");
+            return;
+        }
+
         self.layout();
         self.scroll(); // active window viewport
         self.tsUpdate(); // query the active doc's visible range (needs scrolled top)
@@ -5376,6 +5472,250 @@ pub const Editor = struct {
         .{ .key = "d", .desc = "diff (inline)" },
         .{ .key = "s", .desc = "diff (side by side)" },
     };
+
+    // The startup screen: a title, the recently-opened list, and the keys that
+    // matter on an empty session. Shown only when zedit starts with no file
+    // and there is history to show; any other key dismisses it.
+    const dash_title = "zedit";
+
+    fn renderDashboard(self: *Editor) !void {
+        const th = theme.current;
+        const rows = self.win.rows;
+        const cols = self.win.cols;
+        try self.setBg(th.bg);
+        try self.setFg(th.fg);
+        // Clear the screen ourselves (this frame is written whole).
+        var r: usize = 1;
+        while (r <= rows) : (r += 1) {
+            try self.emitFmt("\x1b[{d};1H", .{r});
+            try self.emit(ansi.clear_line_right);
+        }
+
+        const shown = @min(self.recents.entries.items.len, if (rows > 12) rows - 10 else 3);
+        const block_h = shown + 6; // title, version, blank, heading, list, hint
+        var row = if (rows > block_h) (rows - block_h) / 2 else 1;
+        const left_pad = if (cols > 52) (cols - 52) / 2 else 0;
+
+        try self.emitFmt("\x1b[{d};{d}H", .{ row, left_pad + 1 });
+        try self.setFg(th.mode_normal);
+        try self.emit(dash_title);
+        try self.setFg(th.fg_dim);
+        try self.emitFmt("  {s}", .{cli.version});
+        row += 2;
+
+        try self.emitFmt("\x1b[{d};{d}H", .{ row, left_pad + 1 });
+        try self.setFg(th.comment);
+        try self.emit("Recent");
+        row += 1;
+
+        const avail = if (cols > left_pad + 6) cols - left_pad - 6 else 20;
+        for (self.recents.entries.items[0..shown], 0..) |e, i| {
+            try self.emitFmt("\x1b[{d};{d}H", .{ row + i, left_pad + 1 });
+            const selected = i == self.dash_sel;
+            try self.setBg(if (selected) th.selection else th.bg);
+            try self.setFg(th.mode_command);
+            try self.emitFmt(" {d} ", .{i + 1}); // 1-9 jump straight to an entry
+
+            // Name first so it survives clipping, then the location dimmed.
+            const split = dashSplit(e);
+            try self.setFg(if (e.kind == .dir) th.type_ else th.fg);
+            const name_w = @min(split.name.len, avail);
+            try self.emitSanitized(split.name[0..name_w]);
+            if (split.where.len > 0 and avail > name_w + 2) {
+                try self.setFg(th.fg_dim);
+                try self.emit("  ");
+                const room = avail - name_w - 2;
+                // Long locations lose their *middle*, keeping the root and the
+                // parent directory legible.
+                if (split.where.len <= room) {
+                    try self.emitSanitized(split.where);
+                } else if (room > 4) {
+                    const head = room / 2 - 1;
+                    try self.emitSanitized(split.where[0..head]);
+                    try self.emit("\u{2026}");
+                    try self.emitSanitized(split.where[split.where.len - (room - head - 1) ..]);
+                }
+            }
+            try self.setBg(th.bg);
+            try self.emit(ansi.clear_line_right);
+        }
+        row += shown + 1;
+
+        try self.emitFmt("\x1b[{d};{d}H", .{ row, left_pad + 1 });
+        try self.setFg(th.fg_dim);
+        try self.emit("j/k select   Enter open   1-9 jump   Space f f files   q quit");
+    }
+
+    /// A recent entry split for display: the leaf name (always shown) and
+    /// where it lives (dimmed, elided when long). `$HOME` shortens to `~`, and
+    /// a remote entry keeps its `ssh://host/...` prefix so the machine is
+    /// obvious at a glance.
+    const DashSplit = struct { name: []const u8, where: []const u8 };
+
+    fn dashSplit(e: recent.Entry) DashSplit {
+        const p = e.path;
+        const cut = std.mem.lastIndexOfScalar(u8, p, '/') orelse return .{ .name = p, .where = "" };
+        // A directory's own name is its leaf; its location is the parent.
+        const name = if (cut + 1 < p.len) p[cut + 1 ..] else p;
+        var where = if (cut == 0) "/" else p[0..cut];
+        if (std.c.getenv("HOME")) |home_z| {
+            const home = std.mem.sliceTo(home_z, 0);
+            if (home.len > 1 and std.mem.startsWith(u8, where, home)) {
+                // Reuse the tail so no allocation is needed while rendering.
+                where = where[home.len - 1 ..];
+            }
+        }
+        return .{ .name = name, .where = where };
+    }
+
+    /// Keys while the startup screen is up. Returns false for keys it does not
+    /// own, so the caller dismisses the screen and dispatches them normally —
+    /// the screen never gets in the way of editing.
+    fn dashboardKey(self: *Editor, k: key.Key) !bool {
+        const n = self.recents.entries.items.len;
+        switch (k) {
+            .char => |c| switch (c) {
+                'j' => {
+                    if (self.dash_sel + 1 < n) self.dash_sel += 1;
+                    return true;
+                },
+                'k' => {
+                    if (self.dash_sel > 0) self.dash_sel -= 1;
+                    return true;
+                },
+                'q' => {
+                    self.quit = true;
+                    return true;
+                },
+                '1'...'9' => {
+                    const idx = c - '1';
+                    if (idx < n) {
+                        self.dash_sel = idx;
+                        try self.openRecent(idx);
+                    }
+                    return true;
+                },
+                else => return false,
+            },
+            .down => {
+                if (self.dash_sel + 1 < n) self.dash_sel += 1;
+                return true;
+            },
+            .up => {
+                if (self.dash_sel > 0) self.dash_sel -= 1;
+                return true;
+            },
+            .enter => {
+                try self.openRecent(self.dash_sel);
+                return true;
+            },
+            else => return false,
+        }
+    }
+
+    /// Open recent entry `idx`: a file directly, a directory by entering it
+    /// (locally) or listing it over ssh, then showing the file picker.
+    fn openRecent(self: *Editor, idx: usize) !void {
+        if (idx >= self.recents.entries.items.len) return;
+        const e = self.recents.entries.items[idx];
+        const path = self.gpa.dupe(u8, e.path) catch return;
+        defer self.gpa.free(path);
+        self.dashboard = false;
+        switch (e.kind) {
+            .file => self.openFile(path, 0),
+            .dir => self.enterDir(path),
+        }
+    }
+
+    /// Make `path` the picker's root: a local directory becomes the working
+    /// directory; a remote one is listed over ssh.
+    fn enterDir(self: *Editor, path: []const u8) void {
+        if (remote.isRemote(path)) {
+            self.setRemoteRoot(path);
+            self.openFilePicker();
+            return;
+        }
+        std.process.setCurrentPath(self.io, path) catch {
+            self.setStatus("cannot enter {s}", .{path});
+            return;
+        };
+        self.noteRecent(path, .dir);
+        self.refreshFileCache();
+        self.openFilePicker();
+    }
+
+    /// Open a remote directory as the session's picker root (`zedit ssh://…`).
+    pub fn openRemoteDir(self: *Editor, url: []const u8) void {
+        self.setRemoteRoot(url);
+        self.openFilePicker();
+    }
+
+    /// Record the working directory in the recent list (`zedit .`).
+    pub fn noteRecentCwd(self: *Editor) void {
+        const cwd = std.process.currentPathAlloc(self.io, self.gpa) catch return;
+        defer self.gpa.free(cwd);
+        self.recents.touch(.dir, cwd);
+    }
+
+    /// `:ssh [user@]host[:port][/dir]`: point the picker at a remote machine.
+    /// A bare host browses its home directory (`~`, which the remote shell
+    /// expands), otherwise the given directory.
+    fn openRemote(self: *Editor, spec: []const u8) void {
+        var url: std.ArrayList(u8) = .empty;
+        defer url.deinit(self.gpa);
+        if (!remote.isRemote(spec)) url.appendSlice(self.gpa, remote.scheme) catch return;
+        url.appendSlice(self.gpa, spec) catch return;
+        // No path given: browse the login directory.
+        const after_scheme = url.items[remote.scheme.len..];
+        if (std.mem.indexOfScalar(u8, after_scheme, '/') == null) url.appendSlice(self.gpa, "/.") catch return;
+        const target = remote.parse(url.items) orelse return self.setStatus("bad ssh target: {s}", .{spec});
+        self.setStatus("connecting to {s}…", .{target.dest});
+        self.render() catch {};
+        if (!remote.isDir(self.gpa, self.io, target)) {
+            // Not a directory: treat it as a file to open.
+            self.openFile(url.items, 0);
+            return;
+        }
+        self.setRemoteRoot(url.items);
+        self.openFilePicker();
+        self.setStatus("{s}: {d} files", .{ target.dest, self.fcache.items.len });
+    }
+
+    /// `:update` — ask the release remote for its newest `v*` tag and compare
+    /// it with this build's version. One `git ls-remote` call, on demand only:
+    /// zedit never phones home on its own.
+    fn checkForUpdate(self: *Editor) void {
+        const url = "https://github.com/ashuguptahere/zed.git";
+        const res = std.process.run(self.gpa, self.io, .{
+            .argv = &.{ "git", "ls-remote", "--tags", "--refs", url },
+            .stdout_limit = .limited(1 << 20),
+            .stderr_limit = .limited(8 << 10),
+        }) catch {
+            self.setStatus("update check failed (git not available?)", .{});
+            return;
+        };
+        defer self.gpa.free(res.stdout);
+        defer self.gpa.free(res.stderr);
+        switch (res.term) {
+            .exited => |code| if (code != 0) {
+                std.log.scoped(.editor).warn("ls-remote failed: {s}", .{std.mem.trim(u8, res.stderr, " \n")});
+                return self.setStatus("update check failed (no network?)", .{});
+            },
+            else => return self.setStatus("update check failed", .{}),
+        }
+        const newest = newestTag(res.stdout) orelse return self.setStatus("no releases published yet", .{});
+        switch (compareVersions(newest, cli.version)) {
+            .gt => self.setStatus("update available: {s} (you have {s})", .{ newest, cli.version }),
+            else => self.setStatus("up to date ({s})", .{cli.version}),
+        }
+    }
+
+    fn setRemoteRoot(self: *Editor, url: []const u8) void {
+        if (self.remote_root) |r| self.gpa.free(r);
+        self.remote_root = self.gpa.dupe(u8, url) catch null;
+        self.noteRecent(url, .dir);
+        self.refreshFileCache();
+    }
 
     /// Draw the completion candidates ("wildmenu") as a vertical popup just
     /// above the command line, the selected one highlighted — the look of
@@ -6206,6 +6546,53 @@ fn samePath(cwd: []const u8, doc_path: []const u8, abs: []const u8) bool {
         std.mem.endsWith(u8, abs, doc_path);
 }
 
+/// The highest `refs/tags/vX.Y.Z` in `git ls-remote` output (the `v` stripped).
+/// Null when the output holds no version tags. Shared with main.zig's
+/// `--check-update`, which runs the same check without a terminal.
+pub fn newestReleaseTag(text: []const u8) ?[]const u8 {
+    return newestTag(text);
+}
+
+/// Whether release `tag` is newer than the running `current` version.
+pub fn versionIsNewer(tag: []const u8, current: []const u8) bool {
+    return compareVersions(tag, current) == .gt;
+}
+
+fn newestTag(text: []const u8) ?[]const u8 {
+    var best: ?[]const u8 = null;
+    var it = std.mem.splitScalar(u8, text, '\n');
+    while (it.next()) |line| {
+        const marker = "refs/tags/v";
+        const at = std.mem.indexOf(u8, line, marker) orelse continue;
+        const tag = std.mem.trim(u8, line[at + marker.len ..], " \t\r");
+        if (tag.len == 0) continue;
+        if (best == null or compareVersions(tag, best.?) == .gt) best = tag;
+    }
+    return best;
+}
+
+/// Compare dotted numeric versions ("0.10.1" > "0.9.9"), ignoring any suffix.
+fn compareVersions(a: []const u8, b: []const u8) std.math.Order {
+    var ita = std.mem.splitScalar(u8, a, '.');
+    var itb = std.mem.splitScalar(u8, b, '.');
+    var i: usize = 0;
+    while (i < 4) : (i += 1) {
+        const pa = numPrefix(ita.next() orelse "0");
+        const pb = numPrefix(itb.next() orelse "0");
+        if (pa != pb) return if (pa > pb) .gt else .lt;
+    }
+    return .eq;
+}
+
+fn numPrefix(s: []const u8) usize {
+    var n: usize = 0;
+    for (s) |c| {
+        if (!std.ascii.isDigit(c)) break;
+        n = n * 10 + (c - '0');
+    }
+    return n;
+}
+
 /// Linear blend of two colours: `pct`% of `b` into `a` (integer math, no
 /// floats — used for the diff panes' change-line tint against any theme).
 fn mixColor(a: theme.Color, b: theme.Color, pct: u16) theme.Color {
@@ -6374,6 +6761,23 @@ fn byteAtDisplayCol(line: []const u8, target: usize) usize {
         i += d.len;
     }
     return i;
+}
+
+test "newestTag picks the highest release tag" {
+    const out =
+        "abc123\trefs/tags/v0.1.0\n" ++
+        "def456\trefs/tags/v0.10.2\n" ++
+        "aaa111\trefs/tags/v0.9.9\n" ++
+        "bbb222\trefs/heads/main\n";
+    try std.testing.expectEqualStrings("0.10.2", newestTag(out).?);
+    try std.testing.expect(newestTag("abc\trefs/heads/main\n") == null);
+}
+
+test "compareVersions orders numerically, not lexically" {
+    try std.testing.expectEqual(std.math.Order.gt, compareVersions("0.10.0", "0.9.9"));
+    try std.testing.expectEqual(std.math.Order.eq, compareVersions("0.2.0", "0.2.0"));
+    try std.testing.expectEqual(std.math.Order.lt, compareVersions("0.2.0", "0.2.1"));
+    try std.testing.expectEqual(std.math.Order.eq, compareVersions("1.2", "1.2.0"));
 }
 
 test "mixColor blends toward the tint" {

@@ -14,6 +14,7 @@ const editor = @import("editor.zig");
 const config = @import("config.zig");
 
 const search = @import("search.zig");
+const remote = @import("remote.zig");
 const regex = @import("regex.zig");
 
 const tutor_text = @embedFile("tutor_text");
@@ -56,6 +57,7 @@ pub fn main(init: std.process.Init) !void {
     std.log.scoped(.main).info("starting zedit, file={s}", .{cfg.file orelse "<none>"});
 
     if (cfg.benchmark) return runBenchmark(gpa, io, cfg.file);
+    if (cfg.check_update) return checkUpdate(gpa, io);
 
     if (!config.load(gpa, io, cfg.config_path) and cfg.config_path != null) {
         // An explicit --config that cannot be read is a mistake the user
@@ -64,10 +66,18 @@ pub fn main(init: std.process.Init) !void {
     }
 
     // A directory argument (e.g. `zedit .`) becomes the working directory and
-    // the session starts in the file picker — the nvim/helix habit.
+    // the session starts in the file picker — the nvim/helix habit. An
+    // `ssh://host/dir` URL does the same over ssh (see remote.zig).
     var open_picker = false;
+    var remote_dir: ?[]const u8 = null;
     if (cfg.file) |p| {
-        if (isDirectory(io, p)) {
+        if (remote.parse(p)) |target| {
+            if (remote.isDir(gpa, io, target)) {
+                remote_dir = p;
+                cfg.file = null;
+                open_picker = true;
+            }
+        } else if (isDirectory(io, p)) {
             std.process.setCurrentPath(io, p) catch {
                 cli.printError("cannot enter that directory (permission denied?)");
                 std.process.exit(1);
@@ -110,7 +120,15 @@ pub fn main(init: std.process.Init) !void {
     defer ed.deinit();
     defer terminal.restore();
 
-    if (open_picker) ed.openFilePicker();
+    // Recently-opened list: drives the startup screen when no file was given.
+    ed.startSession(null, cfg.file == null and !cfg.tutor and !open_picker);
+    if (cfg.file) |p| ed.noteRecent(p, .file);
+    if (remote_dir) |d| {
+        ed.openRemoteDir(d);
+    } else if (open_picker) {
+        ed.noteRecentCwd();
+        ed.openFilePicker();
+    }
 
     ed.run() catch |err| {
         terminal.restore();
@@ -118,6 +136,44 @@ pub fn main(init: std.process.Init) !void {
         cli.printError(@errorName(err));
         std.process.exit(1);
     };
+}
+
+/// `--check-update`: compare this build's version with the newest published
+/// release tag. Runs without a terminal, so scripts and CI can use it.
+fn checkUpdate(gpa: std.mem.Allocator, io: std.Io) void {
+    const url = "https://github.com/ashuguptahere/zed.git";
+    const res = std.process.run(gpa, io, .{
+        .argv = &.{ "git", "ls-remote", "--tags", "--refs", url },
+        .stdout_limit = .limited(1 << 20),
+        .stderr_limit = .limited(8 << 10),
+    }) catch {
+        cli.printError("cannot check for updates (is git installed?)");
+        std.process.exit(1);
+    };
+    defer gpa.free(res.stdout);
+    defer gpa.free(res.stderr);
+    switch (res.term) {
+        .exited => |code| if (code != 0) {
+            std.log.scoped(.main).warn("ls-remote failed: {s}", .{std.mem.trim(u8, res.stderr, " \n")});
+            cli.printError("cannot reach the release server (no network?)");
+            std.process.exit(1);
+        },
+        else => {
+            cli.printError("cannot check for updates");
+            std.process.exit(1);
+        },
+    }
+    var b: [256]u8 = undefined;
+    const newest = editor.newestReleaseTag(res.stdout) orelse {
+        cli.printOut("zedit: no releases published yet\n");
+        return;
+    };
+    if (editor.versionIsNewer(newest, cli.version)) {
+        cli.printOut(std.fmt.bufPrint(&b, "zedit: update available — {s} (you have {s})\n" ++
+            "  https://github.com/ashuguptahere/zed/releases/latest\n", .{ newest, cli.version }) catch return);
+    } else {
+        cli.printOut(std.fmt.bufPrint(&b, "zedit: up to date ({s})\n", .{cli.version}) catch return);
+    }
 }
 
 fn isDirectory(io: std.Io, path: []const u8) bool {
@@ -235,6 +291,8 @@ test {
     _ = @import("fuzzy.zig");
     _ = @import("config.zig");
     _ = @import("git.zig");
+    _ = @import("recent.zig");
+    _ = @import("remote.zig");
     _ = @import("lsp.zig");
     _ = @import("treesitter.zig");
     _ = @import("editor.zig");

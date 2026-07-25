@@ -20,6 +20,7 @@ const scenarios = .{
     .{ "config", @import("scenarios/configtheme.zig") },
     .{ "cmdline", @import("scenarios/cmdline.zig") },
     .{ "robust", @import("scenarios/robust.zig") },
+    .{ "remote", @import("scenarios/remote.zig") },
     .{ "ssh", @import("scenarios/ssh.zig") },
     .{ "lsp", @import("scenarios/lsp.zig") },
     .{ "cpu", @import("scenarios/cpu.zig") },

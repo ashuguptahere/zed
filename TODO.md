@@ -7,12 +7,10 @@ behind the roadmap items.
 
 ## In progress
 
-- (nothing — pick the next item below)
+- [ ] Shortlist #8: inline diagnostic text at end of line.
 
 ## Next (in order)
 
-- [ ] Shortlist #8: inline diagnostic text at end of line (reuse the
-      inlay-hint virtual-text machinery).
 - [ ] Shortlist #9: auto-triggered + fuzzy completion (reuse fuzzy.zig).
 - [ ] Shortlist #10: snippets / `textEdit` completions.
 
@@ -38,6 +36,8 @@ behind the roadmap items.
 - [ ] Tree-sitter injections (Markdown uses two layers; HTML JS/CSS plain),
       query predicates (`#match?`/`#eq?`), tree-sitter indent queries.
 - [ ] Cmdline: wildmenu directory-navigation keys, mid-line cursor editing.
+- [ ] Remote: atomic remote writes (temp file + rename instead of `cat >`),
+      remote git signs/sidebar, partial transfers for huge remote files.
 - [ ] More nvim ground-truth test tranches (dot-repeat/macro edge cases).
 
 ## Done (chronological)
@@ -93,3 +93,12 @@ behind the roadmap items.
 - [x] GitHub CI (tests every push) + release pipeline (tag push → stripped
       ReleaseFast binaries: Linux x86_64/aarch64 static musl, macOS
       x86_64/aarch64) — all four targets verified cross-compiling locally.
+- [x] Purged `new.py` (and a stray file named `"`) from the working tree and
+      all 45 commits of history; `.gitignore` guards against a repeat.
+- [x] Remote editing over SSH (`ssh://` URLs, `:ssh`, remote picker, write
+      back) with shell-quoting proven by an injection test.
+- [x] Startup screen with recently opened files/directories (`recent.zig`,
+      XDG state file, pruning + dedup).
+- [x] `:update` / `--check-update` against the newest release tag.
+- [x] Confirmed the toolchain is current: Zig 0.16.0 is the latest stable
+      (master is 0.17.0-dev), so no upgrade was needed.

@@ -48,6 +48,13 @@ Read configuration from
 instead of the standard location (see
 .BR CONFIGURATION ).
 .TP
+.BR \-u ", " \-\-check\-update
+Compare this build with the newest published release tag (one
+.B git ls\-remote
+call) and exit. zedit never checks on its own;
+.B :update
+does the same from inside the editor.
+.TP
 .BR \-b ", " \-\-benchmark
 Time the hot paths (open, whole-buffer literal and regex search, serialize) on
 .I file
@@ -144,6 +151,39 @@ Inner / around paragraph text objects (linewise).
 also takes the trailing blank lines \(em or the leading ones when nothing
 trails, like vim. Counts work:
 .BR d2ap .
+.SH "REMOTE FILES (SSH)"
+.B zedit ssh://[user@]host[:port]/path
+edits a file on another machine, as do
+.B :e ssh://\&...
+and
+.BR ":ssh [user@]host[/dir]" .
+Nothing is installed on the remote: each operation is a single
+.BR ssh (1)
+invocation, so any host you can already ssh into works, including aliases from
+.IR ~/.ssh/config .
+A remote directory opens the fuzzy picker over its files, and
+.B :w
+writes back to the same URL. Remote paths are quoted for the remote shell, so
+spaces and quotes are safe.
+.B BatchMode=yes
+is set, so a host that would prompt for a password fails fast instead of
+hanging the editor \(em use keys or an agent.
+.SH "STARTUP SCREEN"
+Started with no file, zedit lists recently opened files and directories:
+.B j
+/
+.B k
+(or the arrows) select,
+.B Enter
+opens,
+.BR 1 \- 9
+jump straight to an entry,
+.B q
+quits, and any other key dismisses the screen. The list is kept in
+.I $XDG_STATE_HOME/zedit/recent
+(default
+.IR ~/.local/state/zedit/recent ),
+newest first, capped at 30 entries, with vanished paths pruned on load.
 .SH MOUSE
 The wheel scrolls the focused window three lines per notch (cursor dragged
 along only as needed to stay visible). Clicks are ignored; select text with
@@ -330,7 +370,7 @@ search the current file; use
 to search across files.
 .SH "COMMAND LINE"
 .TP
-.B :w \fR[\fPname\fR]\fP :q :wq :x :q! :qa :qa! :wa :format :{n} ZZ ZQ
+.B :w \fR[\fPname\fR]\fP :q :wq :x :q! :qa :qa! :wa :format :ssh :update :{n} ZZ ZQ
 Write, quit (closes the window when more than one is open, else quits; blocked
 on the last window with unsaved changes), write\-and\-quit, force quit, quit
 all (refuses while any buffer has unsaved changes;

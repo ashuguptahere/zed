@@ -57,6 +57,11 @@
   refreshes). The file list is cached per session with per-path char-bitmask
   prefiltering and incremental query narrowing — the same tricks that make
   Zed's finder feel instant
+- **Startup screen** listing recently opened files and directories (`j`/`k`,
+  `Enter`, `1`-`9`), stored in `~/.local/state/zedit/recent`
+- **Remote editing over SSH**: `zedit ssh://host/path/file`, `:e ssh://…` or
+  `:ssh host` — no agent installed on the remote, no extra dependencies; a
+  remote directory opens the fuzzy picker over it and `:w` writes back
 - **Mouse wheel scrolling** (SGR mouse; Shift+drag still selects text in
   your terminal)
 - **Command line** with Tab completion (command names, `:e`/`:w` paths,
@@ -135,7 +140,7 @@ missing file just means defaults. Settings today: `theme`, `tab_width`,
 
 Every CLI option has a short and a long form (`-h/--help`, `-v/--version`,
 `-l/--log`, `-s/--lsp`, `-c/--config`, `-t/--tutor`, `-b/--benchmark`,
-`--init-config`); `zedit <dir>` opens the file picker in that directory, and
+`-u/--check-update`, `--init-config`); `zedit <dir>` opens the file picker in that directory, and
 `zedit --benchmark [file]` prints open/search/serialize timings without
 needing a terminal. Releases are versioned by the `VERSION` file and
 documented in [CHANGELOG.md](CHANGELOG.md).

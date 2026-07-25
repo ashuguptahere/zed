@@ -33,12 +33,17 @@ pub const Ctx = struct {
     }
 };
 
+pub const EnvVar = struct { name: []const u8, value: []const u8 };
+
 pub const SpawnOpts = struct {
     argv: []const []const u8, // full argv, including the program path
     cwd: ?[]const u8 = null,
     term: []const u8 = "xterm",
     rows: u16 = 24,
     cols: u16 = 80,
+    /// Extra environment for the child (e.g. PATH for a mock `ssh`, or
+    /// XDG_STATE_HOME to redirect the recent-files list at a temp dir).
+    env: []const EnvVar = &.{},
 };
 
 pub const Session = struct {
@@ -57,6 +62,11 @@ pub const Session = struct {
         argv[opts.argv.len] = null;
         const term_z = try a.dupeZ(u8, opts.term);
         const cwd_z: ?[*:0]const u8 = if (opts.cwd) |cw| (try a.dupeZ(u8, cw)).ptr else null;
+        const env_z = try a.alloc(struct { name: [*:0]const u8, value: [*:0]const u8 }, opts.env.len);
+        for (opts.env, 0..) |e, i| env_z[i] = .{
+            .name = (try a.dupeZ(u8, e.name)).ptr,
+            .value = (try a.dupeZ(u8, e.value)).ptr,
+        };
 
         const master = c.posix_openpt(c.O_RDWR | c.O_NOCTTY);
         if (master < 0) return error.OpenPt;
@@ -75,6 +85,7 @@ pub const Session = struct {
             if (slave > 2) _ = c.close(slave);
             _ = c.close(master);
             _ = c.setenv("TERM", term_z, 1);
+            for (env_z) |e| _ = c.setenv(e.name, e.value, 1);
             if (cwd_z) |cw| _ = c.chdir(cw);
             _ = c.execvp(argv[0].?, @ptrCast(argv.ptr));
             c._exit(127);

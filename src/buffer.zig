@@ -12,6 +12,7 @@
 //! codepoint boundaries; edits insert and remove whole codepoints.
 
 const std = @import("std");
+const remote = @import("remote.zig");
 const unicode = @import("unicode.zig");
 const Allocator = std.mem.Allocator;
 
@@ -155,7 +156,15 @@ pub const Buffer = struct {
 
     /// Load `path` into a new buffer. A missing file yields an empty buffer
     /// already named `path`, matching the familiar "open to create" behaviour.
+    /// An `ssh://user@host/path` URL is fetched over ssh (see remote.zig) and
+    /// keeps the URL as its path, so `:w` writes back to the same place.
     pub fn load(gpa: Allocator, io: std.Io, path: []const u8) !Buffer {
+        if (remote.parse(path)) |target| {
+            const data = try remote.read(gpa, io, target, max_file_bytes);
+            var b = try fromOwnedBytes(gpa, data);
+            b.path = try gpa.dupe(u8, path);
+            return b;
+        }
         const data = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(max_file_bytes)) catch |err| switch (err) {
             error.FileNotFound => {
                 var b = try initEmpty(gpa);
@@ -191,7 +200,11 @@ pub const Buffer = struct {
         const path = self.path orelse return error.NoFileName;
         const data = try self.toBytes(self.gpa);
         defer self.gpa.free(data);
-        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = data });
+        if (remote.parse(path)) |target| {
+            try remote.write(self.gpa, io, target, data);
+        } else {
+            try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = data });
+        }
         self.dirty = false;
     }
 

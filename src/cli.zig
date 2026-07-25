@@ -18,6 +18,7 @@ pub const Config = struct {
     config_path: ?[]const u8 = null,
     tutor: bool = false,
     benchmark: bool = false,
+    check_update: bool = false,
 };
 
 pub const Parsed = union(enum) {
@@ -65,6 +66,8 @@ pub fn parse(argv: []const [:0]const u8) Parsed {
                 cfg.tutor = true;
             } else if (eql(arg, "-b") or eql(arg, "--benchmark")) {
                 cfg.benchmark = true;
+            } else if (eql(arg, "-u") or eql(arg, "--check-update")) {
+                cfg.check_update = true;
             } else if (eql(arg, "--init-config")) {
                 return .init_config;
             } else {
@@ -92,6 +95,7 @@ const help_text =
     \\  -c, --config <path>  Use <path> instead of ~/.config/zedit/config
     \\  -t, --tutor          Open the interactive tutorial (like vimtutor)
     \\  -b, --benchmark      Time open/search/save on [file] (or synthetic data) and exit
+    \\  -u, --check-update   Compare this build with the newest release and exit
     \\      --init-config    Write the documented default config file and exit
     \\
     \\Keys (normal mode):
@@ -108,6 +112,7 @@ const help_text =
     \\  zedit                 Start with an empty buffer
     \\  zedit src/main.zig    Open a file
     \\  zedit .               Open a directory (file picker)
+    \\  zedit ssh://host/etc/hosts   Edit a file on another machine over SSH
     \\  zedit --log zedit.log notes.txt
     \\
 ;
