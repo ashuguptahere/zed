@@ -11,13 +11,6 @@ behind the roadmap items.
 
 ## Next (in order)
 
-- [ ] Stream the initial read: paint from the first chunk instead of after the
-      whole file is in memory. This is the entire remaining big-file gap —
-      nvim shows an 8.2 MB file at 3.4 ms because it does not wait for the
-      read; our loader is faster (3.9 ms vs 8.4 ms) but runs first.
-- [ ] Asynchronous picker, the way helix does it: stream candidates from a
-      background walk into an already-visible picker and match incrementally
-      with a per-frame time budget, instead of walking synchronously.
 
 The shortlist is done; these are the next-highest gaps from
 `doc/COMPARISON.md`, in rough priority order.
@@ -29,13 +22,6 @@ The shortlist is done; these are the next-highest gaps from
 
 ## Next (in order)
 
-- [ ] Stream the initial read: paint from the first chunk instead of after the
-      whole file is in memory. This is the entire remaining big-file gap —
-      nvim shows an 8.2 MB file at 3.4 ms because it does not wait for the
-      read; our loader is faster (3.9 ms vs 8.4 ms) but runs first.
-- [ ] Asynchronous picker, the way helix does it: stream candidates from a
-      background walk into an already-visible picker and match incrementally
-      with a per-frame time budget, instead of walking synchronously.
 
 
 ## Recurring (every feature / significant change)
@@ -128,6 +114,9 @@ The shortlist is done; these are the next-highest gaps from
 - [x] `:update` / `--check-update` against the newest release tag.
 - [x] Shortlist #8: inline diagnostics (dim severity-coloured virtual text
       after the code; `inline_diagnostics` config, on by default).
+- [x] Streaming load (256 KB head painted, tail read after the first frame:
+      8.2 MB first paint 7.4 → 2.9 ms) and a streaming picker (project walk in
+      ~2 ms slices into an open picker: 20k-file tree visible in 0.5 ms).
 - [x] SIMD literal search (miss 301 ms → 0.37 ms; 10 MB search 7.9 → 5.1 ms)
       and lazy line indexing (8.2 MB open 6.85 → 4.65 ms, RSS 32 → 18 MB).
 - [x] Tree-sitter structural objects `af`/`if`, `ac`/`ic` and `]f`/`[f`

@@ -180,20 +180,18 @@ machine (medians):
 | metric | zedit | helix 25.07.1 | nvim 0.12.4 |
 |---|---|---|---|
 | startup → interactive | **7.1 ms** | 27.4 ms | 10.7 ms |
-| open 10 MB — first paint | 7.4 ms | 31.4 ms | **3.4 ms** |
-| open 10 MB — fully settled | 13.5 ms | 35.4 ms | **10.5 ms** |
+| open 10 MB — first paint | **2.9 ms** | 31.1 ms | 3.8 ms |
+| open 10 MB — fully settled | 13.3 ms | 35.3 ms | **9.5 ms** |
 | keypress → response | **0.12 ms** | 0.27 ms | 0.17 ms |
 | `/` search in the 10 MB file | 5.1 ms | **4.4 ms** | 50.9 ms |
 | file picker open (this repo) | 5.9 cold / **4.8 ms** warm | 4.4 ms | n/a (no builtin) |
 
-zedit wins startup and keypress latency. nvim still shows a large file sooner
-because it paints before it has finished reading, where zedit reads the file
-fully first — our loader itself is about twice as fast (3.9 ms to read and
-index 8.2 MB, against nvim's +8.4 ms), so the gap is when we paint, not how
-fast we load. helix still edges a cold picker because its picker streams
-candidates in from background threads while already on screen; ours walks the
-tree synchronously. On a 476 MB file zedit searches in ~196 ms against nvim's
-217 ms and helix's 1753 ms.
+zedit shows a large file soonest (it paints from the first 256 KB and reads
+the rest afterwards) and wins startup and keypress latency; nvim still reaches
+a fully-settled screen first. On a 476 MB file zedit searches in ~196 ms
+against nvim's 217 ms and helix's 1753 ms. The picker opens before its project
+walk finishes and streams results in, so on a 20k-file tree it is on screen in
+0.5 ms where helix takes ~1.1 s.
 
 Buffer loading is zero-copy (one shared byte buffer; lines are slices that
 convert to owned storage on first edit), so the big-file number fell from

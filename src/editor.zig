@@ -367,6 +367,13 @@ pub const Editor = struct {
     fcache: std.ArrayList([]u8), // project file paths, walked once per session
     fcache_masks: std.ArrayList(u64), // fuzzy.charMask per path, for prefiltering
     fcache_ready: bool,
+    /// An in-progress project walk. The picker opens *before* the walk runs
+    /// and the results stream in a chunk per loop iteration, so a huge tree
+    /// never blocks the first frame or your typing (helix does this with
+    /// background threads; cooperative chunks fit an editor that is otherwise
+    /// single-threaded and idle-blocked in poll()).
+    walk_dir: ?std.Io.Dir,
+    walker: ?std.Io.Dir.SelectiveWalker,
     prev_query: std.ArrayList(u8), // last filtered query (incremental narrowing)
     picker_filtered: std.ArrayList(u32),
     picker_query: std.ArrayList(u8),
@@ -565,6 +572,8 @@ pub const Editor = struct {
             .fcache = .empty,
             .fcache_masks = .empty,
             .fcache_ready = false,
+            .walk_dir = null,
+            .walker = null,
             .recents = .{ .gpa = gpa },
             .recent_path = null,
             .dashboard = false,
@@ -621,6 +630,8 @@ pub const Editor = struct {
     }
 
     pub fn deinit(self: *Editor) void {
+        if (self.walker) |*w| w.deinit();
+        if (self.walk_dir) |*d| d.close(self.io);
         self.clearPreview();
         self.dropPreviewHighlighter();
         self.preview_styles.deinit(self.gpa);
@@ -707,6 +718,12 @@ pub const Editor = struct {
         self.scroll();
         try self.render();
 
+        // The rest of a streamed file lands right after that first paint, so
+        // everything below (highlighting, git, LSP) sees the whole document.
+        self.buf.loadRest(self.io) catch |err| {
+            std.log.scoped(.editor).err("finishing the read failed: {s}", .{@errorName(err)});
+        };
+
         self.startTs();
         self.refreshGit();
         self.startLsp();
@@ -719,6 +736,20 @@ pub const Editor = struct {
                 self.scroll();
                 try self.render();
                 needs_render = false;
+            }
+            // A project walk in progress keeps the loop hot: take a slice,
+            // stream what it found into an open picker, redraw, repeat. Once
+            // it finishes the loop goes back to blocking in poll() forever.
+            if (self.walkInProgress()) {
+                const grew = self.stepWalk(2000); // ~2 ms per slice
+                if (grew and self.mode == .picker and self.picker_kind == .files) {
+                    self.refillFileItems();
+                    self.refilter();
+                }
+                if (grew or !self.walkInProgress()) {
+                    needs_render = self.mode == .picker;
+                    continue;
+                }
             }
             const lsp_fd: ?std.posix.fd_t = if (self.lsp) |*c| (if (c.alive) c.out_fd else null) else null;
             const ready = try self.term.waitReady(lsp_fd, self.pollTimeout());
@@ -3109,12 +3140,20 @@ pub const Editor = struct {
 
     /// Open the fuzzy file picker (`Space f f`; also the startup view when
     /// zedit is launched on a directory).
+    /// Rebuild the file rows from the cache — called as walk slices land.
+    fn refillFileItems(self: *Editor) void {
+        self.picker_items.clearRetainingCapacity();
+        self.picker_text.clearRetainingCapacity();
+        self.fillFileItems();
+        self.prev_query.clearRetainingCapacity(); // the candidate set grew
+    }
+
     pub fn openFilePicker(self: *Editor) void {
         self.freePicker();
         self.picker_kind = .files;
         self.picker_sel = 0;
         self.picker_scroll = 0;
-        self.ensureFileCache();
+        self.ensureFileCache(); // starts the walk; does not wait for it
         self.fillFileItems();
         self.refilter();
         self.mode = .picker;
@@ -3248,37 +3287,80 @@ pub const Editor = struct {
     /// Walk the cwd once per session into the warm cache (files + fuzzy masks),
     /// skipping build/VCS directories. Subsequent picker opens are free of
     /// filesystem work; `Ctrl-r` in a picker refreshes.
+    /// Begin (or resume) the project walk without blocking. Returns straight
+    /// away; `stepWalk` does the work a slice at a time.
     fn ensureFileCache(self: *Editor) void {
-        if (self.fcache_ready) return;
-        var sp = log.Span.start();
+        if (self.fcache_ready or self.walker != null) return;
         if (self.remote_root) |root| {
-            self.fillRemoteCache(root);
+            var sp = log.Span.start();
+            self.fillRemoteCache(root); // one ssh call; nothing to chunk
             self.fcache_ready = true;
             sp.lap("remote-file-list");
             return;
         }
-        var dir = std.Io.Dir.cwd().openDir(self.io, ".", .{ .iterate = true }) catch return;
-        defer dir.close(self.io);
-        var w = dir.walkSelectively(self.gpa) catch return;
-        defer w.deinit();
+        var dir = std.Io.Dir.cwd().openDir(self.io, ".", .{ .iterate = true }) catch {
+            self.fcache_ready = true;
+            return;
+        };
+        self.walker = dir.walkSelectively(self.gpa) catch {
+            dir.close(self.io);
+            self.fcache_ready = true;
+            return;
+        };
+        self.walk_dir = dir;
+    }
+
+    fn walkInProgress(self: *const Editor) bool {
+        return self.walker != null;
+    }
+
+    /// Walk for at most `budget_us`, then hand control back so input stays
+    /// responsive. Returns true when it produced new entries.
+    fn stepWalk(self: *Editor, budget_us: i64) bool {
+        var w = if (self.walker) |*x| x else return false;
+        var sp = log.Span.start();
+        const deadline = nowMs() * 1000 + budget_us;
+        const before = self.fcache.items.len;
+        var done = false;
+        var checked: usize = 0;
         while (true) {
-            const maybe = w.next(self.io) catch break;
-            const entry = maybe orelse break;
+            const maybe = w.next(self.io) catch {
+                done = true;
+                break;
+            };
+            const entry = maybe orelse {
+                done = true;
+                break;
+            };
             if (entry.kind == .directory) {
                 if (!ignoredDir(entry.basename)) w.enter(self.io, entry) catch {};
                 continue;
             }
             if (entry.kind != .file) continue;
-            if (self.fcache.items.len >= 20000) break;
+            if (self.fcache.items.len >= 20000) {
+                done = true;
+                break;
+            }
             const p = self.gpa.dupe(u8, entry.path) catch continue;
             self.fcache.append(self.gpa, p) catch {
                 self.gpa.free(p);
+                done = true;
                 break;
             };
             self.fcache_masks.append(self.gpa, fuzzy.charMask(p)) catch break;
+            // Check the clock every so often rather than per entry.
+            checked += 1;
+            if (checked % 512 == 0 and nowMs() * 1000 >= deadline) break;
         }
-        self.fcache_ready = true;
-        sp.lap("file-walk");
+        if (done) {
+            w.deinit();
+            self.walker = null;
+            if (self.walk_dir) |*d| d.close(self.io);
+            self.walk_dir = null;
+            self.fcache_ready = true;
+            sp.lap("file-walk-done");
+        }
+        return self.fcache.items.len != before;
     }
 
     /// Fill the picker cache from a remote directory (one ssh call). Entries
@@ -3310,6 +3392,12 @@ pub const Editor = struct {
     }
 
     fn refreshFileCache(self: *Editor) void {
+        if (self.walker) |*w| { // abandon a walk already running
+            w.deinit();
+            self.walker = null;
+            if (self.walk_dir) |*d| d.close(self.io);
+            self.walk_dir = null;
+        }
         for (self.fcache.items) |f| self.gpa.free(f);
         self.fcache.clearRetainingCapacity();
         self.fcache_masks.clearRetainingCapacity();

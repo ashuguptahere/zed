@@ -257,7 +257,9 @@ fn msSince(start: i128) f64 {
 /// failure, print a friendly message and signal the caller to exit.
 fn openBuffer(gpa: std.mem.Allocator, io: std.Io, path: ?[]const u8) !buffer.Buffer {
     const p = path orelse return buffer.Buffer.initEmpty(gpa);
-    return buffer.Buffer.load(gpa, io, p) catch |err| {
+    // Read a screenful first so the editor can paint, then let the run loop
+    // pull in the rest (see Buffer.loadPartial / Editor.run).
+    return buffer.Buffer.loadPartial(gpa, io, p, 256 << 10) catch |err| {
         var b: [512]u8 = undefined;
         const reason: []const u8 = switch (err) {
             error.StreamTooLong => "file is too large (2 GB cap)",

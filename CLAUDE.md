@@ -37,6 +37,15 @@ work", they win.
   lexer (`syntax.zig`) remains the fallback for languages without a grammar.
 - **Idiomatic, modern Zig.** Follow current Zig conventions for the toolchain in
   `build.zig.zon` (`minimum_zig_version`). No legacy/deprecated APIs.
+- **Never block the first frame on work the user did not ask for.** The file
+  is read in two phases (`Buffer.loadPartial` reads a 256 KB head, the run
+  loop pulls the tail in after the first paint), and the project walk behind
+  the picker runs in ~2 ms slices between loop iterations, streaming results
+  into an already-visible picker. Measured: first paint on an 8.2 MB file
+  2.9 ms (nvim 3.8 ms), picker visible on a 20k-file tree in 0.5 ms (helix
+  1.1 s). Neither uses a thread — the loop simply keeps a zero timeout while
+  work remains and returns to blocking in `poll(2)` when it is done, so an
+  idle editor still costs nothing.
 - **Paint first, decorate after.** Nothing that merely *annotates* the text may
   sit between launch and the first frame: syntax highlighting, git signs and
   the LSP handshake all run after the initial paint, and a second frame brings
@@ -116,7 +125,7 @@ Source is `src/`, one responsibility per module:
 | `term.zig`    | POSIX terminal control: raw mode, alternate screen, bracketed paste, window size, event-driven input. |
 | `key.zig`     | Decoding raw input bytes into `Key` events (text, arrows, navigation). |
 | `unicode.zig` | UTF-8 decoding, codepoint boundaries, display width. |
-| `buffer.zig`  | The document: zero-copy load (a lazy `u32` line index over one shared buffer; per-line storage materialises on the first edit, copy-on-write from there), save, UTF-8-aware edits. |
+| `buffer.zig`  | The document: two-phase zero-copy load (`loadPartial` indexes a head so the screen can paint, `loadRest` fills the tail), a lazy `u32` line index over one shared buffer, per-line storage materialised on the first edit, save, UTF-8-aware edits. |
 | `motion.zig`  | Pure cursor motions, word/WORD rules, find-char, `%`, text objects. |
 | `register.zig`| Vim registers (named/unnamed, linewise flag) for yank/delete/paste. |
 | `undo.zig`    | Undo/redo as capped buffer snapshots. |

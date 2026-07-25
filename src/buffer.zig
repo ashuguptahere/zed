@@ -41,6 +41,13 @@ pub const Line = union(enum) {
     }
 };
 
+/// A load that has only read its first chunk.
+pub const Pending = struct {
+    file: std.Io.File,
+    filled: usize, // bytes of `source` that hold real data
+    scan_from: usize, // byte the newline scan stopped at
+};
+
 /// Where a backspace/join left the cursor.
 pub const Pos = struct { row: usize, col: usize };
 
@@ -49,6 +56,10 @@ pub const Buffer = struct {
     /// Per-line storage. Empty while the buffer is still "lazy": until the
     /// first edit, lines are described purely by `offsets` into `source`.
     lines: std.ArrayList(Line),
+    /// Set while only the head of the file has been read (see `loadPartial`).
+    /// The whole file is allocated up front, so borrowed line slices stay
+    /// valid as the tail lands; `loadRest` fills and indexes the remainder.
+    pending: ?Pending = null,
     /// Lazy line index: byte offset of each line start in `source`, plus a
     /// trailing sentinel (so line i spans [offsets[i], offsets[i+1]-1)).
     /// Non-empty exactly while `lines` is unused — see `materialize`.
@@ -191,6 +202,80 @@ pub const Buffer = struct {
         }
 
         return .{ .gpa = gpa, .lines = lines, .offsets = offsets, .source = source, .path = null, .dirty = false, .revision = 0, .final_newline = final_newline, .emptied = was_empty, .pure_borrowed = source != null, .has_cr = has_cr };
+    }
+
+    /// Read only the head of `path` and index the complete lines in it, so the
+    /// first screen can be painted before the rest of the file has arrived —
+    /// the one thing nvim still did sooner than us. The full file is allocated
+    /// up front, so the borrowed line slices survive `loadRest` filling in the
+    /// tail. Falls back to a plain load for remote paths and small files,
+    /// where two-phase reading would only add syscalls.
+    pub fn loadPartial(gpa: Allocator, io: std.Io, path: []const u8, head: usize) !Buffer {
+        if (remote.parse(path) != null) return load(gpa, io, path);
+        const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch return load(gpa, io, path);
+        var close_file = true;
+        defer if (close_file) file.close(io);
+
+        const st = file.stat(io) catch return load(gpa, io, path);
+        const size = std.math.cast(usize, st.size) orelse return error.StreamTooLong;
+        if (size > max_file_bytes) return error.StreamTooLong;
+        if (size <= head) return load(gpa, io, path); // one read is enough
+
+        const source = try gpa.alloc(u8, size);
+        errdefer gpa.free(source);
+        const got = file.readPositionalAll(io, source[0..head], 0) catch return load(gpa, io, path);
+        // Index whole lines only; a trailing partial line waits for the tail.
+        const cut = std.mem.lastIndexOfScalar(u8, source[0..got], '\n') orelse 0;
+
+        var b = try fromSource(gpa, source);
+        // fromSource indexed the uninitialised tail as well, so redo the index
+        // over just the part that is real.
+        b.offsets.clearRetainingCapacity();
+        try indexRange(&b.offsets, gpa, source[0 .. cut + 1], 0);
+        b.final_newline = true;
+        b.emptied = false;
+        b.pending = .{ .file = file, .filled = got, .scan_from = cut + 1 };
+        b.path = try gpa.dupe(u8, path);
+        close_file = false; // the buffer owns it until loadRest
+        return b;
+    }
+
+    /// Finish a `loadPartial`: read the remainder and extend the line index.
+    /// Safe to call when nothing is pending.
+    pub fn loadRest(self: *Buffer, io: std.Io) !void {
+        const p = self.pending orelse return;
+        self.pending = null;
+        defer p.file.close(io);
+        const source = self.source orelse return;
+        if (p.filled < source.len) {
+            _ = p.file.readPositionalAll(io, source[p.filled..], p.filled) catch {};
+        }
+        try indexRange(&self.offsets, self.gpa, source, p.scan_from);
+        // Re-derive the tail properties now that the whole file is present.
+        self.final_newline = source.len == 0 or source[source.len - 1] == '\n';
+        if (!self.final_newline) try self.offsets.append(self.gpa, @intCast(source.len + 1));
+        self.has_cr = self.has_cr or std.mem.indexOfScalar(u8, source, '\r') != null;
+    }
+
+    /// Append line starts for the newlines in `src[from..]`. The array already
+    /// holds a leading 0 (and any earlier lines) when called incrementally.
+    fn indexRange(offsets: *std.ArrayList(u32), gpa: Allocator, src: []const u8, from: usize) !void {
+        if (offsets.items.len == 0) try offsets.append(gpa, 0);
+        try offsets.ensureUnusedCapacity(gpa, (src.len - from) / 40 + 2);
+        const vlen = 32;
+        const nl_splat: @Vector(vlen, u8) = @splat('\n');
+        var i = from;
+        while (i + vlen <= src.len) : (i += vlen) {
+            const chunk: @Vector(vlen, u8) = src[i..][0..vlen].*;
+            var mask: u32 = @bitCast(chunk == nl_splat);
+            while (mask != 0) {
+                try offsets.append(gpa, @intCast(i + @ctz(mask) + 1));
+                mask &= mask - 1;
+            }
+        }
+        while (i < src.len) : (i += 1) {
+            if (src[i] == '\n') try offsets.append(gpa, @intCast(i + 1));
+        }
     }
 
     /// Load `path` into a new buffer. A missing file yields an empty buffer
