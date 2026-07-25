@@ -10,6 +10,10 @@ Notable changes to zedit. Dates are commit dates.
 - `zedit <dir>` enters the directory and starts in the fuzzy file picker (it used to fail with a raw `IsDir` error).
 - Every CLI option now has a short form (`-l/--log`, `-s/--lsp`, `-c/--config`, `-t/--tutor`, `-b/--benchmark`).
 - `--benchmark [file]`: a headless self-benchmark timing open, whole-buffer literal and regex search, and serialize.
+- Mouse wheel scrolling (SGR mouse reporting; wheel-only, clicks ignored, Shift+drag still selects).
+- Side-by-side git diff view tints changed/added/removed lines vimdiff-style in both panes (old-side hunk ranges tint the index pane).
+- GitHub CI: tests on every push; tagged `v*` pushes release stripped ReleaseFast binaries for Linux x86_64/aarch64 (static musl) and macOS x86_64/aarch64.
+- `TODO.md`: the working tracker (done in order, in progress, next, recurring per-feature checklist).
 - Vim semantics pinned to ground truth: a `vim_compat` integration suite asserts byte-for-byte agreement with real Neovim driven headlessly, covering operators, autoindent, the jumplist, `:s`, and cmdline completion.
 - AstroNvim-style `Space` leader tree with nested which-key popups (Find, Language tools, Git groups), grown alongside each feature below.
 - Themed UI: five true-colour palettes (Tokyo Night default, Gruvbox, Catppuccin Mocha, Nord, One Dark) with live `:theme` switching, a powerline statusline, relative+absolute line numbers, cursorline, and indent guides.

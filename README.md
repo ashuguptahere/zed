@@ -56,6 +56,8 @@
   refreshes). The file list is cached per session with per-path char-bitmask
   prefiltering and incremental query narrowing — the same tricks that make
   Zed's finder feel instant
+- **Mouse wheel scrolling** (SGR mouse; Shift+drag still selects text in
+  your terminal)
 - **Command line** with Tab completion (command names, `:e`/`:w` paths,
   `:theme` names — nvim wildmenu semantics, popup included) and per-kind
   history on Up/Down with vim's prefix filtering
@@ -65,7 +67,8 @@
 - **File-tree sidebar** (`Space e`): browse and open files, expand
   directories; lives on the left or right (config `sidebar = left|right`)
 - **Git diff views**: `Space g d` inline unified diff (coloured +/- lines) in
-  a split, `Space g s` the index version side by side — plus the always-on
+  a split, `Space g s` the index version side by side with changed/added/
+  removed lines tinted vimdiff-style in both panes — plus the always-on
   gutter change signs
 - **Themes**: `tokyonight` (default), `gruvbox`, `catppuccin`, `nord`,
   `onedark` — set in the config, switch live with `:theme <name>` or `Space f t`
@@ -80,6 +83,13 @@
 - Diagnostic logging and microsecond profiling via `--log`
 - Friendly CLI: `--help`, `--version`, `--tutor`, `--init-config`, meaningful
   exit codes, clear errors
+
+## Install
+
+Prebuilt binaries (Linux x86_64/aarch64 as static musl executables that run
+on any distribution, macOS x86_64/aarch64) are attached to every tagged
+[GitHub release](../../releases) — download, `tar xzf`, and put `bin/zedit`
+on your PATH. Built by CI with `-Doptimize=ReleaseFast -Dstrip`.
 
 ## Build & run
 

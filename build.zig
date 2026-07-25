@@ -3,11 +3,14 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    // Release artifacts are built with -Dstrip (see .github/workflows/release.yml).
+    const strip = b.option(bool, "strip", "Strip debug info from the binary") orelse false;
 
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        .strip = if (strip) true else null,
     });
 
     // Vendored tree-sitter runtime + grammar (see vendor/ and CLAUDE.md).

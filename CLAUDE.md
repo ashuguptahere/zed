@@ -18,6 +18,14 @@ work", they win.
 4. **Goal-driven** — turn vague instructions into verifiable success criteria
    before starting. "Make training faster" is not a goal; "AMP wired, cuDNN
    benchmark on, throughput ≥ 1.5× baseline on the v8n smoke" is.
+5. **YAGNI** — build features when they reach the roadmap, never
+   speculatively; prefer an algorithm or a closed-form computation over a
+   loop, and a `std` call over hand-rolled code (audits sweep for both).
+6. **Every feature ships with its checklist** — regression tests in the same
+   commit, the docs sweep (README/CLAUDE.md/man/tutor/COMPARISON/CHANGELOG),
+   a `TODO.md` update, and for anything perf- or input-relevant: a security
+   pass (untrusted bytes stay inert), a benchmark run (`zig build bench`,
+   `zedit --benchmark`) and `log.Span` profiling before/after.
 
 ## Project rules
 
@@ -59,6 +67,9 @@ work", they win.
 - **Versioned + changelogged.** The `VERSION` file is the single source of
   truth (embedded into `--version` at build time); every user-visible change
   lands in `CHANGELOG.md` in the same commit.
+- **Tracked in `TODO.md`.** The working tracker: in-progress, next (the
+  COMPARISON shortlist), recurring per-feature checklist, known gaps, and the
+  chronological done-list. Update it with every landed change.
 - **Unicode-correct.** Text is UTF-8 throughout. Cursor movement and rendering
   are codepoint- and display-width-aware (CJK = 2 cells, combining = 0). Never
   split a codepoint.
@@ -131,6 +142,11 @@ zig build itest                 # pty integration tests (drives the built editor
 zig build bench -Doptimize=ReleaseFast   # benchmark vs helix/nvim (if installed)
 ```
 
+CI runs `zig build test` + `zig build itest` on every push
+(`.github/workflows/ci.yml`); pushing a `v*` tag cross-compiles stripped
+ReleaseFast binaries for Linux x86_64/aarch64 (static musl) and macOS
+x86_64/aarch64 and attaches them to a GitHub release (`release.yml`).
+
 `zig build` also installs the man page to `zig-out/share/man/man1/zedit.1`
 (source: `doc/zedit.1`); view it with `man ./doc/zedit.1`. The first build compiles
 the vendored tree-sitter C (~6s extra cold; cached afterwards).
@@ -162,7 +178,9 @@ Modal, vi-like, with a comprehensive vim keymap. A command is `[count]` then
 either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 
 - **Motions:** `h j k l`, `w W b B e E`, `0 ^ $`, `gg G {n}G`, `f F t T` + `; ,`,
-  `%`, `H M L`, `Ctrl-d/u/f/b`, arrows/Home/End/PageUp/Down.
+  `%`, `H M L`, `Ctrl-d/u/f/b`, arrows/Home/End/PageUp/Down. The mouse wheel
+  scrolls the viewport 3 lines (SGR mouse reporting; wheel only — clicks are
+  ignored, and text selection still works with the terminal's Shift+drag).
 - **Operators:** `d` `c` `y`, `> <` (indent), doubled `dd cc yy >> <<`; `D C Y`,
   `x X s S`, `r` `~` `J`. `cw`/`cW` act like `ce`/`cE`.
 - **Text objects:** `iw aw iW aW`, `i( i[ i{ i< i" i' i\`` and `a…` variants
@@ -243,7 +261,10 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   (worktree vs index) in a horizontal split, coloured by the `.diff` lexer
   (`+` green, `-` red, `@@` hunk headers); `Space g s` / `:vdiff` opens the
   index version side by side in a vertical split with normal syntax
-  highlighting — the same base the gutter signs compare against. Both are
+  highlighting — the same base the gutter signs compare against — and both
+  panes tint changed/added/removed lines vimdiff-style (25% of the git
+  add/change/delete colour blended into the theme background via `mixColor`;
+  the index pane carries old-side signs from `git.computeOldSide`). Both are
   named scratch buffers (`[diff] name`, `name (index)`) closable with
   `:close`/`Space c`.
 - **Buffers & windows:** several files can be open at once, each with its own
@@ -390,8 +411,10 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   `treesitter.zig`.
 - The sidebar tree is flat-file only (no rename/create/delete operations from
   the tree), rebuilt on expand/toggle rather than watched; the side-by-side
-  diff shows the index version in a plain split (no aligned filler lines or
-  synced scrolling like vimdiff). The inline diff buffer is a static snapshot.
+  diff tints changed lines in both panes but has no aligned filler lines or
+  synced scrolling like vimdiff. The inline diff buffer is a static snapshot.
+  Mouse support is wheel-scrolling only (no click-to-move or drag selection),
+  and the wheel scrolls the focused window, not the one under the pointer.
 - Roadmap (agreed with the owner): port further tranches of Neovim behavioural
   tests via headless ground truth (see `vim_compat`), and work down
   `doc/COMPARISON.md` — the verified feature-gap analysis vs Helix/Neovim

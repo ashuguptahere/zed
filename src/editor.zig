@@ -145,6 +145,7 @@ const Span = struct {
 const Doc = struct {
     buf: buffer.Buffer,
     name: ?[]u8, // display name for scratch buffers (buf.path == null)
+    diff_of: ?*Doc = null, // side-by-side index snapshot: the worktree doc it mirrors
     lang: syntax.Language,
     history: undo.History,
     marks: [26]?Pos,
@@ -781,9 +782,35 @@ pub const Editor = struct {
 
     /// One key through the dot-repeat capture wrapper and the mode dispatcher.
     fn feedKey(self: *Editor, k: key.Key, raw: []const u8) !void {
+        // Mouse wheel: scroll the viewport in the buffer modes; never part of
+        // a command, so it bypasses dot-repeat/macro capture entirely.
+        switch (k) {
+            .scroll_up, .scroll_down => {
+                switch (self.mode) {
+                    .normal, .insert, .visual, .visual_line, .visual_block => self.mouseScroll(k == .scroll_up),
+                    .command, .picker => {},
+                }
+                return;
+            },
+            else => {},
+        }
         if (!self.in_dot) self.dotCapturePre(raw);
         try self.handleKey(k);
         if (!self.in_dot) self.dotCapturePost();
+    }
+
+    /// Wheel scrolling: move the viewport three lines (nvim's default),
+    /// dragging the cursor only as far as needed to keep it on-screen.
+    fn mouseScroll(self: *Editor, up: bool) void {
+        const n = 3;
+        const max_top = self.buf.lineCount() -| 1;
+        self.top = if (up) self.top -| n else @min(self.top + n, max_top);
+        if (self.cy < self.top) self.cy = self.top;
+        const last = self.top + self.textRows() -| 1;
+        if (self.cy > last) self.cy = last;
+        self.cy = @min(self.cy, self.buf.lineCount() - 1);
+        self.cx = @min(self.cx, self.curLine().len);
+        self.updateGoal();
     }
 
     fn dotCapturePre(self: *Editor, raw: []const u8) void {
@@ -3951,6 +3978,9 @@ pub const Editor = struct {
             if (w.doc == victim) w.doc = repl;
         }
         _ = self.docs.orderedRemove(self.docIndex(victim));
+        for (self.docs.items) |doc| {
+            if (doc.diff_of == victim) doc.diff_of = null;
+        }
         var ji: usize = 0;
         while (ji < self.jumps.items.len) {
             if (self.jumps.items[ji].doc == victim) {
@@ -4725,7 +4755,14 @@ pub const Editor = struct {
         }
         var nb: [300]u8 = undefined;
         const label = std.fmt.bufPrint(&nb, "{s} (index)", .{std.fs.path.basename(path)}) catch "(index)";
+        const wt = self.d; // the worktree document being compared
         self.openScratch(label, res.stdout, syntax.detect(path), true);
+        if (self.d != wt) { // openScratch focused the new index pane
+            self.d.diff_of = wt;
+            // Old-side change rows tint the index pane; the worktree pane
+            // reuses its normal gutter signs.
+            git.computeOldSide(self.gpa, self.io, path, &self.git_signs);
+        }
     }
 
     /// Open `content` as a named scratch document in a new split (vertical or
@@ -5034,10 +5071,22 @@ pub const Editor = struct {
         return w.gh;
     }
 
+    /// Whether `w` takes part in a visible side-by-side diff pair — the index
+    /// snapshot pane itself, or a worktree pane some visible index pane
+    /// mirrors. Paired panes get vimdiff-style change-line tinting.
+    fn diffTinted(self: *Editor, w: *Win) bool {
+        if (w.doc.diff_of != null) return true;
+        for (self.wins.items) |other| {
+            if (other.doc.diff_of == w.doc) return true;
+        }
+        return false;
+    }
+
     fn renderWindow(self: *Editor, w: *Win) !void {
         const th = theme.current;
         const view = self.buildView(w);
         const text_rows = self.winTextRows(w);
+        const tinted = self.diffTinted(w);
         var b: [16]u8 = undefined;
         var r: usize = 0;
         while (r < text_rows) : (r += 1) {
@@ -5045,7 +5094,16 @@ pub const Editor = struct {
             self.beginSeg(w.gy + r, w.gx);
             try self.emit(try std.fmt.bufPrint(&b, "\x1b[{d};{d}H", .{ w.gy + r, w.gx }));
             const is_cur = view.active and file_row == view.cy;
-            const row_bg = if (is_cur) th.cursorline else th.bg;
+            var row_bg = if (is_cur) th.cursorline else th.bg;
+            if (tinted and !is_cur) {
+                if (view.git.get(file_row)) |sign| {
+                    row_bg = mixColor(th.bg, switch (sign) {
+                        .added => th.git_add,
+                        .changed => th.git_change,
+                        .deleted => th.git_delete,
+                    }, 25);
+                }
+            }
             try self.setBg(row_bg);
             if (file_row < view.buf.lineCount()) {
                 try self.emitGutter(&view, file_row);
@@ -6060,6 +6118,16 @@ fn samePath(cwd: []const u8, doc_path: []const u8, abs: []const u8) bool {
         std.mem.endsWith(u8, abs, doc_path);
 }
 
+/// Linear blend of two colours: `pct`% of `b` into `a` (integer math, no
+/// floats — used for the diff panes' change-line tint against any theme).
+fn mixColor(a: theme.Color, b: theme.Color, pct: u16) theme.Color {
+    return .{
+        .r = @intCast((@as(u16, a.r) * (100 - pct) + @as(u16, b.r) * pct) / 100),
+        .g = @intCast((@as(u16, a.g) * (100 - pct) + @as(u16, b.g) * pct) / 100),
+        .b = @intCast((@as(u16, a.b) * (100 - pct) + @as(u16, b.b) * pct) / 100),
+    };
+}
+
 /// Codepoints that must never reach the terminal raw — C0 controls, DEL and
 /// C1 controls (U+0080–U+009F, 8-bit CSI et al.). A hostile file or language
 /// server could otherwise inject escape sequences whose terminal *replies*
@@ -6218,6 +6286,17 @@ fn byteAtDisplayCol(line: []const u8, target: usize) usize {
         i += d.len;
     }
     return i;
+}
+
+test "mixColor blends toward the tint" {
+    const a = theme.Color{ .r = 0, .g = 0, .b = 0 };
+    const b = theme.Color{ .r = 200, .g = 100, .b = 40 };
+    const m = mixColor(a, b, 25);
+    try std.testing.expectEqual(@as(u8, 50), m.r);
+    try std.testing.expectEqual(@as(u8, 25), m.g);
+    try std.testing.expectEqual(@as(u8, 10), m.b);
+    const full = mixColor(a, b, 100);
+    try std.testing.expectEqual(@as(u8, 200), full.r);
 }
 
 test "isControlCp classifies injection-capable codepoints" {

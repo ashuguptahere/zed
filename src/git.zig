@@ -33,6 +33,43 @@ pub fn compute(gpa: std.mem.Allocator, io: std.Io, path: []const u8, signs: *Sig
     parse(res.stdout, signs);
 }
 
+/// Recompute `signs` for the OLD side of `path`'s diff (index vs. worktree):
+/// each index-version line that was changed or removed gets a sign, so the
+/// side-by-side view can tint the index pane. Clears on any error.
+pub fn computeOldSide(gpa: std.mem.Allocator, io: std.Io, path: []const u8, signs: *Signs) void {
+    signs.clearRetainingCapacity();
+    const res = std.process.run(gpa, io, .{
+        .argv = &.{ "git", "diff", "--no-color", "-U0", "--", path },
+        .stdout_limit = .limited(8 << 20),
+        .stderr_limit = .limited(64 << 10),
+    }) catch return;
+    defer gpa.free(res.stdout);
+    defer gpa.free(res.stderr);
+    switch (res.term) {
+        .exited => |code| if (code != 0) return,
+        else => return,
+    }
+    parseOldSide(res.stdout, signs);
+}
+
+/// Old-side counterpart of `parse`: marks index-version rows that a hunk
+/// changes (`changed`) or removes entirely (`deleted`).
+fn parseOldSide(text: []const u8, signs: *Signs) void {
+    var it = std.mem.splitScalar(u8, text, '\n');
+    while (it.next()) |line| {
+        if (!std.mem.startsWith(u8, line, "@@")) continue;
+        const minus = std.mem.indexOfScalar(u8, line, '-') orelse continue;
+        const plus = std.mem.indexOfScalarPos(u8, line, minus, '+') orelse continue;
+        const old = parsePair(line[minus + 1 ..]);
+        const new = parsePair(line[plus + 1 ..]);
+        if (old.count == 0) continue; // pure addition: no old-side rows
+        const sign: Sign = if (new.count == 0) .deleted else .changed;
+        const base = if (old.start == 0) 0 else old.start - 1;
+        var i: usize = 0;
+        while (i < old.count) : (i += 1) signs.put(base + i, sign) catch {};
+    }
+}
+
 /// Parse `git diff -U0` output, recording a sign for each affected new-file line.
 fn parse(text: []const u8, signs: *Signs) void {
     var it = std.mem.splitScalar(u8, text, '\n');
@@ -74,6 +111,22 @@ fn parsePair(s: []const u8) Pair {
 
 fn isDigit(c: u8) bool {
     return c >= '0' and c <= '9';
+}
+
+test "parseOldSide marks changed and removed index rows" {
+    var signs = Signs.init(std.testing.allocator);
+    defer signs.deinit();
+    const diff =
+        \\@@ -1,0 +2,2 @@
+        \\@@ -5,2 +7,1 @@
+        \\@@ -10,1 +11,0 @@
+        \\
+    ;
+    parseOldSide(diff, &signs);
+    try std.testing.expect(signs.get(0) == null); // pure addition: nothing
+    try std.testing.expectEqual(Sign.changed, signs.get(4).?); // old line 5
+    try std.testing.expectEqual(Sign.changed, signs.get(5).?); // old line 6
+    try std.testing.expectEqual(Sign.deleted, signs.get(9).?); // old line 10
 }
 
 test "parse hunk headers into signs" {

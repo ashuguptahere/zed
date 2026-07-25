@@ -102,6 +102,10 @@ pub fn run(ctx: *h.Ctx) !void {
         s.drain(600);
         ctx.check("inline diff shows hunks", s.containsPlain(ctx.gpa, "@@") and
             s.containsPlain(ctx.gpa, "+BETA") and s.containsPlain(ctx.gpa, "[diff] f.txt"));
+        // The +/- lines are coloured by the .diff lexer (tokyonight green/red
+        // fg set immediately before the line text).
+        ctx.check("inline diff colours additions green", s.contains("\x1b[38;2;158;206;106m+BETA"));
+        ctx.check("inline diff colours removals red", s.contains("\x1b[38;2;247;118;142m-beta"));
 
         s.send(":close\r"); // back to just the file
         s.drain(300);
@@ -109,6 +113,10 @@ pub fn run(ctx: *h.Ctx) !void {
         s.drain(600);
         ctx.check("side-by-side shows the index version", s.containsPlain(ctx.gpa, "beta") and
             s.containsPlain(ctx.gpa, "(index)"));
+        // Both panes tint changed/added rows (bg = 25% git colour into the
+        // tokyonight background: add 59;71;55, change 75;64;54).
+        ctx.check("side-by-side tints added lines", s.contains("\x1b[48;2;59;71;55m"));
+        ctx.check("side-by-side tints changed lines", s.contains("\x1b[48;2;75;64;54m"));
         s.send(":qa\r");
         s.drain(200);
     }

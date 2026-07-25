@@ -1,6 +1,6 @@
 .{
     .name = .zed,
-    .version = "0.1.0",
+    .version = "0.2.0", // kept in sync with the VERSION file
     .fingerprint = 0xf4720e37acb48e17,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{},
@@ -8,8 +8,10 @@
         "build.zig",
         "build.zig.zon",
         "src",
+        "tools",
         "vendor",
         "doc",
+        "VERSION",
         "README.md",
         "CLAUDE.md",
     },

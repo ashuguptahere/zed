@@ -132,6 +132,12 @@ V\-LINE and V\-BLOCK for selections, COMMAND for the
 line, and PICKER for the fuzzy finders.
 .B Esc
 returns to NORMAL mode.
+.SH MOUSE
+The wheel scrolls the focused window three lines per notch (cursor dragged
+along only as needed to stay visible). Clicks are ignored; select text with
+your terminal's usual
+.B Shift
++drag.
 .SH "NORMAL MODE KEYS"
 .SS Motions
 .TP
@@ -274,7 +280,7 @@ saves them).
 .B Space g d\fR, \fPSpace g s
 Git: unified diff of the current file in a split (also
 .BR :diff ),
-and the index version side by side (also
+and the index version side by side (changed lines tinted in both panes) (also
 .BR :vdiff ).
 .TP
 .B Space e

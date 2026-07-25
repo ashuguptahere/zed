@@ -1,0 +1,21 @@
+# Tests on every push/PR: unit tests plus the full pty integration suite
+# (the harness opens its own pseudo-terminals, so no display is needed).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Unit tests
+        run: zig build test
+      - name: Integration tests (pty)
+        run: zig build itest

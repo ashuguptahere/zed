@@ -1,0 +1,50 @@
+# Release binaries on tag push (v*): ReleaseFast, stripped, cross-compiled by
+# Zig for every supported platform. Linux builds are static musl executables,
+# so one download runs on any distribution; macOS builds cover both CPU
+# architectures. (Windows waits on term.zig's console backend — see TODO.md.)
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - x86_64-linux-musl
+          - aarch64-linux-musl
+          - x86_64-macos
+          - aarch64-macos
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Build (ReleaseFast, stripped)
+        run: zig build -Doptimize=ReleaseFast -Dstrip -Dtarget=${{ matrix.target }}
+      - name: Package
+        run: |
+          tar -C zig-out -czf zedit-${{ github.ref_name }}-${{ matrix.target }}.tar.gz \
+            bin/zedit share/man/man1/zedit.1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zedit-${{ matrix.target }}
+          path: zedit-*.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: zedit-*.tar.gz
+          generate_release_notes: true

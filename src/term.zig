@@ -32,6 +32,8 @@ pub const ansi = struct {
     pub const leave_alt_screen = "\x1b[?1049l";
     pub const enable_bracketed_paste = "\x1b[?2004h";
     pub const disable_bracketed_paste = "\x1b[?2004l";
+    pub const enable_mouse = "\x1b[?1000h\x1b[?1006h"; // button events, SGR encoding
+    pub const disable_mouse = "\x1b[?1006l\x1b[?1000l";
     pub const clear_line_right = "\x1b[K";
     pub const cursor_home = "\x1b[H";
     pub const hide_cursor = "\x1b[?25l";
@@ -119,11 +121,15 @@ pub const Terminal = struct {
         // \x1b[201~ so they insert literally (crucial over SSH, where the
         // terminal's paste is the only clipboard route into the editor).
         try self.write(ansi.enable_bracketed_paste);
+        // Mouse wheel scrolling (clicks are reported too but ignored; text
+        // selection still works with the terminal's usual Shift+drag).
+        try self.write(ansi.enable_mouse);
         self.alt_active = true;
     }
 
     pub fn leaveAltScreen(self: *Terminal) void {
         if (!self.alt_active) return;
+        self.write(ansi.disable_mouse) catch {};
         self.write(ansi.disable_bracketed_paste) catch {};
         self.write(ansi.show_cursor) catch {};
         self.write(ansi.leave_alt_screen) catch {};

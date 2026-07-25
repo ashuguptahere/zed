@@ -19,6 +19,8 @@ pub const Key = union(enum) {
     escape,
     up,
     down,
+    scroll_up,
+    scroll_down,
     left,
     right,
     home,
@@ -75,6 +77,7 @@ fn decodeEscape(bytes: []const u8) Decoded {
         'H' => return .{ .key = .home, .consumed = 3 },
         'F' => return .{ .key = .end, .consumed = 3 },
         'Z' => return .{ .key = .shift_tab, .consumed = 3 },
+        '<' => return decodeSgrMouse(bytes),
         '0'...'9' => return decodeCsiNumeric(bytes),
         else => return .{ .key = .unknown, .consumed = 3 },
     }
@@ -90,6 +93,24 @@ fn ss3(final: u8) Key {
         'F' => .end,
         else => .unknown,
     };
+}
+
+/// Parse an SGR mouse report: ESC [ < button ; x ; y (M|m). Only the wheel
+/// (buttons 64/65 pressed) becomes a key; clicks and releases are consumed
+/// and ignored.
+fn decodeSgrMouse(bytes: []const u8) Decoded {
+    var i: usize = 3; // past "\x1b[<"
+    while (i < bytes.len and (bytes[i] == ';' or (bytes[i] >= '0' and bytes[i] <= '9'))) i += 1;
+    if (i >= bytes.len) return .{ .key = .unknown, .consumed = bytes.len }; // truncated
+    const consumed = i + 1; // include the final M/m
+    if (bytes[i] != 'M' and bytes[i] != 'm') return .{ .key = .unknown, .consumed = consumed };
+    if (bytes[i] == 'M') {
+        const end = std.mem.indexOfScalarPos(u8, bytes[0..i], 3, ';') orelse i;
+        const button = std.fmt.parseInt(u16, bytes[3..end], 10) catch return .{ .key = .unknown, .consumed = consumed };
+        if (button == 64) return .{ .key = .scroll_up, .consumed = consumed };
+        if (button == 65) return .{ .key = .scroll_down, .consumed = consumed };
+    }
+    return .{ .key = .unknown, .consumed = consumed };
 }
 
 /// Parse ESC [ <number> ~  style sequences (Home/End/Delete/PageUp/PageDown).
@@ -140,6 +161,16 @@ test "decode arrows and navigation" {
 test "decode shift-tab" {
     try std.testing.expectEqual(Key.shift_tab, decode("\x1b[Z").key);
     try std.testing.expectEqual(@as(usize, 3), decode("\x1b[Z").consumed);
+}
+
+test "decode SGR mouse wheel" {
+    const up = decode("\x1b[<64;10;5M");
+    try std.testing.expectEqual(Key.scroll_up, up.key);
+    try std.testing.expectEqual(@as(usize, 11), up.consumed);
+    try std.testing.expectEqual(Key.scroll_down, decode("\x1b[<65;1;1M").key);
+    // Clicks and releases are consumed but ignored.
+    try std.testing.expectEqual(Key.unknown, decode("\x1b[<0;5;5M").key);
+    try std.testing.expectEqual(Key.unknown, decode("\x1b[<64;5;5m").key);
 }
 
 test "decode utf8 char" {

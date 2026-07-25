@@ -55,4 +55,32 @@ pub fn run(ctx: *h.Ctx) !void {
     case(ctx, "gcc comments line", &.{ "gcc", ":wq", CR }, "abc\n", "// abc\n");
     case(ctx, "gcc twice toggles back", &.{ "gcc", "gcc", ":wq", CR }, "abc\n", "abc\n");
     case(ctx, "gcj comments two lines", &.{ "gcj", ":wq", CR }, "a\nb\nc\n", "// a\n// b\nc\n");
+
+    // ---- mouse wheel ----
+    // Three wheel-down reports (SGR mouse) scroll the viewport 9 lines,
+    // bringing off-screen lines into view and dragging the cursor to stay
+    // visible (an edit then lands on the dragged-to line, L10).
+    {
+        var content: std.ArrayList(u8) = .empty;
+        defer content.deinit(ctx.gpa);
+        var i: usize = 1;
+        while (i <= 40) : (i += 1) {
+            var lb: [8]u8 = undefined;
+            content.appendSlice(ctx.gpa, std.fmt.bufPrint(&lb, "L{d}\n", .{i}) catch break) catch break;
+        }
+        const path = "/tmp/zedit_it_wheel.txt";
+        h.writeFile(ctx.io, path, content.items);
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, path } });
+        defer s.finish();
+        s.drain(400);
+        ctx.check("bottom lines start off-screen", !s.containsPlain(ctx.gpa, "L30"));
+        s.send("\x1b[<65;5;5M\x1b[<65;5;5M\x1b[<65;5;5M"); // wheel down x3
+        s.drain(400);
+        ctx.check("wheel scrolls the viewport", s.containsPlain(ctx.gpa, "L30"));
+        s.send("x:wq\r"); // cursor was dragged to the top visible line (L10)
+        s.drain(400);
+        const text = h.readFile(ctx.gpa, ctx.io, path);
+        defer ctx.gpa.free(text);
+        ctx.check("cursor follows the scrolled viewport", std.mem.indexOf(u8, text, "\n10\n") != null);
+    }
 }
