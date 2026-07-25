@@ -288,6 +288,11 @@
      ga         list code actions for the current line in a picker
      ]d / [d    jump to the next / previous diagnostic line
 
+  Paragraphs are text objects too:  }  and  {  jump to the next and
+  previous blank line, and  dip  /  dap  delete the paragraph you are
+  in (dap also takes the blank line after it).  Try  }  a few times in
+  this file, then  Ctrl-o  to come back.
+
   In Insert mode,  Ctrl-n  requests completion: a popup opens, Ctrl-n
   and Ctrl-p (or the arrows) move through it, Tab or Enter accepts, and
   Esc dismisses it.

@@ -132,6 +132,18 @@ V\-LINE and V\-BLOCK for selections, COMMAND for the
 line, and PICKER for the fuzzy finders.
 .B Esc
 returns to NORMAL mode.
+.TP
+.B { }
+Previous / next paragraph (an empty line). Both are jump motions, so
+.B Ctrl\-o
+returns.
+.TP
+.B ip ap
+Inner / around paragraph text objects (linewise).
+.B ap
+also takes the trailing blank lines \(em or the leading ones when nothing
+trails, like vim. Counts work:
+.BR d2ap .
 .SH MOUSE
 The wheel scrolls the focused window three lines per notch (cursor dragged
 along only as needed to stay visible). Clicks are ignored; select text with

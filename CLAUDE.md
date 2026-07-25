@@ -178,13 +178,18 @@ Modal, vi-like, with a comprehensive vim keymap. A command is `[count]` then
 either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 
 - **Motions:** `h j k l`, `w W b B e E`, `0 ^ $`, `gg G {n}G`, `f F t T` + `; ,`,
-  `%`, `H M L`, `Ctrl-d/u/f/b`, arrows/Home/End/PageUp/Down. The mouse wheel
+  `%`, `{ }` (paragraph, jump motions), `H M L`, `Ctrl-d/u/f/b`,
+  arrows/Home/End/PageUp/Down. The normal-mode cursor never sits past the
+  last character (vim's rule), so `$x`/`$dh`/`$d{` act on it. The mouse wheel
   scrolls the viewport 3 lines (SGR mouse reporting; wheel only — clicks are
   ignored, and text selection still works with the terminal's Shift+drag).
 - **Operators:** `d` `c` `y`, `> <` (indent), doubled `dd cc yy >> <<`; `D C Y`,
   `x X s S`, `r` `~` `J`. `cw`/`cW` act like `ce`/`cE`.
-- **Text objects:** `iw aw iW aW`, `i( i[ i{ i< i" i' i\`` and `a…` variants
-  (plus `b`/`B` aliases), e.g. `ciw`, `di"`, `da(`.
+- **Text objects:** `iw aw iW aW`, `ip ap` (paragraph, linewise — `ap` takes
+  the trailing blank lines, or the leading ones when nothing trails),
+  `i( i[ i{ i< i" i' i\`` and `a…` variants (plus `b`/`B` aliases), e.g.
+  `ciw`, `di"`, `da(`, `dap`. Objects work in visual mode too (`vip`, `vi(` —
+  paragraph objects switch the selection to V-LINE, as vim does).
 - **Registers/paste:** `"a` selects a register; `p`/`P` paste (linewise/charwise).
   `"+` / `"*` are the system clipboard: yanks there are sent to the terminal
   as OSC 52 (sets the local clipboard, even over SSH); pastes use the
@@ -359,7 +364,10 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   adopt that (or a rope) only if it matters in practice.
 - A resize landing in the tiny window between the resize check and entering
   `poll` is noticed on the next keypress (a self-pipe would close the race).
-- Vim gaps: the trickier dot-repeat/macro interactions are not (fully)
+- Vim gaps: paragraph objects/motions treat only truly empty lines as
+  boundaries (vim's rule; `nroff`-style paragraph macros in `'paragraphs'`
+  aren't supported), and there are no sentence objects (`is`/`as`, `(`/`)`).
+  The trickier dot-repeat/macro interactions are not (fully)
   implemented; autoindent is vim's 'autoindent' only (no smartindent/
   tree-sitter indent queries). Cmdline completion covers command names,
   `:e`/`:w` paths and `:theme` (not every command's arguments), and the
@@ -419,9 +427,9 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   tests via headless ground truth (see `vim_compat`), and work down
   `doc/COMPARISON.md` — the verified feature-gap analysis vs Helix/Neovim
   (shortlist: regex + `:%s`, jumplist, OSC 52 clipboard, autoindent, LSP
-  references/formatting/cross-file edits, and cmdline completion + history are
-  done; next: paragraph objects, inline diagnostics, auto-completion,
-  snippets). Large-file open is
+  references/formatting/cross-file edits, cmdline completion + history, and
+  paragraph objects/motions are done; next: inline diagnostics,
+  auto-completion, snippets). `TODO.md` tracks the live order. Large-file open is
   14.3 ms vs nvim's 10.7 (was 36.6) after the copy-on-write buffer; the last
   ~4 ms is the eager read+scan nvim defers — mmap or lazy line indexing if it
   ever matters.

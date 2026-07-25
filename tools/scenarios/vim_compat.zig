@@ -88,6 +88,35 @@ pub fn run(ctx: *h.Ctx) !void {
     // :qa with unsaved changes refuses (nvim E37); the :wq still writes.
     case(ctx, "nvim#h5 :qa refuses unsaved changes", &.{ "x", ":qa\r", ":wq", CR }, "aa\n", "a\n");
 
+    // Paragraph motions and text objects ({ } ip ap) — nvim-verified.
+    const P2 = "aaa\nbbb\n\nccc\nddd\n";
+    const P3 = "aaa\n\nbbb\n\nccc\n";
+    case(ctx, "nvim#p1 } lands on the empty line", &.{ "}x", ":wq", CR }, P2, P2);
+    case(ctx, "nvim#p2 d} from col 0 is linewise", &.{ "d}", ":wq", CR }, P2, "\nccc\nddd\n");
+    case(ctx, "nvim#p3 d} mid-line stays charwise", &.{ "lld}", ":wq", CR }, P2, "aa\n\nccc\nddd\n");
+    case(ctx, "nvim#p4 { lands on the empty line", &.{ "G{x", ":wq", CR }, P2, P2);
+    case(ctx, "nvim#p5 d{ deletes back to boundary", &.{ "G$d{", ":wq", CR }, P2, "aaa\nbbb\nd\n");
+    case(ctx, "nvim#p6 dip deletes the paragraph", &.{ "dip", ":wq", CR }, P2, "\nccc\nddd\n");
+    case(ctx, "nvim#p7 dap takes the trailing blank", &.{ "dap", ":wq", CR }, P2, "ccc\nddd\n");
+    case(ctx, "nvim#p8 dip on a blank line", &.{ "jdip", ":wq", CR }, "aaa\n\n\nbbb\n", "aaa\nbbb\n");
+    case(ctx, "nvim#p9 dap on last para takes leading blank", &.{ "Gdap", ":wq", CR }, P2, "aaa\nbbb\n");
+    case(ctx, "nvim#p10 vip d is linewise", &.{ "vipd", ":wq", CR }, P2, "\nccc\nddd\n");
+    case(ctx, "nvim#p11 yap P round-trips", &.{ "yapP", ":wq", CR }, P3, "aaa\n\naaa\n\nbbb\n\nccc\n");
+    case(ctx, "nvim#p12 2} skips a boundary", &.{ "2}x", ":wq", CR }, P3, P3);
+    case(ctx, "nvim#p13 whitespace-only line is no boundary", &.{ "}x", ":wq", CR }, "aaa\n  \nbbb\n\nccc\n", "aaa\n  \nbbb\n\nccc\n");
+    case(ctx, "nvim#p14 cip changes the paragraph", &.{ "cip", "XX", ESC, ":wq", CR }, P2, "XX\n\nccc\nddd\n");
+    case(ctx, "nvim#p15 } at EOF clamps to last line", &.{ "}}x", ":wq", CR }, P2, "aaa\nbbb\n\nccc\ndd\n");
+    case(ctx, "nvim#p16 d2ap takes two paragraphs", &.{ "d2ap", ":wq", CR }, P3, "ccc\n");
+
+    // The cursor never sits past the last character in normal mode, so
+    // commands after `$` act on the last character (regression: `$x` used to
+    // do nothing and `$dh`/`$d0`/`$db` were all off by one). nvim-verified.
+    case(ctx, "nvim#c1 $x deletes the last character", &.{ "$x", ":wq", CR }, "abc\n", "ab\n");
+    case(ctx, "nvim#c2 $dh deletes before the last", &.{ "$dh", ":wq", CR }, "abc\n", "ac\n");
+    case(ctx, "nvim#c3 $d0 keeps the last character", &.{ "$d0", ":wq", CR }, "abc\n", "c\n");
+    case(ctx, "nvim#c4 $db from end of line", &.{ "$db", ":wq", CR }, "abc def\n", "abc f\n");
+    case(ctx, "nvim#c5 $dF exclusive backward find", &.{ "$dFc", ":wq", CR }, "abc def\n", "abf\n");
+
     // Regex `/` search: the pattern jumps, then x edits at the match.
     case(ctx, "regex / search jumps to match", &.{ "/b.d\r", "x", ":wq", CR }, "xxx\nbad\n", "xxx\nad\n");
     // Capture groups in the replacement swap two words.

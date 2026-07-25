@@ -43,12 +43,15 @@ Notable changes to zedit. Dates are commit dates.
 - Renamed the editor from `zed` to `zedit` (zig-editor).
 - Ported the pty test harnesses from Python to Zig — `zig build itest` now needs nothing beyond the toolchain.
 
+- Paragraph motions and text objects: `{` / `}` (jump motions) and linewise `ip` / `ap` with counts, available in visual mode too — 16 cases pinned to real nvim.
+
 ### Security
 
 - Control bytes from untrusted sources (file content, LSP hover/inlay/completion text, file names, pasted command-line text) are rendered as `?` placeholders instead of being written raw to the terminal, closing the classic escape-sequence injection where a hostile file could retitle the screen or trigger terminal query replies that arrive as synthetic keystrokes.
 
 ### Fixed
 
+- The normal-mode cursor no longer sits past the last character (vim's rule), fixing a whole class of off-by-one bugs after `$`: `$x` did nothing, and `$dh` / `$d0` / `$db` / `$dF` all deleted one character too many.
 - `:qa` now refuses to quit while any buffer has unsaved changes (nvim's E37 behaviour, pinned in `vim_compat`); `:qa!` discards.
 - `:wa` names failed saves ("1 written, 1 failed — ro.txt: permission denied") instead of skipping them silently; `:w` failures read as plain English instead of raw error enums.
 - An explicit `--config` or `--log` path that cannot be opened is reported instead of silently ignored, and LSP spawn/handshake/exit, config loads, git-sign and tree-sitter fallbacks are all traceable in the `--log` file.

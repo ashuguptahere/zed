@@ -28,7 +28,10 @@ batteries-included editor.
    **DONE** (Tab/Shift-Tab wildmenu with nvim `wildmode=full` ring semantics
    pinned by pty probes; separate `:` / `/` histories on Up/Down with prefix
    filtering, Ctrl-p/n unfiltered — nvim-verified in `vim_compat`).
-7. **Paragraph text objects/motions** `ip`/`ap`/`{`/`}` (nvim, high).
+7. ~~**Paragraph text objects/motions** `ip`/`ap`/`{`/`}`~~ — **DONE**
+   (linewise `ip`/`ap` with counts, `{`/`}` as jump motions, visual-mode
+   objects; 16 nvim-verified cases — which also uncovered and fixed the
+   cursor-past-EOL bug behind `$x`/`$dh`/`$db`).
 8. **Inline diagnostic text** at end of line (helix 25.01, nvim 0.11) — zedit
    already renders inlay-hint virtual text, so the machinery exists.
 9. **Auto-triggered + fuzzy completion** (helix always-on; nvim 0.11/0.12) —

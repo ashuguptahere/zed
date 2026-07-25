@@ -414,6 +414,100 @@ test "matchPair" {
     try testing.expectEqual(@as(?Pos, Pos{ .row = 0, .col = 1 }), matchPair(&b, .{ .row = 0, .col = 4 }));
 }
 
+/// Whether `row` is a paragraph boundary: a truly empty line (vim's rule —
+/// whitespace-only lines are NOT boundaries; nvim-verified).
+fn blankRow(buf: *const buffer.Buffer, row: usize) bool {
+    return buf.line(row).len == 0;
+}
+
+/// One `}` step: the next empty line after the paragraph under/after `row`
+/// (a blank run the cursor sits in is skipped first). Null at buffer end.
+pub fn paraForward(buf: *const buffer.Buffer, row: usize) ?usize {
+    const last = buf.lineCount() - 1;
+    if (row >= last) return null;
+    var r = row + 1;
+    if (blankRow(buf, row)) {
+        while (r <= last and blankRow(buf, r)) r += 1;
+    }
+    while (r <= last and !blankRow(buf, r)) r += 1;
+    if (r > last) return null;
+    return r;
+}
+
+/// One `{` step: the previous empty line before the paragraph under/before
+/// `row`. Null at the buffer start (the caller falls back to row 0).
+pub fn paraBackward(buf: *const buffer.Buffer, row: usize) ?usize {
+    if (row == 0) return null;
+    var r = row - 1;
+    if (blankRow(buf, row)) {
+        while (r > 0 and blankRow(buf, r)) r -= 1;
+    }
+    while (r > 0 and !blankRow(buf, r)) r -= 1;
+    if (!blankRow(buf, r)) return null;
+    return r;
+}
+
+pub const LineRange = struct { top: usize, bot: usize };
+
+/// The `ip`/`ap` line range around `row` (nvim-verified): the run of blank or
+/// non-blank lines the cursor is on; `around` adds the complementary run that
+/// follows (trailing blanks for a paragraph — or the leading ones when
+/// nothing trails). `count` takes that many runs (ip) / pairs of runs (ap).
+pub fn paraObject(buf: *const buffer.Buffer, row: usize, around: bool, count: usize) LineRange {
+    const last = buf.lineCount() - 1;
+    var top = row;
+    while (top > 0 and blankRow(buf, top - 1) == blankRow(buf, row)) top -= 1;
+    var bot = row;
+    var segs = if (around) count * 2 else count;
+    while (segs > 0) : (segs -= 1) {
+        const kind = blankRow(buf, bot);
+        while (bot < last and blankRow(buf, bot + 1) == kind) bot += 1;
+        if (segs > 1) {
+            if (bot == last) break;
+            bot += 1;
+        }
+    }
+    // ap on a paragraph with no trailing blanks takes the leading ones.
+    if (around and !blankRow(buf, row) and !blankRow(buf, bot)) {
+        while (top > 0 and blankRow(buf, top - 1)) top -= 1;
+    }
+    return .{ .top = top, .bot = bot };
+}
+
+test "paraForward and paraBackward step between boundaries" {
+    var b = testBuf("aaa\nbbb\n\nccc\n\n\nddd\n");
+    defer b.deinit();
+    try testing.expectEqual(@as(?usize, 2), paraForward(&b, 0));
+    try testing.expectEqual(@as(?usize, 4), paraForward(&b, 2)); // skips own run, crosses ccc
+    try testing.expectEqual(@as(?usize, null), paraForward(&b, 6));
+    try testing.expectEqual(@as(?usize, 2), paraBackward(&b, 3));
+    try testing.expectEqual(@as(?usize, null), paraBackward(&b, 0));
+    try testing.expectEqual(@as(?usize, null), paraBackward(&b, 1)); // only text above
+}
+
+test "paraForward ignores whitespace-only lines" {
+    var b = testBuf("aaa\n  \nbbb\n\nccc\n");
+    defer b.deinit();
+    try testing.expectEqual(@as(?usize, 3), paraForward(&b, 0));
+}
+
+test "paraObject inner, around, counts" {
+    var b = testBuf("aaa\nbbb\n\nccc\n\nddd\n");
+    defer b.deinit();
+    const ip = paraObject(&b, 0, false, 1);
+    try testing.expectEqual(@as(usize, 0), ip.top);
+    try testing.expectEqual(@as(usize, 1), ip.bot);
+    const ap = paraObject(&b, 0, true, 1);
+    try testing.expectEqual(@as(usize, 2), ap.bot); // + trailing blank
+    const blank = paraObject(&b, 2, false, 1);
+    try testing.expectEqual(@as(usize, 2), blank.top);
+    try testing.expectEqual(@as(usize, 2), blank.bot);
+    const ap2 = paraObject(&b, 0, true, 2);
+    try testing.expectEqual(@as(usize, 4), ap2.bot); // two paragraphs + blanks
+    const ap_last = paraObject(&b, 5, true, 1);
+    try testing.expectEqual(@as(usize, 4), ap_last.top); // leading blank instead
+}
+
 test "objWord inner and around" {
     var b = testBuf("foo bar baz\n");
     defer b.deinit();

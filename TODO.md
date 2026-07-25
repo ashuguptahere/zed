@@ -7,10 +7,10 @@ behind the roadmap items.
 
 ## In progress
 
-- [ ] Shortlist #7: paragraph text objects / motions (`ip` `ap` `{` `}`),
-      nvim-verified.
+- (nothing — pick the next item below)
 
 ## Next (in order)
+
 - [ ] Shortlist #8: inline diagnostic text at end of line (reuse the
       inlay-hint virtual-text machinery).
 - [ ] Shortlist #9: auto-triggered + fuzzy completion (reuse fuzzy.zig).
@@ -87,6 +87,9 @@ behind the roadmap items.
 - [x] Side-by-side git diff change tinting in both panes (+ colour-pinned
       tests for the inline view's green/red).
 - [x] Mouse wheel scrolling (SGR mouse mode, nvim's 3-line step).
+- [x] Shortlist #7: paragraph motions `{` `}` + linewise `ip`/`ap` objects
+      (counts, visual mode); 16 nvim-pinned cases, which also exposed the
+      cursor-past-EOL bug behind `$x`/`$dh`/`$db` (fixed + 5 more cases).
 - [x] GitHub CI (tests every push) + release pipeline (tag push → stripped
       ReleaseFast binaries: Linux x86_64/aarch64 static musl, macOS
       x86_64/aarch64) — all four targets verified cross-compiling locally.

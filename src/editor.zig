@@ -94,6 +94,8 @@ const Await = enum {
     find_cap_f, // F: backward
     find_cap_t, // T: backward
     replace, // r{char}
+    visual_object_inner, // v i{object}
+    visual_object_around, // v a{object}
     mark_set, // m{a-z}
     mark_jump_back, // `{a-z} exact
     mark_jump_line, // '{a-z} line
@@ -905,6 +907,8 @@ pub const Editor = struct {
                 if (self.operator == .none) self.addJump();
                 self.doMotion(.{ .pos = p, .kind = .inclusive, .col_mode = .exact });
             } else self.resetPending(),
+            '{' => self.doMotion(self.paragraphMotion(false)),
+            '}' => self.doMotion(self.paragraphMotion(true)),
             'H' => self.doMotion(self.gotoLineMotion(self.top)),
             'M' => self.doMotion(self.gotoLineMotion(self.top + self.textRows() / 2)),
             'L' => self.doMotion(self.gotoLineMotion(@min(self.top + self.textRows() - 1, self.buf.lineCount() - 1))),
@@ -1160,6 +1164,11 @@ pub const Editor = struct {
                 defer self.resetPending();
                 if (charByte(k)) |c| try self.surroundChange(self.surr_from, c);
             },
+            .visual_object_inner, .visual_object_around => {
+                const around = self.await_arg == .visual_object_around;
+                self.await_arg = .none;
+                self.visualObject(around, k);
+            },
             .none => {},
         }
     }
@@ -1325,6 +1334,10 @@ pub const Editor = struct {
     }
 
     fn textObjectSpan(self: *Editor, around: bool, c: u8) ?Span {
+        if (c == 'p') { // paragraph: a linewise object (nvim-verified)
+            const r = motion.paraObject(self.buf, self.cy, around, self.total());
+            return .{ .lines = true, .top = r.top, .bot = r.bot };
+        }
         const obj: ?motion.Span = switch (c) {
             'w' => motion.objWord(self.buf, self.cursor(), false, around),
             'W' => motion.objWord(self.buf, self.cursor(), true, around),
@@ -1394,6 +1407,16 @@ pub const Editor = struct {
         if (res.kind == .inclusive) {
             end = .{ .row = end.row, .col = unicode.nextBoundary(self.buf.line(end.row), end.col) };
         }
+        if (res.kind == .exclusive and end.col == 0 and end.row > start.row) {
+            // vim's exclusive rules (:h exclusive, nvim-verified for `d}`): an
+            // exclusive motion ending in column 0 stops at the end of the
+            // previous line instead — and becomes linewise when the start was
+            // at or before its line's first non-blank.
+            end = .{ .row = end.row - 1, .col = self.buf.line(end.row - 1).len };
+            if (start.col <= motion.firstNonBlank(self.buf.line(start.row))) {
+                return .{ .lines = true, .top = start.row, .bot = end.row };
+            }
+        }
         return .{ .lines = false, .start = start, .end = end };
     }
 
@@ -1430,6 +1453,33 @@ pub const Editor = struct {
         const extra = self.eff();
         if (extra > 1) row = @min(self.cy + extra - 1, self.buf.lineCount() - 1);
         return .{ .pos = .{ .row = row, .col = self.buf.line(row).len }, .kind = .inclusive, .col_mode = .exact };
+    }
+
+    /// `{` / `}`: to the previous/next paragraph boundary (empty line),
+    /// exclusive. At the buffer edges vim lands on the first/last line — the
+    /// end lands past the last character for operators (`d}` eats the line),
+    /// on it for plain movement.
+    fn paragraphMotion(self: *Editor, forward: bool) MotionResult {
+        if (self.operator == .none) self.addJump();
+        var row = self.cy;
+        var hit_edge = false;
+        var n = self.eff();
+        while (n > 0) : (n -= 1) {
+            const next = if (forward) motion.paraForward(self.buf, row) else motion.paraBackward(self.buf, row);
+            if (next) |r| {
+                row = r;
+            } else {
+                row = if (forward) self.buf.lineCount() - 1 else 0;
+                hit_edge = true;
+                break;
+            }
+        }
+        var col: usize = 0;
+        if (forward and hit_edge) {
+            const line = self.buf.line(row);
+            col = if (self.operator == .none) lastColumn(line) else line.len;
+        }
+        return .{ .pos = .{ .row = row, .col = col }, .kind = .exclusive, .col_mode = .exact };
     }
 
     fn gotoLineMotion(self: *Editor, row: usize) MotionResult {
@@ -2113,6 +2163,7 @@ pub const Editor = struct {
     }
 
     fn visualKey(self: *Editor, k: key.Key) !void {
+        if (self.await_arg != .none) return self.awaitKey(k); // v i{obj} / v a{obj}
         switch (k) {
             .escape => self.mode = .normal,
             .char => |c| switch (c) {
@@ -2158,6 +2209,16 @@ pub const Editor = struct {
                 '<' => try self.visualOperator(.indent_left),
                 'V' => self.mode = .visual_line,
                 'v' => self.mode = .visual,
+                'i' => self.await_arg = .visual_object_inner,
+                'a' => self.await_arg = .visual_object_around,
+                '{' => {
+                    const res = self.paragraphMotion(false);
+                    self.setCursorKeep(res.pos);
+                },
+                '}' => {
+                    const res = self.paragraphMotion(true);
+                    self.setCursorKeep(res.pos);
+                },
                 ':' => self.enterCmd(.ex),
                 else => {},
             },
@@ -2177,6 +2238,25 @@ pub const Editor = struct {
             else => {},
         }
         if (k != .up and k != .down) self.updateGoal();
+    }
+
+    /// `i`/`a` + object in visual mode: reshape the selection to the object.
+    /// Paragraph objects switch to V-LINE (vim makes ip/ap linewise); the
+    /// charwise objects select start..end with the cursor on the last char.
+    fn visualObject(self: *Editor, around: bool, k: key.Key) void {
+        const c = charByte(k) orelse return;
+        const span = self.textObjectSpan(around, c) orelse return;
+        if (span.lines) {
+            self.mode = .visual_line;
+            self.vstart = .{ .row = span.top, .col = 0 };
+            self.cy = span.bot;
+            self.cx = 0;
+        } else {
+            self.vstart = span.start;
+            self.cy = span.end.row;
+            self.cx = unicode.prevBoundary(self.buf.line(span.end.row), span.end.col);
+        }
+        self.updateGoal();
     }
 
     fn setCursorKeep(self: *Editor, p: Pos) void {
@@ -4680,10 +4760,18 @@ pub const Editor = struct {
         self.pending_register = null;
     }
 
+    /// Keep the cursor in bounds. In the buffer-command modes vim never lets it
+    /// sit past the last character (so `$` lands ON it and `x`/`dh`/`d{` after
+    /// `$` act on the right character — nvim-verified); insert mode and the
+    /// prompts legitimately use the one-past-end column.
     fn clampCursor(self: *Editor) void {
         if (self.cy >= self.buf.lineCount()) self.cy = self.buf.lineCount() - 1;
         const line = self.curLine();
-        if (self.cx > line.len) self.cx = line.len;
+        const limit = switch (self.mode) {
+            .normal, .visual, .visual_line, .visual_block => lastColumn(line),
+            .insert, .command, .picker => line.len,
+        };
+        if (self.cx > limit) self.cx = limit;
     }
 
     // === viewport ==========================================================
