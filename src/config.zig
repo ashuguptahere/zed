@@ -30,6 +30,10 @@ pub const Settings = struct {
     /// Inherit the current line's indentation on `o`, `O`, Enter and `cc`
     /// (vim 'autoindent'; an auto-indent left blank is stripped on leaving).
     autoindent: bool = true,
+    /// Ask the language server to format the document before every `:w`
+    /// (skipped when no server is running or it cannot format). AstroNvim and
+    /// Helix both format on save by default; `:format` formats on demand.
+    format_on_save: bool = true,
 };
 
 /// The live settings, read by the editor/renderer. Defaults apply when there
@@ -78,6 +82,11 @@ pub const default_text =
     \\# (vim's 'autoindent'). An auto-indent left blank is stripped.
     \\autoindent = true
     \\
+    \\# Ask the language server to format the document on :w (format-on-save,
+    \\# as AstroNvim and Helix do). Only applies when a server is running and
+    \\# advertises formatting; :format always formats on demand.
+    \\format_on_save = true
+    \\
 ;
 
 /// Apply `key = value` lines to the live settings. Forgiving by design:
@@ -112,6 +121,9 @@ pub fn apply(text: []const u8) void {
         } else if (std.mem.eql(u8, key, "autoindent")) {
             if (std.mem.eql(u8, value, "true")) settings.autoindent = true;
             if (std.mem.eql(u8, value, "false")) settings.autoindent = false;
+        } else if (std.mem.eql(u8, key, "format_on_save")) {
+            if (std.mem.eql(u8, value, "true")) settings.format_on_save = true;
+            if (std.mem.eql(u8, value, "false")) settings.format_on_save = false;
         }
     }
 }

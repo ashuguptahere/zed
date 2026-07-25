@@ -1,7 +1,9 @@
 //! LSP client against the mock server: diagnostics (+ ]d/[d navigation), hover
 //! (normal + insert), inlay hints, document symbols (picker + jump), incremental
-//! didChange, completion, signature help (+ overload cycling), rename, and code
-//! actions (inline edit + executeCommand/applyEdit). Drives the built mock_lsp.
+//! didChange, completion, signature help (+ overload cycling), rename (single-
+//! and cross-file + :wa), code actions (inline edit + executeCommand/applyEdit),
+//! references (picker + jump), and formatting (on demand + format-on-save).
+//! Drives the built mock_lsp.
 
 const std = @import("std");
 const h = @import("../harness.zig");
@@ -38,8 +40,19 @@ const Result = struct {
 
 /// Drive a fresh session against the mock and capture the screen + saved file.
 fn drive(ctx: *h.Ctx, steps: []const Step, final: []const u8) Result {
+    return driveOpt(ctx, null, steps, final);
+}
+
+/// Like `drive`, with an extra mock flag (`--fmt` / `--xfile`) appended to the
+/// `--lsp` command line.
+fn driveOpt(ctx: *h.Ctx, flag: ?[]const u8, steps: []const Step, final: []const u8) Result {
+    const lsp_cmd = if (flag) |f|
+        std.fmt.allocPrint(ctx.gpa, "{s} {s}", .{ ctx.mock, f }) catch unreachable
+    else
+        ctx.gpa.dupe(u8, ctx.mock) catch unreachable;
+    defer ctx.gpa.free(lsp_cmd);
     h.writeFile(ctx.io, target, initial);
-    var s = h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "--lsp", ctx.mock, target } }) catch return .{
+    var s = h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "--lsp", lsp_cmd, target } }) catch return .{
         .out = ctx.gpa.dupe(u8, "") catch unreachable,
         .plain = ctx.gpa.dupe(u8, "") catch unreachable,
         .text = ctx.gpa.dupe(u8, "") catch unreachable,
@@ -170,6 +183,59 @@ pub fn run(ctx: *h.Ctx) !void {
         }, "\x1b:wq\r");
         defer r.deinit(ctx.gpa);
         ctx.check("executeCommand applyEdit applied to buffer", r.textHas("const B = 2;"));
+    }
+
+    // References: Space l R opens a picker of "path:line: text" items; Ctrl-n
+    // to the second reference (line 3), Enter jumps there, x edits at it.
+    {
+        const r = drive(ctx, &.{
+            .{ .keys = " lR", .ms = 900 },
+            .{ .keys = "\x0e", .ms = 300 },
+            .{ .keys = "\r", .ms = 400 },
+            .{ .keys = "x", .ms = 300 },
+        }, "\x1b:wq\r");
+        defer r.deinit(ctx.gpa);
+        ctx.check("references picker labelled", r.plainHas("REFERENCES"));
+        ctx.check("references show path:line: text", r.plainHas(":3: const c = 3;"));
+        ctx.check("Enter jumps to the reference", r.textHas("onst c = 3;"));
+    }
+
+    // Formatting on demand (Space l f): the mock's whole-document edit (a
+    // multi-line range replaced by multi-line text) is applied as one change.
+    {
+        const r = drive(ctx, &.{ .{ .keys = " lf", .ms = 900 } }, "\x1b:wq\r");
+        defer r.deinit(ctx.gpa);
+        ctx.check("format status shown", r.plainHas("formatted (1 edit(s))"));
+        ctx.check("formatting edit applied", r.textHas("const a = 1; // fmt\nconst b = 2;\nconst c = 3;\n"));
+    }
+
+    // Format-on-save: with --fmt the mock advertises formatting, so a plain
+    // :wq formats first (config format_on_save defaults to true).
+    {
+        const r = driveOpt(ctx, "--fmt", &.{}, "\x1b:wq\r");
+        defer r.deinit(ctx.gpa);
+        ctx.check("format-on-save formats before :w", r.textHas("const a = 1; // fmt"));
+    }
+
+    // Cross-file rename: with --xfile the rename's WorkspaceEdit touches a
+    // second file, which is edited in a background buffer and saved by :wa.
+    {
+        const other = "/tmp/zedit_it_other.zig";
+        h.writeFile(ctx.io, other, "const a = 9;\n");
+        const r = driveOpt(ctx, "--xfile", &.{
+            .{ .keys = "0w", .ms = 300 },
+            .{ .keys = "gr", .ms = 400 },
+            .{ .keys = "\x7fxyz", .ms = 400 },
+            .{ .keys = "\r", .ms = 900 },
+            .{ .keys = ":wa\r", .ms = 600 },
+        }, ":qa\r");
+        defer r.deinit(ctx.gpa);
+        ctx.check("cross-file rename status", r.plainHas("renamed 2 in 2 files"));
+        ctx.check(":wa reports both buffers", r.plainHas("2 buffer(s) written"));
+        ctx.check("rename applied to the current file", r.textHas("const xyz = 1;"));
+        const other_text = h.readFile(ctx.gpa, ctx.io, other);
+        defer ctx.gpa.free(other_text);
+        ctx.check("rename applied to the other file", std.mem.eql(u8, other_text, "const xyz = 9;\n"));
     }
 
     // Document symbols: Space-o opens a picker (kind tag + indented names);

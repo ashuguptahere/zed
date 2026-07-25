@@ -108,6 +108,14 @@ highlighting, LSP and git signs are skipped so huge files open instantly.
 .BR o / O /Enter/ cc
 inherit the current line's indentation; an auto\-indent left blank is
 stripped, like vim.
+.TP
+.B format_on_save
+.BR true / false
+(default true). Ask the language server to format the document before every
+.BR :w ,
+when the server advertises formatting;
+.B :format
+formats on demand.
 .SH MODES
 zedit is modal: NORMAL for movement and commands, INSERT for typing, VISUAL and
 V\-LINE and V\-BLOCK for selections, COMMAND for the
@@ -247,8 +255,12 @@ Open-buffer picker.
 .B Space f t
 Theme picker.
 .TP
-.B Space l a\fR, \fPSpace l r\fR, \fPSpace l s\fR, \fPSpace l d
-Code action, rename symbol, document symbols, line diagnostic.
+.B Space l a\fR, \fPSpace l r\fR, \fPSpace l R\fR, \fPSpace l s\fR, \fPSpace l d\fR, \fPSpace l f
+Code action, rename symbol, references (picker), document symbols, line
+diagnostic, format document. Rename and code-action edits apply across all the
+files they touch (unopened ones load into background buffers;
+.B :wa
+saves them).
 .TP
 .B Space g d\fR, \fPSpace g s
 Git: unified diff of the current file in a split (also
@@ -291,7 +303,7 @@ search the current file; use
 to search across files.
 .SH "COMMAND LINE"
 .TP
-.B :w \fR[\fPname\fR]\fP :q :wq :x :q! :qa :{n} ZZ ZQ
+.B :w \fR[\fPname\fR]\fP :q :wq :x :q! :qa :wa :format :{n} ZZ ZQ
 Write, quit (closes the window when more than one is open, else quits; blocked
 on the last window with unsaved changes), write\-and\-quit, force quit, quit
 all, go to line \fIn\fP, write\-and\-quit, quit without writing.

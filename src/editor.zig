@@ -72,7 +72,7 @@ pub const Mode = enum {
     }
 };
 
-const PickerKind = enum { files, grep, code_action, symbol, theme, buffer };
+const PickerKind = enum { files, grep, code_action, symbol, theme, buffer, reference };
 const PickItem = struct { display: []u8, path: []u8, line: usize };
 
 /// One visible row of the file-tree sidebar (a flattened view of the tree:
@@ -1072,8 +1072,10 @@ pub const Editor = struct {
                 if (k == .char) switch (k.char) {
                     'a' => self.lspCodeAction(), // code action
                     'r' => self.enterRename(), // rename symbol
+                    'R' => self.lspReferences(), // search references
                     's' => self.lspDocumentSymbol(), // document symbols
                     'd' => self.lineDiagnostic(), // show the line's diagnostic
+                    'f' => self.lspFormat(), // format buffer
                     else => {},
                 };
             },
@@ -3227,6 +3229,7 @@ pub const Editor = struct {
             .symbol => " SYMBOLS ",
             .theme => " THEMES ",
             .buffer => " BUFFERS ",
+            .reference => " REFERENCES ",
         };
         try self.setBg(th.mode_command);
         try self.setFg(th.bg);
@@ -3428,6 +3431,10 @@ pub const Editor = struct {
             self.closeDoc();
         } else if (eql(cmd, "ls") or eql(cmd, "buffers")) {
             self.listBuffers();
+        } else if (eql(cmd, "wa") or eql(cmd, "wall")) {
+            self.writeAll();
+        } else if (eql(cmd, "format") or eql(cmd, "fmt")) {
+            self.lspFormat();
         } else if (eql(cmd, "diff")) {
             self.gitDiffInline();
         } else if (eql(cmd, "vdiff")) {
@@ -3586,6 +3593,7 @@ pub const Editor = struct {
     }
 
     fn write(self: *Editor, arg: []const u8) !bool {
+        self.formatBeforeSave();
         if (arg.len > 0) try self.buf.setPath(arg);
         self.buf.save(self.io) catch |err| switch (err) {
             error.NoFileName => {
@@ -3601,6 +3609,20 @@ pub const Editor = struct {
         self.setStatus("\"{s}\" written", .{self.buf.path orelse ""});
         self.refreshGit();
         return true;
+    }
+
+    /// `:wa` — write every dirty, file-backed document (cross-file edits leave
+    /// background buffers dirty until saved).
+    fn writeAll(self: *Editor) void {
+        self.formatBeforeSave(); // format-on-save covers the active document
+        var n: usize = 0;
+        for (self.docs.items) |doc| {
+            if (!doc.buf.dirty) continue;
+            doc.buf.save(self.io) catch continue;
+            n += 1;
+        }
+        self.refreshGit();
+        self.setStatus("{d} buffer(s) written", .{n});
     }
 
     fn doQuit(self: *Editor) void {
@@ -3851,8 +3873,23 @@ pub const Editor = struct {
         }
         if (client.apply_ready) {
             client.apply_ready = false;
-            _ = try self.applyEdits(client.server_edits.items); // workspace/applyEdit
-            client.clearServerEdits();
+            _ = try self.applyWorkspaceEdits(client.server_files.items); // workspace/applyEdit
+            client.clearServerFiles();
+        }
+        if (client.refs_ready) {
+            client.refs_ready = false;
+            if (self.mode == .normal) {
+                if (client.references.items.len > 0) self.openReferencePicker() else self.setStatus("no references", .{});
+            }
+        }
+        if (client.fmt_ready) {
+            client.fmt_ready = false;
+            if (client.fmt_edits.items.len == 0) {
+                self.setStatus("format: no changes", .{});
+            } else {
+                const n = try self.applyEdits(client.fmt_edits.items);
+                self.setStatus("formatted ({d} edit(s))", .{n});
+            }
         }
     }
 
@@ -3951,47 +3988,175 @@ pub const Editor = struct {
         client.requestCodeAction(self.cy, 0, self.cy, cols); // the whole current line
     }
 
-    /// Apply the picked code action: its inline edits, then run its command (if
-    /// any) via executeCommand — the server's resulting workspace/applyEdit is
-    /// handled asynchronously.
+    /// Apply the picked code action: its WorkspaceEdit (across files), then run
+    /// its command (if any) via executeCommand — the server's resulting
+    /// workspace/applyEdit is handled asynchronously.
     fn applyCodeAction(self: *Editor, idx: usize) !void {
         const client = if (self.lsp) |*c| c else return;
         if (idx >= client.code_actions.items.len) return;
         const action = client.code_actions.items[idx];
-        if (action.edits.len > 0) _ = try self.applyEdits(action.edits);
+        if (action.files.items.len > 0) _ = try self.applyWorkspaceEdits(action.files.items);
         if (action.command) |cmd| client.executeCommand(cmd, action.arguments);
-        if (action.edits.len == 0 and action.command == null) {
+        if (action.files.items.len == 0 and action.command == null) {
             self.setStatus("'{s}': nothing to apply", .{action.title});
         } else {
             self.setStatus("applied: {s}", .{action.title});
         }
     }
 
-    /// Apply a rename's edits to the buffer.
+    fn lspReferences(self: *Editor) void {
+        const client = if (self.lsp) |*c| c else return self.setStatus("no language server", .{});
+        client.requestReferences(self.cy, self.charCol());
+    }
+
+    /// Request LSP formatting for the whole document (`Space l f` / `:format`);
+    /// the edits are applied when the response arrives.
+    fn lspFormat(self: *Editor) void {
+        const client = if (self.lsp) |*c| c else return self.setStatus("no language server", .{});
+        self.syncLsp(); // the server must see the latest text first
+        client.requestFormatting(config.settings.tab_width);
+    }
+
+    /// Format-on-save: synchronously request + apply formatting before a write.
+    /// Bounded (~1s) so a stuck server cannot hang `:w`; skipped for servers
+    /// that don't advertise formatting.
+    fn formatBeforeSave(self: *Editor) void {
+        if (!config.settings.format_on_save) return;
+        const client = if (self.lsp) |*c| c else return;
+        if (!client.alive or !client.can_format) return;
+        self.syncLsp();
+        client.fmt_ready = false;
+        client.requestFormatting(config.settings.tab_width);
+        var tries: usize = 100;
+        while (!client.fmt_ready and client.alive and tries > 0) : (tries -= 1) client.pump(10);
+        if (!client.fmt_ready) return; // timed out; save the text as-is
+        client.fmt_ready = false;
+        if (client.fmt_edits.items.len > 0) _ = self.applyEdits(client.fmt_edits.items) catch 0;
+    }
+
+    /// Populate the picker with a references result — "path:line: text", with
+    /// line text for already-open documents — and open it (Enter jumps there).
+    fn openReferencePicker(self: *Editor) void {
+        const client = if (self.lsp) |*c| c else return;
+        const cwd = std.process.currentPathAlloc(self.io, self.gpa) catch return;
+        defer self.gpa.free(cwd);
+        self.freePicker();
+        self.picker_kind = .reference;
+        self.picker_sel = 0;
+        self.picker_scroll = 0;
+        for (client.references.items) |ref| {
+            const abs = uriToPath(self.gpa, ref.uri) orelse continue;
+            defer self.gpa.free(abs);
+            var rel: []const u8 = abs;
+            if (abs.len > cwd.len + 1 and std.mem.startsWith(u8, abs, cwd) and abs[cwd.len] == '/')
+                rel = abs[cwd.len + 1 ..];
+            const text = self.openDocLine(cwd, abs, ref.line);
+            const disp = std.fmt.allocPrint(self.gpa, "{s}:{d}: {s}", .{ rel, ref.line + 1, std.mem.trim(u8, text, " \t") }) catch continue;
+            const p = self.gpa.dupe(u8, rel) catch {
+                self.gpa.free(disp);
+                continue;
+            };
+            self.picker_items.append(self.gpa, .{ .display = disp, .path = p, .line = ref.line + 1 }) catch {
+                self.gpa.free(disp);
+                self.gpa.free(p);
+            };
+        }
+        self.mode = .picker;
+        self.refilter();
+    }
+
+    /// Line `row` of the open document backed by `abs` ("" when the file isn't
+    /// open — references into unopened files show path:line only).
+    fn openDocLine(self: *Editor, cwd: []const u8, abs: []const u8, row: usize) []const u8 {
+        for (self.docs.items) |doc| {
+            const p = doc.buf.path orelse continue;
+            if (!samePath(cwd, p, abs)) continue;
+            if (row < doc.buf.lineCount()) return doc.buf.line(row);
+            return "";
+        }
+        return "";
+    }
+
+    /// Apply a rename's WorkspaceEdit across every file it touches.
     fn applyRename(self: *Editor, client: *lsp.Client) !void {
-        if (client.edits.items.len == 0) return self.setStatus("rename: no changes", .{});
-        const n = try self.applyEdits(client.edits.items);
-        self.setStatus("renamed {d} occurrence(s)", .{n});
+        if (client.rename_files.items.len == 0) return self.setStatus("rename: no changes", .{});
+        const nfiles = client.rename_files.items.len;
+        const n = try self.applyWorkspaceEdits(client.rename_files.items);
+        if (nfiles > 1) {
+            self.setStatus("renamed {d} in {d} files (:wa saves)", .{ n, nfiles });
+        } else {
+            self.setStatus("renamed {d} occurrence(s)", .{n});
+        }
+    }
+
+    /// Apply a WorkspaceEdit's per-file groups: the active document directly,
+    /// other open documents in place, and not-yet-open files into background
+    /// buffers (left dirty for `:w` / `:wa`). Returns the edits applied.
+    fn applyWorkspaceEdits(self: *Editor, files: []lsp.FileEdits) !usize {
+        const cwd = std.process.currentPathAlloc(self.io, self.gpa) catch return 0;
+        defer self.gpa.free(cwd);
+        var applied: usize = 0;
+        for (files) |*f| {
+            if (f.edits.items.len == 0) continue;
+            const abs = uriToPath(self.gpa, f.uri) orelse continue;
+            defer self.gpa.free(abs);
+            const doc = self.docForPath(cwd, abs) orelse continue;
+            applied += try self.applyDocEdits(doc, f.edits.items);
+        }
+        return applied;
+    }
+
+    /// The open document backed by `abs`, or the file freshly loaded into a
+    /// background document (listed in `:ls`, not focused).
+    fn docForPath(self: *Editor, cwd: []const u8, abs: []const u8) ?*Doc {
+        for (self.docs.items) |doc| {
+            const p = doc.buf.path orelse continue;
+            if (samePath(cwd, p, abs)) return doc;
+        }
+        const nb = buffer.Buffer.load(self.gpa, self.io, abs) catch return null;
+        const doc = makeDoc(self.gpa, nb) catch {
+            var b = nb;
+            b.deinit();
+            return null;
+        };
+        self.docs.append(self.gpa, doc) catch {
+            doc.buf.deinit();
+            freeDocState(doc, self.gpa);
+            self.gpa.destroy(doc);
+            return null;
+        };
+        return doc;
+    }
+
+    /// Apply edits to one document as an undoable change. The active document
+    /// goes through `applyEdits` (its history/LSP live on the Editor mirror);
+    /// background documents record their own history and sync their own server.
+    fn applyDocEdits(self: *Editor, doc: *Doc, edits: []lsp.TextEdit) !usize {
+        if (doc == self.d) return self.applyEdits(edits);
+        doc.history.record(&doc.buf, 0, 0);
+        const n = applyEditsToBuf(&doc.buf, edits);
+        for (self.wins.items) |w| { // keep inactive viewports in bounds
+            if (w.doc != doc) continue;
+            w.cy = @min(w.cy, doc.buf.lineCount() - 1);
+            w.cx = @min(w.cx, doc.buf.line(w.cy).len);
+            w.top = @min(w.top, w.cy);
+        }
+        if (doc.lsp) |*c| {
+            if (c.alive and doc.buf.revision != doc.lsp_rev) {
+                const content = doc.buf.toBytes(self.gpa) catch return n;
+                defer self.gpa.free(content);
+                c.didChange(content);
+                doc.lsp_rev = doc.buf.revision;
+            }
+        }
+        return n;
     }
 
     /// Apply a set of WorkspaceEdit `TextEdit`s to the current buffer as one
-    /// undoable change. Edits are single-line replacements applied
-    /// last-position-first so earlier byte offsets stay valid; multi-line edits
-    /// are skipped. Returns the number applied.
+    /// undoable change. Returns the number applied.
     fn applyEdits(self: *Editor, edits: []lsp.TextEdit) !usize {
         self.pushUndo();
-        std.mem.sort(lsp.TextEdit, edits, {}, textEditAfter);
-        var applied: usize = 0;
-        for (edits) |e| {
-            if (e.start_line != e.end_line or e.start_line >= self.buf.lineCount()) continue;
-            const line = self.buf.line(e.start_line);
-            const sb = byteAtCharCol(line, e.start_char);
-            const eb = byteAtCharCol(line, e.end_char);
-            if (eb < sb or eb > line.len) continue;
-            try self.buf.deleteInLine(e.start_line, sb, eb);
-            try self.buf.insertBytes(e.start_line, sb, e.text);
-            applied += 1;
-        }
+        const applied = applyEditsToBuf(self.buf, edits);
         self.clampCursor();
         self.updateGoal();
         self.syncLsp(); // notify the server of the applied edits
@@ -4763,8 +4928,10 @@ pub const Editor = struct {
     const lang_keys = [_]WhichKey{
         .{ .key = "a", .desc = "code action" },
         .{ .key = "r", .desc = "rename symbol" },
+        .{ .key = "R", .desc = "references" },
         .{ .key = "s", .desc = "document symbols" },
         .{ .key = "d", .desc = "line diagnostic" },
+        .{ .key = "f", .desc = "format buffer" },
     };
     const git_keys = [_]WhichKey{
         .{ .key = "d", .desc = "diff (inline)" },
@@ -5460,6 +5627,88 @@ fn expandReplacement(out: *std.ArrayList(u8), gpa: Allocator, rep: []const u8, l
 }
 
 /// Order text edits last-position-first (line then column, descending).
+/// Apply LSP `TextEdit`s to `buf`, last-position-first so earlier positions
+/// stay valid. Handles multi-line ranges and multi-line replacement text.
+/// Returns the number applied.
+fn applyEditsToBuf(buf: *buffer.Buffer, edits: []lsp.TextEdit) usize {
+    std.mem.sort(lsp.TextEdit, edits, {}, textEditAfter);
+    var applied: usize = 0;
+    for (edits) |e| {
+        if (applyOneEdit(buf, e)) applied += 1;
+    }
+    return applied;
+}
+
+fn applyOneEdit(buf: *buffer.Buffer, e: lsp.TextEdit) bool {
+    const nlines = buf.lineCount();
+    if (e.start_line >= nlines or e.end_line < e.start_line) return false;
+    const sline = buf.line(e.start_line);
+    const sb = @min(byteAtCharCol(sline, e.start_char), sline.len);
+    // Servers may put the end one past the last line (whole-document edits);
+    // clamp it to the end of the last line.
+    const past_end = e.end_line >= nlines;
+    const end_line: usize = if (past_end) nlines - 1 else e.end_line;
+    if (e.start_line == end_line and !past_end and std.mem.indexOfScalar(u8, e.text, '\n') == null) {
+        const eb = byteAtCharCol(sline, e.end_char);
+        if (eb < sb or eb > sline.len) return false;
+        buf.deleteInLine(e.start_line, sb, eb) catch return false;
+        buf.insertBytes(e.start_line, sb, e.text) catch return false;
+        return true;
+    }
+    // Multi-line range and/or replacement: rebuild the region as
+    // prefix ++ text ++ suffix, then split it back into lines.
+    const eline = buf.line(end_line);
+    const eb = if (past_end) eline.len else @min(byteAtCharCol(eline, e.end_char), eline.len);
+    var joined: std.ArrayList(u8) = .empty;
+    defer joined.deinit(buf.gpa);
+    joined.appendSlice(buf.gpa, sline[0..sb]) catch return false;
+    joined.appendSlice(buf.gpa, e.text) catch return false;
+    joined.appendSlice(buf.gpa, eline[eb..]) catch return false;
+
+    var row = end_line;
+    while (row > e.start_line) : (row -= 1) buf.removeLineAt(row);
+    var it = std.mem.splitScalar(u8, joined.items, '\n');
+    buf.setLine(e.start_line, it.first()) catch return false;
+    var at: usize = e.start_line + 1;
+    while (it.next()) |part| : (at += 1) {
+        buf.insertLineAt(at, part) catch return false;
+    }
+    return true;
+}
+
+/// Decode a file:// URI into a filesystem path (percent-decoded). Null for
+/// non-file URIs (untitled:, jar:, …).
+fn uriToPath(gpa: Allocator, uri: []const u8) ?[]u8 {
+    if (!std.mem.startsWith(u8, uri, "file://")) return null;
+    const enc = uri["file://".len..];
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    var i: usize = 0;
+    while (i < enc.len) {
+        if (enc[i] == '%' and i + 2 < enc.len) {
+            const hi = std.fmt.charToDigit(enc[i + 1], 16) catch 255;
+            const lo = std.fmt.charToDigit(enc[i + 2], 16) catch 255;
+            if (hi != 255 and lo != 255) {
+                out.append(gpa, hi * 16 + lo) catch return null;
+                i += 3;
+                continue;
+            }
+        }
+        out.append(gpa, enc[i]) catch return null;
+        i += 1;
+    }
+    return out.toOwnedSlice(gpa) catch null;
+}
+
+/// Whether `doc_path` (as stored on a buffer — possibly relative to `cwd`)
+/// names the same file as the absolute path `abs`.
+fn samePath(cwd: []const u8, doc_path: []const u8, abs: []const u8) bool {
+    if (doc_path.len > 0 and doc_path[0] == '/') return std.mem.eql(u8, doc_path, abs);
+    return abs.len == cwd.len + 1 + doc_path.len and
+        std.mem.startsWith(u8, abs, cwd) and abs[cwd.len] == '/' and
+        std.mem.endsWith(u8, abs, doc_path);
+}
+
 fn textEditAfter(_: void, a: lsp.TextEdit, b: lsp.TextEdit) bool {
     if (a.start_line != b.start_line) return a.start_line > b.start_line;
     return a.start_char > b.start_char;
@@ -5622,6 +5871,56 @@ fn byteAtDisplayCol(line: []const u8, target: usize) usize {
         i += d.len;
     }
     return i;
+}
+
+test "applyEditsToBuf handles multi-line ranges and text" {
+    const gpa = std.testing.allocator;
+    var b = try buffer.Buffer.fromBytes(gpa, "one\ntwo\nthree\n");
+    defer b.deinit();
+    // Replace from mid-line 0 to mid-line 2 with two lines of new text.
+    var edits = [_]lsp.TextEdit{.{ .start_line = 0, .start_char = 2, .end_line = 2, .end_char = 3, .text = @constCast("X\nY") }};
+    try std.testing.expectEqual(@as(usize, 1), applyEditsToBuf(&b, &edits));
+    try std.testing.expectEqual(@as(usize, 2), b.lineCount());
+    try std.testing.expectEqualStrings("onX", b.line(0));
+    try std.testing.expectEqualStrings("Yee", b.line(1));
+}
+
+test "applyEditsToBuf clamps an end one past the last line" {
+    const gpa = std.testing.allocator;
+    var b = try buffer.Buffer.fromBytes(gpa, "aa\nbb\n");
+    defer b.deinit();
+    // zls-style whole-document edit: end = (lineCount, 0).
+    var edits = [_]lsp.TextEdit{.{ .start_line = 0, .start_char = 0, .end_line = 2, .end_char = 0, .text = @constCast("xx\nyy") }};
+    try std.testing.expectEqual(@as(usize, 1), applyEditsToBuf(&b, &edits));
+    try std.testing.expectEqual(@as(usize, 2), b.lineCount());
+    try std.testing.expectEqualStrings("xx", b.line(0));
+    try std.testing.expectEqualStrings("yy", b.line(1));
+}
+
+test "applyEditsToBuf applies edits last-first" {
+    const gpa = std.testing.allocator;
+    var b = try buffer.Buffer.fromBytes(gpa, "a b a\n");
+    defer b.deinit();
+    var edits = [_]lsp.TextEdit{
+        .{ .start_line = 0, .start_char = 0, .end_line = 0, .end_char = 1, .text = @constCast("xyz") },
+        .{ .start_line = 0, .start_char = 4, .end_line = 0, .end_char = 5, .text = @constCast("xyz") },
+    };
+    try std.testing.expectEqual(@as(usize, 2), applyEditsToBuf(&b, &edits));
+    try std.testing.expectEqualStrings("xyz b xyz", b.line(0));
+}
+
+test "uriToPath decodes file URIs" {
+    const gpa = std.testing.allocator;
+    const p = uriToPath(gpa, "file:///tmp/a%20b.txt").?;
+    defer gpa.free(p);
+    try std.testing.expectEqualStrings("/tmp/a b.txt", p);
+    try std.testing.expectEqual(@as(?[]u8, null), uriToPath(gpa, "untitled:x"));
+}
+
+test "samePath matches relative doc paths against absolute ones" {
+    try std.testing.expect(samePath("/home/u", "src/a.zig", "/home/u/src/a.zig"));
+    try std.testing.expect(samePath("/home/u", "/tmp/a.zig", "/tmp/a.zig"));
+    try std.testing.expect(!samePath("/home/u", "r.txt", "/home/u/bar.txt"));
 }
 
 test "displayCol expands tabs" {

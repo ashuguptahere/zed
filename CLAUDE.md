@@ -194,8 +194,9 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 - **Pickers (AstroNvim-style leader tree, leader = `Space`):** pressing `Space`
   shows a which-key popup with nested groups (submenus get their own popup):
   `Space f` = Find (`f f` files, `f w` words/grep, `f b` buffers, `f t`
-  themes); `Space l` = Language tools (`l a` code action, `l r` rename, `l s`
-  document symbols, `l d` line diagnostic); `Space g` = Git (`g d` inline diff,
+  themes); `Space l` = Language tools (`l a` code action, `l r` rename, `l R`
+  references, `l s` document symbols, `l d` line diagnostic, `l f` format);
+  `Space g` = Git (`g d` inline diff,
   `g s` side-by-side); `Space e` file explorer, `Space c` close buffer,
   `Space w` write, `Space q` quit. In a picker: type to filter, `Ctrl-n`/`Ctrl-p` or
   arrows to move, `Enter` to open, `Esc` to cancel, and `Ctrl-r` re-walks the
@@ -206,8 +207,9 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   Note the three search scopes: `/` searches the current buffer, `Space f w`
   searches file *contents* across the project, `Space f f` matches file *names*.
 - **Command line:** `:w` write, `:q` quit (closes the window if more than one;
-  blocked if unsaved on the last), `:wq`/`:x`, `:q!`, `:qa` quit all,
-  `:w <name>`, `:{number}` goto line, `:$`; `ZZ`/`ZQ`.
+  blocked if unsaved on the last), `:wq`/`:x`, `:q!`, `:qa` quit all, `:wa`
+  write all dirty buffers, `:w <name>`, `:format` LSP-format the document,
+  `:{number}` goto line, `:$`; `ZZ`/`ZQ`.
 - **Sidebar (`Space e`):** a file-tree of the cwd on the configured side
   (config `sidebar = left|right`), which carves its width off the window
   tiling. Focused keys: `j`/`k` move, `Enter`/`l` expand a directory or open a
@@ -234,11 +236,18 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   `typescript-language-server`), or any command via `--lsp`. Diagnostics show as
   gutter signs + a statusline message/count; `K` hovers (`Ctrl-k` in insert
   mode), `gd` goes to definition, `gr` renames the symbol under the cursor
-  (prompts on the command line, pre-filled with the identifier; the returned
-  edits for the current file are applied as one undoable change), `ga` lists
-  code actions for the current line in a picker and applies the chosen one's
-  inline edit, and `]d`/`[d` jump to the next/previous diagnostic line
-  (wrapping; `[count]` repeats). Inlay hints (type/parameter annotations) render
+  (prompts on the command line, pre-filled with the identifier), `Space l R`
+  lists references in a picker ("path:line: text", Enter jumps there), `ga`
+  lists code actions for the current line in a picker and applies the chosen
+  one, and `]d`/`[d` jump to the next/previous diagnostic line (wrapping;
+  `[count]` repeats). WorkspaceEdits (rename, code actions, server-initiated
+  applyEdit) apply to **every** file they touch — the active buffer as one
+  undoable change, other open buffers in place, unopened files loaded into
+  background buffers (left dirty; `:wa` saves them) — and edits may be
+  multi-line (a whole-document formatting edit with the end one past the last
+  line is clamped). `Space l f` / `:format` request LSP formatting, and
+  `format_on_save = true` (config, default on) formats before every `:w` with
+  a bounded ~1s wait, skipped when the server doesn't advertise formatting. Inlay hints (type/parameter annotations) render
   inline as dim virtual text — requested for the document on load and after each
   edit, drawn without touching the buffer (the cursor's screen column accounts
   for hints to its left). `Ctrl-n` in insert mode requests completion (popup: `Ctrl-n`/`Ctrl-p` or
@@ -321,20 +330,24 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   overlay; inactive windows render from their cached state.
 - Block paste of a blockwise yank is charwise (not a true rectangular paste);
   block `A` on lines shorter than the block does not pad with spaces.
-- LSP does diagnostics/hover/goto/completion/signature help/rename/code
-  actions/inlay hints/document symbols with incremental (or full) document sync;
-  no snippets/`textEdit` completions or cross-file edits yet. Document symbols
+- LSP does diagnostics/hover/goto/references/completion/signature help/rename/
+  code actions/formatting/inlay hints/document symbols with incremental (or
+  full) document sync; no snippets/`textEdit` completions yet. Document symbols
   are flattened (nested `DocumentSymbol[]` or flat `SymbolInformation[]`) into a
   picker that jumps to the selected symbol. Inlay hints are
   requested for the whole document (re-requested per edit, not debounced) and
   rendered inline; horizontal-scroll interaction with hints is approximate.
-  Rename and code actions apply only the WorkspaceEdit entries for the current
-  document's URI (cross-file edits to other open buffers aren't applied), and
-  only single-line edits.
+  WorkspaceEdits apply across files and support multi-line edits; document
+  create/rename/delete operations in `documentChanges` are skipped, and
+  references are capped at 1000. The references picker shows line text only for
+  files already open in a buffer. Formatting sends `tabSize` = config
+  `tab_width`, `insertSpaces = true`; format-on-save is a bounded synchronous
+  wait (~1s), gated on the server advertising `documentFormattingProvider` —
+  there is no external (non-LSP) formatter support.
   Code actions are requested for the current line with an empty diagnostics
   context (diagnostic ranges aren't stored); command-based actions run via
   `workspace/executeCommand`, and a server-initiated `workspace/applyEdit` is
-  applied (and answered) — its single-line, current-file edits, like the rest.
+  applied (and answered).
   Signature help triggers on `(`/`,`; `Ctrl-p` cycles overloads when the server
   returns several.
 - Tree-sitter highlighting is wired for Zig, C, Python, JSON, JavaScript, TypeScript, Rust,
@@ -354,9 +367,9 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
 - Roadmap (agreed with the owner): port further tranches of Neovim behavioural
   tests via headless ground truth (see `vim_compat`), and work down
   `doc/COMPARISON.md` — the verified feature-gap analysis vs Helix/Neovim
-  (shortlist: regex + `:%s`, jumplist, OSC 52 clipboard, autoindent, LSP
-  references/formatting/cross-file edits, cmdline completion, paragraph
-  objects, inline diagnostics, auto-completion, snippets). Large-file open is
+  (shortlist: regex + `:%s`, jumplist, OSC 52 clipboard, autoindent, and LSP
+  references/formatting/cross-file edits are done; next: cmdline completion,
+  paragraph objects, inline diagnostics, auto-completion, snippets). Large-file open is
   14.3 ms vs nvim's 10.7 (was 36.6) after the copy-on-write buffer; the last
   ~4 ms is the eager read+scan nvim defers — mmap or lazy line indexing if it
   ever matters.

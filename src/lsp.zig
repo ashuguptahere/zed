@@ -41,12 +41,27 @@ pub const TextEdit = struct {
     text: []u8,
 };
 
-/// A code action offered by the server. `edits` are the inline WorkspaceEdit
-/// entries for the open file; `command`/`arguments` (when present) are run via
-/// `workspace/executeCommand`. An action may carry either, both, or neither.
+/// All the edits a WorkspaceEdit carries for one file.
+pub const FileEdits = struct {
+    uri: []u8,
+    edits: std.ArrayList(TextEdit),
+};
+
+fn clearFileEdits(gpa: std.mem.Allocator, files: *std.ArrayList(FileEdits)) void {
+    for (files.items) |*f| {
+        gpa.free(f.uri);
+        for (f.edits.items) |e| gpa.free(e.text);
+        f.edits.deinit(gpa);
+    }
+    files.clearRetainingCapacity();
+}
+
+/// A code action offered by the server. `files` are the WorkspaceEdit entries
+/// (grouped per file — cross-file actions apply everywhere); `command` /
+/// `arguments` (when present) are run via `workspace/executeCommand`.
 pub const CodeAction = struct {
     title: []u8,
-    edits: []TextEdit,
+    files: std.ArrayList(FileEdits),
     command: ?[]u8 = null, // command id for executeCommand
     arguments: ?[]u8 = null, // serialized JSON arguments array
 };
@@ -86,6 +101,7 @@ pub const Client = struct {
 
     init_done: bool,
     incremental: bool, // server supports incremental textDocument/didChange
+    can_format: bool, // server advertises documentFormattingProvider
     doc: std.ArrayList(u8), // mirror of the open document, for diffing changes
     hover_id: i64,
     def_id: i64,
@@ -99,13 +115,19 @@ pub const Client = struct {
     sig_active: usize, // index of the displayed overload (server-suggested, then cycled)
     sig_ready: bool, // a signatureHelp response just arrived (editor should consume)
     rename_id: i64,
-    edits: std.ArrayList(TextEdit), // pending rename edits for the current file
+    rename_files: std.ArrayList(FileEdits), // pending rename edits, per file
     rename_ready: bool, // a rename response just arrived (editor should apply)
     ca_id: i64,
     code_actions: std.ArrayList(CodeAction), // last code-action result
     ca_ready: bool, // a codeAction response just arrived (editor should consume)
-    server_edits: std.ArrayList(TextEdit), // edits from a workspace/applyEdit request
+    server_files: std.ArrayList(FileEdits), // edits from a workspace/applyEdit request
     apply_ready: bool, // a workspace/applyEdit just arrived (editor should apply)
+    ref_id: i64,
+    references: std.ArrayList(Location), // last references result
+    refs_ready: bool,
+    fmt_id: i64,
+    fmt_edits: std.ArrayList(TextEdit), // formatting edits for the open document
+    fmt_ready: bool,
     hint_id: i64,
     inlay_hints: std.ArrayList(InlayHint), // virtual text for the open document
     sym_id: i64,
@@ -142,6 +164,7 @@ pub const Client = struct {
             .diags = .empty,
             .init_done = false,
             .incremental = false,
+            .can_format = false,
             .doc = .empty,
             .hover_id = -1,
             .def_id = -1,
@@ -155,13 +178,19 @@ pub const Client = struct {
             .sig_active = 0,
             .sig_ready = false,
             .rename_id = -1,
-            .edits = .empty,
+            .rename_files = .empty,
             .rename_ready = false,
             .ca_id = -1,
             .code_actions = .empty,
             .ca_ready = false,
-            .server_edits = .empty,
+            .server_files = .empty,
             .apply_ready = false,
+            .ref_id = -1,
+            .references = .empty,
+            .refs_ready = false,
+            .fmt_id = -1,
+            .fmt_edits = .empty,
+            .fmt_ready = false,
             .hint_id = -1,
             .inlay_hints = .empty,
             .sym_id = -1,
@@ -195,12 +224,16 @@ pub const Client = struct {
         self.completions.deinit(self.gpa);
         self.clearSignatures();
         self.signatures.deinit(self.gpa);
-        self.clearEdits();
-        self.edits.deinit(self.gpa);
+        clearFileEdits(self.gpa, &self.rename_files);
+        self.rename_files.deinit(self.gpa);
         self.clearCodeActions();
         self.code_actions.deinit(self.gpa);
-        self.clearServerEdits();
-        self.server_edits.deinit(self.gpa);
+        clearFileEdits(self.gpa, &self.server_files);
+        self.server_files.deinit(self.gpa);
+        for (self.references.items) |r| self.gpa.free(r.uri);
+        self.references.deinit(self.gpa);
+        for (self.fmt_edits.items) |e| self.gpa.free(e.text);
+        self.fmt_edits.deinit(self.gpa);
         self.clearInlayHints();
         self.inlay_hints.deinit(self.gpa);
         self.clearSymbols();
@@ -228,25 +261,19 @@ pub const Client = struct {
         self.sig_active = 0;
     }
 
-    fn clearEdits(self: *Client) void {
-        for (self.edits.items) |e| self.gpa.free(e.text);
-        self.edits.clearRetainingCapacity();
-    }
-
     fn clearCodeActions(self: *Client) void {
-        for (self.code_actions.items) |a| {
+        for (self.code_actions.items) |*a| {
             self.gpa.free(a.title);
-            for (a.edits) |e| self.gpa.free(e.text);
-            self.gpa.free(a.edits);
+            clearFileEdits(self.gpa, &a.files);
+            a.files.deinit(self.gpa);
             if (a.command) |c| self.gpa.free(c);
             if (a.arguments) |args| self.gpa.free(args);
         }
         self.code_actions.clearRetainingCapacity();
     }
 
-    pub fn clearServerEdits(self: *Client) void {
-        for (self.server_edits.items) |e| self.gpa.free(e.text);
-        self.server_edits.clearRetainingCapacity();
+    pub fn clearServerFiles(self: *Client) void {
+        clearFileEdits(self.gpa, &self.server_files);
     }
 
     fn clearInlayHints(self: *Client) void {
@@ -266,7 +293,7 @@ pub const Client = struct {
         defer body.deinit(self.gpa);
         body.appendSlice(self.gpa, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"processId\":null,\"rootUri\":\"file://") catch return;
         appendEscaped(&body, self.gpa, root) catch return;
-        body.appendSlice(self.gpa, "\",\"capabilities\":{\"textDocument\":{\"publishDiagnostics\":{},\"hover\":{},\"definition\":{},\"completion\":{},\"signatureHelp\":{},\"rename\":{},\"codeAction\":{},\"inlayHint\":{},\"documentSymbol\":{}}}}}") catch return;
+        body.appendSlice(self.gpa, "\",\"capabilities\":{\"textDocument\":{\"publishDiagnostics\":{},\"hover\":{},\"definition\":{},\"completion\":{},\"signatureHelp\":{},\"rename\":{},\"codeAction\":{},\"inlayHint\":{},\"documentSymbol\":{},\"references\":{},\"formatting\":{}}}}}") catch return;
         self.writeMessage(body.items);
     }
 
@@ -444,6 +471,33 @@ pub const Client = struct {
         self.writeMessage(body.items);
     }
 
+    pub fn requestReferences(self: *Client, line: usize, col: usize) void {
+        if (!self.alive) return;
+        self.ref_id = self.nextId();
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(self.gpa);
+        const a = self.gpa;
+        var nb: [200]u8 = undefined;
+        body.appendSlice(a, std.fmt.bufPrint(&nb, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":\"textDocument/references\",\"params\":{{\"textDocument\":{{\"uri\":\"", .{self.ref_id}) catch return) catch return;
+        appendEscaped(&body, a, self.uri) catch return;
+        body.appendSlice(a, std.fmt.bufPrint(&nb, "\"}},\"position\":{{\"line\":{d},\"character\":{d}}},\"context\":{{\"includeDeclaration\":true}}}}}}", .{ line, col }) catch return) catch return;
+        self.writeMessage(body.items);
+    }
+
+    /// Request whole-document formatting with the editor's indent settings.
+    pub fn requestFormatting(self: *Client, tab_size: usize) void {
+        if (!self.alive) return;
+        self.fmt_id = self.nextId();
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(self.gpa);
+        const a = self.gpa;
+        var nb: [160]u8 = undefined;
+        body.appendSlice(a, std.fmt.bufPrint(&nb, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":\"textDocument/formatting\",\"params\":{{\"textDocument\":{{\"uri\":\"", .{self.fmt_id}) catch return) catch return;
+        appendEscaped(&body, a, self.uri) catch return;
+        body.appendSlice(a, std.fmt.bufPrint(&nb, "\"}},\"options\":{{\"tabSize\":{d},\"insertSpaces\":true}}}}}}", .{tab_size}) catch return) catch return;
+        self.writeMessage(body.items);
+    }
+
     fn sendPositionRequest(self: *Client, id: i64, method: []const u8, line: usize, col: usize) void {
         if (!self.alive) return;
         var body: std.ArrayList(u8) = .empty;
@@ -516,6 +570,13 @@ pub const Client = struct {
         }
     }
 
+    /// Block up to `timeout_ms` for server output and process it (used by the
+    /// bounded synchronous wait in format-on-save). One poll + read per call.
+    pub fn pump(self: *Client, timeout_ms: i32) void {
+        if (!self.alive) return;
+        if (pollReadable(self.out_fd, timeout_ms)) self.readAvailable();
+    }
+
     fn handleMessage(self: *Client, body: []const u8) void {
         const parsed = std.json.parseFromSlice(std.json.Value, self.gpa, body, .{}) catch return;
         defer parsed.deinit();
@@ -547,12 +608,22 @@ pub const Client = struct {
         if (id == self.ca_id) self.handleCodeAction(result);
         if (id == self.hint_id) self.handleInlayHints(result);
         if (id == self.sym_id) self.handleDocumentSymbol(result);
+        if (id == self.ref_id) self.handleReferences(result);
+        if (id == self.fmt_id) self.handleFormatting(result);
     }
 
     /// Read the server's `textDocumentSync` to decide full vs. incremental
-    /// change notifications (it may be an integer or `{change: int}`).
+    /// change notifications (it may be an integer or `{change: int}`), and
+    /// whether it can format (so format-on-save skips servers that can't).
     fn parseServerCaps(self: *Client, result: std.json.Value) void {
         const caps = getField(result, "capabilities") orelse return;
+        if (getField(caps, "documentFormattingProvider")) |f| {
+            self.can_format = switch (f) {
+                .bool => |b| b,
+                .object => true,
+                else => false,
+            };
+        }
         const sync = getField(caps, "textDocumentSync") orelse return;
         const change: i64 = switch (sync) {
             .integer => |i| i,
@@ -613,19 +684,19 @@ pub const Client = struct {
         self.sig_active = if (idx >= 0 and @as(usize, @intCast(idx)) < n) @intCast(idx) else 0;
     }
 
-    /// A rename's result is a `WorkspaceEdit`; keep the edits for the open file
-    /// (the editor is single-buffer). `rename_ready` is set regardless so the
-    /// editor consumes the result (an empty list means "no changes").
+    /// A rename's result is a `WorkspaceEdit`; keep every file's edits (the
+    /// editor applies them across buffers). `rename_ready` is set regardless so
+    /// the editor consumes the result (an empty list means "no changes").
     fn handleRename(self: *Client, result: std.json.Value) void {
-        self.clearEdits();
+        clearFileEdits(self.gpa, &self.rename_files);
         self.rename_ready = true;
-        if (result == .object) self.parseWorkspaceEdit(result, &self.edits);
+        if (result == .object) self.parseWorkspaceEdit(result, &self.rename_files);
     }
 
     /// A code-action result is an array of `CodeAction | Command`; keep each
-    /// one's title, its inline `edit` (for the open file), and its `command`
-    /// (executed via executeCommand). A bare `Command` has `command` as a
-    /// string; a `CodeAction.command` is a nested object.
+    /// one's title, its inline `edit` (all files), and its `command` (executed
+    /// via executeCommand). A bare `Command` has `command` as a string; a
+    /// `CodeAction.command` is a nested object.
     fn handleCodeAction(self: *Client, result: std.json.Value) void {
         self.clearCodeActions();
         self.ca_ready = true;
@@ -634,14 +705,8 @@ pub const Client = struct {
             const title = asStr(getField(a, "title")) orelse continue;
             const owned_title = self.gpa.dupe(u8, title) catch continue;
 
-            var tmp: std.ArrayList(TextEdit) = .empty;
-            if (getField(a, "edit")) |edit| self.parseWorkspaceEdit(edit, &tmp);
-            const edits = tmp.toOwnedSlice(self.gpa) catch {
-                for (tmp.items) |e| self.gpa.free(e.text);
-                tmp.deinit(self.gpa);
-                self.gpa.free(owned_title);
-                continue;
-            };
+            var files: std.ArrayList(FileEdits) = .empty;
+            if (getField(a, "edit")) |edit| self.parseWorkspaceEdit(edit, &files);
 
             // Locate the command id and arguments (bare Command vs CodeAction.command).
             var cmd_str: ?[]const u8 = null;
@@ -662,12 +727,12 @@ pub const Client = struct {
 
             self.code_actions.append(self.gpa, .{
                 .title = owned_title,
-                .edits = edits,
+                .files = files,
                 .command = command,
                 .arguments = arguments,
             }) catch {
-                for (edits) |e| self.gpa.free(e.text);
-                self.gpa.free(edits);
+                clearFileEdits(self.gpa, &files);
+                files.deinit(self.gpa);
                 self.gpa.free(owned_title);
                 if (command) |c| self.gpa.free(c);
                 if (arguments) |args| self.gpa.free(args);
@@ -731,11 +796,11 @@ pub const Client = struct {
     }
 
     /// Apply a server-initiated `workspace/applyEdit` request: stash the edits
-    /// for the editor to apply and answer `{applied: true}` (the edit goes to
-    /// the open file as usual). The request id is echoed in the response.
+    /// for the editor to apply and answer `{applied: true}` (every file the
+    /// edit touches). The request id is echoed in the response.
     fn handleApplyEdit(self: *Client, obj: std.json.ObjectMap) void {
         if (obj.get("params")) |p| {
-            if (getField(p, "edit")) |edit| self.parseWorkspaceEdit(edit, &self.server_edits);
+            if (getField(p, "edit")) |edit| self.parseWorkspaceEdit(edit, &self.server_files);
         }
         self.apply_ready = true;
         if (obj.get("id")) |id_val| {
@@ -759,24 +824,44 @@ pub const Client = struct {
         return out.toOwnedSlice(self.gpa) catch null;
     }
 
-    /// Append the current-file `TextEdit`s of a `WorkspaceEdit` (the `changes`
-    /// map or the `documentChanges` array) to `into`.
-    fn parseWorkspaceEdit(self: *Client, edit: std.json.Value, into: *std.ArrayList(TextEdit)) void {
+    /// Parse a `WorkspaceEdit` (the `changes` map or the `documentChanges`
+    /// array) into per-file edit groups — every file, not just the open one.
+    fn parseWorkspaceEdit(self: *Client, edit: std.json.Value, into: *std.ArrayList(FileEdits)) void {
         if (getField(edit, "changes")) |changes| {
             if (changes == .object) {
-                if (changes.object.get(self.uri)) |arr| self.collectEdits(arr, into);
+                var it = changes.object.iterator();
+                while (it.next()) |entry| {
+                    const file = self.fileEntry(into, entry.key_ptr.*) orelse continue;
+                    self.collectEdits(entry.value_ptr.*, &file.edits);
+                }
             }
             return;
         }
         if (getField(edit, "documentChanges")) |dc| {
             if (dc != .array) return;
             for (dc.array.items) |tde| {
+                // Only TextDocumentEdit entries; create/rename/delete file
+                // operations have no `textDocument` and are skipped.
                 const td = getField(tde, "textDocument") orelse continue;
                 const uri = asStr(getField(td, "uri")) orelse continue;
-                if (!std.mem.eql(u8, uri, self.uri)) continue;
-                if (getField(tde, "edits")) |arr| self.collectEdits(arr, into);
+                const arr = getField(tde, "edits") orelse continue;
+                const file = self.fileEntry(into, uri) orelse continue;
+                self.collectEdits(arr, &file.edits);
             }
         }
+    }
+
+    /// Find (or append) the `FileEdits` group for `uri`.
+    fn fileEntry(self: *Client, into: *std.ArrayList(FileEdits), uri: []const u8) ?*FileEdits {
+        for (into.items) |*f| {
+            if (std.mem.eql(u8, f.uri, uri)) return f;
+        }
+        const owned = self.gpa.dupe(u8, uri) catch return null;
+        into.append(self.gpa, .{ .uri = owned, .edits = .empty }) catch {
+            self.gpa.free(owned);
+            return null;
+        };
+        return &into.items[into.items.len - 1];
     }
 
     fn collectEdits(self: *Client, arr: std.json.Value, into: *std.ArrayList(TextEdit)) void {
@@ -825,6 +910,35 @@ pub const Client = struct {
             else => return,
         };
         self.hover_text = self.gpa.dupe(u8, text) catch null;
+    }
+
+    /// A references result is a `Location[]`. `refs_ready` is set regardless
+    /// (an empty list means "no references found").
+    fn handleReferences(self: *Client, result: std.json.Value) void {
+        for (self.references.items) |r| self.gpa.free(r.uri);
+        self.references.clearRetainingCapacity();
+        self.refs_ready = true;
+        if (result != .array) return;
+        for (result.array.items) |loc| {
+            if (self.references.items.len >= 1000) break; // bound huge symbols
+            const uri = asStr(getField(loc, "uri")) orelse continue;
+            const range = getField(loc, "range") orelse continue;
+            const start_pos = getField(range, "start") orelse continue;
+            const owned = self.gpa.dupe(u8, uri) catch continue;
+            self.references.append(self.gpa, .{
+                .uri = owned,
+                .line = u32From(getField(start_pos, "line")),
+                .col = u32From(getField(start_pos, "character")),
+            }) catch self.gpa.free(owned);
+        }
+    }
+
+    /// A formatting result is a `TextEdit[]` for the open document.
+    fn handleFormatting(self: *Client, result: std.json.Value) void {
+        for (self.fmt_edits.items) |e| self.gpa.free(e.text);
+        self.fmt_edits.clearRetainingCapacity();
+        self.fmt_ready = true;
+        if (result == .array) self.collectEdits(result, &self.fmt_edits);
     }
 
     fn handleDefinition(self: *Client, result: std.json.Value) void {

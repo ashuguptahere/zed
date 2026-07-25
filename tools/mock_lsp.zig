@@ -2,13 +2,24 @@
 //! mock_lsp.py). Speaks JSON-RPC over stdio with Content-Length framing and
 //! answers just enough for tools/scenarios/lsp.zig to exercise the client:
 //! diagnostics, hover, definition, completion, signature help, rename, code
-//! actions, and an executeCommand that drives a server-initiated applyEdit.
+//! actions, an executeCommand that drives a server-initiated applyEdit,
+//! references, and formatting. Flags: `--fmt` advertises formatting in the
+//! initialize response (turning on the editor's format-on-save); `--xfile`
+//! makes rename return a second file's edits (sibling `zedit_it_other.zig`)
+//! to exercise cross-file WorkspaceEdits.
 
 const std = @import("std");
 const posix = std.posix;
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
+    const argv = try init.minimal.args.toSlice(init.arena.allocator());
+    var fmt_mode = false;
+    var xfile = false;
+    for (argv[1..]) |a| {
+        if (eql(a, "--fmt")) fmt_mode = true;
+        if (eql(a, "--xfile")) xfile = true;
+    }
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(gpa);
     var doc_uri: []u8 = &.{};
@@ -25,9 +36,14 @@ pub fn main(init: std.process.Init) !void {
         const id = intField(parsed.value, "id");
 
         if (eql(method, "initialize")) {
-            send(gpa, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{{\"capabilities\":{{" ++
-                "\"textDocumentSync\":2,\"completionProvider\":{{}}," ++
-                "\"signatureHelpProvider\":{{\"triggerCharacters\":[\"(\",\",\"]}}}}}}}}", .{id orelse 0});
+            const caps_head = "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{{\"capabilities\":{{" ++
+                "\"textDocumentSync\":2,\"completionProvider\":{{}},\"referencesProvider\":true," ++
+                "\"signatureHelpProvider\":{{\"triggerCharacters\":[\"(\",\",\"]}}";
+            if (fmt_mode) {
+                send(gpa, caps_head ++ ",\"documentFormattingProvider\":true}}}}}}", .{id orelse 0});
+            } else {
+                send(gpa, caps_head ++ "}}}}}}", .{id orelse 0});
+            }
         } else if (eql(method, "textDocument/didOpen")) {
             if (uriOf(parsed.value)) |u| {
                 if (doc_uri.len > 0) gpa.free(doc_uri);
@@ -79,7 +95,17 @@ pub fn main(init: std.process.Init) !void {
             sendRaw(gpa, doc_uri);
             sendRaw(gpa, "\":[{\"range\":{\"start\":{\"line\":0,\"character\":6},\"end\":{\"line\":0,\"character\":7}},\"newText\":\"");
             sendRaw(gpa, new_name);
-            sendRaw(gpa, "\"}]}}}");
+            sendRaw(gpa, "\"}]");
+            if (xfile) {
+                if (std.mem.lastIndexOfScalar(u8, doc_uri, '/')) |slash| {
+                    sendRaw(gpa, ",\"");
+                    sendRaw(gpa, doc_uri[0 .. slash + 1]);
+                    sendRaw(gpa, "zedit_it_other.zig\":[{\"range\":{\"start\":{\"line\":0,\"character\":6},\"end\":{\"line\":0,\"character\":7}},\"newText\":\"");
+                    sendRaw(gpa, new_name);
+                    sendRaw(gpa, "\"}]");
+                }
+            }
+            sendRaw(gpa, "}}}");
             flush(gpa);
         } else if (eql(method, "textDocument/codeAction")) {
             sendRaw(gpa, "{\"jsonrpc\":\"2.0\",\"id\":");
@@ -98,6 +124,21 @@ pub fn main(init: std.process.Init) !void {
                 flush(gpa);
             }
             send(gpa, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":null}}", .{id orelse 0});
+        } else if (eql(method, "textDocument/references")) {
+            // Two in-document references ("a" on line 0 and "c" on line 2).
+            sendRaw(gpa, "{\"jsonrpc\":\"2.0\",\"id\":");
+            sendInt(gpa, id orelse 0);
+            sendRaw(gpa, ",\"result\":[{\"uri\":\"");
+            sendRaw(gpa, doc_uri);
+            sendRaw(gpa, "\",\"range\":{\"start\":{\"line\":0,\"character\":6},\"end\":{\"line\":0,\"character\":7}}},{\"uri\":\"");
+            sendRaw(gpa, doc_uri);
+            sendRaw(gpa, "\",\"range\":{\"start\":{\"line\":2,\"character\":6},\"end\":{\"line\":2,\"character\":7}}}]}");
+            flush(gpa);
+        } else if (eql(method, "textDocument/formatting")) {
+            // One idempotent whole-document edit that appends a "// fmt"
+            // comment to line 0 (multi-line range AND multi-line newText).
+            send(gpa, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":[{{\"range\":{{\"start\":{{\"line\":0,\"character\":0}},\"end\":{{\"line\":2,\"character\":12}}}}," ++
+                "\"newText\":\"const a = 1; // fmt\\nconst b = 2;\\nconst c = 3;\"}}]}}", .{id orelse 0});
         } else if (eql(method, "shutdown")) {
             send(gpa, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":null}}", .{id orelse 0});
         }

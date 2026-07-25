@@ -51,8 +51,13 @@ runtime dependencies**.
   - diagnostics in the gutter/statusline with `]d` / `[d` navigation
   - completion (`Ctrl-n` in insert), signature help (on `(` and `,`),
     hover (`K` / `Ctrl-k`), goto definition (`gd`)
-  - rename (`gr`), code actions (`ga`, including `executeCommand`/`applyEdit`),
-    document symbols (`Space l s`), inlay hints rendered as virtual text
+  - rename (`gr`), find references (`Space l R`), code actions (`ga`,
+    including `executeCommand`/`applyEdit`), document symbols (`Space l s`),
+    inlay hints rendered as virtual text
+  - formatting (`Space l f` / `:format`) with format-on-save (config
+    `format_on_save`), and full WorkspaceEdit support: cross-file, multi-line
+    rename/code-action edits — other buffers are edited in place, unopened
+    files load in the background, `:wa` writes them all
 - **Pickers** via the AstroNvim-style `Space` leader tree with nested
   which-key menus: `Space f f` find files, `Space f w` find words (grep),
   `Space f b` buffers, `Space f t` themes; `Space l …` language tools — one
@@ -120,7 +125,8 @@ zedit --init-config
 
 Format is `key = value` with `#` comments; unknown keys are ignored and a
 missing file just means defaults. Settings today: `theme`, `tab_width`,
-`nerd_font`, `sidebar`, `relative_numbers`, `large_file_mb`, `autoindent`.
+`nerd_font`, `sidebar`, `relative_numbers`, `large_file_mb`, `autoindent`,
+`format_on_save`.
 
 > **Icons look broken?** The powerline statusline separators are Nerd Font
 > glyphs (private-use codepoints). Terminal applications cannot ship fonts —

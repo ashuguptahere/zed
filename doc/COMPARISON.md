@@ -19,8 +19,11 @@ batteries-included editor.
    paste in; works over SSH with zero dependencies).
 4. ~~**Autoindent**~~ — **DONE** (`o`/`O`/Enter/`cc` inherit indent, blank
    auto-indents stripped, nvim-verified; smartindent/TS indent still open).
-5. **LSP: find references, formatting (+ format-on-save), cross-file /
-   multi-line WorkspaceEdits** (both, high).
+5. ~~**LSP: find references, formatting (+ format-on-save), cross-file /
+   multi-line WorkspaceEdits**~~ — **DONE** (`Space l R` references picker,
+   `Space l f`/`:format`, `format_on_save` config; rename/code-action/applyEdit
+   WorkspaceEdits apply to every file — open buffers in place, unopened files
+   loaded as background buffers, saved with `:wa`).
 6. **Command-line completion** for `:e`/`:theme`/commands + history (nvim,
    high) — `:e` without path completion barely works.
 7. **Paragraph text objects/motions** `ip`/`ap`/`{`/`}` (nvim, high).
@@ -47,9 +50,9 @@ batteries-included editor.
 - Case commands beyond `~` (explicit upper/lower) and `:reflow` text wrapping — **low**
 
 **LSP**
-- Find references — Helix `gr` lists references in a picker; zedit has no references at all (its `gr` is rename) — **high**
-- Formatting — `=`/`:format`, format-on-save, external formatter support; zedit has none — **high**
-- Cross-file / multi-line workspace edits — zedit applies rename/code-action edits only to the current file and only single-line; Helix applies full WorkspaceEdits — **high**
+- ~~Find references~~ — **DONE** (`Space l R` picker; Helix's `gr` slot stays rename in zedit)
+- ~~Formatting~~ — **DONE** (`Space l f` / `:format`, `format_on_save` config; external non-LSP formatters still absent) — remaining: **low**
+- ~~Cross-file / multi-line workspace edits~~ — **DONE** (full WorkspaceEdit application across files, multi-line edits)
 - Goto implementation / type definition (`gi`, `gy`) — **medium**
 - Workspace symbols picker (`Space S`) — zedit has document symbols only — **medium**
 - Diagnostics pickers — buffer-wide and workspace-wide diagnostic lists; zedit only has gutter signs + `]d`/`[d` — **medium**
@@ -191,5 +194,6 @@ Ground truth: `/home/origo/Desktop/zed/CLAUDE.md` (note: the on-disk version is 
 ## Naming note
 
 Neovim 0.11 claimed `gr*` as an LSP prefix (`grn` rename, `grr` references,
-`gra` action). zedit's `gr` = rename follows older muscle memory; if we ever
-add references on `grr`, revisit this before it becomes breaking.
+`gra` action). zedit's `gr` = rename follows older muscle memory; references
+therefore live on `Space l R` (the AstroNvim slot), not `grr`. Revisit if the
+`gr` conflict ever becomes breaking.

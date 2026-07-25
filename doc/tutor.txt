@@ -280,7 +280,11 @@
 
      gd         go to the definition of the symbol under the cursor
      K          show hover documentation for it
-     gr         rename the symbol (prompts on the command line)
+     gr         rename the symbol (prompts on the command line; edits in
+                other files are applied too — :wa saves all buffers)
+     Space l R  list every reference to the symbol in a picker
+     Space l f  format the document (:w also formats when the config's
+                format_on_save is true, the default)
      ga         list code actions for the current line in a picker
      ]d / [d    jump to the next / previous diagnostic line
 
