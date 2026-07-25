@@ -254,6 +254,21 @@ The function around the cursor \(em whole, or just its body.
 .B ac ic
 The class, struct, impl or enum around the cursor.
 .TP
+.B aa ia
+The argument or parameter around the cursor.
+.B aa
+also takes the comma joining it to its neighbour \(em the one after it, or
+the one before it for the last argument \(em so what is left is still a
+well-formed list.
+.TP
+.B aC iC
+The comment around the cursor.
+.B aC
+takes the whole comment, extending over a run of comment lines at the same
+column, and is linewise when the comment owns its lines;
+.B iC
+is just the text, without the delimiter.
+.TP
 .B ]f [f
 Jump to the next or previous function. Both are jump motions, so
 .B Ctrl\-o

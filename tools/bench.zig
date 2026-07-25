@@ -12,6 +12,10 @@
 //!   search    `/needle<CR>` for a unique needle near the end of the 10 MB
 //!             file, keypress to settled redraw
 //!
+//! A second table times every *interaction* zedit offers (pickers, explorer,
+//! diff views, opening a file) cold and warm inside one session, since several
+//! of them build something the first time and reuse it afterwards.
+//!
 //! Fairness: nvim runs with `-u NONE -i NONE` and helix with an empty
 //! XDG_CONFIG_HOME so nobody pays for user plugins/config; zedit runs its
 //! defaults (it has no plugins by design). All editors see the same pty size.
@@ -102,6 +106,88 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("\n", .{});
     }
     std.debug.print("\n(median of {d} runs; pty 24x80; helix/nvim with clean configs)\n", .{runs});
+
+    interactionTable(gpa, zedit);
+}
+
+/// What each interaction costs the first time in a session and every time
+/// after. Only zedit is in this table: the keys are its own, and the point is
+/// to show which interactions carry a one-off cost (a project walk, a git
+/// subprocess, compiling a grammar's highlight query) and which are free
+/// afterwards. Both passes run in the *same* session — that is what "warm"
+/// means here.
+const Interaction = struct {
+    name: []const u8,
+    keys: []const u8,
+    close: []const u8, // keys returning to the resting state ("" = none)
+};
+
+const interactions = [_]Interaction{
+    .{ .name = "which-key popup", .keys = " ", .close = "\x1b" },
+    .{ .name = "file explorer", .keys = " e", .close = " e" },
+    .{ .name = "file picker", .keys = " ff", .close = "\x1b" },
+    .{ .name = "  + type a query", .keys = " ffeditor", .close = "\x1b" },
+    .{ .name = "grep picker", .keys = " fwvalue", .close = "\x1b" },
+    .{ .name = "buffer picker", .keys = " fb", .close = "\x1b" },
+    .{ .name = "theme picker", .keys = " ft", .close = "\x1b" },
+    .{ .name = "open a file (:e)", .keys = ":e src/editor.zig\r", .close = ":e build.zig\r" },
+    .{ .name = "search (small file)", .keys = "/const\r", .close = "\x1b" },
+    .{ .name = "git diff (inline)", .keys = " gd", .close = ":close\r" },
+    .{ .name = "git diff (side)", .keys = " gs", .close = ":close\r" },
+    .{ .name = "theme switch", .keys = ":theme gruvbox\r", .close = ":theme tokyonight\r" },
+};
+
+fn interactionTable(gpa: std.mem.Allocator, zedit: []const u8) void {
+    const ed: Editor = .{ .name = "zedit", .bin = zedit, .argv_prefix = &.{zedit}, .picker_key = null };
+    std.debug.print("\nzedit interaction latency (same session: cold = first time, warm = after)\n\n", .{});
+    std.debug.print("{s:<22} {s:>12} {s:>12} {s:>12}\n", .{ "interaction", "cold 1st px", "cold settled", "warm settled" });
+    std.debug.print("{s:-<22} {s:->12} {s:->12} {s:->12}\n", .{ "", "", "", "" });
+    for (interactions) |it| {
+        var first: std.ArrayList(f64) = .empty;
+        var cold: std.ArrayList(f64) = .empty;
+        var warm: std.ArrayList(f64) = .empty;
+        defer first.deinit(gpa);
+        defer cold.deinit(gpa);
+        defer warm.deinit(gpa);
+        var i: usize = 0;
+        while (i < 3) : (i += 1) {
+            const r = measureInteraction(gpa, ed, it) orelse continue;
+            first.append(gpa, r[0]) catch break;
+            cold.append(gpa, r[1]) catch break;
+            warm.append(gpa, r[2]) catch break;
+        }
+        std.debug.print("{s:<22} {d:>10.1}ms {d:>10.1}ms {d:>10.1}ms\n", .{
+            it.name, median(first.items), median(cold.items), median(warm.items),
+        });
+    }
+    std.debug.print("\n(median of 3 runs each, ReleaseFast, in this repository)\n", .{});
+}
+
+/// `.{ cold first response, cold settled, warm settled }`. The first two
+/// differ wherever zedit paints and then decorates: opening a source file puts
+/// the text on screen in a millisecond and finishes highlighting it later, and
+/// a settle-only number would read as if you had waited for all of it.
+fn measureInteraction(gpa: std.mem.Allocator, ed: Editor, it: Interaction) ?[3]f64 {
+    var s = spawnOn(gpa, ed, "build.zig") orelse return null;
+    defer quitAndFinish(&s, ed);
+    _ = waitQuiet(&s, 80, 8000);
+    var out: [3]f64 = .{ -1, -1, -1 };
+    for (0..2) |pass| {
+        const t0 = nowNs();
+        s.send(it.keys);
+        const first = firstByteMs(&s, 8000) orelse return null;
+        _ = waitQuiet(&s, 80, 8000);
+        const settled = msBetween(t0, nowNs()) - 80.0;
+        if (pass == 0) {
+            out[0] = first;
+            out[1] = settled;
+        } else out[2] = settled;
+        if (it.close.len > 0) {
+            s.send(it.close);
+            _ = waitQuiet(&s, 80, 4000);
+        }
+    }
+    return out;
 }
 
 fn binaryWorks(gpa: std.mem.Allocator, io: std.Io, bin: []const u8) bool {

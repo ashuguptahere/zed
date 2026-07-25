@@ -240,4 +240,34 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("\x1b:q!\r");
         s.drain(200);
     }
+
+    // A grep typed before the project walk has delivered anything must still
+    // cover the files that arrive afterwards. (The picker opens on an empty
+    // file cache by design — the walk streams in — so a grep that ran once and
+    // never resumed searched nothing at all.)
+    {
+        const dir = try h.tempDir(ctx.gpa);
+        defer ctx.gpa.free(dir);
+        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        var i: usize = 0;
+        while (i < 60) : (i += 1) {
+            var nb: [64]u8 = undefined;
+            const pad = try std.fmt.allocPrint(ctx.gpa, "{s}/{s}", .{ dir, std.fmt.bufPrint(&nb, "pad_{d:0>3}.txt", .{i}) catch unreachable });
+            defer ctx.gpa.free(pad);
+            h.writeFile(ctx.io, pad, "nothing to see here\n");
+        }
+        const hit = try std.fmt.allocPrint(ctx.gpa, "{s}/zz_target.txt", .{dir});
+        defer ctx.gpa.free(hit);
+        h.writeFile(ctx.io, hit, "a line holding GREPMELATE in it\n");
+
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "pad_000.txt" }, .cwd = dir, .cols = 110 });
+        defer s.finish();
+        s.drain(300);
+        s.send(" fwGREPMELATE"); // grep before the walk has produced anything
+        s.drain(900);
+        // The needle itself echoes in the query line, so look for the file.
+        ctx.check("grep started mid-walk covers files the walk delivers later", s.containsPlain(ctx.gpa, "zz_target"));
+        s.send("\x1b:q!\r");
+        s.drain(200);
+    }
 }

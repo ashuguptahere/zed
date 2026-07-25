@@ -16,8 +16,10 @@ The shortlist is done; these are the next-highest gaps from
 `doc/COMPARISON.md`, in rough priority order.
 
 - [ ] Soft-wrap; undo tree (`:earlier`/`:later`).
-- [ ] Parameter/argument text object (`ia`/`aa`) and a comment object, now
-      that the structural-object machinery exists.
+- [ ] Grep picker: re-reads every project file on each keystroke (~4 ms per
+      key on this repo). Extending a query can only shrink the hit set, so
+      filter the previous hits instead — as the file picker already does —
+      whenever the last scan covered every file and was not capped at 500.
 
 
 ## Next (in order)
@@ -152,5 +154,14 @@ The shortlist is done; these are the next-highest gaps from
       scoring slow editors as instant, and split search into cold/warm
       (zedit 5.1/5.1, nvim 51.6/14.7, helix 1943/20.0). zedit now leads every
       column.
+- [x] Argument (`aa`/`ia`) and comment (`aC`/`iC`) text objects from the
+      syntax tree. Writing them turned up three bugs, each now pinned to
+      headless-nvim ground truth: visual-mode `a` objects behaved like `i`
+      ones, counted find-char (`3fa`, `d3fa`, `2;`) ignored the count, and the
+      grep picker missed every file the project walk had not yet delivered.
+- [x] `:e` paints before decorating (34 ms -> 0.6 ms to first pixel on a
+      300 KB source file); the benchmark's new first-pixel column found it.
+- [x] Cold/warm interaction benchmark table (`zig build bench`) covering every
+      picker, the explorer, both diff views, `:e` and search.
 - [x] Confirmed the toolchain is current: Zig 0.16.0 is the latest stable
       (master is 0.17.0-dev), so no upgrade was needed.

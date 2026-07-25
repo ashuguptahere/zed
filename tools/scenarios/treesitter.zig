@@ -206,4 +206,75 @@ pub fn run(ctx: *h.Ctx) !void {
         defer ctx.gpa.free(got);
         ctx.check("dac deletes a python class", std.mem.eql(u8, got, "\n"));
     }
+
+    // --- argument (`ia`/`aa`) and comment (`iC`/`aC`) objects -------------
+    {
+        const code =
+            \\// first note
+            \\// second note
+            \\pub fn alpha(a: u8, b: u8) u8 {
+            \\    return add(a, b); // trailing note
+            \\}
+            \\
+        ;
+        const head = "// first note\n// second note\n";
+        const arg_cases = [_]Case{
+            .{
+                .name = "dia deletes just the parameter",
+                .keys = &.{ "3G", "f(", "l", "dia" },
+                .want = head ++ "pub fn alpha(, b: u8) u8 {\n    return add(a, b); // trailing note\n}\n",
+            },
+            .{
+                .name = "daa takes the parameter and the comma after it",
+                .keys = &.{ "3G", "f(", "l", "daa" },
+                .want = head ++ "pub fn alpha(b: u8) u8 {\n    return add(a, b); // trailing note\n}\n",
+            },
+            .{
+                .name = "daa on the last parameter takes the comma before it",
+                .keys = &.{ "3G", "f)", "h", "daa" },
+                .want = head ++ "pub fn alpha(a: u8) u8 {\n    return add(a, b); // trailing note\n}\n",
+            },
+            .{
+                .name = "daa works on call arguments too",
+                .keys = &.{ "4G", "f(", "l", "daa" },
+                .want = head ++ "pub fn alpha(a: u8, b: u8) u8 {\n    return add(b); // trailing note\n}\n",
+            },
+            .{
+                .name = "aa in visual mode selects the argument",
+                .keys = &.{ "4G", "f(", "l", "vaad" },
+                .want = head ++ "pub fn alpha(a: u8, b: u8) u8 {\n    return add(b); // trailing note\n}\n",
+            },
+            .{
+                .name = "daC deletes the whole run of comment lines",
+                .keys = &.{ "1G", "daC" },
+                .want = "pub fn alpha(a: u8, b: u8) u8 {\n    return add(a, b); // trailing note\n}\n",
+            },
+            .{
+                .name = "diC keeps the delimiter and clears the text",
+                .keys = &.{ "1G", "diC" },
+                .want = "// \n// second note\npub fn alpha(a: u8, b: u8) u8 {\n    return add(a, b); // trailing note\n}\n",
+            },
+            .{
+                .name = "daC on a trailing comment leaves the code alone",
+                .keys = &.{ "4G", "$", "daC" },
+                .want = head ++ "pub fn alpha(a: u8, b: u8) u8 {\n    return add(a, b);\n}\n",
+            },
+        };
+        for (arg_cases) |cs| {
+            const path = "/tmp/zedit_it_tsarg.zig";
+            h.writeFile(ctx.io, path, code);
+            var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, path } });
+            defer s.finish();
+            s.drain(500);
+            s.sendKeys(cs.keys);
+            s.drain(300);
+            s.send(":wq\r");
+            s.drain(400);
+            const got = h.readFile(ctx.gpa, ctx.io, path);
+            defer ctx.gpa.free(got);
+            const ok = std.mem.eql(u8, got, cs.want);
+            if (!ok) std.debug.print("       got  \"{f}\"\n", .{std.zig.fmtString(got)});
+            ctx.check(cs.name, ok);
+        }
+    }
 }

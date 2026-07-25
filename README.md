@@ -35,7 +35,8 @@
     (searches, `G`, marks, `gd`, buffer switches — cross-buffer)
   - Text objects incl. paragraphs (`ip`/`ap`, `{`/`}`), also in visual mode
   - Tree-sitter structural objects: `af`/`if` (function), `ac`/`ic` (class,
-    struct, impl), and `]f`/`[f` to step between functions
+    struct, impl), `aa`/`ia` (argument, with its comma), `aC`/`iC` (comment,
+    across a run of comment lines), and `]f`/`[f` to step between functions
   - Built-ins (no plugins): autoindent, auto-pairs, comment toggle (`gcc` / `gc{motion}`),
     surround (`ys`/`cs`/`ds`, visual `S`), blockwise visual (`Ctrl-v` + `I`/`A`),
     multiple cursors (`Ctrl-n` / `Ctrl-p` add carets; edits apply to all)

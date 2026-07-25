@@ -249,6 +249,83 @@ pub const Highlighter = struct {
         return null;
     }
 
+    /// The argument or parameter under `byte` — the `ia`/`aa` objects.
+    /// `kinds` names the *list* nodes (`argument_list`, `formal_parameters`,
+    /// …); the item is whichever of the list's named children holds the
+    /// cursor, so the grammar decides where one argument ends and the next
+    /// begins rather than a comma count that a nested call or a string would
+    /// fool.
+    ///
+    /// `around` swallows the separator joining the item to its neighbour: the
+    /// text up to the next item when there is one, else the text back from the
+    /// previous item. Deleting it therefore leaves a well-formed list, which
+    /// is the whole point of the object (and matches targets.vim).
+    pub fn listItem(self: *Highlighter, byte: usize, kinds: []const []const u8, around: bool) ?Span {
+        const tree = self.primary.tree orelse return null;
+        const root = c.ts_tree_root_node(tree);
+        const syms = resolveKinds(c.ts_tree_language(tree), kinds);
+        if (syms.len == 0) return null;
+        var node = c.ts_node_descendant_for_byte_range(root, @intCast(byte), @intCast(byte));
+        while (!c.ts_node_is_null(node)) : (node = c.ts_node_parent(node)) {
+            if (!syms.has(c.ts_node_symbol(node))) continue;
+            const n = c.ts_node_named_child_count(node);
+            if (n == 0) return null;
+            // The first item ending after the cursor: the one it is inside, or
+            // the next one when it sits on a comma or the whitespace after it.
+            var k: u32 = n - 1;
+            var i: u32 = 0;
+            while (i < n) : (i += 1) {
+                if (byte < c.ts_node_end_byte(c.ts_node_named_child(node, i))) {
+                    k = i;
+                    break;
+                }
+            }
+            const item = c.ts_node_named_child(node, k);
+            const start = c.ts_node_start_byte(item);
+            const end = c.ts_node_end_byte(item);
+            if (!around) return .{ .start = start, .end = end };
+            if (k + 1 < n) return .{ .start = start, .end = c.ts_node_start_byte(c.ts_node_named_child(node, k + 1)) };
+            if (k > 0) return .{ .start = c.ts_node_end_byte(c.ts_node_named_child(node, k - 1)), .end = end };
+            return .{ .start = start, .end = end }; // the only item: nothing to join
+        }
+        return null;
+    }
+
+    /// The comment under `byte` — the `iC`/`aC` objects. `around` extends over
+    /// a run of comment nodes on consecutive lines at the same column, which
+    /// is how a block of `//` lines is written and how one wants to delete it;
+    /// a trailing comment beside code keeps its own column and so stays alone.
+    pub fn commentSpan(self: *Highlighter, byte: usize, kinds: []const []const u8, around: bool) ?Span {
+        const tree = self.primary.tree orelse return null;
+        const root = c.ts_tree_root_node(tree);
+        const syms = resolveKinds(c.ts_tree_language(tree), kinds);
+        if (syms.len == 0) return null;
+        var node = c.ts_node_descendant_for_byte_range(root, @intCast(byte), @intCast(byte));
+        while (!c.ts_node_is_null(node)) : (node = c.ts_node_parent(node)) {
+            if (!syms.has(c.ts_node_symbol(node))) continue;
+            if (!around) return .{ .start = c.ts_node_start_byte(node), .end = c.ts_node_end_byte(node) };
+            var first = node;
+            var last = node;
+            const col = c.ts_node_start_point(node).column;
+            while (true) {
+                const prev = c.ts_node_prev_named_sibling(first);
+                if (c.ts_node_is_null(prev) or !syms.has(c.ts_node_symbol(prev))) break;
+                if (c.ts_node_start_point(prev).column != col) break;
+                if (c.ts_node_end_point(prev).row + 1 != c.ts_node_start_point(first).row) break;
+                first = prev;
+            }
+            while (true) {
+                const next = c.ts_node_next_named_sibling(last);
+                if (c.ts_node_is_null(next) or !syms.has(c.ts_node_symbol(next))) break;
+                if (c.ts_node_start_point(next).column != col) break;
+                if (c.ts_node_end_point(last).row + 1 != c.ts_node_start_point(next).row) break;
+                last = next;
+            }
+            return .{ .start = c.ts_node_start_byte(first), .end = c.ts_node_end_byte(last) };
+        }
+        return null;
+    }
+
     /// The start byte of the next (or previous) node of one of `kinds`,
     /// relative to `byte` — the `]f` / `[f` motions.
     ///
@@ -399,6 +476,69 @@ test "grammars produce highlights" {
     }
 }
 
+test "listItem: the argument under the cursor, with and without its comma" {
+    const code = "void f(int a, char b) { g(alpha, beta); }\n";
+    var h = Highlighter.init(std.testing.allocator, .c).?;
+    defer h.deinit();
+    h.reparse(code);
+    const kinds = &[_][]const u8{ "parameter_list", "argument_list" };
+    const at = struct {
+        fn f(hay: []const u8, needle: []const u8) usize {
+            return std.mem.indexOf(u8, hay, needle).?;
+        }
+    }.f;
+
+    const cases = .{
+        // cursor on          inner          around
+        .{ at(code, "int a"), "int a", "int a, " }, // first: takes the comma after
+        .{ at(code, "char b"), "char b", ", char b" }, // last: takes the comma before
+        .{ at(code, "alpha"), "alpha", "alpha, " },
+        .{ at(code, "beta"), "beta", ", beta" },
+    };
+    inline for (cases) |case| {
+        const inner = h.listItem(case[0], kinds, false).?;
+        try std.testing.expectEqualStrings(case[1], code[inner.start..inner.end]);
+        const outer = h.listItem(case[0], kinds, true).?;
+        try std.testing.expectEqualStrings(case[2], code[outer.start..outer.end]);
+    }
+
+    // The cursor on the comma itself belongs to the argument after it, and a
+    // sole argument has no separator to take.
+    const on_comma = h.listItem(at(code, ", char"), kinds, false).?;
+    try std.testing.expectEqualStrings("char b", code[on_comma.start..on_comma.end]);
+    const lone = "void g(void) { h(only); }\n";
+    h.reparse(lone);
+    const solo = h.listItem(std.mem.indexOf(u8, lone, "only").?, kinds, true).?;
+    try std.testing.expectEqualStrings("only", lone[solo.start..solo.end]);
+    // Outside any list there is no object.
+    try std.testing.expect(h.listItem(0, kinds, false) == null);
+}
+
+test "commentSpan: one comment, or a run of them at the same column" {
+    const code = "// one\n// two\nint x = 1; // trailing\n/* block */\n";
+    var h = Highlighter.init(std.testing.allocator, .c).?;
+    defer h.deinit();
+    h.reparse(code);
+    const kinds = &[_][]const u8{"comment"};
+
+    const one = std.mem.indexOf(u8, code, "// one").?;
+    const inner = h.commentSpan(one + 2, kinds, false).?;
+    try std.testing.expectEqualStrings("// one", code[inner.start..inner.end]);
+    const run = h.commentSpan(one + 2, kinds, true).?;
+    try std.testing.expectEqualStrings("// one\n// two", code[run.start..run.end]);
+
+    // A trailing comment sits at its own column, so the run above stops before
+    // it and it stays alone.
+    const trailing = std.mem.indexOf(u8, code, "// trailing").?;
+    const alone = h.commentSpan(trailing + 2, kinds, true).?;
+    try std.testing.expectEqualStrings("// trailing", code[alone.start..alone.end]);
+
+    const block = std.mem.indexOf(u8, code, "/* block */").?;
+    const b = h.commentSpan(block + 3, kinds, true).?;
+    try std.testing.expectEqualStrings("/* block */", code[b.start..b.end]);
+    try std.testing.expect(h.commentSpan(std.mem.indexOf(u8, code, "int x").?, kinds, false) == null);
+}
+
 test "computeEdit prefix/suffix diff" {
     // "abXcd" -> "abYYcd": prefix "ab" (2), suffix "cd" (2).
     const e = computeEdit("abXcd", "abYYcd");
@@ -445,4 +585,6 @@ fn mapCapture(name: []const u8) syntax.Style {
     if (p.has(name, "punctuation.special")) return .operator;
     return .normal;
 }
+
+
 

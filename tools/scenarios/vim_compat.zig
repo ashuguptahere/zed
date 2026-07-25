@@ -76,6 +76,24 @@ pub fn run(ctx: *h.Ctx) !void {
     case(ctx, "nvim#a8 tab indent copied verbatim", &.{ "obar", ESC, ":wq", CR }, "\tfoo\n", "\tfoo\n\tbar\n");
     case(ctx, "nvim#a9 blank Enter-line stripped on Esc", &.{ "A\r", ESC, ":wq", CR }, "    foo\n", "    foo\n\n");
 
+    // Counted find-char: `[count]f/t/F/T` and `[count];`. Ground truth from
+    // headless nvim on "alpha beta gamma alpha beta" — vim counts occurrences
+    // and fails the motion outright when there are too few.
+    const ff = "alpha beta gamma alpha beta\n";
+    case(ctx, "nvim#f1 3fa lands on the third a", &.{ "3fa", "x", ":wq", CR }, ff, "alpha beta gmma alpha beta\n");
+    case(ctx, "nvim#f2 2ta stops before the second a", &.{ "2ta", "x", ":wq", CR }, ff, "alpha bea gamma alpha beta\n");
+    case(ctx, "nvim#f3 d3fa deletes through the third a", &.{ "d3fa", ":wq", CR }, ff, "mma alpha beta\n");
+    case(ctx, "nvim#f4 2; repeats the find twice", &.{ "fa", "2;", "x", ":wq", CR }, ff, "alpha beta gmma alpha beta\n");
+    case(ctx, "nvim#f5 $3Fa searches backwards by count", &.{ "$", "3Fa", "x", ":wq", CR }, ff, "alpha beta gamm alpha beta\n");
+    case(ctx, "nvim#f6 a count past the last match does nothing", &.{ "9fa", "x", ":wq", CR }, ff, "lpha beta gamma alpha beta\n");
+
+    // Visual-mode "around" objects — nvim-verified on "x = add(a, b)".
+    const va = "x = add(a, b)\n";
+    case(ctx, "nvim#v1 va( takes the brackets", &.{ "fa", "va(d", ":wq", CR }, va, "x = add\n");
+    case(ctx, "nvim#v2 vi( keeps them", &.{ "fa", "vi(d", ":wq", CR }, va, "x = add()\n");
+    case(ctx, "nvim#v3 vaw takes the word and its space", &.{ "fa", "vawd", ":wq", CR }, va, "x =(a, b)\n");
+    case(ctx, "nvim#v4 vaW takes the whole WORD", &.{ "fa", "vaWd", ":wq", CR }, va, "x = b)\n");
+
     // Command-line history (Up = \x1b[A, Down = \x1b[B) — nvim-verified.
     // ':' Up recalls the last ex command; Enter replays it.
     case(ctx, "nvim#h1 : Up replays last command", &.{ ":s/a/X/\r", "j", ":", "\x1b[A", "\r", ":wq", CR }, "aa\naa\n", "Xa\nXa\n");

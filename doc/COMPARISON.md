@@ -125,6 +125,11 @@ Per `/home/origo/Desktop/zed/CLAUDE.md`:
 - Multiple cursors (restricted one-per-line vs Helix's full selection model)
 - Macros, registers, vim marks (Helix has no marks), dot-repeat, visual block, incremental search with match highlighting
 - Themes (5) + single config file, `--tutor`, `--log`, powerline statusline, relative line numbers, cursorline, indent guides
+- Live file preview in every picker (tree-sitter highlighted, independently scrollable) — Helix previews only in some pickers
+- Snippet completion with tabstops, fuzzy-ranked auto-completion, workspace-symbol search and a cross-buffer diagnostics list
+- Structural text objects from the syntax tree (`af`/`if`, `ac`/`ic`, `aa`/`ia`, `aC`/`iC`, `]f`/`[f`) — Helix's tree-sitter object set is larger, but the mechanism is there
+- Mouse wheel scrolling; buffer tabs along the top; a recently-opened startup screen; `:update` against the release tags
+- Remote editing over plain SSH (`ssh://host/path`) with nothing installed on the far side — neither Helix nor stock Neovim does this
 
 ---
 
@@ -191,7 +196,12 @@ Ground truth: `/home/origo/Desktop/zed/CLAUDE.md` (note: the on-disk version is 
 - **Buffers + splits:** `:e :bn :bp :bd :ls`, `:split`/`:vsplit`, `Ctrl-w` focus/close/only (flat tiling, no resize)
 - **Appearance:** true-colour themes (Tokyo Night + 4 more, live-switchable), powerline statusline, relative+absolute numbers, cursorline, indent guides
 - **Config file** (`~/.config/zedit/config`) and an embedded **`--tutor`** (vimtutor equivalent)
-- Explicitly **not** yet AstroNvim-complete: no bufferline, no notify-style popups, no mason-style server install/management, and only the active window gets live LSP/overlay rendering.
+- **Bufferline-equivalent** buffer tabs across the top (click to switch, unsaved marker), on by default with more than one file open
+- **Telescope-preview-equivalent** live file preview beside every picker that names a file, tree-sitter highlighted and scrollable with `Ctrl-d`/`Ctrl-u` or the wheel
+- **Alpha/dashboard-equivalent** startup screen listing recently opened files and directories
+- **Mouse wheel scrolling** (3-line step) and tab clicks; **`:update`** checks the release tags on demand
+- **Remote editing over SSH** (`ssh://host/path`, `:ssh`) with no agent on the remote host — beyond Neovim's built-in netrw/scp handling
+- Explicitly **not** yet AstroNvim-complete: no notify-style popups, no mason-style server install/management, and only the active window gets live LSP/overlay rendering.
 
 ---
 

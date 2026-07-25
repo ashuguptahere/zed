@@ -265,15 +265,28 @@
   what can follow.  In any picker: type to filter, move with Ctrl-n and
   Ctrl-p (or the arrows), open with Enter, cancel with Esc.
 
-     Space f    fuzzy file finder (matches file NAMES)
-     Space /    project-wide content search (greps file CONTENTS)
-     Space o    document symbols — jump to a function or type
+     Space f f  fuzzy file finder (matches file NAMES)
+     Space f w  project-wide content search (greps file CONTENTS)
+     Space f b  switch between the open buffers
+     Space e    file explorer: a tree of this directory on the side
 
-  1. Press  Space f , type a few letters of a file name, then press Esc
-     to cancel (or Enter to open it — remember :bp brings you back).
+  Every picker looks the same: the explorer on one side (when open), the
+  results in the middle, and a preview of the highlighted file on the
+  right.  Ctrl-d and Ctrl-u — or the mouse wheel — scroll that preview
+  without moving your selection.
 
-  2. Press  Space /  and search the project for the word  wombat .
+  1. Press  Space f f , type a few letters of a file name, watch the
+     preview follow your selection, then press Esc to cancel (or Enter
+     to open it — remember :bp brings you back).
+
+  2. Press  Space f w  and search the project for the word  wombat .
      This very file should show up.
+
+  3. Press  Space e  for the file tree: j/k move, Enter opens, h
+     collapses, q closes.  Space still opens the leader menu in there.
+
+  With more than one file open, the buffers appear as tabs across the
+  top; a dot marks unsaved ones, and clicking a tab switches to it.
 
   When a language server is installed for the file type (zls, clangd,
   pylsp, typescript-language-server), zedit starts it automatically:
@@ -282,7 +295,12 @@
      K          show hover documentation for it
      gr         rename the symbol (prompts on the command line; edits in
                 other files are applied too — :wa saves all buffers)
+     gi / gy    go to the implementation / the type definition
      Space l R  list every reference to the symbol in a picker
+     Space l s  document symbols — jump to a function or type here
+     Space l S  workspace symbols — search them across the whole
+                project, including files you have never opened
+     Space l D  every diagnostic in every open buffer, in one list
      Space l f  format the document (:w also formats when the config's
                 format_on_save is true, the default)
      ga         list code actions for the current line in a picker
@@ -311,7 +329,9 @@
 
   In a source file with a supported language, whole constructs are text
   objects:  daf  deletes the function around the cursor,  dif  just its
-  body,  dac  a class or struct, and  ]f  /  [f  jump between functions.
+  body,  dac  a class or struct,  daa  an argument (with its comma) and
+  dia  just the argument,  daC  a comment;  ]f  /  [f  jump between
+  functions.
 
   Paragraphs are text objects too:  }  and  {  jump to the next and
   previous blank line, and  dip  /  dap  delete the paragraph you are
@@ -350,7 +370,13 @@
    - Registers:  "ayy  yanks into register a,  "ap  pastes from it.
    - Multiple cursors:  Ctrl-n / Ctrl-p  add a caret on the line below
      or above; typing edits every line at once; Esc collapses them.
-   - Scrolling:  Ctrl-d / Ctrl-u  move by half a page.
+   - Scrolling:  Ctrl-d / Ctrl-u  move by half a page, and the mouse
+     wheel scrolls three lines at a time.
+   - Themes:  :theme  or  Space f t  switches between the five built-in
+     palettes;  zedit --init-config  writes a commented config file.
+   - Staying current:  :update  asks whether a newer zedit was released
+     (it is the only thing that ever touches the network, and only when
+     you ask).
 
   For the complete reference:
 

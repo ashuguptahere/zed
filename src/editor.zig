@@ -367,6 +367,11 @@ pub const Editor = struct {
     fcache: std.ArrayList([]u8), // project file paths, walked once per session
     fcache_masks: std.ArrayList(u64), // fuzzy.charMask per path, for prefiltering
     fcache_ready: bool,
+    /// Set when a freshly opened document still needs the work that only
+    /// *decorates* it — highlighting, git signs, the LSP handshake. The run
+    /// loop paints the text first and does them on the next pass, the same
+    /// rule the first frame follows.
+    decorate_pending: bool,
     /// An in-progress project walk. The picker opens *before* the walk runs
     /// and the results stream in a chunk per loop iteration, so a huge tree
     /// never blocks the first frame or your typing (helix does this with
@@ -375,6 +380,10 @@ pub const Editor = struct {
     walk_dir: ?std.Io.Dir,
     walker: ?std.Io.Dir.SelectiveWalker,
     prev_query: std.ArrayList(u8), // last filtered query (incremental narrowing)
+    /// How many `fcache` entries the current grep query has already read. The
+    /// walk streams files in while the picker is open, so the grep resumes
+    /// from here instead of re-reading the project on every slice.
+    grep_scanned: usize,
     picker_filtered: std.ArrayList(u32),
     picker_query: std.ArrayList(u8),
     picker_sel: usize,
@@ -572,6 +581,7 @@ pub const Editor = struct {
             .fcache = .empty,
             .fcache_masks = .empty,
             .fcache_ready = false,
+            .decorate_pending = false,
             .walk_dir = null,
             .walker = null,
             .recents = .{ .gpa = gpa },
@@ -580,6 +590,7 @@ pub const Editor = struct {
             .dash_sel = 0,
             .remote_root = null,
             .prev_query = .empty,
+            .grep_scanned = 0,
             .picker_filtered = .empty,
             .picker_query = .empty,
             .picker_sel = 0,
@@ -737,15 +748,31 @@ pub const Editor = struct {
                 try self.render();
                 needs_render = false;
             }
+            // The text is on screen; now bring in what merely annotates it.
+            if (self.decorate_pending) {
+                self.decorate_pending = false;
+                if (self.ts == null) self.startTs();
+                self.refreshGit();
+                self.startLsp();
+                needs_render = true;
+                continue;
+            }
             // A project walk in progress keeps the loop hot: take a slice,
             // stream what it found into an open picker, redraw, repeat. Once
             // it finishes the loop goes back to blocking in poll() forever.
             if (self.walkInProgress()) {
                 const grew = self.stepWalk(2000); // ~2 ms per slice
-                if (grew and self.mode == .picker and self.picker_kind == .files) {
-                    self.refillFileItems();
-                    self.refilter();
-                }
+                if (grew and self.mode == .picker) switch (self.picker_kind) {
+                    .files => {
+                        self.refillFileItems();
+                        self.refilter();
+                    },
+                    .grep => {
+                        self.grepMore();
+                        self.showAllGrepHits();
+                    },
+                    else => {},
+                };
                 if (grew or !self.walkInProgress()) {
                     needs_render = self.mode == .picker;
                     continue;
@@ -1408,9 +1435,10 @@ pub const Editor = struct {
                 if (charByte(k)) |c| try self.surroundChange(self.surr_from, c);
             },
             .visual_object_inner, .visual_object_around => {
-                const around = self.await_arg == .visual_object_around;
-                self.await_arg = .none;
-                self.visualObject(around, k);
+                // `a`, not `self.await_arg`: the pending key was cleared on
+                // the way into this switch, so reading it back made every
+                // visual "around" object behave like its "inner" twin.
+                self.visualObject(a == .visual_object_around, k);
             },
             .none => {},
         }
@@ -1578,6 +1606,8 @@ pub const Editor = struct {
 
     fn textObjectSpan(self: *Editor, around: bool, c: u8) ?Span {
         if (c == 'f' or c == 'c') return self.treeObjectSpan(around, c == 'f');
+        if (c == 'a') return self.treeListItemSpan(around);
+        if (c == 'C') return self.treeCommentSpan(around);
         if (c == 'p') { // paragraph: a linewise object (nvim-verified)
             const r = motion.paraObject(self.buf, self.cy, around, self.total());
             return .{ .lines = true, .top = r.top, .bot = r.bot };
@@ -1611,6 +1641,54 @@ pub const Editor = struct {
         const span = h.enclosing(at, kinds, !around) orelse return null;
         const start = self.posOfByte(span.start) orelse return null;
         const end = self.posOfByte(span.end) orelse return null;
+        return .{ .lines = false, .start = start, .end = end };
+    }
+
+    /// `ia`/`aa`: the argument or parameter under the cursor, from the syntax
+    /// tree. `aa` takes the comma that joins it to a neighbour so the list
+    /// stays valid.
+    fn treeListItemSpan(self: *Editor, around: bool) ?Span {
+        var h = if (self.ts) |*x| x else return null;
+        const kinds = listKinds(self.lang);
+        if (kinds.len == 0) return null;
+        const at = self.byteOffset(self.cy, self.cx) orelse return null;
+        const span = h.listItem(at, kinds, around) orelse return null;
+        return .{
+            .lines = false,
+            .start = self.posOfByte(span.start) orelse return null,
+            .end = self.posOfByte(span.end) orelse return null,
+        };
+    }
+
+    /// `iC`/`aC`: the comment under the cursor. `iC` is its text with the
+    /// delimiters stripped; `aC` is the whole thing, extended over a run of
+    /// comment lines, and linewise when the comment owns its lines (so `daC`
+    /// removes them rather than leaving blanks behind).
+    fn treeCommentSpan(self: *Editor, around: bool) ?Span {
+        var h = if (self.ts) |*x| x else return null;
+        const kinds = commentKinds(self.lang);
+        if (kinds.len == 0) return null;
+        const at = self.byteOffset(self.cy, self.cx) orelse return null;
+        const span = h.commentSpan(at, kinds, around) orelse return null;
+        var start = self.posOfByte(span.start) orelse return null;
+        var end = self.posOfByte(span.end) orelse return null;
+        if (around) {
+            const before = self.buf.line(start.row)[0..start.col];
+            const own_line = std.mem.trim(u8, before, " \t").len == 0;
+            if (own_line) return .{ .lines = true, .top = start.row, .bot = end.row };
+            // A trailing comment: take the whitespace separating it from the
+            // code as well, so `daC` does not leave the line padded.
+            start.col = std.mem.trimEnd(u8, before, " \t").len;
+            return .{ .lines = false, .start = start, .end = end };
+        }
+        // Inner: drop the delimiter and the space that conventionally follows.
+        const head = self.buf.line(start.row);
+        while (start.col < head.len and std.mem.indexOfScalar(u8, "/#-;*!<", head[start.col]) != null) start.col += 1;
+        while (start.col < head.len and (head[start.col] == ' ' or head[start.col] == '\t')) start.col += 1;
+        const tail = self.buf.line(end.row)[0..end.col];
+        if (std.mem.endsWith(u8, tail, "*/")) end.col -= 2;
+        end.col = std.mem.trimEnd(u8, self.buf.line(end.row)[0..end.col], " \t").len;
+        if (end.row == start.row and end.col < start.col) end.col = start.col;
         return .{ .lines = false, .start = start, .end = end };
     }
 
@@ -1815,12 +1893,19 @@ pub const Editor = struct {
         const line = self.curLine();
         const forward = kind == .find_f or kind == .find_t;
         const till = kind == .find_t or kind == .find_cap_t;
-        if (motion.findChar(line, self.cx, ch, forward, till)) |col| {
-            const inclusive = forward; // forward find/till is inclusive; backward is exclusive
-            self.doMotion(.{ .pos = .{ .row = self.cy, .col = col }, .kind = if (inclusive) .inclusive else .exclusive, .col_mode = .exact });
-        } else {
-            self.resetPending();
+        // vim counts occurrences, not hops: `3fa` lands on the third `a` and
+        // the whole motion fails (the cursor does not move) when there are
+        // fewer than three. `t` counts the same occurrences and only then
+        // steps back one, so the intermediate searches must not be
+        // till-adjusted or they would stall on the character before each hit.
+        var col = self.cx;
+        var n = self.total(); // vim multiplies `2d3fa`: count before × after
+        while (n > 0) : (n -= 1) {
+            col = motion.findChar(line, col, ch, forward, false) orelse return self.resetPending();
         }
+        if (till) col = if (forward) unicode.prevBoundary(line, col) else unicode.nextBoundary(line, col);
+        const inclusive = forward; // forward find/till is inclusive; backward is exclusive
+        self.doMotion(.{ .pos = .{ .row = self.cy, .col = col }, .kind = if (inclusive) .inclusive else .exclusive, .col_mode = .exact });
     }
 
     fn repeatFind(self: *Editor, reverse: bool) void {
@@ -3422,11 +3507,8 @@ pub const Editor = struct {
     fn refilter(self: *Editor) void {
         var sp = log.Span.start();
         if (self.picker_kind == .grep) {
-            self.picker_filtered.clearRetainingCapacity();
             self.regrep();
-            var i: u32 = 0;
-            while (i < self.picker_items.items.len) : (i += 1) self.picker_filtered.append(self.gpa, i) catch {};
-            self.clampSel();
+            self.showAllGrepHits();
             return;
         }
         const q = self.picker_query.items;
@@ -3468,10 +3550,20 @@ pub const Editor = struct {
     fn regrep(self: *Editor) void {
         self.picker_items.clearRetainingCapacity();
         self.picker_text.clearRetainingCapacity();
+        self.grep_scanned = 0;
+        self.grepMore();
+    }
+
+    /// Grep the `fcache` entries not yet covered by the current query and
+    /// append their matches. Called once per query change and again for each
+    /// slice the project walk delivers — without this a grep started before
+    /// the walk finished would silently cover only the files found so far.
+    fn grepMore(self: *Editor) void {
         const q = self.picker_query.items;
         if (q.len == 0) return;
-        for (self.fcache.items) |fpath| {
+        for (self.fcache.items[self.grep_scanned..]) |fpath| {
             if (self.picker_items.items.len >= 500) break;
+            self.grep_scanned += 1;
             const data = std.Io.Dir.cwd().readFileAlloc(self.io, fpath, self.gpa, .limited(1 << 20)) catch continue;
             defer self.gpa.free(data);
             var line_no: usize = 1;
@@ -3487,6 +3579,14 @@ pub const Editor = struct {
                 self.addPickItem(disp, fpath, line_no);
             }
         }
+    }
+
+    /// Grep hits are already the answer to the query, so every item shows.
+    fn showAllGrepHits(self: *Editor) void {
+        self.picker_filtered.clearRetainingCapacity();
+        var i: u32 = 0;
+        while (i < self.picker_items.items.len) : (i += 1) self.picker_filtered.append(self.gpa, i) catch {};
+        self.clampSel();
     }
 
     fn clampSel(self: *Editor) void {
@@ -3622,7 +3722,7 @@ pub const Editor = struct {
         self.d = doc;
         self.swapDocState(self.d); // load new doc -> mirror
         self.buf = &doc.buf;
-        if (self.ts == null) self.startTs();
+        if (self.ts == null and !self.decorate_pending) self.startTs();
     }
 
     /// Point the active window at `doc` (e.g. `:e`, `:bn`).
@@ -3754,11 +3854,13 @@ pub const Editor = struct {
             self.gpa.destroy(doc);
             return;
         };
+        // Paint before decorating, exactly as the first frame does: a 300 KB
+        // source file took 34 ms to appear because the parse, the `git diff`
+        // and the server handshake all ran before the redraw.
+        self.decorate_pending = true;
         self.focusDoc(doc);
         self.clearExtra();
         self.placeAt(line);
-        self.startLsp();
-        self.refreshGit();
         self.setStatus("opened {s}", .{self.buf.path orelse ""});
     }
 
@@ -7837,6 +7939,30 @@ fn typeKinds(lang: syntax.Language) []const []const u8 {
         .rust => &.{ "struct_item", "enum_item", "impl_item", "trait_item" },
         .go => &.{"type_declaration"},
         .javascript, .typescript => &.{ "class_declaration", "class_body" },
+        else => &.{},
+    };
+}
+
+/// The list nodes holding arguments and parameters, for `ia`/`aa`. Dumped
+/// from the vendored grammars with `ts_node_string` — Zig calls them
+/// `parameters`/`arguments`, C and Go `parameter_list`/`argument_list`,
+/// JS/TS `formal_parameters`/`arguments`, and Python mixes the two.
+fn listKinds(lang: syntax.Language) []const []const u8 {
+    return switch (lang) {
+        .zig, .rust => &.{ "parameters", "arguments" },
+        .c, .go => &.{ "parameter_list", "argument_list" },
+        .python => &.{ "parameters", "lambda_parameters", "argument_list" },
+        .javascript, .typescript => &.{ "formal_parameters", "arguments" },
+        else => &.{},
+    };
+}
+
+/// Comment nodes, for `iC`/`aC`. Rust is the odd one out: it splits line and
+/// block comments into separate node types.
+fn commentKinds(lang: syntax.Language) []const []const u8 {
+    return switch (lang) {
+        .rust => &.{ "line_comment", "block_comment" },
+        .zig, .c, .python, .go, .javascript, .typescript, .html => &.{"comment"},
         else => &.{},
     };
 }

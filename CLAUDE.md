@@ -47,7 +47,10 @@ work", they win.
   work remains and returns to blocking in `poll(2)` when it is done, so an
   idle editor still costs nothing.
 - **Paint first, decorate after.** Nothing that merely *annotates* the text may
-  sit between launch and the first frame: syntax highlighting, git signs and
+  sit between launch and the first frame — nor between `:e` and *its* first
+  frame, which is the same rule applied to every later open (`decorate_pending`
+  in `editor.zig`; opening a 300 KB source file went from 34 ms to 0.6 ms to
+  first paint): syntax highlighting, git signs and
   the LSP handshake all run after the initial paint, and a second frame brings
   them in. This took first paint on a 320 KB source file from 48 ms to 0 ms.
   Benchmarks therefore report first paint *and* settled time — a settle-only
@@ -246,12 +249,19 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 - **Operators:** `d` `c` `y`, `> <` (indent), doubled `dd cc yy >> <<`; `D C Y`,
   `x X s S`, `r` `~` `J`. `cw`/`cW` act like `ce`/`cE`.
 - **Structural objects (tree-sitter):** `af`/`if` select a function (whole, or
-  just its body) and `ac`/`ic` a class/struct/impl/enum, resolved from the
+  just its body), `ac`/`ic` a class/struct/impl/enum, `aa`/`ia` an argument or
+  parameter (`aa` swallowing the comma that joins it to a neighbour — the one
+  after it, or the one before it for the last item — so the list stays valid)
+  and `aC`/`iC` a comment (`aC` extends over a run of comment lines at the same
+  column and is linewise when the comment owns its lines; `iC` is the text
+  without the delimiter), resolved from the
   syntax tree rather than by counting braces — so `daf`, `dif`, `yac`, `vif`
   work per the language's real grammar. `]f`/`[f` jump to the next/previous
   function (jump motions, so `Ctrl-o` returns). The node names come from the
   vendored grammars themselves; languages without a grammar simply have no
-  such objects. The search prunes subtrees that cannot contain a match and
+  such objects. `aa` reads the grammar's own list nodes (`argument_list`,
+  `formal_parameters`, …) and takes whichever named child holds the cursor, so
+  a nested call or a comma inside a string cannot fool it. The search prunes subtrees that cannot contain a match and
   returns at the first hit, comparing grammar symbol ids rather than type
   names — `]f` on a 320 KB file costs ~0.4 ms, against 12 ms for a naive
   full-tree walk.
@@ -569,9 +579,10 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   bytes the block layer left plain), and HTML doesn't highlight embedded JS/CSS.
   Adding a grammar = vendor its `parser.c` + `highlights.scm` and extend
   `treesitter.zig` (and, for `af`/`ac` to work there, its node names in
-  `functionKinds`/`typeKinds` in `editor.zig`). Structural objects currently
-  cover Zig, C, Python, Rust, Go, JavaScript and TypeScript; there is no
-  parameter/argument object (`ia`/`aa`) yet.
+  `functionKinds`/`typeKinds`/`listKinds`/`commentKinds` in `editor.zig`). Structural objects currently
+  cover Zig, C, Python, Rust, Go, JavaScript and TypeScript; `ia`/`aa` and
+  `iC`/`aC` cover the same languages (comments also in HTML). There is no
+  sentence object.
 - The picker preview is a glance, not a view: capped at 256 KB per file,
   tree-sitter only up to 64 KB (the lexer covers bigger files), and skipped for
   remote entries. The parse happens *after* the picker's first frame, so

@@ -6,6 +6,7 @@ Notable changes to zedit. Dates are commit dates.
 
 ### Added
 
+- Argument and comment text objects: `aa`/`ia` select the argument or parameter under the cursor (`aa` takes the comma joining it to a neighbour, so the list stays valid) and `aC`/`iC` a comment (`aC` extends over a run of comment lines at the same column and is linewise when the comment owns its lines). Both read the grammar's own node names, so a nested call or a comma inside a string cannot fool them.
 - Versioning and this changelog: the `VERSION` file is embedded into `--version` at build time.
 - `zedit <dir>` enters the directory and starts in the fuzzy file picker (it used to fail with a raw `IsDir` error).
 - Every CLI option now has a short form (`-l/--log`, `-s/--lsp`, `-c/--config`, `-t/--tutor`, `-b/--benchmark`).
@@ -73,6 +74,10 @@ Notable changes to zedit. Dates are commit dates.
 
 ### Fixed
 
+- Visual-mode "around" objects behaved like their "inner" twins — `va(` selected the same text as `vi(`, for every object. The pending key was read back after it had been cleared. Pinned against headless nvim.
+- `[count]f`/`t`/`F`/`T` and `[count];` ignored the count (`3fa` went to the first `a`), and a count typed after an operator (`d3fa`) did not multiply with one typed before it. Pinned against headless nvim.
+- The grep picker (`Space f w`) searched only the files the project walk had delivered so far — which, on the first open, is none, since the picker deliberately opens before the walk runs. It now resumes as each slice arrives.
+
 - Long jumps (`G`, `100G`, a search hit) now redraw with the cursor centred, as vim does. It used to land on the bottom row, so every mouse-wheel notch immediately dragged it — wheel scrolling now matches nvim exactly at equal window heights.
 - The normal-mode cursor no longer sits past the last character (vim's rule), fixing a whole class of off-by-one bugs after `$`: `$x` did nothing, and `$dh` / `$d0` / `$db` / `$dF` all deleted one character too many.
 - `:qa` now refuses to quit while any buffer has unsaved changes (nvim's E37 behaviour, pinned in `vim_compat`); `:qa!` discards.
@@ -83,6 +88,7 @@ Notable changes to zedit. Dates are commit dates.
 
 ### Performance
 
+- `:e` (and opening from a picker) now paints the file before decorating it, the rule the first frame already followed: the parse, the `git diff` and the language-server handshake used to run first, so a 300 KB source file took 34 ms to appear. It now appears in 0.6 ms and is highlighted a frame later.
 - Opening a file no longer spawns `git` when the file is not inside a work tree — a few `stat` calls replace a ~1.2 ms subprocess — and `loadPartial` no longer scans the not-yet-read tail of its own allocation. Together these took the 10 MB file from first paint to fully settled from 8 ms to 4 ms, and the settled benchmark from 13.3 ms to 9.7 ms (nvim: 10.2 ms).
 - Fixed a benchmark bug that flattered other editors: `waitQuiet` started counting silence as soon as the key was sent, so an editor slower to respond than the quiet window scored as if it had finished immediately. Search and picker measurements now wait for a first response, and search is reported cold and warm.
 
