@@ -47,6 +47,7 @@ const Node = struct {
     depth: u32, // distance from the root: how the common ancestor is found
     seq: u32, // creation order: what `g-`/`g+` and `:earlier` count in
     time_ms: i64,
+    saved: bool, // the buffer was written while in this state (`:earlier 1f`)
     alive: bool,
 
     fn removed(self: Node) []const u8 {
@@ -141,6 +142,7 @@ pub const History = struct {
             .depth = self.nodes.items[parent].depth + 1,
             .seq = self.next_seq,
             .time_ms = nowMs(),
+            .saved = false,
             .alive = true,
         }) catch {
             self.gpa.free(bytes);
@@ -170,6 +172,7 @@ pub const History = struct {
             .depth = 0,
             .seq = self.next_seq,
             .time_ms = nowMs(),
+            .saved = false,
             .alive = true,
         }) catch {
             self.gpa.free(bytes);
@@ -270,6 +273,7 @@ pub const History = struct {
             .depth = 0,
             .seq = c.seq,
             .time_ms = c.time_ms,
+            .saved = c.saved,
             .alive = true,
         };
         self.free(root);
@@ -426,6 +430,52 @@ pub const History = struct {
         const target = best orelse self.endMost(back) orelse return false;
         if (target == self.cur.?) return false;
         return self.goTo(target, buf, cy, cx);
+    }
+
+    /// The buffer has just been written: remember that this state is on disk,
+    /// so `:earlier 1f` can come back to it.
+    pub fn markSaved(self: *History, buf: *const buffer.Buffer, cy: usize, cx: usize) void {
+        self.seal(buf, cy, cx);
+        if (self.cur) |c| self.nodes.items[c].saved = true;
+    }
+
+    /// `:earlier Nf` / `:later Nf`: step over the states the file was written
+    /// at. Running past the last one lands on the oldest (or newest) state
+    /// rather than failing, the same clamp vim applies (nvim-verified: with no
+    /// writes at all, `:earlier 1f` goes to the very beginning).
+    pub fn travelWrites(self: *History, buf: *buffer.Buffer, cy: *usize, cx: *usize, count: usize, back: bool) bool {
+        if (self.cur == null and !self.dirty) return false;
+        self.seal(buf, cy.*, cx.*);
+        var target: ?u32 = null;
+        var from = self.nodes.items[self.cur.?].seq;
+        var i: usize = 0;
+        while (i < count) : (i += 1) {
+            const next = self.adjacentSaved(from, back) orelse {
+                target = self.endMost(back);
+                break;
+            };
+            target = next;
+            from = self.nodes.items[next].seq;
+        }
+        const to = target orelse return false;
+        if (to == self.cur.?) return false;
+        return self.goTo(to, buf, cy, cx);
+    }
+
+    /// The nearest written state before (or after) `from` in creation order.
+    fn adjacentSaved(self: *const History, from: u32, back: bool) ?u32 {
+        var best: ?u32 = null;
+        for (self.nodes.items, 0..) |n, i| {
+            if (!n.alive or !n.saved) continue;
+            if (back and n.seq >= from) continue;
+            if (!back and n.seq <= from) continue;
+            if (best) |b| {
+                const better = if (back) n.seq > self.nodes.items[b].seq else n.seq < self.nodes.items[b].seq;
+                if (!better) continue;
+            }
+            best = @intCast(i);
+        }
+        return best;
     }
 
     /// The oldest (or newest) state in the tree.

@@ -15,9 +15,7 @@ behind the roadmap items.
 The shortlist is done; these are the next-highest gaps from
 `doc/COMPARISON.md`, in rough priority order.
 
-- [ ] Undo: persistence across sessions (vim's `undofile`) and `:earlier Nf`
-      (counted in file writes); snapshots are whole buffers, so memory is
-      O(states x file size).
+- [ ] Undo: persistence across sessions (vim's `undofile`).
 - [ ] Soft wrap: indent retention on continuation rows, and a `text-width`
       wrap column (it wraps at the window edge, mid-word).
 
@@ -154,6 +152,9 @@ The shortlist is done; these are the next-highest gaps from
       headless-nvim ground truth: visual-mode `a` objects behaved like `i`
       ones, counted find-char (`3fa`, `d3fa`, `2;`) ignored the count, and the
       grep picker missed every file the project walk had not yet delivered.
+- [x] Undo states stored as diffs against their parent, not whole-buffer
+      copies (300 changes in a 7.6 MB file: 295 MB -> 43 MB), and
+      `:earlier Nf` / `:later Nf` counted in file writes (5 nvim-pinned cases).
 - [x] Undo tree: branches instead of discarding, `g-`/`g+`, `:earlier`/
       `:later` (counts and time spans, clamped), `:undolist` picker. Ten
       nvim-pinned cases; no measurable cost to edit latency on a 10 MB file

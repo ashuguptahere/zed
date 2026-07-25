@@ -106,6 +106,15 @@ pub fn run(ctx: *h.Ctx) !void {
     case(ctx, "nvim#u9 :earlier 1h clamps to the oldest state", &.{ "IA", ESC, "IB", ESC, ":earlier 1h", CR, ":wq", CR }, ut, "one\n");
     case(ctx, "nvim#u10 :later 1h clamps to the newest", &.{ "IA", ESC, "IB", ESC, ":earlier 1h", CR, ":later 1h", CR, ":wq", CR }, ut, "BAone\n");
 
+    // `:earlier Nf` / `:later Nf` count file writes, not changes. Ground truth
+    // from real nvim through a pty: write, edit, write, edit, then walk back.
+    const wr = &[_][]const u8{ "IA", ESC, ":w", CR, "IB", ESC, ":w", CR, "IC", ESC };
+    case(ctx, "nvim#u11 :earlier 1f returns to the last write", wr ++ &[_][]const u8{ ":earlier 1f", CR, ":wq", CR }, ut, "BAone\n");
+    case(ctx, "nvim#u12 :earlier 2f goes back two writes", wr ++ &[_][]const u8{ ":earlier 2f", CR, ":wq", CR }, ut, "Aone\n");
+    case(ctx, "nvim#u13 :earlier 3f clamps past the first write", wr ++ &[_][]const u8{ ":earlier 3f", CR, ":wq", CR }, ut, "one\n");
+    case(ctx, "nvim#u14 :later 1f comes forward a write", wr ++ &[_][]const u8{ ":earlier 2f", CR, ":later 1f", CR, ":wq", CR }, ut, "BAone\n");
+    case(ctx, "nvim#u15 :earlier 1f with no writes goes to the start", &.{ "IA", ESC, "IB", ESC, ":earlier 1f", CR, ":wq", CR }, ut, "one\n");
+
     // Visual-mode "around" objects — nvim-verified on "x = add(a, b)".
     const va = "x = add(a, b)\n";
     case(ctx, "nvim#v1 va( takes the brackets", &.{ "fa", "va(d", ":wq", CR }, va, "x = add\n");

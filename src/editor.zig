@@ -4906,6 +4906,7 @@ pub const Editor = struct {
             },
         };
         self.setStatus("\"{s}\" written", .{self.buf.path orelse ""});
+        self.history.markSaved(self.buf, self.cy, self.cx); // for `:earlier 1f`
         self.refreshGit();
         return true;
     }
@@ -5995,16 +5996,27 @@ pub const Editor = struct {
     fn historyCommand(self: *Editor, arg: []const u8, back: bool) void {
         const a = std.mem.trim(u8, arg, " ");
         if (a.len == 0) return self.timeTravel(1, back);
-        const scale: ?i64 = switch (a[a.len - 1]) {
+        const suffix = a[a.len - 1];
+        const scale: ?i64 = switch (suffix) {
             's' => 1000,
             'm' => 60 * 1000,
             'h' => 60 * 60 * 1000,
             else => null,
         };
-        const digits = if (scale == null) a else a[0 .. a.len - 1];
+        const writes = suffix == 'f';
+        const digits = if (scale == null and !writes) a else a[0 .. a.len - 1];
         const n = std.fmt.parseInt(u32, digits, 10) catch
-            return self.setStatus("usage: :{s} [count | Ns | Nm | Nh]", .{if (back) "earlier" else "later"});
-        if (scale) |ms| self.timeTravelSpan(@as(i64, n) * ms, back) else self.timeTravel(n, back);
+            return self.setStatus("usage: :{s} [count | Ns | Nm | Nh | Nf]", .{if (back) "earlier" else "later"});
+        if (writes) {
+            // Counted in file writes, which is how you get back to "what I had
+            // when I last saved" without counting keystrokes.
+            if (self.history.travelWrites(self.buf, &self.cy, &self.cx, n, back)) {
+                self.setStatus("{d} write{s} {s}", .{ n, if (n == 1) "" else "s", if (back) "back" else "forward" });
+            } else {
+                self.setStatus("already at {s} change", .{if (back) "oldest" else "newest"});
+            }
+            self.afterHistoryMove();
+        } else if (scale) |ms| self.timeTravelSpan(@as(i64, n) * ms, back) else self.timeTravel(n, back);
     }
 
     /// `:undolist`: every state in the tree, oldest first, in a picker that

@@ -296,7 +296,8 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   discarding the old one. `g-`/`g+` (counts work: `3g-`) walk every state in
   the order it was made, across branches, which is how work stranded by an
   undo-then-edit is reached again; `:earlier`/`:later` do the same from the
-  command line, taking a count or a span (`:earlier 10s`, `2m`, `1h`) and
+  command line, taking a count, a span (`:earlier 10s`, `2m`, `1h`) or a
+  number of file writes (`:earlier 1f` — "what I had when I last saved"), and
   clamping to the oldest/newest state rather than refusing. `:undolist` opens
   the states in a picker — current one marked, branch points flagged — and
   Enter jumps to the chosen one. All nvim-verified in `vim_compat`.
@@ -575,8 +576,7 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   and every edit still serialises the buffer to compute its diff — that last
   O(file) cost per keystroke is the remaining one (10.9 ms on a 7.6 MB file),
   and removing it means the edit path reporting its own ranges. Capped at 256
-  states. History is per session — there is no `undofile` persistence — and
-  `:earlier 1f`, vim's file-write counting, is not implemented.
+  states. History is per session — there is no `undofile` persistence.
 - Multi-cursor is one-caret-per-line (column editing); it does not do
   per-caret line splits/joins or arbitrary selection-based multi-edit.
 - The project-wide grep picker is literal, not regex (in-buffer search is

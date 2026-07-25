@@ -387,8 +387,10 @@ reached again. Counts work:
 .B :earlier " / " :later
 The same from the command line, with a count
 .RB ( ":earlier 2" )
-or a span
-.RB ( ":earlier 10s" ", " 2m ", " 1h ").
+a span
+.RB ( ":earlier 10s" ", " 2m ", " 1h )
+or a number of file writes
+.RB ( ":earlier 1f" ", " 2f ").
 Asking for more than there is goes to the oldest (or newest) state.
 .TP
 .B :undolist

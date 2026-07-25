@@ -2,6 +2,12 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.6.0 - 2026-07-25
+
+### Added
+
+- `:earlier Nf` / `:later Nf` count file *writes* rather than changes, so `:earlier 1f` is "what I had when I last saved" without counting keystrokes. Running past the first (or last) write lands on the oldest (or newest) state, the clamp vim applies. Five cases pinned against real nvim.
+
 ## 0.5.2 - 2026-07-25
 
 ### Performance
