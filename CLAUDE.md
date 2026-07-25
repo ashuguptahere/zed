@@ -319,7 +319,8 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 - **LSP:** a language server is launched per filetype (`zls`, `clangd`, `pylsp`,
   `typescript-language-server`), or any command via `--lsp`. Diagnostics show as
   gutter signs + a statusline message/count; `K` hovers (`Ctrl-k` in insert
-  mode), `gd` goes to definition, `gr` renames the symbol under the cursor
+  mode), `gd` goes to definition, `gi` to the implementation, `gy` to the type
+  definition, `gr` renames the symbol under the cursor
   (prompts on the command line, pre-filled with the identifier), `Space l R`
   lists references in a picker ("path:line: text", Enter jumps there), `ga`
   lists code actions for the current line in a picker and applies the chosen
@@ -443,12 +444,14 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
 - LSP does diagnostics/hover/goto/references/completion/signature help/rename/
   code actions/formatting/inlay hints/document symbols with incremental (or
   full) document sync, including `textEdit`/`additionalTextEdits` completions
-  and snippet expansion. Snippet tabstops are tracked with a deliberately
-  simple model: stops later on the *same line* shift as you type, and a line
-  split or join (Enter, a joining backspace) ends the session rather than
-  guessing; nested placeholders are flattened to their text, `${1|a,b|}` uses
-  the first choice, and variables (`$TM_FILENAME`) resolve to their default or
-  to nothing. Snippet text is remote input, so brace nesting is depth-capped
+  and snippet expansion. Snippet tabstops track edits as you type: stops later
+  on the line shift by what an edit adds or removes, and a line split (Enter)
+  or join (backspace at column 0) moves the later stops with the text — only a
+  multi-line paste, which the simple model cannot follow, ends the session.
+  `${1|a,b,c|}` inserts the first alternative and offers the rest on
+  `Ctrl-n`/`Ctrl-p` (the statusline lists them); nested placeholders are
+  flattened to their text, and variables (`$TM_FILENAME`) resolve to their
+  default or to nothing. Snippet text is remote input, so brace nesting is depth-capped
   (a hostile server cannot recurse the parser into a stack overflow) and the
   expanded text passes through the render sanitizer like any other content. Document symbols
   are flattened (nested `DocumentSymbol[]` or flat `SymbolInformation[]`) into a

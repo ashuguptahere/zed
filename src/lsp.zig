@@ -313,7 +313,7 @@ pub const Client = struct {
         defer body.deinit(self.gpa);
         body.appendSlice(self.gpa, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"processId\":null,\"rootUri\":\"file://") catch return;
         appendEscaped(&body, self.gpa, root) catch return;
-        body.appendSlice(self.gpa, "\",\"capabilities\":{\"textDocument\":{\"publishDiagnostics\":{},\"hover\":{},\"definition\":{},\"completion\":{\"completionItem\":{\"snippetSupport\":true}},\"signatureHelp\":{},\"rename\":{},\"codeAction\":{},\"inlayHint\":{},\"documentSymbol\":{},\"references\":{},\"formatting\":{}}}}}") catch return;
+        body.appendSlice(self.gpa, "\",\"capabilities\":{\"textDocument\":{\"publishDiagnostics\":{},\"hover\":{},\"definition\":{},\"implementation\":{},\"typeDefinition\":{},\"completion\":{\"completionItem\":{\"snippetSupport\":true}},\"signatureHelp\":{},\"rename\":{},\"codeAction\":{},\"inlayHint\":{},\"documentSymbol\":{},\"references\":{},\"formatting\":{}}}}}") catch return;
         self.writeMessage(body.items);
     }
 
@@ -411,6 +411,18 @@ pub const Client = struct {
     pub fn requestDefinition(self: *Client, line: usize, col: usize) void {
         self.def_id = self.nextId();
         self.sendPositionRequest(self.def_id, "textDocument/definition", line, col);
+    }
+
+    /// `gi` / `gy`: the same Location(s) plumbing as goto-definition, so the
+    /// reply lands in `def_target` and the editor jumps the same way.
+    pub fn requestImplementation(self: *Client, line: usize, col: usize) void {
+        self.def_id = self.nextId();
+        self.sendPositionRequest(self.def_id, "textDocument/implementation", line, col);
+    }
+
+    pub fn requestTypeDefinition(self: *Client, line: usize, col: usize) void {
+        self.def_id = self.nextId();
+        self.sendPositionRequest(self.def_id, "textDocument/typeDefinition", line, col);
     }
 
     /// Request code actions for the range [sl,sc)-(el,ec]. We pass an empty

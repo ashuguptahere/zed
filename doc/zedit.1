@@ -163,7 +163,15 @@ and
 move between the stops, the first character typed at an untouched placeholder
 replaces it, and
 .B Esc
-ends the session leaving ordinary text. Items carrying a
+ends the session leaving ordinary text. Stops follow your edits, including a
+line you split with
+.BR Enter .
+A choice placeholder
+.RB ( "${1|a,b,c|}" )
+inserts the first alternative and cycles the rest with
+.B Ctrl\-n
+/
+.BR Ctrl\-p . Items carrying a
 .B textEdit
 replace the server's own range, and any
 .B additionalTextEdits

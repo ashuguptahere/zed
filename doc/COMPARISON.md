@@ -65,7 +65,7 @@ below and prioritised in `TODO.md`.
 - ~~Find references~~ — **DONE** (`Space l R` picker; Helix's `gr` slot stays rename in zedit)
 - ~~Formatting~~ — **DONE** (`Space l f` / `:format`, `format_on_save` config; external non-LSP formatters still absent) — remaining: **low**
 - ~~Cross-file / multi-line workspace edits~~ — **DONE** (full WorkspaceEdit application across files, multi-line edits)
-- Goto implementation / type definition (`gi`, `gy`) — **medium**
+- ~~Goto implementation / type definition (`gi`, `gy`)~~ — **DONE**
 - Workspace symbols picker (`Space S`) — zedit has document symbols only — **medium**
 - Diagnostics pickers — buffer-wide and workspace-wide diagnostic lists; zedit only has gutter signs + `]d`/`[d` — **medium**
 - ~~Snippets / `textEdit` completions with tabstop jumping~~ — **DONE** (`snippet.zig`)

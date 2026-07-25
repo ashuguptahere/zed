@@ -76,6 +76,10 @@ pub fn main(init: std.process.Init) !void {
                 "{{\"label\":\"mockOther\",\"insertText\":\"mockOther\"}}," ++
                 "{{\"label\":\"snipItem\",\"insertTextFormat\":2," ++
                 "\"insertText\":\"call(${{1:first}}, ${{2:second}})$0\"}}," ++
+                "{{\"label\":\"multiItem\",\"insertTextFormat\":2," ++
+                "\"insertText\":\"if ${{1:cond}} {{\\n    $0\\n}}\"}}," ++
+                "{{\"label\":\"choiceItem\",\"insertTextFormat\":2," ++
+                "\"insertText\":\"${{1|const,var,let|}} name = $0;\"}}," ++
                 "{{\"label\":\"editItem\",\"textEdit\":{{\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}}," ++
                 "\"end\":{{\"line\":{d},\"character\":{d}}}}},\"newText\":\"EDITED\"}}," ++
                 "\"additionalTextEdits\":[{{\"range\":{{\"start\":{{\"line\":0,\"character\":0}}," ++
@@ -105,6 +109,12 @@ pub fn main(init: std.process.Init) !void {
         } else if (eql(method, "textDocument/definition")) {
             send(gpa, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{{\"uri\":\"file:///x\"," ++
                 "\"range\":{{\"start\":{{\"line\":2,\"character\":0}},\"end\":{{\"line\":2,\"character\":0}}}}}}}}", .{id orelse 0});
+        } else if (eql(method, "textDocument/implementation")) {
+            send(gpa, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{{\"uri\":\"file:///x\"," ++
+                "\"range\":{{\"start\":{{\"line\":1,\"character\":0}},\"end\":{{\"line\":1,\"character\":0}}}}}}}}", .{id orelse 0});
+        } else if (eql(method, "textDocument/typeDefinition")) {
+            send(gpa, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":[{{\"uri\":\"file:///x\"," ++
+                "\"range\":{{\"start\":{{\"line\":2,\"character\":6}},\"end\":{{\"line\":2,\"character\":6}}}}}}]}}", .{id orelse 0});
         } else if (eql(method, "textDocument/rename")) {
             const new_name = strField(getField(parsed.value, "params") orelse parsed.value, "newName") orelse "x";
             sendRaw(gpa, "{\"jsonrpc\":\"2.0\",\"id\":");

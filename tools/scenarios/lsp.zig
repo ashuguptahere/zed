@@ -171,6 +171,20 @@ pub fn run(ctx: *h.Ctx) !void {
         ctx.check("fuzzy filter excludes non-matches", !r.plainHas("mockOther"));
     }
 
+    // gi / gy: goto implementation and type definition reuse the definition
+    // plumbing, so the cursor lands where the server points (the mock puts
+    // the implementation on line 2 and the type on line 3, col 6).
+    {
+        const r = drive(ctx, &.{ .{ .keys = "gi", .ms = 700 }, .{ .keys = "x", .ms = 300 } }, "\x1b:wq\r");
+        defer r.deinit(ctx.gpa);
+        ctx.check("gi jumps to the implementation", r.textHas("onst b = 2;"));
+    }
+    {
+        const r = drive(ctx, &.{ .{ .keys = "gy", .ms = 700 }, .{ .keys = "x", .ms = 300 } }, "\x1b:wq\r");
+        defer r.deinit(ctx.gpa);
+        ctx.check("gy jumps to the type definition", r.textHas("const  = 3;"));
+    }
+
     // Snippet completion: "snip" uniquely selects the snippet item, whose
     // insertText is "call(${1:first}, ${2:second})$0". Accepting expands the
     // placeholders, puts the cursor on the first one, and typing replaces it;
@@ -200,6 +214,65 @@ pub fn run(ctx: *h.Ctx) !void {
         }, "\x1b:wq\r");
         defer r.deinit(ctx.gpa);
         ctx.check("final tabstop sits after the snippet", r.textHas("call(first, second)!"));
+    }
+
+    // Choice placeholders: ${1|const,var,let|} inserts the first alternative
+    // and Ctrl-n / Ctrl-p cycle the rest in place.
+    {
+        const r = drive(ctx, &.{
+            .{ .keys = "ochoice", .ms = 800 },
+            .{ .keys = "\t", .ms = 500 },
+        }, "\x1b\x1b:wq\r");
+        defer r.deinit(ctx.gpa);
+        ctx.check("choice snippet inserts the first option", r.textHas("const name = ;"));
+        // The full list is width-dependent (the file path shares the bar), so
+        // assert on the hint itself; the cycling cases below prove the rest.
+        ctx.check("choices are advertised in the statusline", r.plainHas("^n/^p choices"));
+    }
+    {
+        const r = drive(ctx, &.{
+            .{ .keys = "ochoice", .ms = 800 },
+            .{ .keys = "\t", .ms = 500 },
+            .{ .keys = "\x0e", .ms = 400 }, // Ctrl-n: next alternative
+        }, "\x1b\x1b:wq\r");
+        defer r.deinit(ctx.gpa);
+        ctx.check("Ctrl-n cycles to the next choice", r.textHas("var name = ;"));
+    }
+    {
+        const r = drive(ctx, &.{
+            .{ .keys = "ochoice", .ms = 800 },
+            .{ .keys = "\t", .ms = 500 },
+            .{ .keys = "\x10", .ms = 400 }, // Ctrl-p wraps to the last
+        }, "\x1b\x1b:wq\r");
+        defer r.deinit(ctx.gpa);
+        ctx.check("Ctrl-p wraps around the choices", r.textHas("let name = ;"));
+    }
+
+    // A multi-line snippet keeps its tabstops across lines, and typing Enter
+    // inside a placeholder moves the later stops down with the text.
+    {
+        const r = drive(ctx, &.{
+            .{ .keys = "omulti", .ms = 800 },
+            .{ .keys = "\t", .ms = 500 },
+            .{ .keys = "ready", .ms = 300 },
+            .{ .keys = "\t", .ms = 300 }, // to $0 on the next line
+            .{ .keys = "body();", .ms = 400 },
+        }, "\x1b\x1b:wq\r");
+        defer r.deinit(ctx.gpa);
+        ctx.check("multi-line snippet tabstops work", r.textHas("if ready {\n    body();\n}"));
+    }
+    {
+        const r = drive(ctx, &.{
+            .{ .keys = "omulti", .ms = 800 },
+            .{ .keys = "\t", .ms = 500 },
+            .{ .keys = "a", .ms = 250 },
+            .{ .keys = "\r", .ms = 250 }, // split inside the placeholder
+            .{ .keys = "b", .ms = 250 },
+            .{ .keys = "\t", .ms = 400 }, // the final stop followed the split
+            .{ .keys = "Z", .ms = 300 },
+        }, "\x1b\x1b:wq\r");
+        defer r.deinit(ctx.gpa);
+        ctx.check("tabstops survive a line split", r.textHas("if a\nb {\n    Z\n}"));
     }
 
     // A textEdit item replaces the server's own range (the four characters

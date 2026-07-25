@@ -15,9 +15,6 @@ The shortlist is done; these are the next-highest gaps from
 `doc/COMPARISON.md`, in rough priority order. Pick one and it moves to
 "In progress".
 
-- [ ] Snippet polish: multi-line tabstop tracking across line splits, and
-      choice placeholders (`${1|a,b|}`) offering the alternatives.
-- [ ] Goto implementation / type definition (`gi`, `gy`).
 - [ ] Workspace symbols picker (zedit has document symbols only).
 - [ ] Buffer/workspace diagnostics picker.
 - [ ] Tree-sitter textobjects (function/class/parameter) and structural motions.
@@ -112,6 +109,9 @@ The shortlist is done; these are the next-highest gaps from
 - [x] `:update` / `--check-update` against the newest release tag.
 - [x] Shortlist #8: inline diagnostics (dim severity-coloured virtual text
       after the code; `inline_diagnostics` config, on by default).
+- [x] Snippet polish: tabstops survive splits/joins; choice placeholders
+      cycle with Ctrl-n/Ctrl-p. Goto implementation (`gi`) / type
+      definition (`gy`).
 - [x] Shortlist #10: snippets (`snippet.zig` parser, tabstop session,
       Tab/Shift-Tab, type-to-replace) + `textEdit` / `additionalTextEdits`.
       **The COMPARISON shortlist is now complete.**

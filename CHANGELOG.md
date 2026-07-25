@@ -43,6 +43,8 @@ Notable changes to zedit. Dates are commit dates.
 - Renamed the editor from `zed` to `zedit` (zig-editor).
 - Ported the pty test harnesses from Python to Zig — `zig build itest` now needs nothing beyond the toolchain.
 
+- `gi` and `gy` jump to a symbol's implementation and type definition.
+- Snippet tabstops now survive line splits and joins, and choice placeholders (`${1|a,b,c|}`) offer their alternatives on `Ctrl-n`/`Ctrl-p` instead of silently using the first.
 - Snippet completions: items the server marks as snippets expand their placeholders and start a tabstop session — `Tab`/`Shift-Tab` walk the stops, the first keystroke at an untouched placeholder replaces it, `Esc` ends the session. Completion items also honour the server's `textEdit` range instead of guessing the identifier prefix, and apply `additionalTextEdits` (auto-imports). zedit now advertises `snippetSupport`, so servers offer them at all.
 - Completion now pops up on its own while typing (debounced by `completion_delay_ms`, default 150 ms; `auto_completion = false` restores manual-only) and the list is fuzzy-matched and ranked with the pickers' scorer — `mplt` finds `mockComplete`. The debounce is armed only while typing, so an idle editor still blocks in `poll(2)` at zero CPU.
 - Partial commands are shown as you type them at the right of the statusline (vim's `showcmd`): `d`, `di`, `2d`, `"ay`, `^W`, cleared the instant the command executes; the macro-recording marker shares the slot.

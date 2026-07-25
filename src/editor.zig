@@ -81,7 +81,13 @@ const PickItem = struct { display: []u8, path: []u8, line: usize };
 
 /// A snippet tabstop resolved to a buffer position (`len` is the placeholder
 /// still sitting there, which the first keystroke at the stop removes).
-const SnipStop = struct { row: usize, col: usize, len: usize };
+const SnipStop = struct {
+    row: usize,
+    col: usize,
+    len: usize,
+    choices: ?[]u8 = null, // owned: "a,b,c" from ${N|a,b,c|}
+    choice: usize = 0, // which alternative is currently in the buffer
+};
 
 /// One command-line completion candidate: `text` is the full replacement
 /// command line; `text[show..]` is what the wildmenu displays.
@@ -566,6 +572,7 @@ pub const Editor = struct {
     }
 
     pub fn deinit(self: *Editor) void {
+        self.endSnippet();
         self.snip_stops.deinit(self.gpa);
         recent.save(&self.recents, self.io, self.recent_path);
         self.recents.deinit();
@@ -1148,6 +1155,12 @@ pub const Editor = struct {
                     self.resetPending();
                 } else if (k == .char and k.char == 'r') {
                     self.enterRename(); // gr: rename symbol (prompts for the new name)
+                } else if (k == .char and k.char == 'i') {
+                    self.lspImplementation(); // gi: goto implementation
+                    self.resetPending();
+                } else if (k == .char and k.char == 'y') {
+                    self.lspTypeDefinition(); // gy: goto type definition
+                    self.resetPending();
                 } else if (k == .char and k.char == 'a') {
                     self.lspCodeAction(); // ga: code actions for the current line
                     self.resetPending();
@@ -2029,6 +2042,9 @@ pub const Editor = struct {
         // leaves the snippet as ordinary text.
         if (self.snippetActive()) {
             switch (k) {
+                .ctrl => |c| if ((c == 'n' or c == 'p') and !self.comp_open) {
+                    if (self.snippetCycleChoice(c == 'n')) return;
+                },
                 .tab => {
                     self.snippetJump(true);
                     return;
@@ -4508,6 +4524,18 @@ pub const Editor = struct {
         if (self.lsp) |*c| c.requestDefinition(self.cy, self.charCol());
     }
 
+    /// `gi` — jump to the implementation(s) of the symbol under the cursor.
+    fn lspImplementation(self: *Editor) void {
+        const client = if (self.lsp) |*c| c else return self.setStatus("no language server", .{});
+        client.requestImplementation(self.cy, self.charCol());
+    }
+
+    /// `gy` — jump to the *type* of the symbol under the cursor.
+    fn lspTypeDefinition(self: *Editor) void {
+        const client = if (self.lsp) |*c| c else return self.setStatus("no language server", .{});
+        client.requestTypeDefinition(self.cy, self.charCol());
+    }
+
     fn lspDocumentSymbol(self: *Editor) void {
         if (self.lsp) |*c| c.requestDocumentSymbol();
     }
@@ -4937,7 +4965,15 @@ pub const Editor = struct {
         self.snip_stops.clearRetainingCapacity();
         for (stops) |s| {
             const pos = offsetToPos(row, col, text, s.offset);
-            self.snip_stops.append(self.gpa, .{ .row = pos.row, .col = pos.col, .len = s.len }) catch {};
+            const owned: ?[]u8 = if (s.choices) |c| (self.gpa.dupe(u8, c) catch null) else null;
+            self.snip_stops.append(self.gpa, .{
+                .row = pos.row,
+                .col = pos.col,
+                .len = s.len,
+                .choices = owned,
+            }) catch {
+                if (owned) |o| self.gpa.free(o);
+            };
         }
         self.snip_idx = 0;
         if (self.snip_stops.items.len == 0) {
@@ -4955,9 +4991,55 @@ pub const Editor = struct {
         self.cx = @min(s.col, self.buf.line(self.cy).len);
         self.snip_pristine = s.len > 0;
         self.updateGoal();
+        if (s.choices) |c| self.setStatus("^n/^p choices: {s}", .{c});
+    }
+
+    /// Cycle a choice tabstop (`${1|a,b,c|}`) through its alternatives,
+    /// swapping the text in the buffer as it goes.
+    fn snippetCycleChoice(self: *Editor, forward: bool) bool {
+        if (!self.snippetActive()) return false;
+        const s = self.snip_stops.items[self.snip_idx];
+        const list = s.choices orelse return false;
+
+        var n: usize = 0;
+        var it = std.mem.splitScalar(u8, list, ',');
+        while (it.next()) |_| n += 1;
+        if (n <= 1) return false;
+        const next = if (forward) (s.choice + 1) % n else (s.choice + n - 1) % n;
+
+        var pick: []const u8 = "";
+        var i: usize = 0;
+        var it2 = std.mem.splitScalar(u8, list, ',');
+        while (it2.next()) |c| : (i += 1) {
+            if (i == next) pick = c;
+        }
+
+        const line = self.buf.line(s.row);
+        const end = @min(s.col + s.len, line.len);
+        if (end < s.col) return false;
+        self.buf.deleteInLine(s.row, s.col, end) catch return false;
+        self.buf.insertBytes(s.row, s.col, pick) catch return false;
+
+        const old_len = end - s.col;
+        for (self.snip_stops.items) |*o| {
+            if (o.row == s.row and o.col > s.col) {
+                o.col = o.col + pick.len -| old_len;
+            }
+        }
+        self.snip_stops.items[self.snip_idx].len = pick.len;
+        self.snip_stops.items[self.snip_idx].choice = next;
+        self.snip_pristine = true; // typing still replaces the whole choice
+        self.cy = s.row;
+        self.cx = s.col;
+        self.updateGoal();
+        self.setStatus("^n/^p choices: {s}", .{list});
+        return true;
     }
 
     fn endSnippet(self: *Editor) void {
+        for (self.snip_stops.items) |s| {
+            if (s.choices) |c| self.gpa.free(c);
+        }
         self.snip_stops.clearRetainingCapacity();
         self.snip_idx = 0;
         self.snip_pristine = false;
@@ -4983,7 +5065,10 @@ pub const Editor = struct {
     /// changes the line numbering, which this simple model does not track, so
     /// it ends the session rather than jumping somewhere wrong.
     fn snippetShift(self: *Editor, row: usize, col: usize, rows_before: usize, len_before: usize) void {
-        if (self.buf.lineCount() != rows_before) return self.endSnippet();
+        const rows_after = self.buf.lineCount();
+        if (rows_after == rows_before + 1) return self.snippetSplit(row, col);
+        if (rows_after + 1 == rows_before) return self.snippetJoin(row);
+        if (rows_after != rows_before) return self.endSnippet(); // multi-line paste
         if (row >= self.buf.lineCount()) return self.endSnippet();
         const len_after = self.buf.line(row).len;
         if (len_after == len_before) return;
@@ -4993,6 +5078,34 @@ pub const Editor = struct {
                 s.col += len_after - len_before;
             } else {
                 s.col -|= len_before - len_after;
+            }
+        }
+    }
+
+    /// A line split at (row, col) — Enter inside a snippet: everything after
+    /// the split point moves down a line, so the stops follow it.
+    fn snippetSplit(self: *Editor, row: usize, col: usize) void {
+        for (self.snip_stops.items) |*s| {
+            if (s.row > row) {
+                s.row += 1;
+            } else if (s.row == row and s.col >= col) {
+                s.row += 1;
+                s.col -= col;
+            }
+        }
+    }
+
+    /// A join (backspace at column 0) — the cursor now sits where the two
+    /// lines met, so stops from the removed line move up and across.
+    fn snippetJoin(self: *Editor, row: usize) void {
+        if (row == 0) return self.endSnippet();
+        const at = self.cx; // the join point, where the cursor landed
+        for (self.snip_stops.items) |*s| {
+            if (s.row == row) {
+                s.row -= 1;
+                s.col += at;
+            } else if (s.row > row) {
+                s.row -= 1;
             }
         }
     }

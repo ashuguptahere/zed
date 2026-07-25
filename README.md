@@ -48,7 +48,8 @@
   - snippets with tabstops (`Tab`/`Shift-Tab` between placeholders, typing
     replaces them), `textEdit` ranges and auto-import `additionalTextEdits`
   - signature help (on `(` and `,`),
-    hover (`K` / `Ctrl-k`), goto definition (`gd`)
+    hover (`K` / `Ctrl-k`), goto definition (`gd`), implementation (`gi`) and
+    type definition (`gy`)
   - rename (`gr`), find references (`Space l R`), code actions (`ga`,
     including `executeCommand`/`applyEdit`), document symbols (`Space l s`),
     inlay hints rendered as virtual text

@@ -27,6 +27,9 @@ pub const Stop = struct {
     final: bool,
     offset: usize, // byte offset into `text`
     len: usize, // placeholder length in bytes (0 for a bare $N)
+    /// For `${N|a,b,c|}`: the alternatives, comma-separated as written. The
+    /// first is used as the placeholder text; the editor cycles the rest.
+    choices: ?[]u8 = null,
 };
 
 pub const Parsed = struct {
@@ -35,6 +38,9 @@ pub const Parsed = struct {
 
     pub fn deinit(self: *Parsed, gpa: std.mem.Allocator) void {
         gpa.free(self.text);
+        for (self.stops) |s| {
+            if (s.choices) |c| gpa.free(c);
+        }
         gpa.free(self.stops);
     }
 };
@@ -147,6 +153,7 @@ fn parseBraced(
         while (k < body.len and std.ascii.isDigit(body[k])) : (k += 1) idx = idx * 10 + (body[k] - '0');
         const offset = text.items.len;
         var len: usize = 0;
+        var choices: ?[]u8 = null;
         if (k < body.len and body[k] == ':') {
             // Placeholder text may itself contain nested tabstops; those are
             // flattened to their own placeholder text (we keep one level of
@@ -156,13 +163,16 @@ fn parseBraced(
             try text.appendSlice(gpa, inner.text);
             len = inner.text.len;
         } else if (k < body.len and body[k] == '|') {
-            const bar = std.mem.indexOfScalarPos(u8, body, k + 1, ',') orelse
-                std.mem.lastIndexOfScalar(u8, body, '|') orelse body.len;
-            const first = body[k + 1 .. @min(bar, body.len)];
+            // ${N|a,b,c|} — keep every alternative; show the first.
+            const end_bar = std.mem.lastIndexOfScalar(u8, body, '|') orelse body.len;
+            const list = body[k + 1 .. @max(end_bar, k + 1)];
+            const first_end = std.mem.indexOfScalar(u8, list, ',') orelse list.len;
+            const first = list[0..first_end];
             try text.appendSlice(gpa, first);
             len = first.len;
+            choices = gpa.dupe(u8, list) catch null;
         }
-        try stops.append(gpa, .{ .index = idx, .final = idx == 0, .offset = offset, .len = len });
+        try stops.append(gpa, .{ .index = idx, .final = idx == 0, .offset = offset, .len = len, .choices = choices });
         return close + 1;
     }
 
@@ -247,12 +257,21 @@ test "final stop sorts after higher indices" {
     try std.testing.expect(p.stops[2].final);
 }
 
-test "choices use the first option" {
+test "choices use the first option and keep the rest" {
     const gpa = std.testing.allocator;
-    var p = try parse(gpa, "${1|const,var|} x");
+    var p = try parse(gpa, "${1|const,var,let|} x");
     defer p.deinit(gpa);
     try std.testing.expectEqualStrings("const x", p.text);
     try std.testing.expectEqual(@as(usize, 5), p.stops[0].len);
+    try std.testing.expectEqualStrings("const,var,let", p.stops[0].choices.?);
+}
+
+test "choice list with one entry" {
+    const gpa = std.testing.allocator;
+    var p = try parse(gpa, "${1|only|}");
+    defer p.deinit(gpa);
+    try std.testing.expectEqualStrings("only", p.text);
+    try std.testing.expectEqualStrings("only", p.stops[0].choices.?);
 }
 
 test "escapes stay literal" {
