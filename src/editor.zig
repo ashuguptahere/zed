@@ -290,6 +290,12 @@ pub const Editor = struct {
     // and disarms — so an idle editor still blocks indefinitely (zero CPU).
     comp_due_ms: ?i64,
 
+    // Picker preview: the file shown beside the results, cached so moving the
+    // selection re-reads only when the path actually changes.
+    preview_path: ?[]u8,
+    preview_text: ?[]u8,
+    preview_top: usize, // first line of the file to show (grep/reference hits centre)
+
     // Rows an overlay (popup) painted over this frame. The next frame must
     // repaint exactly these — the rest can still be diffed, so dismissing a
     // popup costs a few rows instead of the whole screen.
@@ -500,6 +506,9 @@ pub const Editor = struct {
             .snip_stops = .empty,
             .snip_idx = 0,
             .snip_pristine = false,
+            .preview_path = null,
+            .preview_text = null,
+            .preview_top = 0,
             .overlay_top = 0,
             .overlay_bot = 0,
             .comp_due_ms = null,
@@ -582,6 +591,7 @@ pub const Editor = struct {
     }
 
     pub fn deinit(self: *Editor) void {
+        self.clearPreview();
         self.endSnippet();
         self.snip_stops.deinit(self.gpa);
         recent.save(&self.recents, self.io, self.recent_path);
@@ -3577,16 +3587,39 @@ pub const Editor = struct {
         self.left = self.cur.left;
     }
 
+    /// The picker screen: the file tree on its configured side (when open),
+    /// the results next to it, and — for anything that names a file — a live
+    /// preview of the selection on the right, Helix-style. Every picker uses
+    /// this same layout, so searching looks the same wherever you start it.
     fn renderPickerBody(self: *Editor) !void {
         const th = theme.current;
         const cols: usize = self.win.cols;
         const rows: usize = self.win.rows;
         const visible = if (rows > 1) rows - 1 else 1;
 
+        // Columns: [sidebar] [list] [preview]
+        const side_w = if (self.sb_open) self.sbWidth() else 0;
+        const body_x = if (self.sb_open and config.settings.sidebar == .left) side_w + 1 else 1;
+        const body_w = cols -| side_w;
+        // A preview needs room for both panes; below that the results get the
+        // whole width rather than two unreadable columns.
+        const wants_preview = self.previewKind() != .none and body_w >= 40;
+        const list_w = if (wants_preview) @max(body_w / 2, 24) else body_w;
+        const prev_x = body_x + list_w;
+        const prev_w = if (wants_preview) body_w - list_w else 0;
+
         if (self.picker_sel < self.picker_scroll) self.picker_scroll = self.picker_sel;
         if (self.picker_sel >= self.picker_scroll + visible) self.picker_scroll = self.picker_sel - visible + 1;
 
-        // Prompt line.
+        // Clear the whole screen once; the panes then paint over it.
+        try self.setBg(th.bg);
+        var clr: usize = 1;
+        while (clr <= rows) : (clr += 1) {
+            try self.emitFmt("\x1b[{d};1H", .{clr});
+            try self.emit(ansi.clear_line_right);
+        }
+        if (self.sb_open) try self.renderSidebar();
+
         const klabel = switch (self.picker_kind) {
             .files => " FILES ",
             .grep => " SEARCH ",
@@ -3596,38 +3629,151 @@ pub const Editor = struct {
             .buffer => " BUFFERS ",
             .reference => " REFERENCES ",
         };
+
+        // Prompt.
+        try self.emitFmt("\x1b[1;{d}H", .{body_x});
         try self.setBg(th.mode_command);
         try self.setFg(th.bg);
         try self.emit(klabel);
         try self.setBg(th.bg);
         try self.setFg(th.fg);
         try self.emit(" ");
-        try self.emit(self.picker_query.items);
-        try self.emit(ansi.clear_line_right);
-        try self.emit("\r\n");
+        const qmax = list_w -| (klabel.len + 2);
+        try self.emitSanitized(self.picker_query.items[0..@min(self.picker_query.items.len, qmax)]);
 
         // Results.
         var shown: usize = 0;
         while (shown < visible) : (shown += 1) {
             const fi = self.picker_scroll + shown;
             const selected = fi == self.picker_sel and fi < self.picker_filtered.items.len;
+            try self.emitFmt("\x1b[{d};{d}H", .{ shown + 2, body_x });
             try self.setBg(if (selected) th.cursorline else th.bg);
+            var used: usize = 0;
             if (fi < self.picker_filtered.items.len) {
                 const it = self.picker_items.items[self.picker_filtered.items[fi]];
                 try self.setFg(if (selected) th.mode_normal else th.fg_dim);
                 try self.emit(if (selected) "\u{25B6} " else "  ");
                 try self.setFg(if (selected) th.fg else th.fg_dim);
-                const maxw = if (cols > 2) cols - 2 else 0;
-                try self.emitSanitized(it.display[0..@min(it.display.len, maxw)]);
+                const maxw = list_w -| 3;
+                const text = it.display[0..@min(it.display.len, maxw)];
+                try self.emitSanitized(text);
+                used = 2 + unicode.displayWidth(text);
             }
-            try self.setBg(if (selected) th.cursorline else th.bg);
-            try self.emit(ansi.clear_line_right);
-            if (shown + 1 < visible) try self.emit("\r\n");
+            if (used < list_w) try self.emitSpaces(list_w - used);
         }
 
+        if (wants_preview) try self.renderPreview(prev_x, prev_w, rows);
+
         const promptw = klabel.len + 1;
-        try self.emitFmt("\x1b[{d};{d}H", .{ 1, promptw + unicode.displayWidth(self.picker_query.items) + 1 });
+        try self.emitFmt("\x1b[{d};{d}H", .{ 1, body_x + promptw + unicode.displayWidth(self.picker_query.items) });
         try self.emit(ansi.show_cursor);
+    }
+
+    const PreviewKind = enum { none, file, line };
+
+    /// Whether the current picker's selection names something previewable:
+    /// a file (file picker, buffers) or a file *and line* (grep, references).
+    fn previewKind(self: *Editor) PreviewKind {
+        // Remote entries are not previewed (that would be an ssh round trip
+        // per keystroke), so they keep the full width for the results.
+        if (self.remote_root != null) return .none;
+        if (self.picker_sel < self.picker_filtered.items.len) {
+            const it = self.picker_items.items[self.picker_filtered.items[self.picker_sel]];
+            if (remote.isRemote(it.path)) return .none;
+        }
+        return switch (self.picker_kind) {
+            .files => .file,
+            .buffer => .file,
+            .grep, .reference => .line,
+            .theme, .code_action, .symbol => .none,
+        };
+    }
+
+    fn clearPreview(self: *Editor) void {
+        if (self.preview_path) |p| self.gpa.free(p);
+        if (self.preview_text) |t| self.gpa.free(t);
+        self.preview_path = null;
+        self.preview_text = null;
+    }
+
+    /// Load the selected entry's file into the preview cache (only when the
+    /// path changed — moving the selection within one file is free).
+    fn ensurePreview(self: *Editor) void {
+        if (self.picker_sel >= self.picker_filtered.items.len) return self.clearPreview();
+        const it = self.picker_items.items[self.picker_filtered.items[self.picker_sel]];
+        self.preview_top = if (it.line > 0) it.line - 1 else 0;
+        if (self.preview_path) |p| {
+            if (std.mem.eql(u8, p, it.path)) return; // already loaded
+        }
+        self.clearPreview();
+        // A preview is a convenience: skip anything that would cost a round
+        // trip or a huge read.
+        if (remote.isRemote(it.path)) return;
+        const text = std.Io.Dir.cwd().readFileAlloc(self.io, it.path, self.gpa, .limited(256 << 10)) catch return;
+        self.preview_path = self.gpa.dupe(u8, it.path) catch null;
+        self.preview_text = text;
+    }
+
+    /// Draw the preview pane: the selected file, syntax-highlighted, scrolled
+    /// so a matched line (grep, references) sits in view and marked.
+    fn renderPreview(self: *Editor, x: usize, w: usize, rows: usize) !void {
+        const th = theme.current;
+        self.ensurePreview();
+
+        try self.emitFmt("\x1b[1;{d}H", .{x});
+        try self.setBg(th.status_seg_bg);
+        try self.setFg(th.status_seg_fg);
+        const name: []const u8 = if (self.preview_path) |p| std.fs.path.basename(p) else "";
+        try self.emit(" ");
+        try self.emitSanitized(name[0..@min(name.len, w -| 2)]);
+        if (unicode.displayWidth(name) + 1 < w) try self.emitSpaces(w - unicode.displayWidth(name) - 1);
+
+        const text = self.preview_text orelse return;
+        const body_rows = rows -| 1;
+        // Centre the target line when the entry named one.
+        const first = if (self.preview_top > body_rows / 2) self.preview_top - body_rows / 2 else 0;
+        const lang = if (self.preview_path) |p| syntax.detect(p) else .none;
+
+        var line_no: usize = 0;
+        var row: usize = 2;
+        var it = std.mem.splitScalar(u8, text, '\n');
+        while (it.next()) |line| : (line_no += 1) {
+            if (line_no < first) continue;
+            if (row > rows) break;
+            const hit = self.previewKind() == .line and line_no == self.preview_top;
+            try self.emitFmt("\x1b[{d};{d}H", .{ row, x });
+            try self.setBg(if (hit) th.cursorline else th.bg);
+            try self.setFg(th.fg_dim);
+            var nb: [8]u8 = undefined;
+            const num = std.fmt.bufPrint(&nb, "{d: >4} ", .{line_no + 1}) catch "     ";
+            try self.emit(num);
+            try self.emitPreviewLine(line, lang, w -| num.len);
+            row += 1;
+        }
+    }
+
+    /// One preview line, lexer-highlighted and clipped (no tree-sitter here:
+    /// the preview is a glance, not an editable view).
+    fn emitPreviewLine(self: *Editor, line: []const u8, lang: syntax.Language, w: usize) !void {
+        self.style_buf.resize(self.gpa, line.len) catch {};
+        const styled = self.style_buf.items.len == line.len;
+        if (styled) syntax.highlight(lang, line, self.style_buf.items);
+        var used: usize = 0;
+        var i: usize = 0;
+        while (i < line.len and used < w) {
+            const d = unicode.decode(line[i..]);
+            const cw = if (d.cp == '\t') @min(tabWidth(), w - used) else unicode.width(d.cp);
+            if (used + cw > w) break;
+            try self.setFg(if (styled) self.styleColor(self.style_buf.items[i]) else th_fg());
+            if (d.cp == '\t') {
+                try self.emitSpaces(cw);
+            } else {
+                try self.emit(if (isControlCp(d.cp)) "?" else line[i .. i + d.len]);
+            }
+            used += cw;
+            i += d.len;
+        }
+        if (used < w) try self.emitSpaces(w - used);
     }
 
     // === command line ======================================================
@@ -5624,8 +5770,15 @@ pub const Editor = struct {
     /// Tile the windows over the text area (all but the bottom command line).
     /// One orientation at a time (even split); the last window takes the
     /// remainder so the screen is fully covered.
+    /// Whether the buffer tabline is on screen: more than one file open and
+    /// the config allows it (nvim shows its tabline the same way).
+    fn tabsVisible(self: *Editor) bool {
+        return config.settings.buffer_tabs and self.docs.items.len > 1;
+    }
+
     fn layout(self: *Editor) void {
-        const total_rows = if (self.win.rows > 1) self.win.rows - 1 else 1; // reserve command line
+        const tab_h: usize = if (self.tabsVisible()) 1 else 0;
+        const total_rows = if (self.win.rows > 1 + tab_h) self.win.rows - 1 - tab_h else 1; // command line + tabs
         const cols: usize = self.win.cols;
         // The sidebar carves its width off the chosen side; windows tile the rest.
         const sb_w: usize = if (self.sb_open) self.sbWidth() else 0;
@@ -5638,16 +5791,16 @@ pub const Editor = struct {
             for (self.wins.items, 0..) |w, i| {
                 const ww = if (i == n - 1) (if (x0 + avail > x) x0 + avail - x else 1) else each;
                 w.gx = x;
-                w.gy = 1;
+                w.gy = 1 + tab_h;
                 w.gw = ww;
                 w.gh = total_rows;
                 x += ww;
             }
         } else {
             const each = if (n > 0) total_rows / n else total_rows;
-            var y: usize = 1;
+            var y: usize = 1 + tab_h;
             for (self.wins.items, 0..) |w, i| {
-                const wh = if (i == n - 1) (if (total_rows + 1 > y) total_rows - y + 1 else 1) else each;
+                const wh = if (i == n - 1) (if (total_rows + 1 + tab_h > y) total_rows + tab_h - y + 1 else 1) else each;
                 w.gx = x0;
                 w.gy = y;
                 w.gw = avail;
@@ -5888,6 +6041,7 @@ pub const Editor = struct {
         self.tsUpdate(); // query the active doc's visible range (needs scrolled top)
         self.saveViewport(); // mirror back into the active Win for rendering
 
+        if (self.tabsVisible()) try self.renderTabs();
         for (self.wins.items) |w| try self.renderWindow(w);
         if (self.sb_open) try self.renderSidebar();
 
@@ -6124,6 +6278,18 @@ pub const Editor = struct {
     /// Open a remote directory as the session's picker root (`zedit ssh://…`).
     pub fn openRemoteDir(self: *Editor, url: []const u8) void {
         self.setRemoteRoot(url);
+        self.openBrowser();
+    }
+
+    /// The view for "opened on a directory": the file tree on the left and the
+    /// picker (with its preview) filling the rest, so an empty session lands
+    /// somewhere useful instead of on a blank buffer.
+    pub fn openBrowser(self: *Editor) void {
+        if (!self.sb_open) {
+            self.sb_open = true;
+            self.sbRebuild();
+        }
+        self.sb_focus = false; // typing goes to the search box
         self.openFilePicker();
     }
 
@@ -6192,6 +6358,34 @@ pub const Editor = struct {
         self.remote_root = self.gpa.dupe(u8, url) catch null;
         self.noteRecent(url, .dir);
         self.refreshFileCache();
+    }
+
+    /// The buffer tabline across the top: one tab per open file, the active
+    /// one highlighted, dirty ones marked. Shown only when more than one file
+    /// is open, so a single-file session loses no room.
+    fn renderTabs(self: *Editor) !void {
+        const th = theme.current;
+        const cols = self.win.cols;
+        self.beginSeg(1, 1);
+        try self.emitFmt("\x1b[1;1H", .{});
+        var used: usize = 0;
+        for (self.docs.items) |doc| {
+            const name = std.fs.path.basename(docLabel(doc));
+            const active = doc == self.d;
+            const dirty = doc.buf.dirty;
+            const w = 3 + unicode.displayWidth(name) + @as(usize, if (dirty) 2 else 0);
+            if (used + w > cols) break;
+            try self.setBg(if (active) th.bg else th.status_seg_bg);
+            try self.setFg(if (active) th.mode_normal else th.fg_dim);
+            try self.emit(" ");
+            try self.emitSanitized(name);
+            if (dirty) try self.emit(" \u{25CF}");
+            try self.emit("  ");
+            used += w;
+        }
+        try self.setBg(th.status_seg_bg);
+        if (used < cols) try self.emitSpaces(cols - used);
+        self.closeSegs();
     }
 
     /// Draw the completion candidates ("wildmenu") as a vertical popup just
@@ -7162,6 +7356,10 @@ fn offsetToPos(row: usize, col: usize, text: []const u8, offset: usize) Pos {
         } else c += 1;
     }
     return .{ .row = r, .col = c };
+}
+
+fn th_fg() Color {
+    return theme.current.fg;
 }
 
 /// Linear blend of two colours: `pct`% of `b` into `a` (integer math, no

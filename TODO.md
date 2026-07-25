@@ -15,6 +15,9 @@ The shortlist is done; these are the next-highest gaps from
 `doc/COMPARISON.md`, in rough priority order.
 
 - [ ] Workspace symbols picker (zedit has document symbols only).
+- [ ] Preview polish: tree-sitter highlighting in the preview pane, and
+      scrolling within it.
+- [ ] Click-to-select on the tabline (needs mouse click handling).
 - [ ] Buffer/workspace diagnostics picker.
 - [ ] Tree-sitter textobjects (function/class/parameter) and structural motions.
 - [ ] Soft-wrap; undo tree (`:earlier`/`:later`).
@@ -22,10 +25,6 @@ The shortlist is done; these are the next-highest gaps from
 
 ## Next (in order)
 
-- [ ] Explorer + picker layout: `zedit .` opens the tree on the left and the
-      picker on the right with a file preview (Helix-style), consistently for
-      every picker.
-- [ ] Buffers as tabs along the top.
 
 ## Recurring (every feature / significant change)
 
@@ -115,6 +114,8 @@ The shortlist is done; these are the next-highest gaps from
 - [x] `:update` / `--check-update` against the newest release tag.
 - [x] Shortlist #8: inline diagnostics (dim severity-coloured virtual text
       after the code; `inline_diagnostics` config, on by default).
+- [x] Picker layout: tree + results + live file preview, used by every
+      picker; `zedit <dir>` opens into it. Buffer tabs along the top.
 - [x] UX batch: wheel scrolling carries the cursor (owner's choice), the
       finished command stays on the statusline, `Space` works in the explorer,
       and dismissing a popup repaints only its rows (3155 → 1481 bytes).

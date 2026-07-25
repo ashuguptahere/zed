@@ -125,6 +125,11 @@ highlighting, LSP and git signs are skipped so huge files open instantly.
 inherit the current line's indentation; an auto\-indent left blank is
 stripped, like vim.
 .TP
+.B buffer_tabs
+.BR true / false
+(default true). List open buffers as tabs across the top, shown only when more
+than one file is open.
+.TP
 .B auto_completion
 .BR true / false
 (default true). Request completions while typing an identifier, after a pause,
@@ -362,6 +367,11 @@ insert at the left/right edge of every selected line. Press
 .B S{char}
 to surround the selection.
 .SH "PICKERS (Space leader, AstroNvim-style groups)"
+Every picker shares one layout: the file tree on its side (when open), the
+results beside it, and a live preview of the selected file on the right,
+syntax\-highlighted and scrolled to the matching line. Starting zedit on a
+directory opens this view directly. Remote entries and narrow terminals skip
+the preview and give the results the full width.
 Pressing
 .B Space
 shows a which\-key popup; the

@@ -43,6 +43,8 @@ Notable changes to zedit. Dates are commit dates.
 - Renamed the editor from `zed` to `zedit` (zig-editor).
 - Ported the pty test harnesses from Python to Zig — `zig build itest` now needs nothing beyond the toolchain.
 
+- One consistent search layout: every picker now shows the file tree on its side, the results beside it, and a live syntax-highlighted preview of the selected file (scrolled to the matching line for grep and references). `zedit <dir>` opens straight into that view.
+- Open buffers are listed as tabs across the top when more than one is open, with the active one highlighted and unsaved ones marked (`buffer_tabs` config).
 - Mouse-wheel scrolling now carries the cursor with the viewport, keeping its screen row, so scrolling to the top of a file no longer strands it at the bottom of the page.
 - The statusline keeps the finished command visible (`diw`, `2dd`, `"ayy`) until the next one starts, instead of clearing the instant it runs; a status message still takes precedence for the space.
 - `Space` opens the leader menu while the file explorer has focus, as it does everywhere else.

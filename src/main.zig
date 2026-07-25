@@ -127,7 +127,7 @@ pub fn main(init: std.process.Init) !void {
         ed.openRemoteDir(d);
     } else if (open_picker) {
         ed.noteRecentCwd();
-        ed.openFilePicker();
+        ed.openBrowser();
     }
 
     ed.run() catch |err| {

@@ -30,6 +30,9 @@ pub const Settings = struct {
     /// Inherit the current line's indentation on `o`, `O`, Enter and `cc`
     /// (vim 'autoindent'; an auto-indent left blank is stripped on leaving).
     autoindent: bool = true,
+    /// Show open buffers as tabs across the top (only when more than one is
+    /// open, like nvim's tabline).
+    buffer_tabs: bool = true,
     /// Pop up completions on their own while typing, after a short pause,
     /// instead of only on `Ctrl-n` (Helix and recent Neovim both do this).
     auto_completion: bool = true,
@@ -93,6 +96,10 @@ pub const default_text =
     \\# (vim's 'autoindent'). An auto-indent left blank is stripped.
     \\autoindent = true
     \\
+    \\# Show open buffers as tabs along the top (only when more than one file
+    \\# is open, so a single-file session keeps the whole screen).
+    \\buffer_tabs = true
+    \\
     \\# Pop up completions while typing (after completion_delay_ms of pause),
     \\# not just on Ctrl-n. The popup is fuzzy-matched: "mc" finds mockComplete.
     \\auto_completion = true
@@ -146,6 +153,9 @@ pub fn apply(text: []const u8) void {
         } else if (std.mem.eql(u8, key, "autoindent")) {
             if (std.mem.eql(u8, value, "true")) settings.autoindent = true;
             if (std.mem.eql(u8, value, "false")) settings.autoindent = false;
+        } else if (std.mem.eql(u8, key, "buffer_tabs")) {
+            if (std.mem.eql(u8, value, "true")) settings.buffer_tabs = true;
+            if (std.mem.eql(u8, value, "false")) settings.buffer_tabs = false;
         } else if (std.mem.eql(u8, key, "auto_completion")) {
             if (std.mem.eql(u8, value, "true")) settings.auto_completion = true;
             if (std.mem.eql(u8, value, "false")) settings.auto_completion = false;

@@ -84,6 +84,63 @@ pub fn run(ctx: *h.Ctx) !void {
         ctx.check("directory open leaves other files untouched", std.mem.eql(u8, result[0], "aaa\n"));
     }
 
+    // `zedit .` lands on the browser view: the file tree on the left, the
+    // picker on the right, and a preview of the selected file beside it.
+    {
+        const dir = try h.tempDir(ctx.gpa);
+        defer ctx.gpa.free(dir);
+        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const a = try std.fmt.allocPrint(ctx.gpa, "{s}/alpha.txt", .{dir});
+        defer ctx.gpa.free(a);
+        const b = try std.fmt.allocPrint(ctx.gpa, "{s}/beta.txt", .{dir});
+        defer ctx.gpa.free(b);
+        h.writeFile(ctx.io, a, "ALPHA MARKER\nsecond line\n");
+        h.writeFile(ctx.io, b, "BETA MARKER\n");
+
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "." }, .cwd = dir, .cols = 110 });
+        defer s.finish();
+        s.drain(700);
+        ctx.check("directory opens the explorer beside the picker", s.containsPlain(ctx.gpa, "EXPLORER") and
+            s.containsPlain(ctx.gpa, "FILES"));
+        ctx.check("picker previews the selected file", s.containsPlain(ctx.gpa, "MARKER"));
+
+        const m = s.mark();
+        s.send("beta"); // narrow to beta.txt: the preview follows the selection
+        s.drain(600);
+        ctx.check("preview follows the selection", s.containsPlainSince(ctx.gpa, m, "BETA MARKER"));
+        s.send("\x1b:qa!\r");
+        s.drain(200);
+    }
+
+    // Buffers appear as tabs across the top once more than one is open.
+    {
+        const dir = try h.tempDir(ctx.gpa);
+        defer ctx.gpa.free(dir);
+        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const a = try std.fmt.allocPrint(ctx.gpa, "{s}/one.txt", .{dir});
+        defer ctx.gpa.free(a);
+        const b = try std.fmt.allocPrint(ctx.gpa, "{s}/two.txt", .{dir});
+        defer ctx.gpa.free(b);
+        h.writeFile(ctx.io, a, "first\n");
+        h.writeFile(ctx.io, b, "second\n");
+
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "one.txt" }, .cwd = dir });
+        defer s.finish();
+        s.drain(500);
+        ctx.check("no tabline for a single buffer", !s.containsPlain(ctx.gpa, "one.txt  "));
+        const m = s.mark();
+        s.send(":e two.txt\r");
+        s.drain(600);
+        ctx.check("tabs list both buffers", s.containsPlainSince(ctx.gpa, m, "one.txt") and
+            s.containsPlainSince(ctx.gpa, m, "two.txt"));
+        const m2 = s.mark();
+        s.send("x"); // edit marks the active tab dirty
+        s.drain(400);
+        ctx.check("edited buffer is marked in its tab", s.containsPlainSince(ctx.gpa, m2, "two.txt \u{25CF}"));
+        s.send(":qa!\r");
+        s.drain(200);
+    }
+
     // Grep picker: search 'find', open match in c.txt at line 3, delete a char.
     {
         const files = [_]File{

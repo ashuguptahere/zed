@@ -256,6 +256,14 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   opening does no filesystem work after the first walk, candidates are
   prefiltered with per-path char bitmasks, and extending the query narrows the
   previous result set instead of rescoring everything).
+  Every picker uses one layout: the file tree on its side (when open), the
+  results next to it, and — for pickers that name a file (`f f`, `f b`,
+  `f w`, references) — a **live preview** of the selection on the right,
+  syntax-highlighted and scrolled to the matching line. `zedit <dir>` opens
+  straight into that view (tree + search + preview), which is what an empty
+  session shows instead of a blank buffer. The preview is skipped for remote
+  entries (an ssh round trip per keystroke) and on narrow terminals, where the
+  results take the full width.
   Note the three search scopes: `/` searches the current buffer, `Space f w`
   searches file *contents* across the project, `Space f f` matches file *names*.
 - **Command line:** `:w` write, `:q` quit (closes the window if more than one;
@@ -311,6 +319,10 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 - **Update check:** `:update` (or `--check-update`) compares this build with
   the newest `v*` release tag via one `git ls-remote`. On demand only — zedit
   never contacts the network by itself.
+- **Buffer tabs:** open files appear as tabs across the top (active
+  highlighted, unsaved marked with `●`), shown only when more than one is open
+  so a single-file session keeps every row. Config `buffer_tabs = false`
+  turns them off.
 - **Buffers & windows:** several files can be open at once, each with its own
   cursor, undo, tree-sitter and LSP. `:e <file>` opens (or, in the picker,
   `Enter`) a file in the active window — already-open files are reused, not
@@ -391,8 +403,8 @@ decoding.
 
 Runtime configuration is one documented file (see `config.zig`): theme,
 `tab_width`, `nerd_font`, `sidebar` (left/right), `relative_numbers`,
-`large_file_mb`, `autoindent`, `auto_completion`, `completion_delay_ms`,
-`inline_diagnostics`, `format_on_save`; `zedit --init-config` writes
+`large_file_mb`, `autoindent`, `buffer_tabs`, `auto_completion`,
+`completion_delay_ms`, `inline_diagnostics`, `format_on_save`; `zedit --init-config` writes
 the annotated default.
 `zedit --tutor` opens the embedded interactive tutorial (`doc/tutor.txt`,
 embedded via `build.zig`).
@@ -489,6 +501,10 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   bytes the block layer left plain), and HTML doesn't highlight embedded JS/CSS.
   Adding a grammar = vendor its `parser.c` + `highlights.scm` and extend
   `treesitter.zig`.
+- The picker preview is a lexer-highlighted glance, not a view: no
+  tree-sitter, no scrolling within it, capped at 256 KB per file, and skipped
+  for remote entries. The tabline lists buffers in open order with no
+  click-to-select (mouse support is wheel-only) and no reordering.
 - The sidebar tree is flat-file only (no rename/create/delete operations from
   the tree), rebuilt on expand/toggle rather than watched; the side-by-side
   diff tints changed lines in both panes but has no aligned filler lines or
