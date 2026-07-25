@@ -115,7 +115,7 @@ Source is `src/`, one responsibility per module:
 | `recent.zig`  | The recently-opened list behind the startup screen (XDG state file). |
 | `remote.zig`  | Editing over SSH: `ssh://user@host/path` parsing, read/write/list via one `ssh` per operation. |
 | `lsp.zig`     | Minimal LSP client: JSON-RPC over a server's stdio (diagnostics, hover, goto, completion, signature help; incremental or full doc sync per the server's capabilities). |
-| `treesitter.zig` | Tree-sitter highlighting via the vendored C runtime + grammar (incremental parse, visible-range `highlights.scm` query). |
+| `treesitter.zig` | Tree-sitter highlighting via the vendored C runtime + grammar (incremental parse, visible-range `highlights.scm` query, compiled queries shared process-wide). |
 | `editor.zig`  | State, the vim command interpreter, multiple cursors, multiple buffers + windows (splits), pickers, LSP, tree-sitter, viewport, themed rendering. |
 
 Vendored C lives under `vendor/` (`tree-sitter/` runtime, plus `tree-sitter-zig`,
@@ -149,6 +149,11 @@ CI runs `zig build test` + `zig build itest` on every push
 (`.github/workflows/ci.yml`); pushing a `v*` tag cross-compiles stripped
 ReleaseFast binaries for Linux x86_64/aarch64 (static musl) and macOS
 x86_64/aarch64 and attaches them to a GitHub release (`release.yml`).
+
+Compiling a grammar's `highlights.scm` costs 3–14 ms, so the compiled queries
+are cached per grammar for the life of the process (`query_cache` in
+`treesitter.zig`) and shared by every buffer and the picker preview — opening
+ten files of one language compiles its query once, not ten times.
 
 Build times: the vendored tree-sitter C (19 translation units) is compiled
 **once** into a static library that every artifact links — attaching the C
@@ -259,7 +264,9 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   Every picker uses one layout: the file tree on its side (when open), the
   results next to it, and — for pickers that name a file (`f f`, `f b`,
   `f w`, references) — a **live preview** of the selection on the right,
-  syntax-highlighted and scrolled to the matching line. `zedit <dir>` opens
+  tree-sitter highlighted and scrolled to the matching line. `Ctrl-d` /
+  `Ctrl-u` and the mouse wheel scroll the preview itself (it stops at the end
+  of the file), independently of the selection. `zedit <dir>` opens
   straight into that view (tree + search + preview), which is what an empty
   session shows instead of a blank buffer. The preview is skipped for remote
   entries (an ssh round trip per keystroke) and on narrow terminals, where the
@@ -321,8 +328,9 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   never contacts the network by itself.
 - **Buffer tabs:** open files appear as tabs across the top (active
   highlighted, unsaved marked with `●`), shown only when more than one is open
-  so a single-file session keeps every row. Config `buffer_tabs = false`
-  turns them off.
+  so a single-file session keeps every row. **Clicking a tab** switches to that
+  buffer; clicks anywhere else are ignored so the terminal's own text selection
+  keeps working. Config `buffer_tabs = false` turns them off.
 - **Buffers & windows:** several files can be open at once, each with its own
   cursor, undo, tree-sitter and LSP. `:e <file>` opens (or, in the picker,
   `Enter`) a file in the active window — already-open files are reused, not
@@ -501,10 +509,13 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   bytes the block layer left plain), and HTML doesn't highlight embedded JS/CSS.
   Adding a grammar = vendor its `parser.c` + `highlights.scm` and extend
   `treesitter.zig`.
-- The picker preview is a lexer-highlighted glance, not a view: no
-  tree-sitter, no scrolling within it, capped at 256 KB per file, and skipped
-  for remote entries. The tabline lists buffers in open order with no
-  click-to-select (mouse support is wheel-only) and no reordering.
+- The picker preview is a glance, not a view: capped at 256 KB per file,
+  tree-sitter only up to 64 KB (the lexer covers bigger files), and skipped for
+  remote entries. The parse happens *after* the picker's first frame, so
+  opening it stays fast; previewing a language whose grammar has not been
+  compiled yet costs a one-off 3–14 ms on the following frame. The tabline
+  lists buffers in open order with no reordering, and mouse support is still
+  wheel + tabline clicks only (no click-to-move-cursor or drag selection).
 - The sidebar tree is flat-file only (no rename/create/delete operations from
   the tree), rebuilt on expand/toggle rather than watched; the side-by-side
   diff tints changed lines in both panes but has no aligned filler lines or

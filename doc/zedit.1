@@ -249,7 +249,9 @@ newest first, capped at 30 entries, with vanished paths pruned on load.
 .SH MOUSE
 The wheel scrolls the focused window three lines per notch and moves the
 cursor with it, so the cursor keeps its position on screen. At the very top or
-bottom of the file nothing moves. A jump further
+bottom of the file nothing moves. In a picker the wheel scrolls the preview
+pane. Clicking a buffer tab switches to it; clicks elsewhere are ignored, so
+your terminal's own selection still works. A jump further
 than half a window \(em
 .BR G ,
 .BR 100G ,
@@ -369,7 +371,11 @@ to surround the selection.
 .SH "PICKERS (Space leader, AstroNvim-style groups)"
 Every picker shares one layout: the file tree on its side (when open), the
 results beside it, and a live preview of the selected file on the right,
-syntax\-highlighted and scrolled to the matching line. Starting zedit on a
+tree\-sitter highlighted and scrolled to the matching line.
+.B Ctrl\-d
+and
+.B Ctrl\-u
+(or the mouse wheel) scroll the preview itself. Starting zedit on a
 directory opens this view directly. Remote entries and narrow terminals skip
 the preview and give the results the full width.
 Pressing

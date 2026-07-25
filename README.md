@@ -83,9 +83,10 @@
 - **File-tree sidebar** (`Space e`): browse and open files, expand
   directories; lives on the left or right (config `sidebar = left|right`)
 - **One search layout everywhere**: tree on the left, results in the middle,
-  and a live syntax-highlighted **preview** of the selection on the right —
-  `zedit <dir>` opens straight into it
-- **Buffer tabs** along the top when more than one file is open
+  and a live tree-sitter-highlighted **preview** of the selection on the right
+  (`Ctrl-d`/`Ctrl-u` or the wheel scroll it) — `zedit <dir>` opens into it
+- **Buffer tabs** along the top when more than one file is open; click one to
+  switch
 - **Git diff views**: `Space g d` inline unified diff (coloured +/- lines) in
   a split, `Space g s` the index version side by side with changed/added/
   removed lines tinted vimdiff-style in both panes — plus the always-on

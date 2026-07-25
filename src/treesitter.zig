@@ -44,8 +44,37 @@ const highlights_html = @embedFile("ts_highlights_html");
 const highlights_markdown = @embedFile("ts_highlights_markdown");
 const highlights_markdown_inline = @embedFile("ts_highlights_markdown_inline");
 
-/// One parse+query layer: a parser, its tree, the highlight query and the
-/// capture-id -> style table. Markdown uses two (block + inline).
+/// Compiled highlight queries, one per grammar, kept for the life of the
+/// process. Compiling one costs ~14 ms for a large grammar, and a query is
+/// immutable once built — so every buffer and the picker's preview share it
+/// instead of each paying that price. (C-allocated, freed by process exit.)
+var query_cache: [16]?struct { src: []const u8, query: *c.TSQuery } = @splat(null);
+
+fn cachedQuery(language: *const c.TSLanguage, query_src: []const u8) ?*c.TSQuery {
+    for (query_cache) |slot| {
+        if (slot) |s| {
+            // Each grammar has exactly one query source, embedded at build
+            // time, so identity of the slice is identity of the grammar.
+            if (s.src.ptr == query_src.ptr and s.src.len == query_src.len) return s.query;
+        }
+    }
+    var err_off: u32 = 0;
+    var err_type: c.TSQueryError = 0;
+    const query = c.ts_query_new(language, query_src.ptr, @intCast(query_src.len), &err_off, &err_type) orelse {
+        std.log.scoped(.treesitter).err("highlights query failed to compile: error {d} at byte {d}", .{ err_type, err_off });
+        return null;
+    };
+    for (&query_cache) |*slot| {
+        if (slot.* == null) {
+            slot.* = .{ .src = query_src, .query = query };
+            break;
+        }
+    }
+    return query;
+}
+
+/// One parse+query layer: a parser, its tree, the shared highlight query and
+/// the capture-id -> style table. Markdown uses two (block + inline).
 const Layer = struct {
     parser: *c.TSParser,
     query: *c.TSQuery,
@@ -56,13 +85,7 @@ const Layer = struct {
         const parser = c.ts_parser_new() orelse return null;
         errdefer c.ts_parser_delete(parser);
         if (!c.ts_parser_set_language(parser, language)) return null;
-        var err_off: u32 = 0;
-        var err_type: c.TSQueryError = 0;
-        const query = c.ts_query_new(language, query_src.ptr, @intCast(query_src.len), &err_off, &err_type) orelse {
-            std.log.scoped(.treesitter).err("highlights query failed to compile: error {d} at byte {d}", .{ err_type, err_off });
-            return null;
-        };
-        errdefer c.ts_query_delete(query);
+        const query = cachedQuery(language, query_src) orelse return null;
         const n = c.ts_query_capture_count(query);
         const styles = gpa.alloc(syntax.Style, n) catch return null;
         var i: u32 = 0;
@@ -75,7 +98,7 @@ const Layer = struct {
 
     fn deinit(self: *Layer, gpa: Allocator) void {
         if (self.tree) |t| c.ts_tree_delete(t);
-        c.ts_query_delete(self.query);
+        // `query` is shared via `query_cache` — never deleted here.
         c.ts_parser_delete(self.parser);
         gpa.free(self.styles);
     }

@@ -9,8 +9,12 @@
 const std = @import("std");
 const unicode = @import("unicode.zig");
 
+/// A mouse button press, at 1-based screen coordinates.
+pub const Mouse = struct { row: u16, col: u16 };
+
 pub const Key = union(enum) {
     char: u21,
+    mouse_press: Mouse,
     ctrl: u8, // the associated lowercase letter, e.g. 0x03 -> 'c'
     enter,
     tab,
@@ -104,13 +108,17 @@ fn decodeSgrMouse(bytes: []const u8) Decoded {
     if (i >= bytes.len) return .{ .key = .unknown, .consumed = bytes.len }; // truncated
     const consumed = i + 1; // include the final M/m
     if (bytes[i] != 'M' and bytes[i] != 'm') return .{ .key = .unknown, .consumed = consumed };
-    if (bytes[i] == 'M') {
-        const end = std.mem.indexOfScalarPos(u8, bytes[0..i], 3, ';') orelse i;
-        const button = std.fmt.parseInt(u16, bytes[3..end], 10) catch return .{ .key = .unknown, .consumed = consumed };
-        if (button == 64) return .{ .key = .scroll_up, .consumed = consumed };
-        if (button == 65) return .{ .key = .scroll_down, .consumed = consumed };
-    }
-    return .{ .key = .unknown, .consumed = consumed };
+    if (bytes[i] != 'M') return .{ .key = .unknown, .consumed = consumed }; // release: ignored
+
+    // button ; x ; y
+    var it = std.mem.splitScalar(u8, bytes[3..i], ';');
+    const button = std.fmt.parseInt(u16, it.next() orelse "", 10) catch return .{ .key = .unknown, .consumed = consumed };
+    if (button == 64) return .{ .key = .scroll_up, .consumed = consumed };
+    if (button == 65) return .{ .key = .scroll_down, .consumed = consumed };
+    if (button != 0) return .{ .key = .unknown, .consumed = consumed }; // only the left button acts
+    const col = std.fmt.parseInt(u16, it.next() orelse "", 10) catch return .{ .key = .unknown, .consumed = consumed };
+    const row = std.fmt.parseInt(u16, it.next() orelse "", 10) catch return .{ .key = .unknown, .consumed = consumed };
+    return .{ .key = .{ .mouse_press = .{ .row = row, .col = col } }, .consumed = consumed };
 }
 
 /// Parse ESC [ <number> ~  style sequences (Home/End/Delete/PageUp/PageDown).
@@ -168,9 +176,13 @@ test "decode SGR mouse wheel" {
     try std.testing.expectEqual(Key.scroll_up, up.key);
     try std.testing.expectEqual(@as(usize, 11), up.consumed);
     try std.testing.expectEqual(Key.scroll_down, decode("\x1b[<65;1;1M").key);
-    // Clicks and releases are consumed but ignored.
-    try std.testing.expectEqual(Key.unknown, decode("\x1b[<0;5;5M").key);
+    // A left-button press reports where it landed; releases and other
+    // buttons are consumed but ignored.
+    const click = decode("\x1b[<0;12;3M");
+    try std.testing.expectEqual(@as(u16, 12), click.key.mouse_press.col);
+    try std.testing.expectEqual(@as(u16, 3), click.key.mouse_press.row);
     try std.testing.expectEqual(Key.unknown, decode("\x1b[<64;5;5m").key);
+    try std.testing.expectEqual(Key.unknown, decode("\x1b[<2;5;5M").key); // right button
 }
 
 test "decode utf8 char" {

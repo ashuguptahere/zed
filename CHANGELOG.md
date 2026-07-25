@@ -43,6 +43,9 @@ Notable changes to zedit. Dates are commit dates.
 - Renamed the editor from `zed` to `zedit` (zig-editor).
 - Ported the pty test harnesses from Python to Zig — `zig build itest` now needs nothing beyond the toolchain.
 
+- The picker preview is tree-sitter highlighted and scrollable on its own (`Ctrl-d` / `Ctrl-u` or the mouse wheel, stopping at the end of the file).
+- Clicking a buffer tab switches to it.
+- Compiled tree-sitter highlight queries are shared for the life of the process instead of being rebuilt per buffer: compiling one costs 3–14 ms, so opening many files of a language (or previewing them) now pays it once. This is what keeps picker-open at ~6 ms with a highlighted preview, against ~19 ms for the naive version.
 - One consistent search layout: every picker now shows the file tree on its side, the results beside it, and a live syntax-highlighted preview of the selected file (scrolled to the matching line for grep and references). `zedit <dir>` opens straight into that view.
 - Open buffers are listed as tabs across the top when more than one is open, with the active one highlighted and unsaved ones marked (`buffer_tabs` config).
 - Mouse-wheel scrolling now carries the cursor with the viewport, keeping its screen row, so scrolling to the top of a file no longer strands it at the bottom of the page.

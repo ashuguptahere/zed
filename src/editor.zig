@@ -295,6 +295,12 @@ pub const Editor = struct {
     preview_path: ?[]u8,
     preview_text: ?[]u8,
     preview_top: usize, // first line of the file to show (grep/reference hits centre)
+    preview_scroll: isize, // lines the reader scrolled, relative to that
+    preview_ts: ?treesitter.Highlighter, // reused across files of one language
+    preview_ts_lang: syntax.Language, // which language `preview_ts` was built for
+    preview_warm: bool, // the file is loaded but not parsed yet (see render)
+    preview_styles: std.ArrayList(syntax.Style), // styles for the queried range
+    preview_vis: usize, // byte offset the styles start at
 
     // Rows an overlay (popup) painted over this frame. The next frame must
     // repaint exactly these — the rest can still be diffed, so dismissing a
@@ -509,6 +515,12 @@ pub const Editor = struct {
             .preview_path = null,
             .preview_text = null,
             .preview_top = 0,
+            .preview_scroll = 0,
+            .preview_ts = null,
+            .preview_ts_lang = .none,
+            .preview_warm = false,
+            .preview_styles = .empty,
+            .preview_vis = 0,
             .overlay_top = 0,
             .overlay_bot = 0,
             .comp_due_ms = null,
@@ -592,6 +604,8 @@ pub const Editor = struct {
 
     pub fn deinit(self: *Editor) void {
         self.clearPreview();
+        self.dropPreviewHighlighter();
+        self.preview_styles.deinit(self.gpa);
         self.endSnippet();
         self.snip_stops.deinit(self.gpa);
         recent.save(&self.recents, self.io, self.recent_path);
@@ -866,10 +880,15 @@ pub const Editor = struct {
         // Mouse wheel: scroll the viewport in the buffer modes; never part of
         // a command, so it bypasses dot-repeat/macro capture entirely.
         switch (k) {
+            .mouse_press => |m| {
+                self.mouseClick(m);
+                return;
+            },
             .scroll_up, .scroll_down => {
                 switch (self.mode) {
                     .normal, .insert, .visual, .visual_line, .visual_block => self.mouseScroll(k == .scroll_up),
-                    .command, .picker => {},
+                    .picker => self.scrollPreview(if (k == .scroll_up) -3 else 3),
+                    .command => {},
                 }
                 return;
             },
@@ -928,6 +947,20 @@ pub const Editor = struct {
                 self.showcmd_done = false;
             },
         }
+    }
+
+    /// A left-click. Only the tabline acts on it today: clicking a tab makes
+    /// that buffer current, the way every tabbed editor behaves. Clicks
+    /// elsewhere are ignored, so terminal text selection keeps working.
+    fn mouseClick(self: *Editor, m: key.Mouse) void {
+        if (self.mode != .normal and self.mode != .insert) return;
+        if (!self.tabsVisible() or m.row != 1) return;
+        const doc = self.tabAt(m.col) orelse return;
+        if (doc == self.d) return;
+        self.addJump();
+        self.focusDoc(doc);
+        self.clampCursor();
+        self.setStatus("{s}", .{docLabel(doc)});
     }
 
     /// Wheel scrolling: move the viewport three lines (nvim's step) and carry
@@ -3323,9 +3356,14 @@ pub const Editor = struct {
             },
             .up => self.selDelta(false),
             .down => self.selDelta(true),
+            .scroll_up => self.scrollPreview(-3), // the wheel scrolls the preview
+            .scroll_down => self.scrollPreview(3),
             .ctrl => |c| switch (c) {
                 'p' => self.selDelta(false),
                 'n' => self.selDelta(true),
+                // Ctrl-d / Ctrl-u page the preview pane itself.
+                'd' => self.scrollPreview(@intCast(self.win.rows / 2)),
+                'u' => self.scrollPreview(-@as(isize, @intCast(self.win.rows / 2))),
                 'c' => self.closePicker(),
                 'r' => if (self.picker_kind == .files or self.picker_kind == .grep) {
                     // Re-walk the project (picks up files created since the
@@ -3689,11 +3727,21 @@ pub const Editor = struct {
         };
     }
 
+    /// Drop the previewed file. The highlighter is deliberately kept: building
+    /// one compiles the grammar's highlight query, which costs ~14 ms, so it
+    /// is reused for every later file of the same language (see `warmPreview`).
     fn clearPreview(self: *Editor) void {
         if (self.preview_path) |p| self.gpa.free(p);
         if (self.preview_text) |t| self.gpa.free(t);
         self.preview_path = null;
         self.preview_text = null;
+        self.preview_styles.clearRetainingCapacity();
+    }
+
+    fn dropPreviewHighlighter(self: *Editor) void {
+        if (self.preview_ts) |*h| h.deinit();
+        self.preview_ts = null;
+        self.preview_ts_lang = .none;
     }
 
     /// Load the selected entry's file into the preview cache (only when the
@@ -3706,12 +3754,49 @@ pub const Editor = struct {
             if (std.mem.eql(u8, p, it.path)) return; // already loaded
         }
         self.clearPreview();
+        self.preview_scroll = 0; // a new file starts at its own beginning
         // A preview is a convenience: skip anything that would cost a round
         // trip or a huge read.
         if (remote.isRemote(it.path)) return;
         const text = std.Io.Dir.cwd().readFileAlloc(self.io, it.path, self.gpa, .limited(256 << 10)) catch return;
         self.preview_path = self.gpa.dupe(u8, it.path) catch null;
         self.preview_text = text;
+
+        // The parse is deliberately *not* done here: compiling the grammar's
+        // highlight query and parsing the file costs ~14 ms, which would sit
+        // between the picker keystroke and its first frame. `warmPreview`
+        // does it after that frame is on screen, so the picker still opens in
+        // ~5 ms and the colours arrive with the next redraw.
+        self.preview_warm = text.len <= (64 << 10);
+    }
+
+    /// Parse the previewed file for tree-sitter highlighting. Called after the
+    /// frame has been written, never before it.
+    fn warmPreview(self: *Editor) void {
+        if (!self.preview_warm) return;
+        self.preview_warm = false;
+        const path = self.preview_path orelse return;
+        const text = self.preview_text orelse return;
+        const lang = syntax.detect(path);
+        if (self.preview_ts == null or self.preview_ts_lang != lang) {
+            self.dropPreviewHighlighter();
+            var sp = log.Span.start();
+            self.preview_ts = treesitter.Highlighter.init(self.gpa, lang);
+            self.preview_ts_lang = lang;
+            sp.lap("preview-ts-init");
+        }
+        var sp2 = log.Span.start();
+        if (self.preview_ts) |*h| h.reparse(text); // cheap: the query is already compiled
+        sp2.lap("preview-ts-parse");
+    }
+
+    /// Scroll the preview pane itself (`Ctrl-d` / `Ctrl-u`, or the wheel while
+    /// the picker is open), independently of the selection.
+    fn scrollPreview(self: *Editor, lines: isize) void {
+        if (self.previewKind() == .none) return;
+        self.preview_scroll += lines;
+        const floor = -@as(isize, @intCast(self.preview_top));
+        if (self.preview_scroll < floor) self.preview_scroll = floor; // not past line 1
     }
 
     /// Draw the preview pane: the selected file, syntax-highlighted, scrolled
@@ -3730,14 +3815,28 @@ pub const Editor = struct {
 
         const text = self.preview_text orelse return;
         const body_rows = rows -| 1;
-        // Centre the target line when the entry named one.
-        const first = if (self.preview_top > body_rows / 2) self.preview_top - body_rows / 2 else 0;
+        // Centre the target line when the entry named one, then apply whatever
+        // the reader scrolled on top of that.
+        const centred = if (self.preview_top > body_rows / 2) self.preview_top - body_rows / 2 else 0;
+        var first = @as(usize, @intCast(@max(0, @as(isize, @intCast(centred)) + self.preview_scroll)));
+        // Stop at the end of the file: keep a few lines on screen rather than
+        // scrolling into blank space, and remember the clamp so holding the
+        // key does not build up an offset that has to be unwound.
+        const n_lines = countLines(text);
+        const max_first = n_lines -| @min(n_lines, 3);
+        if (first > max_first) {
+            first = max_first;
+            self.preview_scroll = @as(isize, @intCast(first)) - @as(isize, @intCast(centred));
+        }
         const lang = if (self.preview_path) |p| syntax.detect(p) else .none;
+        self.queryPreviewStyles(text, first, body_rows);
 
         var line_no: usize = 0;
+        var offset: usize = 0; // byte offset of the line, for the style lookup
         var row: usize = 2;
         var it = std.mem.splitScalar(u8, text, '\n');
         while (it.next()) |line| : (line_no += 1) {
+            defer offset += line.len + 1;
             if (line_no < first) continue;
             if (row > rows) break;
             const hit = self.previewKind() == .line and line_no == self.preview_top;
@@ -3747,17 +3846,55 @@ pub const Editor = struct {
             var nb: [8]u8 = undefined;
             const num = std.fmt.bufPrint(&nb, "{d: >4} ", .{line_no + 1}) catch "     ";
             try self.emit(num);
-            try self.emitPreviewLine(line, lang, w -| num.len);
+            try self.emitPreviewLine(line, lang, w -| num.len, offset);
             row += 1;
         }
     }
 
+    /// Run the tree-sitter query over just the lines the preview shows, the
+    /// same visible-range trick the editor uses so cost is O(pane), not
+    /// O(file). No-op when the file was too big to parse (the lexer covers it).
+    fn queryPreviewStyles(self: *Editor, text: []const u8, first: usize, rows: usize) void {
+        if (self.preview_warm) return; // not parsed yet: this frame uses the lexer
+        var h = if (self.preview_ts) |*x| x else return;
+        var start: usize = 0;
+        var line_no: usize = 0;
+        var i: usize = 0;
+        while (i < text.len and line_no < first) : (i += 1) {
+            if (text[i] == '\n') {
+                line_no += 1;
+                start = i + 1;
+            }
+        }
+        var end = start;
+        var shown: usize = 0;
+        while (end < text.len and shown < rows) : (end += 1) {
+            if (text[end] == '\n') shown += 1;
+        }
+        self.preview_styles.resize(self.gpa, end - start) catch return;
+        h.queryRange(start, end, self.preview_styles.items);
+        self.preview_vis = start;
+    }
+
     /// One preview line, lexer-highlighted and clipped (no tree-sitter here:
     /// the preview is a glance, not an editable view).
-    fn emitPreviewLine(self: *Editor, line: []const u8, lang: syntax.Language, w: usize) !void {
+    fn emitPreviewLine(self: *Editor, line: []const u8, lang: syntax.Language, w: usize, offset: usize) !void {
         self.style_buf.resize(self.gpa, line.len) catch {};
         const styled = self.style_buf.items.len == line.len;
-        if (styled) syntax.highlight(lang, line, self.style_buf.items);
+        if (styled) {
+            if (self.preview_ts != null and !self.preview_warm) {
+                // Tree-sitter styles, sliced out of the queried range.
+                for (self.style_buf.items, 0..) |*s, i| {
+                    const abs = offset + i;
+                    s.* = if (abs >= self.preview_vis and abs - self.preview_vis < self.preview_styles.items.len)
+                        self.preview_styles.items[abs - self.preview_vis]
+                    else
+                        .normal;
+                }
+            } else {
+                syntax.highlight(lang, line, self.style_buf.items);
+            }
+        }
         var used: usize = 0;
         var i: usize = 0;
         while (i < line.len and used < w) {
@@ -6024,6 +6161,17 @@ pub const Editor = struct {
             try self.term.write(self.frame.items);
             self.prev_valid = false; // the picker paints the whole screen
             sp.lap("render");
+            // Now that the picker is on screen, parse the previewed file so
+            // the next frame can colour it — see `warmPreview`.
+            if (self.preview_warm) {
+                self.warmPreview();
+                self.frame.clearRetainingCapacity();
+                self.cur_fg = null;
+                self.cur_bg = null;
+                try self.emit(ansi.hide_cursor);
+                try self.renderPickerBody();
+                try self.term.write(self.frame.items);
+            }
             return;
         }
 
@@ -6363,6 +6511,26 @@ pub const Editor = struct {
     /// The buffer tabline across the top: one tab per open file, the active
     /// one highlighted, dirty ones marked. Shown only when more than one file
     /// is open, so a single-file session loses no room.
+    /// The screen width one tab occupies. The renderer and the click
+    /// hit-test both use this, so a tab can never be drawn at one place and
+    /// clicked at another.
+    fn tabCells(doc: *Doc) usize {
+        const name = std.fs.path.basename(docLabel(doc));
+        return 3 + unicode.displayWidth(name) + @as(usize, if (doc.buf.dirty) 2 else 0);
+    }
+
+    /// The document whose tab covers 1-based screen column `col`, if any.
+    fn tabAt(self: *Editor, col: usize) ?*Doc {
+        var x: usize = 1;
+        for (self.docs.items) |doc| {
+            const w = tabCells(doc);
+            if (x + w > self.win.cols + 1) break;
+            if (col >= x and col < x + w) return doc;
+            x += w;
+        }
+        return null;
+    }
+
     fn renderTabs(self: *Editor) !void {
         const th = theme.current;
         const cols = self.win.cols;
@@ -6373,7 +6541,7 @@ pub const Editor = struct {
             const name = std.fs.path.basename(docLabel(doc));
             const active = doc == self.d;
             const dirty = doc.buf.dirty;
-            const w = 3 + unicode.displayWidth(name) + @as(usize, if (dirty) 2 else 0);
+            const w = tabCells(doc);
             if (used + w > cols) break;
             try self.setBg(if (active) th.bg else th.status_seg_bg);
             try self.setFg(if (active) th.mode_normal else th.fg_dim);
@@ -7356,6 +7524,10 @@ fn offsetToPos(row: usize, col: usize, text: []const u8, offset: usize) Pos {
         } else c += 1;
     }
     return .{ .row = r, .col = c };
+}
+
+fn countLines(text: []const u8) usize {
+    return std.mem.count(u8, text, "\n") + 1;
 }
 
 fn th_fg() Color {

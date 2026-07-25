@@ -112,6 +112,54 @@ pub fn run(ctx: *h.Ctx) !void {
         s.drain(200);
     }
 
+    // The preview is tree-sitter highlighted and scrollable on its own.
+    {
+        const dir = try h.tempDir(ctx.gpa);
+        defer ctx.gpa.free(dir);
+        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const zf = try std.fmt.allocPrint(ctx.gpa, "{s}/long.zig", .{dir});
+        defer ctx.gpa.free(zf);
+        var content: std.ArrayList(u8) = .empty;
+        defer content.deinit(ctx.gpa);
+        try content.appendSlice(ctx.gpa, "const std = @import(\"std\");\n");
+        var i: usize = 1;
+        while (i <= 60) : (i += 1) {
+            var lb: [40]u8 = undefined;
+            try content.appendSlice(ctx.gpa, std.fmt.bufPrint(&lb, "pub fn fn_{d}() void {{}}\n", .{i}) catch break);
+        }
+        try content.appendSlice(ctx.gpa, "const DEEP_MARKER = 42;\n");
+        h.writeFile(ctx.io, zf, content.items);
+
+        const KEYWORD = "\x1b[38;2;187;154;247m"; // tokyonight keyword
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ ctx.zedit, "." },
+            .cwd = dir,
+            .cols = 110,
+            .term = "xterm-256color",
+        });
+        defer s.finish();
+        s.drain(900);
+        ctx.check("preview is tree-sitter highlighted", s.contains(KEYWORD) and
+            s.containsPlain(ctx.gpa, "const std"));
+
+        var m = s.mark();
+        s.send("\x04\x04\x04\x04\x04"); // Ctrl-d pages the preview to the end
+        s.drain(700);
+        ctx.check("Ctrl-d scrolls the preview", s.containsPlainSince(ctx.gpa, m, "DEEP_MARKER"));
+
+        m = s.mark();
+        s.send("\x15\x15\x15\x15\x15\x15"); // Ctrl-u back to the top
+        s.drain(700);
+        ctx.check("Ctrl-u scrolls the preview back", s.containsPlainSince(ctx.gpa, m, "const std"));
+
+        m = s.mark();
+        s.send("\x1b[<65;60;10M" ** 4); // the wheel scrolls it too
+        s.drain(600);
+        ctx.check("the wheel scrolls the preview", s.containsPlainSince(ctx.gpa, m, "fn_"));
+        s.send("\x1b:qa!\r");
+        s.drain(200);
+    }
+
     // Buffers appear as tabs across the top once more than one is open.
     {
         const dir = try h.tempDir(ctx.gpa);
@@ -137,6 +185,17 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("x"); // edit marks the active tab dirty
         s.drain(400);
         ctx.check("edited buffer is marked in its tab", s.containsPlainSince(ctx.gpa, m2, "two.txt \u{25CF}"));
+
+        // Clicking a tab switches to that buffer; clicks elsewhere are ignored
+        // so the terminal's own text selection keeps working.
+        const m3 = s.mark();
+        s.send("\x1b[<0;3;1M"); // left-click the first tab ("one.txt")
+        s.drain(500);
+        ctx.check("clicking a tab switches buffer", s.containsPlainSince(ctx.gpa, m3, "first"));
+        const m4 = s.mark();
+        s.send("\x1b[<0;5;6M"); // a click in the text area does nothing
+        s.drain(400);
+        ctx.check("clicks outside the tabline are ignored", !s.containsPlainSince(ctx.gpa, m4, "second"));
         s.send(":qa!\r");
         s.drain(200);
     }
