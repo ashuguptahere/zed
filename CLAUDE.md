@@ -92,9 +92,19 @@ work", they win.
   usage error, 1 = runtime error), a directory argument opens the file picker
   there, and `--benchmark` self-times the hot paths. The tool is pleasant from
   the first run.
-- **Versioned + changelogged.** The `VERSION` file is the single source of
-  truth (embedded into `--version` at build time); every user-visible change
-  lands in `CHANGELOG.md` in the same commit.
+- **Versioned + changelogged, every single change.** The `VERSION` file is the
+  single source of truth (embedded into `--version` at build time). Bump it and
+  add the `CHANGELOG.md` section **in the same commit as the code** — a commit
+  that changes behaviour and leaves `VERSION` alone is incomplete. Semantic
+  `MAJOR.MINOR.PATCH`, with one standing rule from the owner:
+  - **MAJOR stays 0.** Do not release 1.0.0 until the owner says so.
+  - **MINOR** for anything a user would notice: a feature, a new key or
+    command, a changed default, a behavioural fix (`0.4.0` → `0.5.0`).
+  - **PATCH** for what a user would not: internal fixes, performance,
+    refactors, docs, tests, tooling (`0.5.0` → `0.5.1`).
+  - One version per commit, and the `CHANGELOG.md` heading (`## X.Y.Z - date`)
+    goes above the previous one with the entries filed under `### Added`,
+    `### Changed`, `### Fixed`, `### Performance` or `### Security`.
 - **Tracked in `TODO.md`.** The working tracker: in-progress, next (the
   COMPARISON shortlist), recurring per-feature checklist, known gaps, and the
   chronological done-list. Update it with every landed change.

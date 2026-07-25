@@ -21,11 +21,6 @@ The shortlist is done; these are the next-highest gaps from
 - [ ] Soft wrap: indent retention on continuation rows, and a `text-width`
       wrap column (it wraps at the window edge, mid-word).
 
-
-## Next (in order)
-
-
-
 ## Recurring (every feature / significant change)
 
 - [ ] Allocation discipline: no per-item heap allocation in loops that can run
