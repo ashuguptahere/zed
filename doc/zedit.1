@@ -146,6 +146,14 @@ only while typing, so an idle editor still blocks in
 .BR poll (2)
 and uses no CPU.
 .TP
+.B persistent_undo
+(default false). Keep the undo tree on disk, under
+.IR $XDG_STATE_HOME/zedit/undo ,
+so undo still works after reopening a file. It holds the edits, not a copy of
+the text, and is created readable only by you; it is ignored if the file has
+been changed by something else since. Nothing removes these files again, which
+is why this is off by default.
+.TP
 .B soft_wrap
 (default true). Continue a line too long for the window on the next screen
 row, marked with a dim arrow in the gutter, instead of scrolling the view

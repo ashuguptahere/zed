@@ -375,8 +375,10 @@
    - Undo is a tree:  u  and  Ctrl-r  step back and forward as usual, but
      if you undo and then type something new, the old version is not
      lost.   g-  and  g+  walk every state in the order you made them,
-     :earlier 10s  goes back in time, and  :undolist  shows them all in
-     a picker so you can jump straight to one.
+     :earlier 10s  goes back in time,  :earlier 1f  goes back to your
+     last save, and  :undolist  shows them all in a picker so you can
+     jump straight to one.  Put  persistent_undo = true  in your config
+     and the history is still there tomorrow.
    - Long lines wrap onto the next screen row, marked with a small arrow
      in the gutter.  j and k still step whole lines, as in vim;  gj  and
      gk  step one screen row, and  g0 / g$  reach the ends of one.  Put

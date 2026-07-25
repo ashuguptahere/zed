@@ -48,6 +48,11 @@ pub const Settings = struct {
     /// of scrolling sideways (vim's `wrap`, on by default there too). `j`/`k`
     /// still move by buffer line, as in vim; `gj`/`gk` move by screen row.
     soft_wrap: bool = true,
+    /// Keep the undo history on disk (vim's `undofile`), under
+    /// `$XDG_STATE_HOME/zedit/undo`, so undo still works after reopening a
+    /// file. Off by default, as in vim: the files hold your text and nothing
+    /// prunes them.
+    persistent_undo: bool = false,
     /// Ask the language server to format the document before every `:w`
     /// (skipped when no server is running or it cannot format). AstroNvim and
     /// Helix both format on save by default; `:format` formats on demand.
@@ -123,6 +128,12 @@ pub const default_text =
     \\# screen rows. Set false to scroll horizontally instead.
     \\soft_wrap = true
     \\
+    \\# Keep undo history on disk (vim's 'undofile'), under
+    \\# $XDG_STATE_HOME/zedit/undo, so u still works after reopening a file.
+    \\# Off by default: those files hold copies of your text, and nothing
+    \\# removes them again.
+    \\persistent_undo = false
+    \\
     \\# Ask the language server to format the document on :w (format-on-save,
     \\# as AstroNvim and Helix do). Only applies when a server is running and
     \\# advertises formatting; :format always formats on demand.
@@ -171,6 +182,9 @@ pub fn apply(text: []const u8) void {
         } else if (std.mem.eql(u8, key, "completion_delay_ms")) {
             const n = std.fmt.parseInt(usize, value, 10) catch continue;
             if (n <= 10_000) settings.completion_delay_ms = n;
+        } else if (std.mem.eql(u8, key, "persistent_undo")) {
+            if (std.mem.eql(u8, value, "true")) settings.persistent_undo = true;
+            if (std.mem.eql(u8, value, "false")) settings.persistent_undo = false;
         } else if (std.mem.eql(u8, key, "soft_wrap")) {
             if (std.mem.eql(u8, value, "true")) settings.soft_wrap = true;
             if (std.mem.eql(u8, value, "false")) settings.soft_wrap = false;

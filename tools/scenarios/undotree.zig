@@ -83,6 +83,92 @@ pub fn run(ctx: *h.Ctx) !void {
         ctx.check("3g- reaches the original text", std.mem.eql(u8, got, "one\n"));
     }
 
+    // persistent_undo: the tree is written on save and picked up by the next
+    // session, so `u` still reaches changes made before the editor was closed.
+    {
+        const state = try std.fmt.allocPrint(ctx.gpa, "{s}/state", .{dir});
+        defer ctx.gpa.free(state);
+        const cfg = try std.fmt.allocPrint(ctx.gpa, "{s}/cfg", .{dir});
+        defer ctx.gpa.free(cfg);
+        const xdg = try std.fmt.allocPrint(ctx.gpa, "XDG_STATE_HOME={s}", .{state});
+        defer ctx.gpa.free(xdg);
+        h.writeFile(ctx.io, cfg, "persistent_undo = true\n");
+        h.writeFile(ctx.io, path, "one\n");
+
+        {
+            var s = try h.Session.spawn(ctx.gpa, .{
+                .argv = &.{ "env", xdg, ctx.zedit, "--config", cfg, "u.txt" },
+                .cwd = dir,
+            });
+            defer s.finish();
+            s.drain(400);
+            s.sendKeys(&.{ "IA", ESC, "IB", ESC, ":wq", CR }); // saved as "BAone"
+            s.drain(500);
+        }
+        const saved = h.readFile(ctx.gpa, ctx.io, path);
+        defer ctx.gpa.free(saved);
+        ctx.check("the file was written", std.mem.eql(u8, saved, "BAone\n"));
+
+        {
+            var s = try h.Session.spawn(ctx.gpa, .{
+                .argv = &.{ "env", xdg, ctx.zedit, "--config", cfg, "u.txt" },
+                .cwd = dir,
+            });
+            defer s.finish();
+            s.drain(600);
+            s.sendKeys(&.{ "u", "u", ":wq", CR }); // undo past the start of this session
+            s.drain(500);
+        }
+        const undone = h.readFile(ctx.gpa, ctx.io, path);
+        defer ctx.gpa.free(undone);
+        const ok = std.mem.eql(u8, undone, "one\n");
+        if (!ok) std.debug.print("       got  \"{f}\"\n", .{std.zig.fmtString(undone)});
+        ctx.check("undo history survives closing the editor", ok);
+
+        // A file changed behind zedit's back must not have the old history
+        // applied to it: the past it describes is not this file's.
+        h.writeFile(ctx.io, path, "something else entirely\n");
+        {
+            var s = try h.Session.spawn(ctx.gpa, .{
+                .argv = &.{ "env", xdg, ctx.zedit, "--config", cfg, "u.txt" },
+                .cwd = dir,
+            });
+            defer s.finish();
+            s.drain(600);
+            s.sendKeys(&.{ "u", ":wq", CR });
+            s.drain(500);
+        }
+        const untouched = h.readFile(ctx.gpa, ctx.io, path);
+        defer ctx.gpa.free(untouched);
+        ctx.check("a stale undo file is ignored", std.mem.eql(u8, untouched, "something else entirely\n"));
+    }
+
+    // Without the setting, nothing is written and nothing is restored.
+    {
+        const state = try std.fmt.allocPrint(ctx.gpa, "{s}/state2", .{dir});
+        defer ctx.gpa.free(state);
+        const xdg = try std.fmt.allocPrint(ctx.gpa, "XDG_STATE_HOME={s}", .{state});
+        defer ctx.gpa.free(xdg);
+        h.writeFile(ctx.io, path, "one\n");
+        {
+            var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ "env", xdg, ctx.zedit, "u.txt" }, .cwd = dir });
+            defer s.finish();
+            s.drain(400);
+            s.sendKeys(&.{ "IA", ESC, ":wq", CR });
+            s.drain(500);
+        }
+        {
+            var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ "env", xdg, ctx.zedit, "u.txt" }, .cwd = dir });
+            defer s.finish();
+            s.drain(500);
+            s.sendKeys(&.{ "u", ":wq", CR });
+            s.drain(500);
+        }
+        const got = h.readFile(ctx.gpa, ctx.io, path);
+        defer ctx.gpa.free(got);
+        ctx.check("persistent_undo off keeps history per session", std.mem.eql(u8, got, "Aone\n"));
+    }
+
     // A bad argument explains itself instead of doing something surprising.
     {
         h.writeFile(ctx.io, path, "one\n");

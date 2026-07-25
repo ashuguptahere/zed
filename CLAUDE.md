@@ -141,7 +141,7 @@ Source is `src/`, one responsibility per module:
 | `buffer.zig`  | The document: two-phase zero-copy load (`loadPartial` indexes a head so the screen can paint, `loadRest` fills the tail), a lazy `u32` line index over one shared buffer, per-line storage materialised on the first edit, save, UTF-8-aware edits. |
 | `motion.zig`  | Pure cursor motions, word/WORD rules, find-char, `%`, text objects. |
 | `register.zig`| Vim registers (named/unnamed, linewise flag) for yank/delete/paste. |
-| `undo.zig`    | Undo history as a tree of edits — each state the diff from its parent (branches, `g-`/`g+`, `:earlier`/`:later`). |
+| `undo.zig`    | Undo history as a tree of edits — each state the diff from its parent (branches, `g-`/`g+`, `:earlier`/`:later`), optionally kept on disk. |
 | `regex.zig`   | Regex engine: Pike VM (Thompson NFA), linear time, captures; modern "very magic" syntax. |
 | `search.zig`  | Buffer search (`/ ? n N * #`): regex-powered, with a whole-source SIMD memmem fast path for literal patterns while the buffer is unedited. |
 | `theme.zig`   | Colour palettes (Tokyo Night default + Gruvbox/Catppuccin/Nord/One Dark), the active-theme global, 24-bit SGR helpers. |
@@ -300,7 +300,11 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   number of file writes (`:earlier 1f` — "what I had when I last saved"), and
   clamping to the oldest/newest state rather than refusing. `:undolist` opens
   the states in a picker — current one marked, branch points flagged — and
-  Enter jumps to the chosen one. All nvim-verified in `vim_compat`.
+  Enter jumps to the chosen one. With `persistent_undo` (config, off by
+  default, vim's `undofile`) the tree is written to
+  `$XDG_STATE_HOME/zedit/undo` on every save and picked up when the file is
+  next opened, so `u` still reaches yesterday's changes. All nvim-verified in
+  `vim_compat`.
   **Repeat:** `.` repeats the last change.
 - **Visual:** `v` (char), `V` (line), `Ctrl-v` (block); move to extend, `o`
   swaps ends, then `d c y x > <`. In block mode `I`/`A` insert at the left/right
@@ -500,7 +504,8 @@ decoding.
 Runtime configuration is one documented file (see `config.zig`): theme,
 `tab_width`, `nerd_font`, `sidebar` (left/right), `relative_numbers`,
 `large_file_mb`, `autoindent`, `buffer_tabs`, `auto_completion`,
-`completion_delay_ms`, `inline_diagnostics`, `soft_wrap`, `format_on_save`; `zedit --init-config` writes
+`completion_delay_ms`, `inline_diagnostics`, `soft_wrap`, `persistent_undo`,
+`format_on_save`; `zedit --init-config` writes
 the annotated default.
 `zedit --tutor` opens the embedded interactive tutorial (`doc/tutor.txt`,
 embedded via `build.zig`).
@@ -576,7 +581,12 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   and every edit still serialises the buffer to compute its diff — that last
   O(file) cost per keystroke is the remaining one (10.9 ms on a 7.6 MB file),
   and removing it means the edit path reporting its own ranges. Capped at 256
-  states. History is per session — there is no `undofile` persistence.
+  states. On disk the root's text is *not* stored — the anchor state is the
+  file itself, and the diffs run both ways, so a 200-change session on an
+  8.6 MB file is a 1.5 KB undo file rather than a second copy of the file. The
+  anchor's length and hash are stored and checked, so a file edited by another
+  program gets no history rather than someone else's past; nothing prunes old
+  undo files, which is part of why the setting is off by default.
 - Multi-cursor is one-caret-per-line (column editing); it does not do
   per-caret line splits/joins or arbitrary selection-based multi-edit.
 - The project-wide grep picker is literal, not regex (in-buffer search is

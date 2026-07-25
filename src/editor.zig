@@ -745,6 +745,7 @@ pub const Editor = struct {
         self.startTs();
         self.refreshGit();
         self.startLsp();
+        self.restoreHistory();
         self.scroll();
         try self.render();
 
@@ -761,6 +762,7 @@ pub const Editor = struct {
                 if (self.ts == null) self.startTs();
                 self.refreshGit();
                 self.startLsp();
+                self.restoreHistory();
                 needs_render = true;
                 continue;
             }
@@ -4907,6 +4909,7 @@ pub const Editor = struct {
         };
         self.setStatus("\"{s}\" written", .{self.buf.path orelse ""});
         self.history.markSaved(self.buf, self.cy, self.cx); // for `:earlier 1f`
+        self.persistHistory();
         self.refreshGit();
         return true;
     }
@@ -5960,6 +5963,51 @@ pub const Editor = struct {
         self.clampCursor();
         self.updateGoal();
         self.resetPending();
+    }
+
+    /// The document's absolute path, which is what its undo file is keyed on.
+    /// Null for a scratch or remote buffer: there is nothing stable to key on.
+    fn absPathOf(self: *Editor, out: []u8) ?[]const u8 {
+        const p = self.buf.path orelse return null;
+        if (remote.isRemote(p)) return null;
+        if (p.len > 0 and p[0] == '/') return std.fmt.bufPrint(out, "{s}", .{p}) catch null;
+        const cwd = std.process.currentPathAlloc(self.io, self.gpa) catch return null;
+        defer self.gpa.free(cwd);
+        return std.fmt.bufPrint(out, "{s}/{s}", .{ cwd, p }) catch null;
+    }
+
+    /// Write the undo tree beside the file's state entry (config
+    /// `persistent_undo`, off by default). Best-effort: a history that cannot
+    /// be written is not worth interrupting a save for.
+    fn persistHistory(self: *Editor) void {
+        if (!config.settings.persistent_undo) return;
+        var abs_buf: [1024]u8 = undefined;
+        const abs = self.absPathOf(&abs_buf) orelse return;
+        var file_buf: [768]u8 = undefined;
+        const file = undo.filePath(&file_buf, abs) orelse return;
+        self.history.writeTo(self.io, file, abs);
+    }
+
+    /// Bring back the undo tree written by an earlier session — but only if it
+    /// ends on the text actually in the file. Anything could have edited it in
+    /// between, and a history of a different past is worse than none.
+    fn restoreHistory(self: *Editor) void {
+        if (!config.settings.persistent_undo or self.history.cur != null) return;
+        var abs_buf: [1024]u8 = undefined;
+        const abs = self.absPathOf(&abs_buf) orelse return;
+        var file_buf: [768]u8 = undefined;
+        const file = undo.filePath(&file_buf, abs) orelse return;
+        const now = self.buf.toBytes(self.gpa) catch return;
+        defer self.gpa.free(now);
+        // The history is anchored to the text it was written against; if the
+        // file has moved on, `readFrom` says so by returning nothing.
+        const loaded = undo.History.readFrom(self.gpa, self.io, file, abs, now) orelse {
+            std.log.scoped(.editor).debug("no usable undo history for {s}", .{abs});
+            return;
+        };
+        self.history.deinit();
+        self.history = loaded;
+        std.log.scoped(.editor).debug("undo history restored for {s}", .{abs});
     }
 
     /// `g-` / `g+` and `:earlier` / `:later` with a plain count: step through

@@ -67,6 +67,63 @@ pub const Entry = struct {
     branch: bool, // its parent has more than one child: an alternative history
 };
 
+/// A bounds-checked walk over the undo file: every read either returns a value
+/// or signals that the file is too short, so a truncated or hostile file can
+/// only ever be rejected.
+const Reader = struct {
+    b: []const u8,
+    i: usize = 0,
+
+    fn take(self: *Reader, n: usize) Slice {
+        if (self.i + n > self.b.len) return .{ .s = self.b[self.b.len..] };
+        defer self.i += n;
+        return .{ .s = self.b[self.i..][0..n] };
+    }
+
+    fn byte(self: *Reader) ?u8 {
+        const s = self.take(1);
+        return if (s.s.len == 1) s.s[0] else null;
+    }
+
+    fn word(self: *Reader) ?u32 {
+        const s = self.take(4);
+        if (s.s.len != 4) return null;
+        return std.mem.littleToNative(u32, std.mem.bytesToValue(u32, s.s));
+    }
+
+    fn long(self: *Reader) ?u64 {
+        const s = self.take(8);
+        if (s.s.len != 8) return null;
+        return std.mem.littleToNative(u64, std.mem.bytesToValue(u64, s.s));
+    }
+
+    const Slice = struct {
+        s: []const u8,
+        fn eqlStr(self: Slice, other: []const u8) bool {
+            return std.mem.eql(u8, self.s, other);
+        }
+    };
+};
+
+/// Where a file's history is kept: `$XDG_STATE_HOME/zedit/undo/<hash>`. The
+/// name is a hash of the absolute path (paths are longer than a filename may
+/// be, and contain slashes); the path itself is stored inside the file and
+/// checked on load, so a collision cannot apply the wrong history.
+pub fn filePath(buf: []u8, abs_path: []const u8) ?[]const u8 {
+    var home_buf: [512]u8 = undefined;
+    const dir = stateDir(&home_buf) orelse return null;
+    return std.fmt.bufPrint(buf, "{s}/{x:0>16}.undo", .{ dir, std.hash.Wyhash.hash(0, abs_path) }) catch null;
+}
+
+fn stateDir(buf: []u8) ?[]const u8 {
+    if (std.c.getenv("XDG_STATE_HOME")) |xdg_z| {
+        const xdg = std.mem.sliceTo(xdg_z, 0);
+        if (xdg.len > 0) return std.fmt.bufPrint(buf, "{s}/zedit/undo", .{xdg}) catch null;
+    }
+    const home_z = std.c.getenv("HOME") orelse return null;
+    return std.fmt.bufPrint(buf, "{s}/.local/state/zedit/undo", .{std.mem.sliceTo(home_z, 0)}) catch null;
+}
+
 /// Monotonic milliseconds — the same clock the profiler uses, so history
 /// timestamps cannot jump when the wall clock is adjusted.
 fn nowMs() i64 {
@@ -543,6 +600,204 @@ pub const History = struct {
         return false;
     }
 
+    // === persistence =======================================================
+    //
+    // The tree is diffs, so writing it costs about what the edits cost. The
+    // root's full text is *not* written: the state the history is anchored to
+    // is the text in the file, and the diffs run both ways, so the root can be
+    // rebuilt from it on load. A 200-change session on an 8.6 MB file is a
+    // 1.5 KB undo file rather than a second copy of the file.
+    //
+    // What is written instead is the length and hash of that anchor text, so a
+    // file edited by something else is detected and its history refused rather
+    // than replayed onto text it never described.
+    //
+    // Records are stored by sequence number rather than array index, because
+    // indices are a detail of how slots get reused.
+
+    const magic = "ZUNDO";
+    const format_version: u8 = 1;
+    const no_seq: u32 = 0xFFFF_FFFF;
+
+    /// Write the whole tree to `path` (0600 — it holds the file's text).
+    pub fn writeTo(self: *History, io: std.Io, path: []const u8, for_file: []const u8) void {
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(self.gpa);
+        const w = &out;
+        w.appendSlice(self.gpa, magic) catch return;
+        w.append(self.gpa, format_version) catch return;
+        putU32(self.gpa, w, @intCast(for_file.len)) catch return;
+        w.appendSlice(self.gpa, for_file) catch return;
+        putU64(self.gpa, w, self.base.items.len) catch return;
+        putU64(self.gpa, w, std.hash.Wyhash.hash(0, self.base.items)) catch return;
+        putU32(self.gpa, w, if (self.cur) |c| self.nodes.items[c].seq else no_seq) catch return;
+        putU32(self.gpa, w, self.next_seq) catch return;
+        putU32(self.gpa, w, @intCast(self.liveCount())) catch return;
+
+        // Ascending sequence order, so the reader meets a parent before its
+        // children and can link as it goes.
+        var order: std.ArrayList(u32) = .empty;
+        defer order.deinit(self.gpa);
+        for (self.nodes.items, 0..) |n, i| {
+            if (n.alive) order.append(self.gpa, @intCast(i)) catch return;
+        }
+        const Ctx = struct {
+            h: *const History,
+            fn less(c: @This(), a: u32, b: u32) bool {
+                return c.h.nodes.items[a].seq < c.h.nodes.items[b].seq;
+            }
+        };
+        std.mem.sort(u32, order.items, Ctx{ .h = self }, Ctx.less);
+
+        for (order.items) |i| {
+            const n = self.nodes.items[i];
+            putU32(self.gpa, w, n.seq) catch return;
+            putU32(self.gpa, w, if (n.parent) |p| self.nodes.items[p].seq else no_seq) catch return;
+            putU32(self.gpa, w, if (n.last_child) |c| (if (self.nodes.items[c].alive) self.nodes.items[c].seq else no_seq) else no_seq) catch return;
+            putU32(self.gpa, w, n.at) catch return;
+            putU32(self.gpa, w, n.old_len) catch return;
+            putU32(self.gpa, w, if (n.parent == null) 0 else n.new_len) catch return;
+            putU32(self.gpa, w, @intCast(n.cy)) catch return;
+            putU32(self.gpa, w, @intCast(n.cx)) catch return;
+            putU64(self.gpa, w, @bitCast(n.time_ms)) catch return;
+            w.append(self.gpa, @intFromBool(n.saved)) catch return;
+            // The root's text is the one thing left out; it comes back from
+            // the file itself.
+            if (n.parent != null) w.appendSlice(self.gpa, n.bytes) catch return;
+        }
+
+        if (std.mem.lastIndexOfScalar(u8, path, '/')) |cut| {
+            std.Io.Dir.cwd().createDirPath(io, path[0..cut]) catch {};
+        }
+        // The history is a copy of the file's text in another place, so it is
+        // created owner-only rather than at the usual 0666-minus-umask.
+        std.Io.Dir.cwd().writeFile(io, .{
+            .sub_path = path,
+            .data = out.items,
+            .flags = .{ .permissions = @enumFromInt(0o600) },
+        }) catch |err| {
+            std.log.scoped(.undo).debug("cannot write {s}: {s}", .{ path, @errorName(err) });
+        };
+    }
+
+    /// Read a tree written by `writeTo`. `content` is the text the file holds
+    /// now: it seeds the history and is checked against the anchor recorded
+    /// when it was written, so a file edited by something else gets no history
+    /// rather than someone else's past. Null on any disagreement.
+    pub fn readFrom(gpa: Allocator, io: std.Io, path: []const u8, for_file: []const u8, content: []const u8) ?History {
+        const raw = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(64 << 20)) catch return null;
+        defer gpa.free(raw);
+        var h = History.init(gpa);
+        if (parseInto(&h, raw, for_file, content)) return h;
+        h.deinit();
+        return null;
+    }
+
+    fn parseInto(h: *History, raw: []const u8, for_file: []const u8, content: []const u8) bool {
+        var r = Reader{ .b = raw };
+        if (!r.take(magic.len).eqlStr(magic)) return false;
+        if ((r.byte() orelse return false) != format_version) return false;
+        const plen = r.word() orelse return false;
+        if (!r.take(plen).eqlStr(for_file)) return false;
+        const anchor_len = r.long() orelse return false;
+        const anchor_hash = r.long() orelse return false;
+        if (anchor_len != content.len or anchor_hash != std.hash.Wyhash.hash(0, content)) return false;
+        const cur_seq = r.word() orelse return false;
+        h.next_seq = r.word() orelse return false;
+        const count = r.word() orelse return false;
+        if (count > 1_000_000) return false;
+
+        var i: u32 = 0;
+        while (i < count) : (i += 1) {
+            const seq = r.word() orelse return false;
+            const parent_seq = r.word() orelse return false;
+            const child_seq = r.word() orelse return false;
+            const at = r.word() orelse return false;
+            const old_len = r.word() orelse return false;
+            const new_len = r.word() orelse return false;
+            const cy = r.word() orelse return false;
+            const cx = r.word() orelse return false;
+            const time_ms: i64 = @bitCast(r.long() orelse return false);
+            const saved = (r.byte() orelse return false) != 0;
+            const want = if (parent_seq == no_seq) 0 else @as(usize, old_len) + new_len;
+            const body = r.take(want).s;
+            if (body.len != want) return false;
+            const bytes = h.gpa.dupe(u8, body) catch return false;
+            const parent = if (parent_seq == no_seq) null else h.indexOfSeq(parent_seq) orelse {
+                h.gpa.free(bytes);
+                return false;
+            };
+            const idx = h.alloc(.{
+                .at = at,
+                .old_len = old_len,
+                .new_len = new_len,
+                .bytes = bytes,
+                .cy = cy,
+                .cx = cx,
+                .parent = parent,
+                .last_child = null, // linked below, once every seq is known
+                .children = 0,
+                .depth = if (parent) |p| h.nodes.items[p].depth + 1 else 0,
+                .seq = seq,
+                .time_ms = time_ms,
+                .saved = saved,
+                .alive = true,
+            }) catch {
+                h.gpa.free(bytes);
+                return false;
+            };
+            if (parent) |p| h.nodes.items[p].children += 1;
+            if (child_seq != no_seq) h.nodes.items[idx].last_child = child_seq; // patched below
+        }
+        // Second pass: last_child was stored as a sequence number.
+        for (h.nodes.items) |*n| {
+            if (!n.alive) continue;
+            if (n.last_child) |seq_as_child| n.last_child = h.indexOfSeq(seq_as_child);
+        }
+        h.cur = if (cur_seq == no_seq) null else h.indexOfSeq(cur_seq);
+        if (h.cur == null and count > 0) return false;
+        h.setBase(content) catch return false;
+        return h.rebuildRoot();
+    }
+
+    fn indexOfSeq(self: *const History, seq: u32) ?u32 {
+        for (self.nodes.items, 0..) |n, i| if (n.alive and n.seq == seq) return @intCast(i);
+        return null;
+    }
+
+    /// Undo every edit from `cur` back to the root to recover the root's text,
+    /// which the file does not carry. Pruning is the only thing that needs it,
+    /// but it needs it to be exact.
+    fn rebuildRoot(self: *History) bool {
+        const cur = self.cur orelse return true;
+        var text: std.ArrayList(u8) = .empty;
+        defer text.deinit(self.gpa);
+        text.appendSlice(self.gpa, self.base.items) catch return false;
+        var at = cur;
+        var steps: usize = 0;
+        while (self.nodes.items[at].parent) |p| {
+            const n = self.nodes.items[at];
+            if (n.at + n.new_len > text.items.len) return false; // not our file
+            text.replaceRange(self.gpa, n.at, n.new_len, n.removed()) catch return false;
+            at = p;
+            steps += 1;
+            if (steps > self.nodes.items.len) return false; // a cycle
+        }
+        const full = text.toOwnedSlice(self.gpa) catch return false;
+        self.gpa.free(self.nodes.items[at].bytes);
+        self.nodes.items[at].bytes = full;
+        self.nodes.items[at].new_len = @intCast(full.len);
+        return true;
+    }
+
+    fn putU32(gpa: Allocator, w: *std.ArrayList(u8), v: u32) !void {
+        try w.appendSlice(gpa, &std.mem.toBytes(std.mem.nativeToLittle(u32, v)));
+    }
+
+    fn putU64(gpa: Allocator, w: *std.ArrayList(u8), v: u64) !void {
+        try w.appendSlice(gpa, &std.mem.toBytes(std.mem.nativeToLittle(u64, v)));
+    }
+
     /// Bytes the history is holding — what the diff storage exists to keep small.
     pub fn bytesHeld(self: *const History) usize {
         var n: usize = self.base.items.len;
@@ -693,6 +948,84 @@ test "a node costs its edit, not the file" {
     // dominate, the 200 states cost bytes each. Snapshots would have needed
     // 20 MB.
     try std.testing.expect(h.bytesHeld() < 300_000);
+}
+
+test "a history survives a round trip through its file" {
+    const gpa = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "/tmp/zedit_undo_roundtrip.undo";
+    defer std.Io.Dir.cwd().deleteFile(io, path) catch {};
+
+    var buf = try buffer.Buffer.fromBytes(gpa, "start\n");
+    defer buf.deinit();
+    var cy: usize = 0;
+    var cx: usize = 0;
+    {
+        var h = History.init(gpa);
+        defer h.deinit();
+        h.record(&buf, 0, 0);
+        _ = try buf.insertCodepoint(0, 0, 'A');
+        h.record(&buf, 0, 0);
+        _ = try buf.insertCodepoint(0, 0, 'B');
+        _ = h.undo(&buf, &cy, &cx); // "Astart", leaving "BAstart" on a branch
+        h.markSaved(&buf, cy, cx);
+        h.writeTo(io, path, "/tmp/some/file.txt");
+    }
+
+    // A different file's history is never applied, whatever the name says —
+    // and neither is one whose anchor text no longer matches.
+    try std.testing.expect(History.readFrom(gpa, io, path, "/tmp/other.txt", "Astart\n") == null);
+    try std.testing.expect(History.readFrom(gpa, io, path, "/tmp/some/file.txt", "edited elsewhere\n") == null);
+
+    var back = History.readFrom(gpa, io, path, "/tmp/some/file.txt", "Astart\n") orelse return error.NoHistory;
+    defer back.deinit();
+
+    // The branch, the sequence numbers and the write mark all came back.
+    try std.testing.expectEqual(@as(usize, 3), back.liveCount());
+    try std.testing.expect(back.redo(&buf, &cy, &cx));
+    try std.testing.expectEqualStrings("BAstart", buf.line(0));
+    try std.testing.expect(back.travelWrites(&buf, &cy, &cx, 1, true));
+    try std.testing.expectEqualStrings("Astart", buf.line(0));
+}
+
+test "a truncated or foreign undo file is refused, not trusted" {
+    const gpa = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "/tmp/zedit_undo_broken.undo";
+    defer std.Io.Dir.cwd().deleteFile(io, path) catch {};
+
+    var buf = try buffer.Buffer.fromBytes(gpa, "hello\n");
+    defer buf.deinit();
+    var h = History.init(gpa);
+    defer h.deinit();
+    h.record(&buf, 0, 0);
+    _ = try buf.insertCodepoint(0, 0, 'x');
+    h.record(&buf, 0, 0);
+    h.writeTo(io, path, "/tmp/f.txt");
+
+    const whole = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(1 << 20));
+    defer gpa.free(whole);
+
+    // Every prefix of a valid file must be rejected rather than half-read.
+    var cut: usize = 0;
+    while (cut < whole.len) : (cut += 1) {
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = whole[0..cut] });
+        if (History.readFrom(gpa, io, path, "/tmp/f.txt", "xhello\n")) |*bad| {
+            var b = bad.*;
+            b.deinit();
+            return error.TruncatedFileAccepted;
+        }
+    }
+    // Random bytes in place of the body are rejected too.
+    const junk = try gpa.dupe(u8, whole);
+    defer gpa.free(junk);
+    for (junk[8..]) |*b| b.* = 0xAB;
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = junk });
+    try std.testing.expect(History.readFrom(gpa, io, path, "/tmp/f.txt", "xhello\n") == null);
 }
 
 test "jumping across branches rebuilds the exact text" {

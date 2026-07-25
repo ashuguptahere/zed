@@ -2,6 +2,12 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.7.0 - 2026-07-26
+
+### Added
+
+- `persistent_undo` (config, off by default — vim's `undofile`): the undo tree is written to `$XDG_STATE_HOME/zedit/undo` on every save and picked up when the file is next opened, so `u`, `g-` and `:undolist` still reach changes made in an earlier session. The root's text is not stored — the state the history is anchored to is the file itself, and the diffs run both ways — so a 200-change session on an 8.6 MB file is a 1,484-byte undo file rather than a second copy of the file, and `:w` costs the same as it did (55–57 ms either way). The anchor's length and hash are recorded and checked, so a file edited by another program gets no history rather than someone else's past, and the file is created readable only by its owner. Nothing prunes old undo files, which is part of why it is off by default.
+
 ## 0.6.0 - 2026-07-25
 
 ### Added

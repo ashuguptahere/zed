@@ -85,8 +85,9 @@ below and prioritised in `TODO.md`.
 
 **Other**
 - ~~Undo tree with time travel~~ — **DONE** (branching history, `g-`/`g+`,
-  `:earlier`/`:later` with counts and time spans, `:undolist` picker); on-disk
-  undo *persistence* is in neither editor — **low**
+  `:earlier`/`:later` with counts, time spans and file writes, `:undolist`
+  picker, and optional on-disk persistence, which Helix does not have) —
+  **done**
 - ~~Soft-wrap~~ — **DONE** (`soft_wrap`, on by default, with a `↳` continuation
   marker and `gj`/`gk`/`g0`/`g$`); indent retention and a `text-width` wrap
   column are not there — **low**

@@ -15,7 +15,6 @@ behind the roadmap items.
 The shortlist is done; these are the next-highest gaps from
 `doc/COMPARISON.md`, in rough priority order.
 
-- [ ] Undo: persistence across sessions (vim's `undofile`).
 - [ ] Soft wrap: indent retention on continuation rows, and a `text-width`
       wrap column (it wraps at the window edge, mid-word).
 
@@ -35,6 +34,9 @@ The shortlist is done; these are the next-highest gaps from
       numbers for hot paths. No perf claim without a measurement.
 
 ## Later / known gaps (tracked in CLAUDE.md + COMPARISON.md)
+
+- [ ] Undo files are never pruned; a long-lived state directory only grows.
+      Vim has the same gap, but an age or size cap would be better.
 
 - [ ] Windows console support (`term.zig` gate marks the spot).
 - [ ] Regex project-wide grep picker (in-buffer search is regex already).
@@ -152,6 +154,10 @@ The shortlist is done; these are the next-highest gaps from
       headless-nvim ground truth: visual-mode `a` objects behaved like `i`
       ones, counted find-char (`3fa`, `d3fa`, `2;`) ignored the count, and the
       grep picker missed every file the project walk had not yet delivered.
+- [x] Undo persistence (`persistent_undo`, off by default): the tree written
+      to XDG state on save, restored on open, anchored to the file by length +
+      hash so a stale history is refused. 1.5 KB for a 200-change session on an
+      8.6 MB file; no measurable cost to `:w`.
 - [x] Undo states stored as diffs against their parent, not whole-buffer
       copies (300 changes in a 7.6 MB file: 295 MB -> 43 MB), and
       `:earlier Nf` / `:later Nf` counted in file writes (5 nvim-pinned cases).
