@@ -84,7 +84,9 @@ below and prioritised in `TODO.md`.
 - Rulers, whitespace rendering, per-mode cursor shapes, configurable gutters — **low**
 
 **Other**
-- Undo tree with time travel — Helix's history is a tree (`:earlier`/`:later`, `Alt-u`/`Alt-U`); zedit is capped linear snapshots (note: on-disk undo *persistence* is not in Helix stable either) — **medium**
+- ~~Undo tree with time travel~~ — **DONE** (branching history, `g-`/`g+`,
+  `:earlier`/`:later` with counts and time spans, `:undolist` picker); on-disk
+  undo *persistence* is in neither editor — **low**
 - ~~Soft-wrap~~ — **DONE** (`soft_wrap`, on by default, with a `↳` continuation
   marker and `gj`/`gk`/`g0`/`g$`); indent retention and a `text-width` wrap
   column are not there — **low**

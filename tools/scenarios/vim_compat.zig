@@ -87,6 +87,25 @@ pub fn run(ctx: *h.Ctx) !void {
     case(ctx, "nvim#f5 $3Fa searches backwards by count", &.{ "$", "3Fa", "x", ":wq", CR }, ff, "alpha beta gamm alpha beta\n");
     case(ctx, "nvim#f6 a count past the last match does nothing", &.{ "9fa", "x", ":wq", CR }, ff, "lpha beta gamma alpha beta\n");
 
+    // The undo tree: `g-`/`g+` walk states in the order they were made, so a
+    // change stranded by undo-then-edit is still reachable. Ground truth from
+    // headless nvim on "one" with the same keys.
+    const ut = "one\n";
+    case(ctx, "nvim#u1 u returns to the state before the insert", &.{ "IA", ESC, "u", ":wq", CR }, ut, "one\n");
+    case(ctx, "nvim#u2 editing after an undo replaces the redo", &.{ "IA", ESC, "u", "IB", ESC, ":wq", CR }, ut, "Bone\n");
+    case(ctx, "nvim#u3 g- reaches the abandoned branch", &.{ "IA", ESC, "u", "IB", ESC, "g-", ":wq", CR }, ut, "Aone\n");
+    case(ctx, "nvim#u4 g- again reaches the original", &.{ "IA", ESC, "u", "IB", ESC, "g-", "g-", ":wq", CR }, ut, "one\n");
+    case(ctx, "nvim#u5 g+ walks back forward in time", &.{ "IA", ESC, "u", "IB", ESC, "g-", "g-", "g+", ":wq", CR }, ut, "Aone\n");
+
+    // `:earlier` / `:later`, counted in changes and in time. Ground truth from
+    // real nvim driven through a pty (running the keys as `-c` arguments joins
+    // the two inserts into one undo block and hides the difference).
+    case(ctx, "nvim#u6 :earlier 1 steps back one change", &.{ "IA", ESC, "IB", ESC, ":earlier 1", CR, ":wq", CR }, ut, "Aone\n");
+    case(ctx, "nvim#u7 :earlier 2 steps back two", &.{ "IA", ESC, "IB", ESC, ":earlier 2", CR, ":wq", CR }, ut, "one\n");
+    case(ctx, "nvim#u8 :later 1 comes forward again", &.{ "IA", ESC, "IB", ESC, ":earlier 2", CR, ":later 1", CR, ":wq", CR }, ut, "Aone\n");
+    case(ctx, "nvim#u9 :earlier 1h clamps to the oldest state", &.{ "IA", ESC, "IB", ESC, ":earlier 1h", CR, ":wq", CR }, ut, "one\n");
+    case(ctx, "nvim#u10 :later 1h clamps to the newest", &.{ "IA", ESC, "IB", ESC, ":earlier 1h", CR, ":later 1h", CR, ":wq", CR }, ut, "BAone\n");
+
     // Visual-mode "around" objects — nvim-verified on "x = add(a, b)".
     const va = "x = add(a, b)\n";
     case(ctx, "nvim#v1 va( takes the brackets", &.{ "fa", "va(d", ":wq", CR }, va, "x = add\n");

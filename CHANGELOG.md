@@ -6,6 +6,7 @@ Notable changes to zedit. Dates are commit dates.
 
 ### Added
 
+- Undo is now a tree rather than a line: a change made after an undo starts a branch instead of discarding what was undone. `g-`/`g+` (with counts) walk every state in the order it was made, across branches; `:earlier`/`:later` take a count or a span (`10s`, `2m`, `1h`) and clamp to the oldest/newest state; `:undolist` lists every state in a picker, marking the current one and flagging branch points, and Enter jumps to the one chosen. Ten cases pinned against real nvim. A "change" that leaves the text identical no longer costs an undo step.
 - Soft wrap (`soft_wrap`, on by default as in vim): a line too long for the window continues on the next screen row, marked with a dim `↳` in the gutter, instead of scrolling the view sideways. `gj`/`gk`/`g0`/`g$` move by screen row; `j`/`k`/`0`/`$` keep their buffer-line meaning; `H`/`M`/`L`, `Ctrl-d`/`u`/`f`/`b` and the mouse wheel count screen rows. `soft_wrap = false` restores horizontal scrolling.
 - Argument and comment text objects: `aa`/`ia` select the argument or parameter under the cursor (`aa` takes the comma joining it to a neighbour, so the list stays valid) and `aC`/`iC` a comment (`aC` extends over a run of comment lines at the same column and is linewise when the comment owns its lines). Both read the grammar's own node names, so a nested call or a comma inside a string cannot fool them.
 - Versioning and this changelog: the `VERSION` file is embedded into `--version` at build time.

@@ -25,6 +25,7 @@ const scenarios = .{
     .{ "lsp", @import("scenarios/lsp.zig") },
     .{ "cpu", @import("scenarios/cpu.zig") },
     .{ "wrap", @import("scenarios/wrap.zig") },
+    .{ "undotree", @import("scenarios/undotree.zig") },
 };
 
 pub fn main(init: std.process.Init) !void {

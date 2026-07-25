@@ -372,6 +372,11 @@
      or above; typing edits every line at once; Esc collapses them.
    - Scrolling:  Ctrl-d / Ctrl-u  move by half a page, and the mouse
      wheel scrolls three lines at a time.
+   - Undo is a tree:  u  and  Ctrl-r  step back and forward as usual, but
+     if you undo and then type something new, the old version is not
+     lost.   g-  and  g+  walk every state in the order you made them,
+     :earlier 10s  goes back in time, and  :undolist  shows them all in
+     a picker so you can jump straight to one.
    - Long lines wrap onto the next screen row, marked with a small arrow
      in the gutter.  j and k still step whole lines, as in vim;  gj  and
      gk  step one screen row, and  g0 / g$  reach the ends of one.  Put

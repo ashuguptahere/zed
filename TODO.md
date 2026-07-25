@@ -15,7 +15,9 @@ behind the roadmap items.
 The shortlist is done; these are the next-highest gaps from
 `doc/COMPARISON.md`, in rough priority order.
 
-- [ ] Undo tree (`:earlier`/`:later`).
+- [ ] Undo: persistence across sessions (vim's `undofile`) and `:earlier Nf`
+      (counted in file writes); snapshots are whole buffers, so memory is
+      O(states x file size).
 - [ ] Soft wrap: indent retention on continuation rows, and a `text-width`
       wrap column (it wraps at the window edge, mid-word).
 
@@ -157,6 +159,10 @@ The shortlist is done; these are the next-highest gaps from
       headless-nvim ground truth: visual-mode `a` objects behaved like `i`
       ones, counted find-char (`3fa`, `d3fa`, `2;`) ignored the count, and the
       grep picker missed every file the project walk had not yet delivered.
+- [x] Undo tree: branches instead of discarding, `g-`/`g+`, `:earlier`/
+      `:later` (counts and time spans, clamped), `:undolist` picker. Ten
+      nvim-pinned cases; no measurable cost to edit latency on a 10 MB file
+      (2.1 ms/keystroke either way).
 - [x] Soft wrap (`soft_wrap`, on by default): continuation rows with a `↳`
       gutter marker, `gj`/`gk`/`g0`/`g$`, and screen-row counting for `H`/`M`/
       `L`, `Ctrl-d`/`u`/`f`/`b` and the wheel. Drawing a line once per row it

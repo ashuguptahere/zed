@@ -36,6 +36,8 @@
   - Text objects incl. paragraphs (`ip`/`ap`, `{`/`}`), also in visual mode
   - Soft wrap (on by default, `soft_wrap = false` to scroll sideways instead),
     with `gj`/`gk`/`g0`/`g$` for screen-row movement
+  - Undo *tree*: editing after an undo branches instead of discarding, and
+    `g-`/`g+`, `:earlier`/`:later` and the `:undolist` picker reach every state
   - Tree-sitter structural objects: `af`/`if` (function), `ac`/`ic` (class,
     struct, impl), `aa`/`ia` (argument, with its comma), `aC`/`iC` (comment,
     across a run of comment lines), and `]f`/`[f` to step between functions

@@ -374,7 +374,26 @@ are the system clipboard: yanking to them emits OSC 52, which sets the local
 clipboard even over SSH. Terminal pastes (bracketed paste) insert literally.
 .TP
 .B p P u Ctrl-r .
-Paste after/before, undo, redo, repeat last change.
+Paste after/before, undo, redo, repeat last change. Undo history is a tree: a
+change made after an undo starts a branch rather than discarding what was
+undone.
+.TP
+.B g\- g+
+Go to the previous / next state in the order the states were made, across
+branches \(em so a change stranded by an undo followed by a new edit can be
+reached again. Counts work:
+.BR 3g\- .
+.TP
+.B :earlier " / " :later
+The same from the command line, with a count
+.RB ( ":earlier 2" )
+or a span
+.RB ( ":earlier 10s" ", " 2m ", " 1h ").
+Asking for more than there is goes to the oldest (or newest) state.
+.TP
+.B :undolist
+Every state in a picker \(em the current one marked, branch points flagged.
+Enter jumps to the state chosen.
 .TP
 .B Ctrl-o Ctrl-i
 Jumplist: back / forward through jump\-motions (searches, \fBG\fP, marks,

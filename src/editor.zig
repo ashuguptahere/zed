@@ -76,7 +76,7 @@ pub const Mode = enum {
     }
 };
 
-const PickerKind = enum { files, grep, code_action, symbol, wsymbol, diagnostic, theme, buffer, reference };
+const PickerKind = enum { files, grep, code_action, symbol, wsymbol, diagnostic, theme, buffer, reference, undo };
 /// A picker row. Text lives in one shared byte arena (`picker_text`) and is
 /// referenced by offset, so populating 20k results costs one growing buffer
 /// instead of 40k small allocations — and closing the picker resets the arena
@@ -1322,6 +1322,12 @@ pub const Editor = struct {
                     self.resetPending();
                 } else if (k == .char and k.char == 'a') {
                     self.lspCodeAction(); // ga: code actions for the current line
+                    self.resetPending();
+                } else if (k == .char and k.char == '-') {
+                    self.timeTravel(self.eff(), true); // g-: one state older
+                    self.resetPending();
+                } else if (k == .char and k.char == '+') {
+                    self.timeTravel(self.eff(), false); // g+: one state newer
                     self.resetPending();
                 } else if (k == .char and k.char == 'j')
                     self.doMotion(self.screenVertical(false, self.total()))
@@ -3769,6 +3775,14 @@ pub const Editor = struct {
             self.closePicker();
             return self.applyCodeAction(idx);
         }
+        if (self.picker_kind == .undo) {
+            const seq = it.line;
+            self.closePicker();
+            if (!self.history.goToSeq(self.buf, &self.cy, &self.cx, seq)) return self.setStatus("that state is gone", .{});
+            self.setStatus("state {d}", .{seq});
+            self.afterHistoryMove();
+            return;
+        }
         if (self.picker_kind == .symbol) {
             const idx = it.line; // the symbol index stashed at population time
             self.closePicker();
@@ -4043,6 +4057,7 @@ pub const Editor = struct {
             .reference => " REFERENCES ",
             .wsymbol => " WORKSPACE SYMBOLS ",
             .diagnostic => " DIAGNOSTICS ",
+            .undo => " UNDO TREE ",
         };
 
         // Prompt.
@@ -4102,7 +4117,7 @@ pub const Editor = struct {
             .buffer => .file,
             .grep, .reference => .line,
             .diagnostic, .wsymbol => .line,
-            .theme, .code_action, .symbol => .none,
+            .theme, .code_action, .symbol, .undo => .none,
         };
     }
 
@@ -4570,9 +4585,10 @@ pub const Editor = struct {
     /// Every completable command, by its full name (all are also accepted
     /// spelled out by execEx; the short forms still work typed by hand).
     const command_names = [_][]const u8{
-        "bdelete", "bnext",  "bprevious", "buffers", "close", "diff",  "edit",
-        "format",  "ls",     "only",      "quit",    "quitall", "split", "theme",
-        "vdiff",   "vsplit", "wall",      "wq",      "write", "x",
+        "bdelete", "bnext",  "bprevious", "buffers", "close",  "diff",     "earlier",
+        "edit",    "format", "later",     "ls",      "only",   "quit",     "quitall",
+        "split",   "theme",  "undolist",  "vdiff",   "vsplit", "wall",     "wq",
+        "write",   "x",
     };
 
     fn wildCommands(self: *Editor, prefix: []const u8) void {
@@ -4700,6 +4716,12 @@ pub const Editor = struct {
             self.openRemote(arg);
         } else if (eql(cmd, "update") or eql(cmd, "checkupdate")) {
             self.checkForUpdate();
+        } else if (eql(cmd, "earlier") or eql(cmd, "ea")) {
+            self.historyCommand(arg, true);
+        } else if (eql(cmd, "later") or eql(cmd, "lat")) {
+            self.historyCommand(arg, false);
+        } else if (eql(cmd, "undolist") or eql(cmd, "undol")) {
+            self.openUndoPicker();
         } else if (eql(cmd, "diff")) {
             self.gitDiffInline();
         } else if (eql(cmd, "vdiff")) {
@@ -5937,6 +5959,80 @@ pub const Editor = struct {
         self.clampCursor();
         self.updateGoal();
         self.resetPending();
+    }
+
+    /// `g-` / `g+` and `:earlier` / `:later` with a plain count: step through
+    /// the states in the order they were made, across branches. This is how a
+    /// change stranded by an undo-then-edit is reached again.
+    fn timeTravel(self: *Editor, count: usize, back: bool) void {
+        const moved = self.history.travel(self.buf, &self.cy, &self.cx, count, back);
+        if (moved == 0) {
+            self.setStatus("already at {s} change", .{if (back) "oldest" else "newest"});
+        } else {
+            self.setStatus("{d} change{s} {s}", .{ moved, if (moved == 1) "" else "s", if (back) "back" else "forward" });
+        }
+        self.afterHistoryMove();
+    }
+
+    /// `:earlier 10s` / `:later 2m`: the same, counted in time.
+    fn timeTravelSpan(self: *Editor, ms: i64, back: bool) void {
+        if (self.history.travelTime(self.buf, &self.cy, &self.cx, ms, back)) {
+            self.setStatus("moved {s} {d}s", .{ if (back) "back" else "forward", @divTrunc(ms, 1000) });
+        } else {
+            self.setStatus("already at {s} change", .{if (back) "oldest" else "newest"});
+        }
+        self.afterHistoryMove();
+    }
+
+    fn afterHistoryMove(self: *Editor) void {
+        self.clampCursor();
+        self.updateGoal();
+        self.resetPending();
+    }
+
+    /// `:earlier` / `:later`: a count of changes, or a span with an `s`/`m`/`h`
+    /// suffix (vim's `f` — counted in file writes — is not implemented).
+    fn historyCommand(self: *Editor, arg: []const u8, back: bool) void {
+        const a = std.mem.trim(u8, arg, " ");
+        if (a.len == 0) return self.timeTravel(1, back);
+        const scale: ?i64 = switch (a[a.len - 1]) {
+            's' => 1000,
+            'm' => 60 * 1000,
+            'h' => 60 * 60 * 1000,
+            else => null,
+        };
+        const digits = if (scale == null) a else a[0 .. a.len - 1];
+        const n = std.fmt.parseInt(u32, digits, 10) catch
+            return self.setStatus("usage: :{s} [count | Ns | Nm | Nh]", .{if (back) "earlier" else "later"});
+        if (scale) |ms| self.timeTravelSpan(@as(i64, n) * ms, back) else self.timeTravel(n, back);
+    }
+
+    /// `:undolist`: every state in the tree, oldest first, in a picker that
+    /// jumps to the chosen one. The sequence number is stashed in `line`.
+    fn openUndoPicker(self: *Editor) void {
+        var entries: std.ArrayList(undo.Entry) = .empty;
+        defer entries.deinit(self.gpa);
+        self.history.list(self.buf, self.cy, self.cx, &entries) catch return self.setStatus("out of memory", .{});
+        if (entries.items.len == 0) return self.setStatus("no changes yet", .{});
+        self.freePicker();
+        self.picker_kind = .undo;
+        self.picker_sel = 0;
+        self.picker_scroll = 0;
+        const now = nowMs();
+        for (entries.items) |e| {
+            var b: [96]u8 = undefined;
+            const secs = @divTrunc(now - e.time_ms, 1000);
+            const row = std.fmt.bufPrint(&b, "{s}{d:>4}  {d}s ago{s}", .{
+                if (e.current) "\u{25B8} " else "  ",
+                e.seq,
+                secs,
+                if (e.branch) "  (branch)" else "",
+            }) catch continue;
+            self.addPickItem(row, "", e.seq);
+            if (e.current) self.picker_sel = self.picker_items.items.len - 1;
+        }
+        self.mode = .picker;
+        self.refilter();
     }
 
     fn stopMacro(self: *Editor) void {
