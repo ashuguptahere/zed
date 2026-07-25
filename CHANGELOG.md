@@ -83,6 +83,9 @@ Notable changes to zedit. Dates are commit dates.
 
 ### Performance
 
+- Opening a file no longer spawns `git` when the file is not inside a work tree — a few `stat` calls replace a ~1.2 ms subprocess — and `loadPartial` no longer scans the not-yet-read tail of its own allocation. Together these took the 10 MB file from first paint to fully settled from 8 ms to 4 ms, and the settled benchmark from 13.3 ms to 9.7 ms (nvim: 10.2 ms).
+- Fixed a benchmark bug that flattered other editors: `waitQuiet` started counting silence as soon as the key was sent, so an editor slower to respond than the quiet window scored as if it had finished immediately. Search and picker measurements now wait for a first response, and search is reported cold and warm.
+
 - Files are read in two phases: a 256 KB head is indexed and painted, and the rest is pulled in right after the first frame. First paint on an 8.2 MB file went from 7.4 ms to 2.9 ms — sooner than nvim (3.8 ms).
 - The picker opens before its project walk has run and streams results in, ~2 ms of walking per loop iteration. On a 20k-file tree the picker is visible in 0.5 ms (helix, which uses background threads for the same job, takes ~1.1 s on that tree).
 

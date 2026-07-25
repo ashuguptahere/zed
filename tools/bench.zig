@@ -74,7 +74,7 @@ pub fn main(init: std.process.Init) !void {
         .{ .name = "nvim", .bin = "nvim", .argv_prefix = &.{ "nvim", "-u", "NONE", "-i", "NONE" }, .picker_key = null },
     };
 
-    std.debug.print("\n{s:<8} {s:>12} {s:>12} {s:>12} {s:>12} {s:>12} {s:>14}\n", .{ "editor", "startup", "bigfile", "big-1stpaint", "keypress", "big-search", "picker-open" });
+    std.debug.print("\n{s:<8} {s:>12} {s:>12} {s:>12} {s:>12} {s:>12} {s:>14}\n", .{ "editor", "startup", "bigfile", "big-1stpaint", "keypress", "search c/w", "picker-open" });
     std.debug.print("{s:-<8} {s:->12} {s:->12} {s:->12} {s:->12} {s:->12} {s:->14}\n", .{ "", "", "", "", "", "", "" });
 
     for (editors) |ed| {
@@ -86,8 +86,9 @@ pub fn main(init: std.process.Init) !void {
         const bigload = median(measureStartup(gpa, ed, big_file, 3));
         const bigpaint = median(measureFirstPaint(gpa, ed, big_file, 3));
         const keypress = median(measureKeypress(gpa, ed, runs));
-        const bigsearch = median(measureSearch(gpa, ed, 3));
-        std.debug.print("{s:<8} {d:>10.1}ms {d:>10.1}ms {d:>10.1}ms {d:>10.2}ms {d:>10.1}ms", .{ ed.name, startup, bigload, bigpaint, keypress, bigsearch });
+        const bigsearch = median(measureSearch(gpa, ed, 3, false));
+        const bigsearch_warm = median(measureSearch(gpa, ed, 3, true));
+        std.debug.print("{s:<8} {d:>10.1}ms {d:>10.1}ms {d:>10.1}ms {d:>10.2}ms {d:>7.1}/{d:<4.1}ms", .{ ed.name, startup, bigload, bigpaint, keypress, bigsearch, bigsearch_warm });
         if (ed.picker_key) |pk| {
             const cold = measurePicker(gpa, ed, pk, false);
             std.debug.print(" {d:>8.1}ms cold", .{cold});
@@ -164,15 +165,29 @@ fn measureKeypress(gpa: std.mem.Allocator, ed: Editor, n: usize) []f64 {
 
 /// Search for a unique needle near the end of the big file: `/needle<CR>`,
 /// keypress until the redraw settles.
-fn measureSearch(gpa: std.mem.Allocator, ed: Editor, n: usize) []f64 {
+/// `warm` searches once first, separating whatever an editor builds on its
+/// first search over a file from the steady-state cost. (helix spends ~500 ms
+/// on its first search of an 8 MB file and ~20 ms after that; reporting only
+/// one of those would misrepresent it in one direction or the other.)
+fn measureSearch(gpa: std.mem.Allocator, ed: Editor, n: usize, warm: bool) []f64 {
     var out: std.ArrayList(f64) = .empty;
     var i: usize = 0;
     while (i < n) : (i += 1) {
         var s = spawnOn(gpa, ed, big_file) orelse break;
         defer quitAndFinish(&s, ed);
         _ = waitQuiet(&s, 80, 8000);
+        if (warm) {
+            s.send("/value_150000\r");
+            _ = firstByteMs(&s, 8000);
+            _ = waitQuiet(&s, 80, 8000);
+        }
         const t0 = nowNs();
         s.send("/value_199999\r");
+        // Wait for the editor to actually respond before timing the settle:
+        // `waitQuiet` alone starts counting silence immediately, so an editor
+        // that takes longer than the quiet window to say anything scores as if
+        // it had finished instantly. (This flattered helix by ~800 ms here.)
+        if (firstByteMs(&s, 8000) == null) continue;
         _ = waitQuiet(&s, 80, 8000);
         out.append(gpa, msBetween(t0, nowNs()) - 80.0) catch break;
     }
@@ -193,6 +208,7 @@ fn measurePicker(gpa: std.mem.Allocator, ed: Editor, picker_key: []const u8, war
     }
     const t0 = nowNs();
     s.send(picker_key);
+    if (firstByteMs(&s, 8000) == null) return -1; // same trap as the search
     _ = waitQuiet(&s, 80, 8000);
     const ms = msBetween(t0, nowNs()) - 80.0;
     s.send("\x1b");

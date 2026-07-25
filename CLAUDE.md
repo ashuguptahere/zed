@@ -135,7 +135,7 @@ Source is `src/`, one responsibility per module:
 | `config.zig`  | The single documented config file (`~/.config/zedit/config`): parse, apply, standard path, `--init-config` default text. |
 | `syntax.zig`  | Dependency-free per-line lexer producing per-byte styles. |
 | `fuzzy.zig`   | Subsequence scorer for the pickers. |
-| `git.zig`     | Git change signs for the gutter (parses `git diff -U0`). |
+| `git.zig`     | Git change signs for the gutter (parses `git diff -U0`; skips the subprocess entirely outside a work tree). |
 | `snippet.zig` | LSP snippet parsing: `$1`, `${1:placeholder}`, `${1|a,b|}`, `$0`, escapes → plain text + tabstops. |
 | `recent.zig`  | The recently-opened list behind the startup screen (XDG state file). |
 | `remote.zig`  | Editing over SSH: `ssh://user@host/path` parsing, read/write/list via one `ssh` per operation. |
@@ -169,6 +169,12 @@ zig build test                  # unit tests (pure logic; no tty needed)
 zig build itest                 # pty integration tests (drives the built editor)
 zig build bench -Doptimize=ReleaseFast   # benchmark vs helix/nvim (if installed)
 ```
+
+**Measure what a user waits for.** `waitQuiet` alone cannot time an editor:
+it starts counting silence immediately, so anything slower to respond than the
+quiet window scores as instant. Always require a first response before timing
+the settle, and report cold and warm separately where a first operation builds
+something.
 
 **Measure in ReleaseFast.** `zig build test` and `zig build itest` reinstall
 `zig-out/bin/zedit` as a *Debug* build, which is ~6x slower — rebuild with

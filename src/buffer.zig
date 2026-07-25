@@ -227,15 +227,27 @@ pub const Buffer = struct {
         // Index whole lines only; a trailing partial line waits for the tail.
         const cut = std.mem.lastIndexOfScalar(u8, source[0..got], '\n') orelse 0;
 
-        var b = try fromSource(gpa, source);
-        // fromSource indexed the uninitialised tail as well, so redo the index
-        // over just the part that is real.
-        b.offsets.clearRetainingCapacity();
-        try indexRange(&b.offsets, gpa, source[0 .. cut + 1], 0);
-        b.final_newline = true;
-        b.emptied = false;
-        b.pending = .{ .file = file, .filled = got, .scan_from = cut + 1 };
-        b.path = try gpa.dupe(u8, path);
+        // Index only the bytes that actually arrived. (Going through
+        // `fromSource` here would scan the whole allocation — including the
+        // uninitialised tail — and throw the result away.)
+        var offsets: std.ArrayList(u32) = .empty;
+        errdefer offsets.deinit(gpa);
+        try indexRange(&offsets, gpa, source[0 .. cut + 1], 0);
+
+        const b: Buffer = .{
+            .gpa = gpa,
+            .lines = .empty,
+            .offsets = offsets,
+            .pending = .{ .file = file, .filled = got, .scan_from = cut + 1 },
+            .source = source,
+            .path = try gpa.dupe(u8, path),
+            .dirty = false,
+            .revision = 0,
+            .final_newline = true,
+            .emptied = false,
+            .pure_borrowed = true,
+            .has_cr = std.mem.indexOfScalar(u8, source[0..got], '\r') != null,
+        };
         close_file = false; // the buffer owns it until loadRest
         return b;
     }

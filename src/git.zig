@@ -14,8 +14,35 @@ pub const Sign = enum { added, changed, deleted };
 pub const Signs = std.AutoHashMap(usize, Sign);
 
 /// Recompute `signs` for `path` (working tree vs. index). Clears on any error.
+/// Whether `path` sits inside a git work tree, decided with a few `stat`s
+/// rather than by asking git. Spawning `git` costs ~1.2 ms, which is a lot to
+/// pay on every open of a file that is not in a repository at all.
+fn inWorkTree(io: std.Io, path: []const u8) bool {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    var dir: []const u8 = std.fs.path.dirname(path) orelse ".";
+    var hops: usize = 0;
+    while (hops < 64) : (hops += 1) {
+        const probe = std.fmt.bufPrint(&buf, "{s}/.git", .{dir}) catch return true;
+        if (std.Io.Dir.cwd().openDir(io, probe, .{})) |*d| {
+            var dd = d.*;
+            dd.close(io);
+            return true;
+        } else |_| {}
+        // A .git *file* means a worktree or submodule; openFile catches that.
+        if (std.Io.Dir.cwd().openFile(io, probe, .{})) |f| {
+            var ff = f;
+            ff.close(io);
+            return true;
+        } else |_| {}
+        dir = std.fs.path.dirname(dir) orelse break;
+        if (dir.len == 0) break;
+    }
+    return false;
+}
+
 pub fn compute(gpa: std.mem.Allocator, io: std.Io, path: []const u8, signs: *Signs) void {
     signs.clearRetainingCapacity();
+    if (!inWorkTree(io, path)) return;
     const res = std.process.run(gpa, io, .{
         .argv = &.{ "git", "diff", "--no-color", "-U0", "--", path },
         .stdout_limit = .limited(8 << 20),

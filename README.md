@@ -179,16 +179,22 @@ machine (medians):
 
 | metric | zedit | helix 25.07.1 | nvim 0.12.4 |
 |---|---|---|---|
-| startup → interactive | **7.1 ms** | 27.4 ms | 10.7 ms |
-| open 10 MB — first paint | **2.9 ms** | 31.1 ms | 3.8 ms |
-| open 10 MB — fully settled | 13.3 ms | 35.3 ms | **9.5 ms** |
-| keypress → response | **0.12 ms** | 0.27 ms | 0.17 ms |
-| `/` search in the 10 MB file | 5.1 ms | **4.4 ms** | 50.9 ms |
-| file picker open (this repo) | 5.9 cold / **4.8 ms** warm | 4.4 ms | n/a (no builtin) |
+| startup → interactive | **5.8 ms** | 27.9 ms | 10.8 ms |
+| open 10 MB — first paint | **1.2 ms** | 31.5 ms | 3.2 ms |
+| open 10 MB — fully settled | **9.7 ms** | 34.8 ms | 10.2 ms |
+| keypress → response | **0.12 ms** | 0.28 ms | 0.18 ms |
+| `/` search in 10 MB — cold / repeat | **5.1 / 5.1 ms** | 1943 / 20.0 ms | 51.6 / 14.7 ms |
+| file picker open (this repo) | **6.2 cold / 4.6 ms warm** | 1941 ms cold | n/a (no builtin) |
 
-zedit shows a large file soonest (it paints from the first 256 KB and reads
-the rest afterwards) and wins startup and keypress latency; nvim still reaches
-a fully-settled screen first. On a 476 MB file zedit searches in ~196 ms
+Two notes on reading this table honestly. The search and picker columns used
+to show helix at ~4.4 ms; that was a bug in *our* harness, which began counting
+silence the moment the key was sent and so scored an editor that had not
+answered yet as having finished instantly. It now waits for a first response
+before timing the settle, which is why helix's numbers moved so far. An
+independent probe puts helix's first search of this file at ~520 ms and its
+repeat searches at 15–22 ms, so treat the cold figure as the right order of
+magnitude rather than an exact one. zedit's search costs the same cold and
+warm because it builds no index to warm up. On a 476 MB file zedit searches in ~196 ms
 against nvim's 217 ms and helix's 1753 ms. The picker opens before its project
 walk finishes and streams results in, so on a 20k-file tree it is on screen in
 0.5 ms where helix takes ~1.1 s.
