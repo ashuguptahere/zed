@@ -46,7 +46,13 @@ pub const Pos = struct { row: usize, col: usize };
 
 pub const Buffer = struct {
     gpa: Allocator,
+    /// Per-line storage. Empty while the buffer is still "lazy": until the
+    /// first edit, lines are described purely by `offsets` into `source`.
     lines: std.ArrayList(Line),
+    /// Lazy line index: byte offset of each line start in `source`, plus a
+    /// trailing sentinel (so line i spans [offsets[i], offsets[i+1]-1)).
+    /// Non-empty exactly while `lines` is unused — see `materialize`.
+    offsets: std.ArrayList(u32) = .empty,
     /// The loaded file bytes that borrowed lines slice into (null for buffers
     /// that never loaded anything). Freed only in deinit/replaceContents, so
     /// borrowed slices stay valid for the buffer's whole life.
@@ -71,15 +77,38 @@ pub const Buffer = struct {
     /// bows out then, since line slices exclude the stripped '\r').
     has_cr: bool,
 
+    /// Build the `lines` array from the lazy offset index. Called by the first
+    /// operation that needs per-line storage — i.e. the first edit. Reading,
+    /// searching, rendering and saving all work straight off the offsets, so a
+    /// file opened to look at never pays for this.
+    fn materialize(self: *Buffer) !void {
+        if (self.offsets.items.len == 0) return; // already materialized
+        const src = self.source orelse "";
+        try self.lines.ensureTotalCapacity(self.gpa, self.offsets.items.len - 1);
+        var i: usize = 0;
+        while (i + 1 < self.offsets.items.len) : (i += 1) {
+            const s = self.offsets.items[i];
+            const e = self.offsets.items[i + 1];
+            self.lines.appendAssumeCapacity(.{ .borrowed = stripCr(src[s .. e - 1]) });
+        }
+        self.offsets.clearRetainingCapacity();
+    }
+
+    /// True while the buffer is still described by the offset index alone.
+    fn isLazy(self: *const Buffer) bool {
+        return self.offsets.items.len != 0;
+    }
+
     pub fn initEmpty(gpa: Allocator) !Buffer {
         var lines: std.ArrayList(Line) = .empty;
         try lines.append(gpa, .{ .borrowed = &.{} });
         // New buffers follow the POSIX convention: once they hold content they
         // are saved with a trailing newline. A still-empty buffer writes 0 bytes.
-        return .{ .gpa = gpa, .lines = lines, .source = null, .path = null, .dirty = false, .revision = 0, .final_newline = true, .emptied = true, .pure_borrowed = false, .has_cr = false };
+        return .{ .gpa = gpa, .lines = lines, .offsets = .empty, .source = null, .path = null, .dirty = false, .revision = 0, .final_newline = true, .emptied = true, .pure_borrowed = false, .has_cr = false };
     }
 
     pub fn deinit(self: *Buffer) void {
+        self.offsets.deinit(self.gpa);
         for (self.lines.items) |*l| l.free(self.gpa);
         self.lines.deinit(self.gpa);
         if (self.source) |s| self.gpa.free(s);
@@ -110,10 +139,17 @@ pub const Buffer = struct {
         errdefer lines.deinit(gpa);
 
         const src: []const u8 = source orelse &.{};
+        // Lazy index: one u32 offset per line (plus an end sentinel) instead of
+        // a 32-byte tagged union each — 8x less memory written at open, which
+        // is most of what opening a large file costs. `materialize` turns this
+        // into real `Line`s the first time something edits.
+        var offsets: std.ArrayList(u32) = .empty;
+        errdefer offsets.deinit(gpa);
         // Estimate the line count (~40 bytes/line) to make growth rare, but
         // keep a single pass — a separate exact count pass costs ~25% of the
         // whole parse on huge files.
-        try lines.ensureTotalCapacity(gpa, src.len / 40 + 1);
+        try offsets.ensureTotalCapacity(gpa, src.len / 40 + 2);
+        try offsets.append(gpa, 0);
         // One vectorized pass over the bytes: per-line `indexOf` calls cost
         // more in call overhead than the search itself on short lines
         // (measured ~3x slower on a 200k-line file).
@@ -127,31 +163,34 @@ pub const Buffer = struct {
             var mask: u32 = @bitCast(chunk == nl_splat);
             while (mask != 0) {
                 const nl = i + @ctz(mask);
-                const stripped = stripCr(src[start..nl]);
-                has_cr = has_cr or stripped.len != nl - start;
-                try lines.append(gpa, .{ .borrowed = stripped });
+                has_cr = has_cr or (nl > start and src[nl - 1] == '\r');
+                try offsets.append(gpa, @intCast(nl + 1));
                 start = nl + 1;
                 mask &= mask - 1; // clear the lowest set bit
             }
         }
         while (i < src.len) : (i += 1) {
             if (src[i] == '\n') {
-                const stripped = stripCr(src[start..i]);
-                has_cr = has_cr or stripped.len != i - start;
-                try lines.append(gpa, .{ .borrowed = stripped });
+                has_cr = has_cr or (i > start and src[i - 1] == '\r');
+                try offsets.append(gpa, @intCast(i + 1));
                 start = i + 1;
             }
         }
         var final_newline = true;
         if (start < src.len) {
             // Trailing text after the last newline: no final newline on disk.
-            try lines.append(gpa, .{ .borrowed = stripCr(src[start..]) });
+            try offsets.append(gpa, @intCast(src.len + 1)); // sentinel past the (absent) \n
             final_newline = false;
         }
-        const was_empty = lines.items.len == 0;
-        if (was_empty) try lines.append(gpa, .{ .borrowed = &.{} });
+        // `offsets` holds one entry per line start plus a trailing sentinel, so
+        // a file with N lines has N+1 entries. Fewer than 2 means no lines.
+        const was_empty = offsets.items.len < 2;
+        if (was_empty) {
+            offsets.clearRetainingCapacity();
+            try lines.append(gpa, .{ .borrowed = &.{} });
+        }
 
-        return .{ .gpa = gpa, .lines = lines, .source = source, .path = null, .dirty = false, .revision = 0, .final_newline = final_newline, .emptied = was_empty, .pure_borrowed = source != null, .has_cr = has_cr };
+        return .{ .gpa = gpa, .lines = lines, .offsets = offsets, .source = source, .path = null, .dirty = false, .revision = 0, .final_newline = final_newline, .emptied = was_empty, .pure_borrowed = source != null, .has_cr = has_cr };
     }
 
     /// Load `path` into a new buffer. A missing file yields an empty buffer
@@ -183,14 +222,19 @@ pub const Buffer = struct {
     pub fn toBytes(self: *const Buffer, gpa: Allocator) ![]u8 {
         // A genuinely empty document writes 0 bytes; a single line whose text
         // was merely emptied still writes its "\n" (vim semantics).
-        if (self.emptied and self.lines.items.len == 1 and self.lines.items[0].bytes().len == 0) {
+        const count = self.lineCount();
+        if (self.emptied and count == 1 and self.line(0).len == 0) {
             return gpa.alloc(u8, 0);
         }
         var out: std.ArrayList(u8) = .empty;
         errdefer out.deinit(gpa);
-        for (self.lines.items, 0..) |*ln, idx| {
-            try out.appendSlice(gpa, ln.bytes());
-            const last = idx + 1 == self.lines.items.len;
+        // Reads through `line`, so an unedited buffer serialises straight out
+        // of the lazy index without materialising it.
+        try out.ensureTotalCapacity(gpa, if (self.source) |s| s.len else 0);
+        var idx: usize = 0;
+        while (idx < count) : (idx += 1) {
+            try out.appendSlice(gpa, self.line(idx));
+            const last = idx + 1 == count;
             if (!last or self.final_newline) try out.append(gpa, '\n');
         }
         return out.toOwnedSlice(gpa);
@@ -215,22 +259,32 @@ pub const Buffer = struct {
     }
 
     pub fn lineCount(self: *const Buffer) usize {
+        if (self.isLazy()) return self.offsets.items.len - 1;
         return self.lines.items.len;
     }
 
     pub fn line(self: *const Buffer, row: usize) []const u8 {
+        if (self.isLazy()) {
+            const src = self.source orelse "";
+            const s = self.offsets.items[row];
+            const e = self.offsets.items[row + 1];
+            const text = src[s .. e - 1];
+            return if (self.has_cr) stripCr(text) else text;
+        }
         return self.lines.items[row].bytes();
     }
 
     /// The row's bytes as mutable storage (converting a borrowed line to owned
     /// first) — for same-length in-place edits like case toggling.
     pub fn lineMut(self: *Buffer, row: usize) ![]u8 {
+        try self.materialize();
         const l = try self.toOwned(row);
         return l.items;
     }
 
     /// Ensure the line owns its bytes (copy-on-write conversion).
     fn toOwned(self: *Buffer, row: usize) !*std.ArrayList(u8) {
+        try self.materialize();
         const l = &self.lines.items[row];
         switch (l.*) {
             .owned => |*a| return a,
@@ -249,6 +303,7 @@ pub const Buffer = struct {
 
     /// Insert one codepoint at (row, col). Returns the new column (col + bytes).
     pub fn insertCodepoint(self: *Buffer, row: usize, col: usize, cp: u21) !usize {
+        try self.materialize();
         var enc: [4]u8 = undefined;
         const n = std.unicode.utf8Encode(cp, &enc) catch return col;
         const l = try self.toOwned(row);
@@ -262,6 +317,7 @@ pub const Buffer = struct {
     /// Split the line at (row, col) into two, as the Enter key does. A
     /// borrowed line splits into two borrowed slices — no copies.
     pub fn splitLine(self: *Buffer, row: usize, col: usize) !void {
+        try self.materialize();
         switch (self.lines.items[row]) {
             .borrowed => |s| {
                 try self.lines.insert(self.gpa, row + 1, .{ .borrowed = s[col..] });
@@ -284,6 +340,7 @@ pub const Buffer = struct {
 
     /// Delete the codepoint at (row, col). At end-of-line, join the next line.
     pub fn deleteForward(self: *Buffer, row: usize, col: usize) !void {
+        try self.materialize();
         if (col < self.lines.items[row].bytes().len) {
             const cur = try self.toOwned(row);
             const len = unicode.decode(cur.items[col..]).len;
@@ -303,6 +360,7 @@ pub const Buffer = struct {
     /// Delete the codepoint before (row, col). At column 0, join onto the
     /// previous line. Returns the resulting cursor position.
     pub fn deleteBackward(self: *Buffer, row: usize, col: usize) !Pos {
+        try self.materialize();
         if (col > 0) {
             const cur = try self.toOwned(row);
             const prev = unicode.prevBoundary(cur.items, col);
@@ -328,8 +386,10 @@ pub const Buffer = struct {
         const tmp = try fromBytes(self.gpa, data);
         for (self.lines.items) |*l| l.free(self.gpa);
         self.lines.deinit(self.gpa);
+        self.offsets.deinit(self.gpa);
         if (self.source) |s| self.gpa.free(s);
         self.lines = tmp.lines; // take ownership; tmp.path is null
+        self.offsets = tmp.offsets;
         self.source = tmp.source;
         self.final_newline = tmp.final_newline;
         self.emptied = tmp.emptied;
@@ -340,6 +400,7 @@ pub const Buffer = struct {
 
     /// Insert raw bytes into a line at a byte offset.
     pub fn insertBytes(self: *Buffer, row: usize, col: usize, bytes: []const u8) !void {
+        try self.materialize();
         const l = try self.toOwned(row);
         try l.insertSlice(self.gpa, col, bytes);
         self.emptied = false;
@@ -349,6 +410,7 @@ pub const Buffer = struct {
 
     /// Remove bytes [start, end) from a line.
     pub fn deleteInLine(self: *Buffer, row: usize, start: usize, end: usize) !void {
+        try self.materialize();
         if (end <= start) return;
         const l = try self.toOwned(row);
         try l.replaceRange(self.gpa, start, end - start, &[_]u8{});
@@ -358,6 +420,7 @@ pub const Buffer = struct {
 
     /// Replace a line's entire content.
     pub fn setLine(self: *Buffer, row: usize, bytes: []const u8) !void {
+        try self.materialize();
         const l = try self.toOwned(row);
         l.clearRetainingCapacity();
         try l.appendSlice(self.gpa, bytes);
@@ -368,6 +431,7 @@ pub const Buffer = struct {
 
     /// Insert a new line (copying `bytes`) at index `at`.
     pub fn insertLineAt(self: *Buffer, at: usize, bytes: []const u8) !void {
+        try self.materialize();
         var new_line: std.ArrayList(u8) = .empty;
         errdefer new_line.deinit(self.gpa);
         try new_line.appendSlice(self.gpa, bytes);
@@ -380,6 +444,7 @@ pub const Buffer = struct {
 
     /// Remove line `at`, always leaving at least one (empty) line.
     pub fn removeLineAt(self: *Buffer, at: usize) void {
+        self.materialize() catch return;
         var removed = self.lines.orderedRemove(at);
         removed.free(self.gpa);
         if (self.lines.items.len == 0) {
@@ -471,8 +536,12 @@ test "copy-on-write: editing one borrowed line leaves the rest borrowed" {
     const gpa = std.testing.allocator;
     var b = try Buffer.fromBytes(gpa, "one\ntwo\nthree\n");
     defer b.deinit();
-    try std.testing.expect(b.lines.items[1] == .borrowed);
-    _ = try b.insertCodepoint(1, 0, 'X');
+    // Freshly loaded: no per-line storage at all, just the offset index.
+    try std.testing.expect(b.isLazy());
+    try std.testing.expectEqual(@as(usize, 0), b.lines.items.len);
+    try std.testing.expectEqualStrings("two", b.line(1));
+
+    _ = try b.insertCodepoint(1, 0, 'X'); // the first edit materialises
     try std.testing.expectEqualStrings("Xtwo", b.line(1));
     try std.testing.expect(b.lines.items[1] == .owned);
     // Neighbours stayed zero-copy and unchanged.
@@ -480,6 +549,36 @@ test "copy-on-write: editing one borrowed line leaves the rest borrowed" {
     try std.testing.expect(b.lines.items[2] == .borrowed);
     try std.testing.expectEqualStrings("one", b.line(0));
     try std.testing.expectEqualStrings("three", b.line(2));
+}
+
+test "the lazy index reads, counts and serialises without materialising" {
+    const gpa = std.testing.allocator;
+    var b = try Buffer.fromBytes(gpa, "alpha\nbeta\ngamma\n");
+    defer b.deinit();
+    try std.testing.expectEqual(@as(usize, 3), b.lineCount());
+    try std.testing.expectEqualStrings("alpha", b.line(0));
+    try std.testing.expectEqualStrings("gamma", b.line(2));
+    const out = try b.toBytes(gpa);
+    defer gpa.free(out);
+    try std.testing.expectEqualStrings("alpha\nbeta\ngamma\n", out);
+    try std.testing.expect(b.isLazy()); // reading never materialises
+}
+
+test "lazy index handles CRLF and a missing final newline" {
+    const gpa = std.testing.allocator;
+    var crlf = try Buffer.fromBytes(gpa, "one\r\ntwo\r\n");
+    defer crlf.deinit();
+    try std.testing.expectEqual(@as(usize, 2), crlf.lineCount());
+    try std.testing.expectEqualStrings("one", crlf.line(0));
+    try std.testing.expectEqualStrings("two", crlf.line(1));
+
+    var tail = try Buffer.fromBytes(gpa, "a\nb");
+    defer tail.deinit();
+    try std.testing.expectEqual(@as(usize, 2), tail.lineCount());
+    try std.testing.expectEqualStrings("b", tail.line(1));
+    const out = try tail.toBytes(gpa);
+    defer gpa.free(out);
+    try std.testing.expectEqualStrings("a\nb", out); // no newline invented
 }
 
 test "splitting a borrowed line stays zero-copy and round-trips" {

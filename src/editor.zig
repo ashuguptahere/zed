@@ -4723,9 +4723,12 @@ pub const Editor = struct {
 
         self.ts_line_starts.clearRetainingCapacity();
         var off: usize = 0;
-        for (self.buf.lines.items) |*ln| {
+        var row: usize = 0;
+        const rows = self.buf.lineCount();
+        self.ts_line_starts.ensureTotalCapacity(self.gpa, rows) catch {};
+        while (row < rows) : (row += 1) {
             self.ts_line_starts.append(self.gpa, off) catch {};
-            off += ln.bytes().len + 1; // + newline
+            off += self.buf.line(row).len + 1; // + newline
         }
         self.ts_rev = self.buf.revision;
         self.ts_q_top = std.math.maxInt(usize); // force a requery

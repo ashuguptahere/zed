@@ -110,12 +110,12 @@ Source is `src/`, one responsibility per module:
 | `term.zig`    | POSIX terminal control: raw mode, alternate screen, bracketed paste, window size, event-driven input. |
 | `key.zig`     | Decoding raw input bytes into `Key` events (text, arrows, navigation). |
 | `unicode.zig` | UTF-8 decoding, codepoint boundaries, display width. |
-| `buffer.zig`  | The document: zero-copy load (lines borrow from one shared buffer, copy-on-write on first edit), save, UTF-8-aware edits. |
+| `buffer.zig`  | The document: zero-copy load (a lazy `u32` line index over one shared buffer; per-line storage materialises on the first edit, copy-on-write from there), save, UTF-8-aware edits. |
 | `motion.zig`  | Pure cursor motions, word/WORD rules, find-char, `%`, text objects. |
 | `register.zig`| Vim registers (named/unnamed, linewise flag) for yank/delete/paste. |
 | `undo.zig`    | Undo/redo as capped buffer snapshots. |
 | `regex.zig`   | Regex engine: Pike VM (Thompson NFA), linear time, captures; modern "very magic" syntax. |
-| `search.zig`  | Buffer search (`/ ? n N * #`): regex-powered, with a whole-source SIMD fast path for literal patterns while the buffer is unedited. |
+| `search.zig`  | Buffer search (`/ ? n N * #`): regex-powered, with a whole-source SIMD memmem fast path for literal patterns while the buffer is unedited. |
 | `theme.zig`   | Colour palettes (Tokyo Night default + Gruvbox/Catppuccin/Nord/One Dark), the active-theme global, 24-bit SGR helpers. |
 | `config.zig`  | The single documented config file (`~/.config/zedit/config`): parse, apply, standard path, `--init-config` default text. |
 | `syntax.zig`  | Dependency-free per-line lexer producing per-byte styles. |
@@ -463,8 +463,14 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
 ## Known gaps / future work (keep this honest)
 
 - Windows console support (the `term.zig` compile-time gate marks the spot).
-- Large-file performance: loading is zero-copy with copy-on-write lines
-  (`buffer.zig`, 2 GB cap), and above the config's `large_file_mb` (64 MB
+- Large-file performance: loading is zero-copy with a lazy line index —
+  opening records one `u32` offset per line instead of a 32-byte tagged union,
+  and `lines` is only materialised by the first edit, so reading, searching,
+  rendering and saving never pay for it (8.2 MB file: open 6.85 → 4.65 ms,
+  peak RSS 32.3 → 18.5 MB). Literal search uses a first-byte/last-byte SIMD
+  memmem (`search.zig`), and the whole-source path is authoritative — a miss
+  returns immediately instead of re-walking every line, which used to cost
+  301 ms on 8.2 MB (`buffer.zig`, 2 GB cap), and above the config's `large_file_mb` (64 MB
   default) highlighting/LSP/git signs are skipped ("large-file mode"). A
   476 MB / 10M-line file opens in ~375 ms and `/`-searches in ~196 ms (nvim:
   103/217, helix: 459/1753). nvim still opens faster via lazy line indexing —

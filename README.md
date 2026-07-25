@@ -179,11 +179,16 @@ machine (medians):
 
 | metric | zedit | helix 25.07.1 | nvim 0.12.4 |
 |---|---|---|---|
-| startup → interactive | **7.2 ms** | 27.0 ms | 10.5 ms |
-| open 10 MB / 200k lines | 17.6 ms | 35.1 ms | **10.7 ms** |
-| keypress → response | **0.10 ms** | 0.28 ms | 0.17 ms |
-| `/` search in the 10 MB file | 7.6 ms | **4.4 ms** | 51.1 ms |
-| file picker open (this repo) | 5.1 cold / **4.5 ms** warm | 4.4 ms | n/a (no builtin) |
+| startup → interactive | **6.9 ms** | 27.2 ms | 9.9 ms |
+| open 10 MB / 200k lines | 13.3 ms | 35.0 ms | **10.4 ms** |
+| keypress → response | **0.12 ms** | 0.27 ms | 0.17 ms |
+| `/` search in the 10 MB file | 5.1 ms | **4.4 ms** | 50.9 ms |
+| file picker open (this repo) | 5.9 cold / **4.8 ms** warm | 4.4 ms | n/a (no builtin) |
+
+zedit wins startup and keypress latency; nvim still opens large files faster
+(it defers more work than our lazy index does) and helix still edges the 10 MB
+search and a cold picker. On a 476 MB file zedit searches in ~196 ms against
+nvim's 217 ms and helix's 1753 ms.
 
 Buffer loading is zero-copy (one shared byte buffer; lines are slices that
 convert to owned storage on first edit), so the big-file number fell from
