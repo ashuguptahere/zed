@@ -13,7 +13,81 @@ const NORD_BG = "\x1b[48;2;46;52;64m"; // #2e3440
 const KEYWORD = "\x1b[38;2;187;154;247m"; // tokyonight keyword (purple)
 const POWERLINE = "\xee\x82\xb0"; // U+E0B0
 
+/// Settings that only show up in the rendered frame: a tab drawn at its width,
+/// the buffer tabline present or gone, and the completion debounce accepted as
+/// a number rather than ignored.
+fn renderedSettings(ctx: *h.Ctx) !void {
+    const dir = try h.tempDir(ctx.gpa);
+    defer ctx.gpa.free(dir);
+    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const cfg = try std.fmt.allocPrint(ctx.gpa, "{s}/cfg", .{dir});
+    defer ctx.gpa.free(cfg);
+    const a = try std.fmt.allocPrint(ctx.gpa, "{s}/a.txt", .{dir});
+    defer ctx.gpa.free(a);
+    const b = try std.fmt.allocPrint(ctx.gpa, "{s}/b.txt", .{dir});
+    defer ctx.gpa.free(b);
+    h.writeFile(ctx.io, a, "\tX\n"); // one tab, then a marker
+    h.writeFile(ctx.io, b, "second\n");
+
+    // tab_width: the marker after a tab moves by exactly the difference in
+    // widths. Comparing the two runs rather than one absolute column keeps the
+    // gutter's own width out of the assertion.
+    var indent: [2]usize = .{ 0, 0 };
+    for ([_][]const u8{ "2", "8" }, 0..) |w, i| {
+        const text = try std.fmt.allocPrint(ctx.gpa, "tab_width = {s}\n", .{w});
+        defer ctx.gpa.free(text);
+        h.writeFile(ctx.io, cfg, text);
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "--config", cfg, "a.txt" }, .cwd = dir });
+        defer s.finish();
+        s.drain(500);
+        const plain = try s.plain(ctx.gpa);
+        defer ctx.gpa.free(plain);
+        const at = std.mem.indexOfScalar(u8, plain, 'X') orelse 0;
+        var spaces: usize = 0;
+        while (spaces < at and plain[at - 1 - spaces] == ' ') spaces += 1;
+        indent[i] = spaces;
+        s.send(":q!\r");
+        s.drain(200);
+    }
+    if (indent[1] != indent[0] + 6) std.debug.print("       tab indent {d} vs {d}\n", .{ indent[0], indent[1] });
+    ctx.check("tab_width sets how wide a tab renders", indent[0] > 0 and indent[1] == indent[0] + 6);
+
+    // buffer_tabs: two files open, tabline shown by default and gone when off.
+    for ([_]struct { text: []const u8, want: bool }{
+        .{ .text = "# default\n", .want = true },
+        .{ .text = "buffer_tabs = false\n", .want = false },
+    }) |case| {
+        h.writeFile(ctx.io, cfg, case.text);
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "--config", cfg, "a.txt" }, .cwd = dir });
+        defer s.finish();
+        s.drain(400);
+        s.send(":e b.txt\r");
+        s.drain(500);
+        const m = s.mark();
+        s.send("i \x1b"); // force a redraw so the tabline (or its absence) is current
+        s.drain(400);
+        const shown = s.containsPlainSince(ctx.gpa, m, "a.txt") and s.containsPlainSince(ctx.gpa, m, "b.txt");
+        ctx.check(if (case.want) "buffer tabs are shown by default" else "buffer_tabs = false hides them", shown == case.want);
+        s.send(":q!\r:q!\r");
+        s.drain(200);
+    }
+
+    // completion_delay_ms: a number the editor accepts and keeps working with
+    // (the timer itself is covered by the LSP scenario).
+    h.writeFile(ctx.io, cfg, "completion_delay_ms = 40\n");
+    var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "--config", cfg, "a.txt" }, .cwd = dir });
+    defer s.finish();
+    s.drain(500);
+    s.send("ihello\x1b");
+    s.drain(400);
+    ctx.check("completion_delay_ms is accepted and editing continues", s.containsPlain(ctx.gpa, "hello"));
+    s.send(":q!\r");
+    s.drain(200);
+}
+
 pub fn run(ctx: *h.Ctx) !void {
+    try renderedSettings(ctx);
+
     const dir = try h.tempDir(ctx.gpa);
     defer ctx.gpa.free(dir);
     defer h.removeTree(ctx.gpa, ctx.io, dir);

@@ -21,9 +21,25 @@ work", they win.
 5. **YAGNI** — build features when they reach the roadmap, never
    speculatively; prefer an algorithm or a closed-form computation over a
    loop, and a `std` call over hand-rolled code (audits sweep for both).
-6. **Every feature ships with its checklist** — regression tests in the same
-   commit, the docs sweep (README/CLAUDE.md/man/tutor/COMPARISON/CHANGELOG),
-   a `TODO.md` update, and for anything perf- or input-relevant: a security
+6. **No feature without a test. No exceptions.** A change to behaviour that
+   lands without a test in the *same commit* is not finished, however obvious
+   it looks. Concretely:
+   - Pure logic (motions, search, regex, undo, snippets, config) gets a unit
+     test in its own module; anything interactive gets a pty scenario under
+     `tools/scenarios/`.
+   - Vim behaviour is pinned to **real nvim**, driven through a pty — never
+     from memory, and never through `-c` arguments, which join undo blocks and
+     hide exactly what is under test.
+   - **Every new config setting** gets a test that the key actually does
+     something. `config.zig`'s completeness test walks `Settings` at comptime
+     and fails if a field is missing from the annotated default text or is not
+     read by the parser, so those two can never be forgotten again.
+   - After writing a test, **check that it fails without the fix** (stash the
+     change, or plant the old behaviour back). A test that passes either way
+     proves nothing.
+7. **Every feature ships with the rest of its checklist** — the docs sweep
+   (README/CLAUDE.md/man/tutor/COMPARISON/CHANGELOG), a `VERSION` bump, a
+   `TODO.md` update, and for anything perf- or input-relevant: a security
    pass (untrusted bytes stay inert), a benchmark run (`zig build bench`,
    `zedit --benchmark`) and `log.Span` profiling before/after.
 

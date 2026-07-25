@@ -2,6 +2,14 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.7.1 - 2026-07-26
+
+### Fixed
+
+- `config.zig` now has a completeness test that walks `Settings` at comptime and fails if a field is missing from the text `--init-config` writes or is not read by the parser — a setting could previously reach the struct and silently ignore what the user put in their config.
+- Tests for the three settings that had none: `tab_width` (a tab renders that wide), `buffer_tabs` (the tabline appears and `= false` hides it) and `completion_delay_ms`.
+- A regression test for `:e` painting before it decorates, which shipped in 0.3.0 without one. It asserts the order of bytes in the stream rather than a timing, so it cannot be flaky: the text and the git sign arrive in different frames.
+
 ## 0.7.0 - 2026-07-26
 
 ### Added

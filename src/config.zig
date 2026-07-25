@@ -258,6 +258,43 @@ test "apply parses keys, comments, junk" {
     settings = .{};
 }
 
+test "every setting is documented and parsed" {
+    // A setting that reaches `Settings` but not the parser silently ignores
+    // what the user wrote; one that is in neither the parser nor the annotated
+    // default is undiscoverable. Walking the struct at comptime makes both
+    // impossible to forget when the next setting is added, which a written rule
+    // cannot.
+    inline for (@typeInfo(Settings).@"struct".fields) |f| {
+        settings = .{};
+        var found = false;
+        var lines = std.mem.splitScalar(u8, default_text, '\n');
+        while (lines.next()) |line| {
+            const t = std.mem.trim(u8, line, " \t");
+            if (std.mem.startsWith(u8, t, f.name) and std.mem.indexOfScalar(u8, t, '=') != null) found = true;
+        }
+        if (!found) {
+            std.debug.print("setting '{s}' is missing from the default config text\n", .{f.name});
+            return error.SettingNotDocumented;
+        }
+        // And read back: feed a value that differs from the default and check
+        // it lands.
+        const dflt = @as(*const f.type, @ptrCast(@alignCast(f.default_value_ptr.?))).*;
+        const want: []const u8 = switch (@typeInfo(f.type)) {
+            .bool => if (dflt) "false" else "true",
+            .int => "7",
+            .@"enum" => if (dflt == .left) "right" else "left",
+            else => continue,
+        };
+        var buf: [128]u8 = undefined;
+        apply(std.fmt.bufPrint(&buf, "{s} = {s}", .{ f.name, want }) catch unreachable);
+        if (@field(settings, f.name) == dflt) {
+            std.debug.print("setting '{s}' is not read by the config parser\n", .{f.name});
+            return error.SettingNotParsed;
+        }
+    }
+    settings = .{};
+}
+
 test "default config text applies cleanly to defaults" {
     settings = .{};
     apply(default_text);

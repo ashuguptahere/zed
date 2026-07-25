@@ -25,7 +25,10 @@ The shortlist is done; these are the next-highest gaps from
       free-and-reallocate (see the picker arena in `editor.zig`).
 
 - [ ] Regression tests in the same commit (unit + pty itest; vim behaviour
-      pinned via headless nvim ground truth — never from memory).
+      pinned via real nvim through a pty — never from memory), and each one
+      checked to *fail* without the change. A new config setting gets a test
+      that the key does something; `config.zig`'s comptime completeness test
+      already fails if it is undocumented or unparsed.
 - [ ] Docs sweep: README, CLAUDE.md, man page, tutor, COMPARISON, CHANGELOG.
 - [ ] Security pass: no raw untrusted bytes to the terminal, argv-array
       spawns only, no secrets; audit sweep periodically.

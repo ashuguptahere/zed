@@ -16,6 +16,46 @@ const DELETE = "\x1b[38;2;247;118;142m"; // theme.git_delete
 const BAR = "\xe2\x94\x82"; // U+2502
 const LOWBLOCK = "\xe2\x96\x81"; // U+2581
 
+/// `:e` must put the text on screen *before* anything that only decorates it —
+/// the rule the first frame follows, applied to every later open. The check is
+/// on the order of bytes in the stream, not on timing: the text and the gutter
+/// sign arrive in two different frames, and the sign is emitted before the text
+/// on any row it shares, so seeing the text first can only mean it came in an
+/// earlier frame.
+fn paintBeforeDecorating(ctx: *h.Ctx) !void {
+    const dir = try h.tempDir(ctx.gpa);
+    defer ctx.gpa.free(dir);
+    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const name = "tracked.txt";
+    const file = try std.fmt.allocPrint(ctx.gpa, "{s}/{s}", .{ dir, name });
+    defer ctx.gpa.free(file);
+    const other = try std.fmt.allocPrint(ctx.gpa, "{s}/other.txt", .{dir});
+    defer ctx.gpa.free(other);
+
+    git(ctx, &.{ "git", "-C", dir, "init", "-q" });
+    h.writeFile(ctx.io, file, "alpha\nbravo\n");
+    git(ctx, &.{ "git", "-C", dir, "add", name });
+    git(ctx, &.{ "git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@t.t", "commit", "-q", "-m", "init" });
+    h.writeFile(ctx.io, file, "alpha\nCHANGEDLINE\n"); // a change for the gutter
+    h.writeFile(ctx.io, other, "nothing here\n");
+
+    var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "other.txt" }, .cwd = dir });
+    defer s.finish();
+    s.drain(500);
+    const from = s.mark();
+    s.send(":e tracked.txt\r");
+    s.drain(700);
+
+    const stream = s.out.items[@min(from, s.out.items.len)..];
+    const text = std.mem.indexOf(u8, stream, "CHANGEDLINE");
+    const sign = std.mem.indexOf(u8, stream, CHANGE); // the git-change colour
+    const ok = text != null and sign != null and text.? < sign.?;
+    if (!ok) std.debug.print("       text at {?d}, git sign at {?d}\n", .{ text, sign });
+    ctx.check(":e paints the file before decorating it", ok);
+    s.send(":q!\r");
+    s.drain(200);
+}
+
 /// Run a git subcommand in `dir`, ignoring (but freeing) its output. Uses `-C`
 /// and `-c` flags so it works regardless of the global/system git config.
 fn git(ctx: *h.Ctx, argv: []const []const u8) void {
@@ -68,6 +108,8 @@ fn capture(
 }
 
 pub fn run(ctx: *h.Ctx) !void {
+    try paintBeforeDecorating(ctx);
+
     // changed + added line
     try capture(ctx, "alpha\nbeta\ngamma\n", "alpha\nBETA\ngamma\nadded\n", "f.txt", &.{
         .{ .name = "changed line shows change sign", .present = &.{ CHANGE, BAR }, .absent = &.{} },
