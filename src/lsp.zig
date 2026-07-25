@@ -88,6 +88,17 @@ pub const InlayHint = struct {
 /// A document symbol, flattened from the (possibly nested) response. `kind` is
 /// the LSP SymbolKind; `depth` is the nesting level (0 = top); (line, col) is
 /// the symbol's selection position.
+/// A `workspace/symbol` result: a symbol anywhere in the project, with the
+/// file it lives in. Bounded per response and cleared before each new one, so
+/// this list never grows unbounded.
+pub const WorkspaceSymbol = struct {
+    name: []u8,
+    uri: []u8,
+    kind: u8,
+    line: u32,
+    col: u32,
+};
+
 pub const Symbol = struct {
     name: []u8,
     kind: u8,
@@ -144,6 +155,9 @@ pub const Client = struct {
     sym_id: i64,
     symbols: std.ArrayList(Symbol), // last documentSymbol result (flattened)
     sym_ready: bool, // a documentSymbol response just arrived (editor should consume)
+    wsym_id: i64,
+    wsymbols: std.ArrayList(WorkspaceSymbol), // last workspace/symbol result
+    wsym_ready: bool,
 
     pub fn start(
         gpa: Allocator,
@@ -210,6 +224,9 @@ pub const Client = struct {
             .sym_id = -1,
             .symbols = .empty,
             .sym_ready = false,
+            .wsym_id = -1,
+            .wsymbols = .empty,
+            .wsym_ready = false,
         };
 
         self.sendInitialize(root);
@@ -255,6 +272,8 @@ pub const Client = struct {
         self.inlay_hints.deinit(self.gpa);
         self.clearSymbols();
         self.symbols.deinit(self.gpa);
+        self.clearWorkspaceSymbols();
+        self.wsymbols.deinit(self.gpa);
         if (self.hover_text) |t| self.gpa.free(t);
         if (self.def_target) |d| self.gpa.free(d.uri);
     }
@@ -301,6 +320,14 @@ pub const Client = struct {
         self.inlay_hints.clearRetainingCapacity();
     }
 
+    fn clearWorkspaceSymbols(self: *Client) void {
+        for (self.wsymbols.items) |s| {
+            self.gpa.free(s.name);
+            self.gpa.free(s.uri);
+        }
+        self.wsymbols.clearRetainingCapacity();
+    }
+
     fn clearSymbols(self: *Client) void {
         for (self.symbols.items) |s| self.gpa.free(s.name);
         self.symbols.clearRetainingCapacity();
@@ -313,7 +340,7 @@ pub const Client = struct {
         defer body.deinit(self.gpa);
         body.appendSlice(self.gpa, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"processId\":null,\"rootUri\":\"file://") catch return;
         appendEscaped(&body, self.gpa, root) catch return;
-        body.appendSlice(self.gpa, "\",\"capabilities\":{\"textDocument\":{\"publishDiagnostics\":{},\"hover\":{},\"definition\":{},\"implementation\":{},\"typeDefinition\":{},\"completion\":{\"completionItem\":{\"snippetSupport\":true}},\"signatureHelp\":{},\"rename\":{},\"codeAction\":{},\"inlayHint\":{},\"documentSymbol\":{},\"references\":{},\"formatting\":{}}}}}") catch return;
+        body.appendSlice(self.gpa, "\",\"capabilities\":{\"textDocument\":{\"publishDiagnostics\":{},\"hover\":{},\"definition\":{},\"implementation\":{},\"typeDefinition\":{},\"completion\":{\"completionItem\":{\"snippetSupport\":true}},\"signatureHelp\":{},\"rename\":{},\"codeAction\":{},\"inlayHint\":{},\"documentSymbol\":{},\"workspaceSymbol\":{},\"references\":{},\"formatting\":{}}}}}") catch return;
         self.writeMessage(body.items);
     }
 
@@ -458,6 +485,21 @@ pub const Client = struct {
             body.appendSlice(a, args) catch return;
         }
         body.appendSlice(a, "}}") catch return;
+        self.writeMessage(body.items);
+    }
+
+    /// `workspace/symbol`: symbols across the project, filtered by `query`
+    /// server-side (an empty query asks for everything the server will give).
+    pub fn requestWorkspaceSymbol(self: *Client, query: []const u8) void {
+        if (!self.alive) return;
+        self.wsym_id = self.nextId();
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(self.gpa);
+        const a = self.gpa;
+        var nb: [128]u8 = undefined;
+        body.appendSlice(a, std.fmt.bufPrint(&nb, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":\"workspace/symbol\",\"params\":{{\"query\":\"", .{self.wsym_id}) catch return) catch return;
+        appendEscaped(&body, a, query) catch return;
+        body.appendSlice(a, "\"}}") catch return;
         self.writeMessage(body.items);
     }
 
@@ -642,6 +684,7 @@ pub const Client = struct {
         if (id == self.ca_id) self.handleCodeAction(result);
         if (id == self.hint_id) self.handleInlayHints(result);
         if (id == self.sym_id) self.handleDocumentSymbol(result);
+        if (id == self.wsym_id) self.handleWorkspaceSymbol(result);
         if (id == self.ref_id) self.handleReferences(result);
         if (id == self.fmt_id) self.handleFormatting(result);
     }
@@ -821,6 +864,36 @@ pub const Client = struct {
         self.sym_ready = true;
         if (result != .array) return;
         for (result.array.items) |s| self.addSymbol(s, 0);
+    }
+
+    /// Parse a `WorkspaceSymbol[]` / `SymbolInformation[]`: each entry has a
+    /// name and a location (uri + range).
+    fn handleWorkspaceSymbol(self: *Client, result: std.json.Value) void {
+        self.clearWorkspaceSymbols();
+        self.wsym_ready = true;
+        if (result != .array) return;
+        for (result.array.items) |s| {
+            if (self.wsymbols.items.len >= 1000) break; // bound a huge project
+            const name = asStr(getField(s, "name")) orelse continue;
+            const loc = getField(s, "location") orelse continue;
+            const uri = asStr(getField(loc, "uri")) orelse continue;
+            const pos = if (getField(loc, "range")) |r| getField(r, "start") else null;
+            const owned_name = self.gpa.dupe(u8, name) catch continue;
+            const owned_uri = self.gpa.dupe(u8, uri) catch {
+                self.gpa.free(owned_name);
+                continue;
+            };
+            self.wsymbols.append(self.gpa, .{
+                .name = owned_name,
+                .uri = owned_uri,
+                .kind = @intCast(u32From(getField(s, "kind"))),
+                .line = if (pos) |p| u32From(getField(p, "line")) else 0,
+                .col = if (pos) |p| u32From(getField(p, "character")) else 0,
+            }) catch {
+                self.gpa.free(owned_name);
+                self.gpa.free(owned_uri);
+            };
+        }
     }
 
     fn addSymbol(self: *Client, s: std.json.Value, depth: u8) void {

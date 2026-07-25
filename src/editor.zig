@@ -76,8 +76,21 @@ pub const Mode = enum {
     }
 };
 
-const PickerKind = enum { files, grep, code_action, symbol, theme, buffer, reference };
-const PickItem = struct { display: []u8, path: []u8, line: usize };
+const PickerKind = enum { files, grep, code_action, symbol, wsymbol, diagnostic, theme, buffer, reference };
+/// A picker row. Text lives in one shared byte arena (`picker_text`) and is
+/// referenced by offset, so populating 20k results costs one growing buffer
+/// instead of 40k small allocations — and closing the picker resets the arena
+/// while *keeping* its capacity, so reopening allocates nothing at all. The
+/// record is 20 bytes (against 40 for two slices), which keeps the fuzzy
+/// filter's scan cache-friendly. This is the pooled, offset-addressed shape
+/// Ghostty uses for terminal cells, applied to the thing zedit allocates most.
+const PickItem = struct {
+    display_at: u32,
+    display_len: u32,
+    path_at: u32,
+    path_len: u32,
+    line: u32,
+};
 
 /// A snippet tabstop resolved to a buffer position (`len` is the placeholder
 /// still sitting there, which the first keystroke at the stop removes).
@@ -285,10 +298,12 @@ pub const Editor = struct {
     snip_idx: usize,
     snip_pristine: bool,
 
-    // Auto-completion: a deadline set while typing an identifier. The poll in
-    // the main loop waits until then instead of forever, fires one request,
-    // and disarms — so an idle editor still blocks indefinitely (zero CPU).
+    // The editor's one timer: a deadline for a request that should follow a
+    // pause in typing (completion, or a workspace-symbol query). The poll in
+    // the main loop waits until then instead of forever, fires it, and
+    // disarms — so an idle editor still blocks indefinitely (zero CPU).
     comp_due_ms: ?i64,
+    due_kind: enum { completion, wsymbol },
 
     // Picker preview: the file shown beside the results, cached so moving the
     // selection re-reads only when the path actually changes.
@@ -330,6 +345,7 @@ pub const Editor = struct {
     // picker (fuzzy file finder / global search)
     picker_kind: PickerKind,
     picker_items: std.ArrayList(PickItem),
+    picker_text: std.ArrayList(u8), // backing store for every row's strings
     // file-tree sidebar (Space e; side set by the config's `sidebar`)
     sb_open: bool,
     sb_focus: bool, // keys go to the tree instead of the buffer
@@ -352,7 +368,7 @@ pub const Editor = struct {
     fcache_masks: std.ArrayList(u64), // fuzzy.charMask per path, for prefiltering
     fcache_ready: bool,
     prev_query: std.ArrayList(u8), // last filtered query (incremental narrowing)
-    picker_filtered: std.ArrayList(usize),
+    picker_filtered: std.ArrayList(u32),
     picker_query: std.ArrayList(u8),
     picker_sel: usize,
     picker_scroll: usize,
@@ -524,6 +540,7 @@ pub const Editor = struct {
             .overlay_top = 0,
             .overlay_bot = 0,
             .comp_due_ms = null,
+            .due_kind = .completion,
             .showcmd = undefined,
             .showcmd_len = 0,
             .showcmd_done = false,
@@ -538,6 +555,7 @@ pub const Editor = struct {
             .cmd_kind = .ex,
             .picker_kind = .files,
             .picker_items = .empty,
+            .picker_text = .empty,
             .sb_open = false,
             .sb_focus = false,
             .sb_entries = .empty,
@@ -647,6 +665,7 @@ pub const Editor = struct {
         self.extra.deinit(self.gpa);
         self.freePicker();
         self.picker_items.deinit(self.gpa);
+        self.picker_text.deinit(self.gpa);
         self.sbFree();
         self.sb_entries.deinit(self.gpa);
         var xit = self.sb_expanded.keyIterator();
@@ -696,7 +715,10 @@ pub const Editor = struct {
             const lsp_fd: ?std.posix.fd_t = if (self.lsp) |*c| (if (c.alive) c.out_fd else null) else null;
             const ready = try self.term.waitReady(lsp_fd, self.pollTimeout());
             if (self.completionDue()) {
-                self.lspCompletion();
+                switch (self.due_kind) {
+                    .completion => self.lspCompletion(),
+                    .wsymbol => self.sendWorkspaceSymbolQuery(),
+                }
                 needs_render = true;
             }
             if (self.term.takeResize()) {
@@ -1311,6 +1333,8 @@ pub const Editor = struct {
                     'a' => self.lspCodeAction(), // code action
                     'r' => self.enterRename(), // rename symbol
                     'R' => self.lspReferences(), // search references
+                    'S' => self.openWorkspaceSymbolPicker(), // project-wide symbols
+                    'D' => self.openDiagnosticPicker(), // all diagnostics
                     's' => self.lspDocumentSymbol(), // document symbols
                     'd' => self.lineDiagnostic(), // show the line's diagnostic
                     'f' => self.lspFormat(), // format buffer
@@ -3036,15 +3060,7 @@ pub const Editor = struct {
     /// index so the filter can consult the precomputed mask.
     fn fillFileItems(self: *Editor) void {
         for (self.fcache.items, 0..) |path, i| {
-            const disp = self.gpa.dupe(u8, path) catch continue;
-            const p = self.gpa.dupe(u8, path) catch {
-                self.gpa.free(disp);
-                continue;
-            };
-            self.picker_items.append(self.gpa, .{ .display = disp, .path = p, .line = i }) catch {
-                self.gpa.free(disp);
-                self.gpa.free(p);
-            };
+            self.addPickItem(path, path, i);
         }
     }
 
@@ -3068,15 +3084,7 @@ pub const Editor = struct {
         self.picker_sel = 0;
         self.picker_scroll = 0;
         for (client.code_actions.items, 0..) |action, i| {
-            const disp = self.gpa.dupe(u8, action.title) catch continue;
-            const p = self.gpa.dupe(u8, action.title) catch { // fuzzy filters on `path`
-                self.gpa.free(disp);
-                continue;
-            };
-            self.picker_items.append(self.gpa, .{ .display = disp, .path = p, .line = i }) catch {
-                self.gpa.free(disp);
-                self.gpa.free(p);
-            };
+            self.addPickItem(action.title, action.title, i);
         }
         self.mode = .picker;
         self.refilter();
@@ -3093,15 +3101,9 @@ pub const Editor = struct {
         const spaces = "                    "; // 20 spaces, sliced by depth
         for (client.symbols.items, 0..) |sym, i| {
             const pad = spaces[0..@min(@as(usize, sym.depth) * 2, spaces.len)];
-            const disp = std.fmt.allocPrint(self.gpa, "{s}{s} {s}", .{ pad, symbolKindName(sym.kind), sym.name }) catch continue;
-            const p = self.gpa.dupe(u8, sym.name) catch { // fuzzy filters on the bare name
-                self.gpa.free(disp);
-                continue;
-            };
-            self.picker_items.append(self.gpa, .{ .display = disp, .path = p, .line = i }) catch {
-                self.gpa.free(disp);
-                self.gpa.free(p);
-            };
+            var db: [512]u8 = undefined;
+            const disp = std.fmt.bufPrint(&db, "{s}{s} {s}", .{ pad, symbolKindName(sym.kind), sym.name }) catch continue;
+            self.addPickItem(disp, sym.name, i);
         }
         self.mode = .picker;
         self.refilter();
@@ -3118,15 +3120,9 @@ pub const Editor = struct {
             const name = docLabel(doc);
             const mark: []const u8 = if (doc == self.d) "* " else "  ";
             const dirty: []const u8 = if (doc.buf.dirty) " \u{25CF}" else "";
-            const disp = std.fmt.allocPrint(self.gpa, "{s}{s}{s}", .{ mark, name, dirty }) catch continue;
-            const p = self.gpa.dupe(u8, name) catch {
-                self.gpa.free(disp);
-                continue;
-            };
-            self.picker_items.append(self.gpa, .{ .display = disp, .path = p, .line = i }) catch {
-                self.gpa.free(disp);
-                self.gpa.free(p);
-            };
+            var db: [512]u8 = undefined;
+            const disp = std.fmt.bufPrint(&db, "{s}{s}{s}", .{ mark, name, dirty }) catch continue;
+            self.addPickItem(disp, name, i);
         }
         self.mode = .picker;
         self.refilter();
@@ -3139,29 +3135,45 @@ pub const Editor = struct {
         self.picker_sel = 0;
         self.picker_scroll = 0;
         for (theme.themes) |t| {
-            const disp = self.gpa.dupe(u8, t.name) catch continue;
-            const p = self.gpa.dupe(u8, t.name) catch {
-                self.gpa.free(disp);
-                continue;
-            };
-            self.picker_items.append(self.gpa, .{ .display = disp, .path = p, .line = 0 }) catch {
-                self.gpa.free(disp);
-                self.gpa.free(p);
-            };
+            self.addPickItem(t.name, t.name, 0);
         }
         self.mode = .picker;
         self.refilter();
     }
 
+    /// Reset the picker. Nothing is freed: the arena and the index arrays keep
+    /// their capacity for the next open, so a warm picker performs no
+    /// allocation at all.
     fn freePicker(self: *Editor) void {
-        for (self.picker_items.items) |it| {
-            self.gpa.free(it.display);
-            self.gpa.free(it.path);
-        }
         self.picker_items.clearRetainingCapacity();
+        self.picker_text.clearRetainingCapacity();
         self.picker_filtered.clearRetainingCapacity();
         self.picker_query.clearRetainingCapacity();
         self.prev_query.clearRetainingCapacity();
+    }
+
+    /// Append a row. `display` is what the list shows, `path` what opening it
+    /// acts on (or an index stashed in `line` for the action/symbol pickers).
+    fn addPickItem(self: *Editor, display: []const u8, path: []const u8, line: usize) void {
+        const d_at: u32 = @intCast(self.picker_text.items.len);
+        self.picker_text.appendSlice(self.gpa, display) catch return;
+        const p_at: u32 = @intCast(self.picker_text.items.len);
+        self.picker_text.appendSlice(self.gpa, path) catch return;
+        self.picker_items.append(self.gpa, .{
+            .display_at = d_at,
+            .display_len = @intCast(display.len),
+            .path_at = p_at,
+            .path_len = @intCast(path.len),
+            .line = @intCast(line),
+        }) catch {};
+    }
+
+    fn itemDisplay(self: *const Editor, it: PickItem) []const u8 {
+        return self.picker_text.items[it.display_at..][0..it.display_len];
+    }
+
+    fn itemPath(self: *const Editor, it: PickItem) []const u8 {
+        return self.picker_text.items[it.path_at..][0..it.path_len];
     }
 
     fn closePicker(self: *Editor) void {
@@ -3222,7 +3234,9 @@ pub const Editor = struct {
             const tail = if (std.mem.startsWith(u8, rel, "./")) rel[2..] else rel;
             if (tail.len == 0) continue;
             if (self.fcache.items.len >= 20000) break;
-            const url = std.fmt.allocPrint(self.gpa, "{s}/{s}", .{ base, tail }) catch continue;
+            var ub: [1024]u8 = undefined;
+            const built = std.fmt.bufPrint(&ub, "{s}/{s}", .{ base, tail }) catch continue;
+            const url = self.gpa.dupe(u8, built) catch break; // the cache owns it
             self.fcache.append(self.gpa, url) catch {
                 self.gpa.free(url);
                 break;
@@ -3241,6 +3255,14 @@ pub const Editor = struct {
 
     fn onQueryChange(self: *Editor) void {
         self.picker_sel = 0;
+        if (self.picker_kind == .wsymbol) {
+            // The server does the matching, so ask it again once typing pauses
+            // — the same debounce auto-completion uses, and the same single
+            // timer, so an idle picker still costs nothing.
+            self.due_kind = .wsymbol;
+            self.comp_due_ms = nowMs() + @as(i64, @intCast(config.settings.completion_delay_ms));
+            return;
+        }
         self.picker_scroll = 0;
         self.refilter();
     }
@@ -3250,7 +3272,7 @@ pub const Editor = struct {
         if (self.picker_kind == .grep) {
             self.picker_filtered.clearRetainingCapacity();
             self.regrep();
-            var i: usize = 0;
+            var i: u32 = 0;
             while (i < self.picker_items.items.len) : (i += 1) self.picker_filtered.append(self.gpa, i) catch {};
             self.clampSel();
             return;
@@ -3260,13 +3282,13 @@ pub const Editor = struct {
         // set, so rescore just the current survivors instead of every item.
         const narrow = self.picker_kind == .files and self.prev_query.items.len > 0 and
             q.len > self.prev_query.items.len and std.mem.startsWith(u8, q, self.prev_query.items);
-        var survivors: std.ArrayList(usize) = .empty;
+        var survivors: std.ArrayList(u32) = .empty;
         defer survivors.deinit(self.gpa);
         if (narrow) survivors.appendSlice(self.gpa, self.picker_filtered.items) catch {};
 
         self.picker_filtered.clearRetainingCapacity();
         if (q.len == 0) {
-            var i: usize = 0;
+            var i: u32 = 0;
             while (i < self.picker_items.items.len) : (i += 1) self.picker_filtered.append(self.gpa, i) catch {};
         } else {
             const qmask = fuzzy.charMask(q);
@@ -3275,12 +3297,12 @@ pub const Editor = struct {
             const n = if (narrow) survivors.items.len else self.picker_items.items.len;
             var k: usize = 0;
             while (k < n) : (k += 1) {
-                const i = if (narrow) survivors.items[k] else k;
+                const i: u32 = if (narrow) survivors.items[k] else @intCast(k);
                 const it = self.picker_items.items[i];
                 // Char-bag prefilter (files only — `.line` indexes the cache).
                 if (self.picker_kind == .files and it.line < self.fcache_masks.items.len and
                     !fuzzy.maskMatches(self.fcache_masks.items[it.line], qmask)) continue;
-                if (fuzzy.score(it.path, q)) |s| scored.append(self.gpa, .{ .idx = i, .score = s }) catch {};
+                if (fuzzy.score(self.itemPath(it), q)) |s| scored.append(self.gpa, .{ .idx = i, .score = s }) catch {};
             }
             std.mem.sort(Scored, scored.items, {}, scoredLess);
             for (scored.items) |s| self.picker_filtered.append(self.gpa, s.idx) catch {};
@@ -3292,11 +3314,8 @@ pub const Editor = struct {
     }
 
     fn regrep(self: *Editor) void {
-        for (self.picker_items.items) |it| {
-            self.gpa.free(it.display);
-            self.gpa.free(it.path);
-        }
         self.picker_items.clearRetainingCapacity();
+        self.picker_text.clearRetainingCapacity();
         const q = self.picker_query.items;
         if (q.len == 0) return;
         for (self.fcache.items) |fpath| {
@@ -3311,15 +3330,9 @@ pub const Editor = struct {
                 var s = ln;
                 while (s.len > 0 and (s[0] == ' ' or s[0] == '\t')) s = s[1..];
                 const text = s[0..@min(s.len, 120)];
-                const disp = std.fmt.allocPrint(self.gpa, "{s}:{d}: {s}", .{ fpath, line_no, text }) catch continue;
-                const pp = self.gpa.dupe(u8, fpath) catch {
-                    self.gpa.free(disp);
-                    continue;
-                };
-                self.picker_items.append(self.gpa, .{ .display = disp, .path = pp, .line = line_no }) catch {
-                    self.gpa.free(disp);
-                    self.gpa.free(pp);
-                };
+                var db: [512]u8 = undefined;
+                const disp = std.fmt.bufPrint(&db, "{s}:{d}: {s}", .{ fpath, line_no, text }) catch continue;
+                self.addPickItem(disp, fpath, line_no);
             }
         }
     }
@@ -3370,11 +3383,8 @@ pub const Editor = struct {
                     // session's cached walk) and refilter with the same query.
                     self.refreshFileCache();
                     if (self.picker_kind == .files) {
-                        for (self.picker_items.items) |it| {
-                            self.gpa.free(it.display);
-                            self.gpa.free(it.path);
-                        }
                         self.picker_items.clearRetainingCapacity();
+                        self.picker_text.clearRetainingCapacity();
                         self.fillFileItems();
                     }
                     self.prev_query.clearRetainingCapacity(); // force a full rescore
@@ -3405,8 +3415,9 @@ pub const Editor = struct {
         }
         if (self.picker_kind == .theme) {
             var name_buf: [64]u8 = undefined;
-            const n = @min(it.path.len, name_buf.len);
-            @memcpy(name_buf[0..n], it.path[0..n]);
+            const tp = self.itemPath(it);
+            const n = @min(tp.len, name_buf.len);
+            @memcpy(name_buf[0..n], tp[0..n]);
             self.closePicker();
             _ = theme.set(name_buf[0..n]);
             self.setStatus("theme: {s}", .{name_buf[0..n]});
@@ -3422,7 +3433,7 @@ pub const Editor = struct {
             }
             return;
         }
-        const path = self.gpa.dupe(u8, it.path) catch return;
+        const path = self.gpa.dupe(u8, self.itemPath(it)) catch return;
         defer self.gpa.free(path);
         const line = if (it.line > 0) it.line - 1 else 0;
         self.closePicker();
@@ -3666,6 +3677,8 @@ pub const Editor = struct {
             .theme => " THEMES ",
             .buffer => " BUFFERS ",
             .reference => " REFERENCES ",
+            .wsymbol => " WORKSPACE SYMBOLS ",
+            .diagnostic => " DIAGNOSTICS ",
         };
 
         // Prompt.
@@ -3693,7 +3706,8 @@ pub const Editor = struct {
                 try self.emit(if (selected) "\u{25B6} " else "  ");
                 try self.setFg(if (selected) th.fg else th.fg_dim);
                 const maxw = list_w -| 3;
-                const text = it.display[0..@min(it.display.len, maxw)];
+                const disp = self.itemDisplay(it);
+                const text = disp[0..@min(disp.len, maxw)];
                 try self.emitSanitized(text);
                 used = 2 + unicode.displayWidth(text);
             }
@@ -3717,12 +3731,13 @@ pub const Editor = struct {
         if (self.remote_root != null) return .none;
         if (self.picker_sel < self.picker_filtered.items.len) {
             const it = self.picker_items.items[self.picker_filtered.items[self.picker_sel]];
-            if (remote.isRemote(it.path)) return .none;
+            if (remote.isRemote(self.itemPath(it))) return .none;
         }
         return switch (self.picker_kind) {
             .files => .file,
             .buffer => .file,
             .grep, .reference => .line,
+            .diagnostic, .wsymbol => .line,
             .theme, .code_action, .symbol => .none,
         };
     }
@@ -3749,17 +3764,18 @@ pub const Editor = struct {
     fn ensurePreview(self: *Editor) void {
         if (self.picker_sel >= self.picker_filtered.items.len) return self.clearPreview();
         const it = self.picker_items.items[self.picker_filtered.items[self.picker_sel]];
+        const ipath = self.itemPath(it);
         self.preview_top = if (it.line > 0) it.line - 1 else 0;
         if (self.preview_path) |p| {
-            if (std.mem.eql(u8, p, it.path)) return; // already loaded
+            if (std.mem.eql(u8, p, ipath)) return; // already loaded
         }
         self.clearPreview();
         self.preview_scroll = 0; // a new file starts at its own beginning
         // A preview is a convenience: skip anything that would cost a round
         // trip or a huge read.
-        if (remote.isRemote(it.path)) return;
-        const text = std.Io.Dir.cwd().readFileAlloc(self.io, it.path, self.gpa, .limited(256 << 10)) catch return;
-        self.preview_path = self.gpa.dupe(u8, it.path) catch null;
+        if (remote.isRemote(ipath)) return;
+        const text = std.Io.Dir.cwd().readFileAlloc(self.io, ipath, self.gpa, .limited(256 << 10)) catch return;
+        self.preview_path = self.gpa.dupe(u8, ipath) catch null;
         self.preview_text = text;
 
         // The parse is deliberately *not* done here: compiling the grammar's
@@ -4791,6 +4807,10 @@ pub const Editor = struct {
             _ = try self.applyWorkspaceEdits(client.server_files.items); // workspace/applyEdit
             client.clearServerFiles();
         }
+        if (client.wsym_ready) {
+            client.wsym_ready = false;
+            if (self.mode == .picker and self.picker_kind == .wsymbol) self.fillWorkspaceSymbols();
+        }
         if (client.refs_ready) {
             client.refs_ready = false;
             if (self.mode == .normal) {
@@ -4961,6 +4981,87 @@ pub const Editor = struct {
         if (client.fmt_edits.items.len > 0) _ = self.applyEdits(client.fmt_edits.items) catch 0;
     }
 
+    /// `Space l S` — symbols across the whole project. The query goes to the
+    /// server (it does the matching over files zedit has never opened), so
+    /// each keystroke re-asks after the same pause auto-completion uses.
+    fn openWorkspaceSymbolPicker(self: *Editor) void {
+        if (self.lsp == null) return self.setStatus("no language server", .{});
+        self.freePicker();
+        self.picker_kind = .wsymbol;
+        self.picker_sel = 0;
+        self.picker_scroll = 0;
+        self.mode = .picker;
+        self.refilter();
+        self.sendWorkspaceSymbolQuery();
+        self.setStatus("workspace symbols: type to search", .{});
+    }
+
+    fn sendWorkspaceSymbolQuery(self: *Editor) void {
+        self.comp_due_ms = null;
+        const client = if (self.lsp) |*c| c else return;
+        client.requestWorkspaceSymbol(self.picker_query.items);
+    }
+
+    /// Rebuild the workspace-symbol rows from the server's answer.
+    fn fillWorkspaceSymbols(self: *Editor) void {
+        const client = if (self.lsp) |*c| c else return;
+        const cwd = std.process.currentPathAlloc(self.io, self.gpa) catch return;
+        defer self.gpa.free(cwd);
+        self.picker_items.clearRetainingCapacity();
+        self.picker_text.clearRetainingCapacity();
+        for (client.wsymbols.items) |s| {
+            const abs = uriToPath(self.gpa, s.uri) orelse continue;
+            defer self.gpa.free(abs);
+            const rel = relativeTo(cwd, abs);
+            var db: [512]u8 = undefined;
+            const disp = std.fmt.bufPrint(&db, "{s} {s}  {s}:{d}", .{
+                symbolKindName(s.kind), s.name, rel, s.line + 1,
+            }) catch continue;
+            self.addPickItem(disp, rel, s.line + 1);
+        }
+        // The server already matched the query, so show every row it returned.
+        self.picker_filtered.clearRetainingCapacity();
+        var i: u32 = 0;
+        while (i < self.picker_items.items.len) : (i += 1) self.picker_filtered.append(self.gpa, i) catch {};
+        self.clampSel();
+    }
+
+    /// `Space l D` — every diagnostic the servers have reported for the open
+    /// buffers, most severe first, grouped by file.
+    fn openDiagnosticPicker(self: *Editor) void {
+        self.freePicker();
+        self.picker_kind = .diagnostic;
+        self.picker_sel = 0;
+        self.picker_scroll = 0;
+        const cwd = std.process.currentPathAlloc(self.io, self.gpa) catch return;
+        defer self.gpa.free(cwd);
+
+        var found: usize = 0;
+        for (self.docs.items) |doc| {
+            // The active document's client lives on the Editor mirror.
+            const client = if (doc == self.d) (if (self.lsp) |*c| c else null) else (if (doc.lsp) |*c| c else null);
+            const cl = client orelse continue;
+            const path = doc.buf.path orelse continue;
+            const rel = relativeTo(cwd, path);
+            for (cl.diags.items) |d| {
+                var db: [512]u8 = undefined;
+                const end = std.mem.indexOfScalar(u8, d.message, '\n') orelse d.message.len;
+                const disp = std.fmt.bufPrint(&db, "{s} {s}:{d}: {s}", .{
+                    severityTag(d.severity), rel, d.line + 1, d.message[0..end],
+                }) catch continue;
+                self.addPickItem(disp, rel, d.line + 1);
+                found += 1;
+            }
+        }
+        if (found == 0) {
+            self.freePicker();
+            self.mode = .normal;
+            return self.setStatus("no diagnostics", .{});
+        }
+        self.mode = .picker;
+        self.refilter();
+    }
+
     /// Populate the picker with a references result — "path:line: text", with
     /// line text for already-open documents — and open it (Enter jumps there).
     fn openReferencePicker(self: *Editor) void {
@@ -4978,15 +5079,9 @@ pub const Editor = struct {
             if (abs.len > cwd.len + 1 and std.mem.startsWith(u8, abs, cwd) and abs[cwd.len] == '/')
                 rel = abs[cwd.len + 1 ..];
             const text = self.openDocLine(cwd, abs, ref.line);
-            const disp = std.fmt.allocPrint(self.gpa, "{s}:{d}: {s}", .{ rel, ref.line + 1, std.mem.trim(u8, text, " \t") }) catch continue;
-            const p = self.gpa.dupe(u8, rel) catch {
-                self.gpa.free(disp);
-                continue;
-            };
-            self.picker_items.append(self.gpa, .{ .display = disp, .path = p, .line = ref.line + 1 }) catch {
-                self.gpa.free(disp);
-                self.gpa.free(p);
-            };
+            var db: [512]u8 = undefined;
+            const disp = std.fmt.bufPrint(&db, "{s}:{d}: {s}", .{ rel, ref.line + 1, std.mem.trim(u8, text, " \t") }) catch continue;
+            self.addPickItem(disp, rel, ref.line + 1);
         }
         self.mode = .picker;
         self.refilter();
@@ -5120,6 +5215,7 @@ pub const Editor = struct {
             self.comp_due_ms = null;
             return;
         }
+        self.due_kind = .completion;
         self.comp_due_ms = nowMs() + @as(i64, @intCast(config.settings.completion_delay_ms));
     }
 
@@ -6244,7 +6340,9 @@ pub const Editor = struct {
         .{ .key = "r", .desc = "rename symbol" },
         .{ .key = "R", .desc = "references" },
         .{ .key = "s", .desc = "document symbols" },
+        .{ .key = "S", .desc = "workspace symbols" },
         .{ .key = "d", .desc = "line diagnostic" },
+        .{ .key = "D", .desc = "all diagnostics" },
         .{ .key = "f", .desc = "format buffer" },
     };
     const git_keys = [_]WhichKey{
@@ -7526,6 +7624,23 @@ fn offsetToPos(row: usize, col: usize, text: []const u8, offset: usize) Pos {
     return .{ .row = r, .col = c };
 }
 
+/// `path` relative to `cwd` when it sits underneath it, else unchanged —
+/// borrowed, never allocated.
+fn relativeTo(cwd: []const u8, path: []const u8) []const u8 {
+    if (path.len > cwd.len + 1 and std.mem.startsWith(u8, path, cwd) and path[cwd.len] == '/')
+        return path[cwd.len + 1 ..];
+    return path;
+}
+
+fn severityTag(sev: u8) []const u8 {
+    return switch (sev) {
+        1 => "E",
+        2 => "W",
+        3 => "I",
+        else => "H",
+    };
+}
+
 fn countLines(text: []const u8) usize {
     return std.mem.count(u8, text, "\n") + 1;
 }
@@ -7606,7 +7721,7 @@ fn lastColumn(line: []const u8) usize {
     return unicode.prevBoundary(line, line.len);
 }
 
-const Scored = struct { idx: usize, score: i32 };
+const Scored = struct { idx: u32, score: i32 };
 
 fn scoredLess(_: void, a: Scored, b: Scored) bool {
     return a.score > b.score; // higher score first

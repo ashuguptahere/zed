@@ -14,8 +14,6 @@ behind the roadmap items.
 The shortlist is done; these are the next-highest gaps from
 `doc/COMPARISON.md`, in rough priority order.
 
-- [ ] Workspace symbols picker (zedit has document symbols only).
-- [ ] Buffer/workspace diagnostics picker.
 - [ ] Tree-sitter textobjects (function/class/parameter) and structural motions.
 - [ ] Soft-wrap; undo tree (`:earlier`/`:later`).
 
@@ -24,6 +22,10 @@ The shortlist is done; these are the next-highest gaps from
 
 
 ## Recurring (every feature / significant change)
+
+- [ ] Allocation discipline: no per-item heap allocation in loops that can run
+      thousands of times; format into stack buffers, clear-and-reuse instead of
+      free-and-reallocate (see the picker arena in `editor.zig`).
 
 - [ ] Regression tests in the same commit (unit + pty itest; vim behaviour
       pinned via headless nvim ground truth — never from memory).
@@ -111,6 +113,10 @@ The shortlist is done; these are the next-highest gaps from
 - [x] `:update` / `--check-update` against the newest release tag.
 - [x] Shortlist #8: inline diagnostics (dim severity-coloured virtual text
       after the code; `inline_diagnostics` config, on by default).
+- [x] Workspace symbols picker (`Space l S`, server-side query) and
+      diagnostics picker (`Space l D`), built on a rewritten picker store:
+      one offset-addressed arena, stack formatting, retained capacity
+      (−22% peak RSS on a 4000-file tree). Ghostty-inspired.
 - [x] Preview polish (tree-sitter highlighting, Ctrl-d/Ctrl-u + wheel
       scrolling) and tabline click-to-select; compiled highlight queries are
       now shared process-wide, which kept picker-open at ~6 ms.

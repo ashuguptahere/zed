@@ -94,6 +94,21 @@ pub fn main(init: std.process.Init) !void {
             // exercise the client's label flattening: ": " + "i32" -> ": i32".
             send(gpa, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":[{{\"position\":{{\"line\":0,\"character\":7}}," ++
                 "\"label\":[{{\"value\":\": \"}},{{\"value\":\"i32\"}}],\"kind\":1}}]}}", .{id orelse 0});
+        } else if (eql(method, "workspace/symbol")) {
+            // Two project-wide symbols, in different files, so the picker has
+            // something cross-file to jump to. The query is echoed into the
+            // first name to prove it reached the server.
+            const q = strField(getField(parsed.value, "params") orelse parsed.value, "query") orelse "";
+            sendRaw(gpa, "{\"jsonrpc\":\"2.0\",\"id\":");
+            sendInt(gpa, id orelse 0);
+            sendRaw(gpa, ",\"result\":[{\"name\":\"wsymFor_");
+            sendRaw(gpa, q);
+            sendRaw(gpa, "\",\"kind\":12,\"location\":{\"uri\":\"");
+            sendRaw(gpa, doc_uri);
+            sendRaw(gpa, "\",\"range\":{\"start\":{\"line\":2,\"character\":6},\"end\":{\"line\":2,\"character\":6}}}}," ++
+                "{\"name\":\"otherSymbol\",\"kind\":23,\"location\":{\"uri\":\"file:///tmp/zedit_it_other.zig\"," ++
+                "\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":0}}}}]}");
+            flush(gpa);
         } else if (eql(method, "textDocument/documentSymbol")) {
             // A nested DocumentSymbol[] (struct Foo with a child field, plus a
             // top-level fn main) to exercise the client's flattening.

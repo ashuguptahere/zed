@@ -66,8 +66,8 @@ below and prioritised in `TODO.md`.
 - ~~Formatting~~ — **DONE** (`Space l f` / `:format`, `format_on_save` config; external non-LSP formatters still absent) — remaining: **low**
 - ~~Cross-file / multi-line workspace edits~~ — **DONE** (full WorkspaceEdit application across files, multi-line edits)
 - ~~Goto implementation / type definition (`gi`, `gy`)~~ — **DONE**
-- Workspace symbols picker (`Space S`) — zedit has document symbols only — **medium**
-- Diagnostics pickers — buffer-wide and workspace-wide diagnostic lists; zedit only has gutter signs + `]d`/`[d` — **medium**
+- ~~Workspace symbols picker~~ — **DONE** (`Space l S`, server-side query)
+- ~~Diagnostics pickers~~ — **DONE** (`Space l D` lists every diagnostic across the open buffers)
 - ~~Snippets / `textEdit` completions with tabstop jumping~~ — **DONE** (`snippet.zig`)
 - ~~Auto-triggered completion (idle timeout)~~ — **DONE** (debounced; `auto_completion` config)
 - Multiple language servers per language — zedit launches exactly one per filetype — **low**

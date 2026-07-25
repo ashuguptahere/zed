@@ -400,9 +400,10 @@ Open-buffer picker.
 .B Space f t
 Theme picker.
 .TP
-.B Space l a\fR, \fPSpace l r\fR, \fPSpace l R\fR, \fPSpace l s\fR, \fPSpace l d\fR, \fPSpace l f
-Code action, rename symbol, references (picker), document symbols, line
-diagnostic, format document. Rename and code-action edits apply across all the
+.B Space l a\fR, \fPSpace l r\fR, \fPSpace l R\fR, \fPSpace l s\fR, \fPSpace l S\fR, \fPSpace l d\fR, \fPSpace l D\fR, \fPSpace l f
+Code action, rename symbol, references (picker), document symbols, workspace
+symbols (the server matches the query across the project), line diagnostic,
+every diagnostic in the open buffers, format document. Rename and code-action edits apply across all the
 files they touch (unopened ones load into background buffers;
 .B :wa
 saves them).

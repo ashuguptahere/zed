@@ -45,6 +45,8 @@
     `[d` navigation
   - completion that pops up as you type (debounced; `Ctrl-n` on demand) and
     is **fuzzy** matched — `mplt` finds `mockComplete`
+  - workspace symbol search (`Space l S`) and a diagnostics list
+    (`Space l D`) across all open buffers
   - snippets with tabstops (`Tab`/`Shift-Tab` between placeholders, typing
     replaces them), `textEdit` ranges and auto-import `additionalTextEdits`
   - signature help (on `(` and `,`),

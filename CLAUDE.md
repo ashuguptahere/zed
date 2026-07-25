@@ -51,6 +51,16 @@ work", they win.
   on bad input (e.g. malformed UTF-8 is rendered, not fatal).
 - **Modular.** One clear responsibility per file (see Architecture). New
   concerns get new modules rather than swelling existing ones.
+- **Few allocations, pooled and reused.** Hot paths allocate as little as
+  possible and reuse what they have, in the spirit of Ghostty's terminal
+  buffers: the picker keeps all row text in one byte arena addressed by
+  `u32` offsets (`PickItem` is 20 bytes, not two slices), rows are formatted
+  into stack buffers rather than `allocPrint`, closing a picker *retains*
+  capacity instead of freeing, and compiled tree-sitter queries are shared
+  process-wide. Measured on a 4000-file tree: −22% peak RSS across picker
+  cycles and a faster filter. Prefer "clear and reuse" over "free and
+  reallocate", and keep per-item allocations out of loops that can run
+  thousands of times.
 - **No dead code.** Remove unused code, scaffolding and TODO stubs as soon as
   they stop earning their place. Don't keep a "legacy" path alongside a new one.
 - **Human-friendly errors.** User-facing messages are plain English with a hint
@@ -252,7 +262,8 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   shows a which-key popup with nested groups (submenus get their own popup):
   `Space f` = Find (`f f` files, `f w` words/grep, `f b` buffers, `f t`
   themes); `Space l` = Language tools (`l a` code action, `l r` rename, `l R`
-  references, `l s` document symbols, `l d` line diagnostic, `l f` format);
+  references, `l s` document symbols, `l S` workspace symbols, `l d` line
+  diagnostic, `l D` all diagnostics, `l f` format);
   `Space g` = Git (`g d` inline diff,
   `g s` side-by-side); `Space e` file explorer, `Space c` close buffer,
   `Space w` write, `Space q` quit. In a picker: type to filter, `Ctrl-n`/`Ctrl-p` or
@@ -346,7 +357,11 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   mode), `gd` goes to definition, `gi` to the implementation, `gy` to the type
   definition, `gr` renames the symbol under the cursor
   (prompts on the command line, pre-filled with the identifier), `Space l R`
-  lists references in a picker ("path:line: text", Enter jumps there), `ga`
+  lists references in a picker ("path:line: text", Enter jumps there),
+  `Space l S` searches **workspace symbols** (the query goes to the server,
+  which matches across files zedit has never opened; re-asked after the same
+  typing pause auto-completion uses), `Space l D` lists **every diagnostic**
+  across the open buffers tagged by severity, `ga`
   lists code actions for the current line in a picker and applies the chosen
   one, and `]d`/`[d` jump to the next/previous diagnostic line (wrapping;
   `[count]` repeats). Each diagnostic's message also renders inline at the end
@@ -469,8 +484,9 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   overlay; inactive windows render from their cached state.
 - Block paste of a blockwise yank is charwise (not a true rectangular paste);
   block `A` on lines shorter than the block does not pad with spaces.
-- LSP does diagnostics/hover/goto/references/completion/signature help/rename/
-  code actions/formatting/inlay hints/document symbols with incremental (or
+- LSP does diagnostics/hover/goto (definition, implementation, type)/
+  references/completion/signature help/rename/code actions/formatting/inlay
+  hints/document + workspace symbols with incremental (or
   full) document sync, including `textEdit`/`additionalTextEdits` completions
   and snippet expansion. Snippet tabstops track edits as you type: stops later
   on the line shift by what an edit adds or removes, and a line split (Enter)
@@ -488,7 +504,9 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
   rendered inline; horizontal-scroll interaction with hints is approximate.
   WorkspaceEdits apply across files and support multi-line edits; document
   create/rename/delete operations in `documentChanges` are skipped, and
-  references are capped at 1000. The references picker shows line text only for
+  references and workspace symbols are capped at 1000 each. The diagnostics
+  picker covers the *open* buffers — the servers only push diagnostics for
+  documents zedit has opened. The references picker shows line text only for
   files already open in a buffer. Formatting sends `tabSize` = config
   `tab_width`, `insertSpaces = true`; format-on-save is a bounded synchronous
   wait (~1s), gated on the server advertising `documentFormattingProvider` —

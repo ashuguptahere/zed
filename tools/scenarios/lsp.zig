@@ -171,6 +171,52 @@ pub fn run(ctx: *h.Ctx) !void {
         ctx.check("fuzzy filter excludes non-matches", !r.plainHas("mockOther"));
     }
 
+    // Workspace symbols (Space l S): the server matches the query across the
+    // project — the mock echoes it back — and Enter jumps to the symbol.
+    {
+        const r = drive(ctx, &.{ .{ .keys = " lS", .ms = 800 } }, quit);
+        defer r.deinit(ctx.gpa);
+        ctx.check("workspace symbol picker labelled", r.plainHas("WORKSPACE SYMBOLS"));
+        ctx.check("workspace symbols listed", r.plainHas("wsymFor_") and r.plainHas("otherSymbol"));
+    }
+    {
+        const r = drive(ctx, &.{
+            .{ .keys = " lS", .ms = 700 },
+            .{ .keys = "query", .ms = 800 }, // re-queries the server after the pause
+        }, quit);
+        defer r.deinit(ctx.gpa);
+        ctx.check("the query is sent to the server", r.plainHas("wsymFor_query"));
+    }
+    {
+        const r = drive(ctx, &.{
+            .{ .keys = " lS", .ms = 800 },
+            .{ .keys = "\r", .ms = 600 }, // open the first symbol (line 3 of this file)
+            .{ .keys = "x", .ms = 300 },
+        }, "\x1b:wq\r");
+        defer r.deinit(ctx.gpa);
+        ctx.check("workspace symbol jumps to its position", r.textHas("onst c = 3;"));
+    }
+
+    // Diagnostics picker (Space l D): every diagnostic across the open
+    // buffers, tagged by severity; Enter jumps to the line.
+    {
+        const r = drive(ctx, &.{ .{ .keys = " lD", .ms = 800 } }, quit);
+        defer r.deinit(ctx.gpa);
+        ctx.check("diagnostics picker labelled", r.plainHas("DIAGNOSTICS"));
+        ctx.check("diagnostics listed with severity", r.plainHas("E ") and r.plainHas("mock error") and
+            r.plainHas("W ") and r.plainHas("mock warn"));
+    }
+    {
+        const r = drive(ctx, &.{
+            .{ .keys = " lD", .ms = 800 },
+            .{ .keys = "\x0e", .ms = 300 }, // second row: the warning on line 3
+            .{ .keys = "\r", .ms = 500 },
+            .{ .keys = "x", .ms = 300 },
+        }, "\x1b:wq\r");
+        defer r.deinit(ctx.gpa);
+        ctx.check("diagnostic entry jumps to its line", r.textHas("onst c = 3;"));
+    }
+
     // gi / gy: goto implementation and type definition reuse the definition
     // plumbing, so the cursor lands where the server points (the mock puts
     // the implementation on line 2 and the type on line 3, col 6).

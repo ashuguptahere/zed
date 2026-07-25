@@ -43,6 +43,9 @@ Notable changes to zedit. Dates are commit dates.
 - Renamed the editor from `zed` to `zedit` (zig-editor).
 - Ported the pty test harnesses from Python to Zig — `zig build itest` now needs nothing beyond the toolchain.
 
+- Workspace symbol search (`Space l S`): the typed query goes to the language server, which matches across files that were never opened, and Enter jumps to the symbol.
+- Diagnostics picker (`Space l D`): every diagnostic across the open buffers, tagged by severity, with Enter jumping to the line.
+- Picker rows now live in one byte arena addressed by offsets instead of two heap allocations each, are formatted into stack buffers, and keep their capacity when the picker closes. Measured over a 4000-file tree: peak memory across picker cycles −22% (984 KB → 768 KB) and filtering slightly faster.
 - The picker preview is tree-sitter highlighted and scrollable on its own (`Ctrl-d` / `Ctrl-u` or the mouse wheel, stopping at the end of the file).
 - Clicking a buffer tab switches to it.
 - Compiled tree-sitter highlight queries are shared for the life of the process instead of being rebuilt per buffer: compiling one costs 3–14 ms, so opening many files of a language (or previewing them) now pays it once. This is what keeps picker-open at ~6 ms with a highlighted preview, against ~19 ms for the naive version.
