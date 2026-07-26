@@ -3952,10 +3952,24 @@ pub const Editor = struct {
         self.addJump();
         self.noteRecent(path, .file);
         self.dashboard = false;
+        // vim's rule (nvim-verified): opening a file on top of an *untouched*
+        // [No Name] buffer replaces it instead of leaving it in :ls — a
+        // `zedit .` session must not carry its startup buffer forever. Kept
+        // when it is modified, non-empty (--tutor), a named scratch, or still
+        // shown in another window; destroyed only after focus has moved off it.
+        const prev = self.d;
+        var prev_wins: usize = 0;
+        for (self.wins.items) |w| {
+            if (w.doc == prev) prev_wins += 1;
+        }
+        const adopt = prev.buf.path == null and prev.name == null and
+            !prev.buf.dirty and prev.buf.lineCount() == 1 and
+            prev.buf.line(0).len == 0 and prev_wins == 1;
         for (self.docs.items) |doc| {
-            const p = doc.buf.path orelse continue;
+            const p = doc.buf.path orelse continue; // `prev` can never match: it has no path
             if (std.mem.eql(u8, p, path)) {
                 self.focusDoc(doc);
+                if (adopt) self.destroyDoc(prev);
                 self.placeAt(line);
                 // The doc's own copy, not `path`: focusDoc's reveal may
                 // rebuild the sidebar entries that own the argument.
@@ -3985,6 +3999,7 @@ pub const Editor = struct {
         // and the server handshake all ran before the redraw.
         self.decorate_pending = true;
         self.focusDoc(doc);
+        if (adopt) self.destroyDoc(prev);
         self.clearExtra();
         self.placeAt(line);
         self.setStatus("opened {s}", .{self.buf.path orelse ""});
@@ -5040,6 +5055,7 @@ pub const Editor = struct {
             return false;
         }
         self.formatBeforeSave();
+        const was_unnamed = self.buf.path == null;
         if (arg.len > 0) try self.buf.setPath(arg);
         self.buf.save(self.io) catch |err| switch (err) {
             error.NoFileName => {
@@ -5052,6 +5068,14 @@ pub const Editor = struct {
                 return false;
             },
         };
+        // `:w name.py` naming a previously-unnamed buffer decides its language:
+        // detect it and bring up highlighting and LSP, as opening the file would
+        // (the filetype used to stay "text" until the file was reopened).
+        if (was_unnamed and self.buf.path != null) {
+            self.lang = syntax.detect(self.buf.path);
+            if (self.ts == null) self.startTs();
+            if (self.lsp == null) self.startLsp();
+        }
         self.setStatus("\"{s}\" written", .{self.buf.path orelse ""});
         self.history.markSaved(self.buf, self.cy, self.cx); // for `:earlier 1f`
         self.persistHistory();
@@ -6537,7 +6561,7 @@ pub const Editor = struct {
         const last = self.buf.lineCount() - 1;
         if (self.diffPairOf(self.cur)) |p| { // skip over this pane's filler rows
             const new_side = self.cur == p.wt;
-            const dtop = git.displayRow(p.hunks, new_side, self.top);
+            const dtop = self.diffDisplayTop(p);
             return @min(git.rowAtOrAfter(p.hunks, new_side, dtop + n), last);
         }
         if (!self.wrapping()) return @min(self.top + n, last);
@@ -6556,7 +6580,7 @@ pub const Editor = struct {
     fn cursorScreenRow(self: *Editor) usize {
         if (self.diffPairOf(self.cur)) |p| { // count the pane's filler rows too
             const new_side = self.cur == p.wt;
-            return git.displayRow(p.hunks, new_side, self.cy) -| git.displayRow(p.hunks, new_side, self.top);
+            return git.displayRow(p.hunks, new_side, self.cy) -| self.diffDisplayTop(p);
         }
         if (!self.wrapping()) return self.cy -| self.top;
         var used: usize = 0;
@@ -6599,7 +6623,7 @@ pub const Editor = struct {
         const rows = self.textRows();
         const half = rows / 2;
         const dcy = git.displayRow(p.hunks, new_side, self.cy);
-        const dtop = git.displayRow(p.hunks, new_side, self.top);
+        const dtop = self.diffDisplayTop(p);
         if (dcy < dtop) {
             const want = if (dtop - dcy > half) dcy -| (rows -| 1) / 2 else dcy;
             self.top = git.rowAtOrAfter(p.hunks, new_side, want);
@@ -6658,8 +6682,28 @@ pub const Editor = struct {
         var nb: [300]u8 = undefined;
         const label = std.fmt.bufPrint(&nb, "[diff] {s}", .{std.fs.path.basename(path)}) catch "[diff]";
         for (self.docs.items) |doc| { // toggle: this file's diff is already open
-            if (doc.buf.path == null and doc.name != null and std.mem.eql(u8, doc.name.?, label))
-                return self.closeDiffScratch(doc, self.d);
+            if (doc.buf.path == null and doc.name != null and std.mem.eql(u8, doc.name.?, label)) {
+                // Only a *visible* diff toggles closed. A scratch left with no
+                // window (`:bn` moved the window off it) is stale: destroy it
+                // and fall through to reopen — not a phantom "diff closed"
+                // that changes nothing on screen.
+                for (self.wins.items) |w| {
+                    if (w.doc == doc) return self.closeDiffScratch(doc, self.d);
+                }
+                self.destroyDoc(doc);
+                break;
+            }
+        }
+        // The two diff views are exclusive per file: opening one closes the
+        // other first, so they can never stack into a third window, and the
+        // split starts from the pre-diff layout with the orientation this
+        // view sets.
+        for (self.docs.items) |doc| {
+            if (doc.diff_of == self.d) {
+                self.closeDiffScratch(doc, self.d);
+                self.setStatus("", .{}); // the open below replaces it, not a close
+                break;
+            }
         }
         const res = std.process.run(self.gpa, self.io, .{
             .argv = &.{ "git", "diff", "--no-color", "--", path },
@@ -6683,13 +6727,34 @@ pub const Editor = struct {
     /// view. The panes are row-aligned through the diff's hunks (see
     /// `renderWindow`) and scroll in lockstep.
     fn gitDiffSide(self: *Editor) void {
-        // Toggle: this file's pair is already open (or its scratch lingers
-        // from a closed window) — close it instead, from whichever side.
+        // Toggle: this file's pair is already open — close it instead, from
+        // whichever side. Like the inline toggle, only a *visible* snapshot
+        // counts: one left windowless (`:bn`/`:close` moved its window away)
+        // is stale — destroy it and fall through to reopen, not a phantom
+        // "diff closed" that changes nothing on screen.
         if (self.d.diff_of) |wt| return self.closeDiffScratch(self.d, wt);
         for (self.docs.items) |doc| {
-            if (doc.diff_of == self.d) return self.closeDiffScratch(doc, self.d);
+            if (doc.diff_of == self.d) {
+                for (self.wins.items) |w| {
+                    if (w.doc == doc) return self.closeDiffScratch(doc, self.d);
+                }
+                self.destroyDoc(doc);
+                break;
+            }
         }
         const path = self.buf.path orelse return self.setStatus("no file to diff", .{});
+        // The two diff views are exclusive per file (see gitDiffInline): an
+        // open inline diff closes before the pair opens, so the vertical
+        // split starts from the pre-diff layout.
+        var db: [300]u8 = undefined;
+        const dlabel = std.fmt.bufPrint(&db, "[diff] {s}", .{std.fs.path.basename(path)}) catch "[diff]";
+        for (self.docs.items) |doc| {
+            if (doc.buf.path == null and doc.name != null and std.mem.eql(u8, doc.name.?, dlabel)) {
+                self.closeDiffScratch(doc, self.d);
+                self.setStatus("", .{}); // the open below replaces it, not a close
+                break;
+            }
+        }
         var sb: [300]u8 = undefined;
         const spec = std.fmt.bufPrint(&sb, ":./{s}", .{path}) catch return;
         const res = std.process.run(self.gpa, self.io, .{
@@ -7184,9 +7249,23 @@ pub const Editor = struct {
     /// every frame from the focused pane (or the worktree pane when neither
     /// side has focus) — the two panes scroll as one without duplicated state.
     fn diffDisplayTop(self: *Editor, p: DiffPair) usize {
-        if (self.cur == p.ix) return git.displayRow(p.hunks, false, self.top);
-        if (self.cur == p.wt) return git.displayRow(p.hunks, true, self.top);
-        return git.displayRow(p.hunks, true, p.wt.top);
+        if (self.cur == p.ix) return self.paneDisplayTop(p, p.ix, false, self.top, self.cy);
+        if (self.cur == p.wt) return self.paneDisplayTop(p, p.wt, true, self.top, self.cy);
+        return self.paneDisplayTop(p, p.wt, true, p.wt.top, p.wt.cy);
+    }
+
+    /// Display top of a pane anchored at buffer row `top`. Buffer row 0
+    /// anchors at display row 0, not at its own display row: a deletion
+    /// before the first line (`@@ -1,N +0,0 @@`, new.start == 0) puts N
+    /// aligned rows *above* buffer row 0, which a buffer-row top could never
+    /// reach — the whole index pane sat above the viewport on a total
+    /// deletion. The cursor still wins when that gap is taller than the
+    /// window (only the gap's tail shows; see Known gaps).
+    fn paneDisplayTop(self: *Editor, p: DiffPair, w: *Win, new_side: bool, top: usize, cy: usize) usize {
+        const dtop = git.displayRow(p.hunks, new_side, top);
+        if (top > 0) return dtop;
+        const dcy = git.displayRow(p.hunks, new_side, cy);
+        return @min(dtop, dcy -| (self.winTextRows(w) -| 1));
     }
 
     /// Carry the derived top back onto the unfocused pane's Win each frame, so

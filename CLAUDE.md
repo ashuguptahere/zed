@@ -117,7 +117,11 @@ work", they win.
 - **Versioned + changelogged, every single change.** The `VERSION` file is the
   single source of truth (embedded into `--version` at build time). Bump it and
   add the `CHANGELOG.md` section **in the same commit as the code** — a commit
-  that changes behaviour and leaves `VERSION` alone is incomplete. Semantic
+  that changes behaviour and leaves `VERSION` alone is incomplete.
+  `build.zig.zon`'s `.version` carries a copy for package metadata, and the
+  build **enforces** the pair: a comptime check in `build.zig` reads both
+  files and fails the build with a clear message when they disagree — bump
+  them together. Semantic
   `MAJOR.MINOR.PATCH`, with one standing rule from the owner:
   - **MAJOR stays 0.** Do not release 1.0.0 until the owner says so.
   - **MINOR** for anything a user would notice: a feature, a new key or
@@ -400,7 +404,8 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   blocked if unsaved on the last), `:wq`/`:x`, `:q!`, `:qa` quit all (refuses
   while any buffer is dirty — nvim's E37, nvim-verified; `:qa!` discards),
   `:wa` write all dirty buffers (failed saves are named, never silent),
-  `:w <name>`, `:format` LSP-format the document,
+  `:w <name>` (naming a previously-unnamed buffer detects its filetype and
+  starts highlighting + LSP on the spot), `:format` LSP-format the document,
   `:{number}` goto line, `:$`; `ZZ`/`ZQ`. **Tab completion** (nvim
   `wildmode=full` semantics, pinned by pty probes of the real thing): Tab
   completes command names, `:e`/`:w` file paths (a unique directory gets a
@@ -474,11 +479,20 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   off inside a visible pair (a wrapped line would break row alignment;
   horizontal scrolling still works there). Changed/added/removed lines tint
   vimdiff-style in both panes (25% of the git colour into the theme
-  background via `mixColor`). Pressing the key again — from either pane —
+  background via `mixColor`). A hunk whose deletion precedes line 1
+  (`@@ -1,N +0,0 @@`, up to a total deletion) sits *above* buffer row 0 in
+  display space, so a pane whose top is row 0 anchors at display row 0 —
+  cursor-clamped (`paneDisplayTop`, shared by render, scroll, cursor row and
+  `H`/`M`/`L`) — rather than hiding the old lines above the viewport.
+  Pressing the key again — from either pane —
   **toggles the view closed** (windows and scratch doc both; `Space g d`
-  toggles the inline diff the same way), and a file with no changes reports
-  "no changes" instead of opening a split. The alignment reflects the file as
-  last saved, like the gutter signs; both refresh on `:w`.
+  toggles the inline diff the same way). Both toggles key on a *visible*
+  window — a scratch left windowless by `:bn`/`:close` is destroyed and the
+  view reopens, never a phantom "diff closed" — and a file with no changes
+  reports "no changes" instead of opening a split. The two views are **exclusive per
+  file**: opening one closes the other first, so they can never stack into a
+  third window, and each view re-tiles in its own orientation. The alignment
+  reflects the file as last saved, like the gutter signs; both refresh on `:w`.
 - **Startup screen:** launched with no file, zedit shows the recently-opened
   list (files and directories, newest first) with the leaf name first and the
   location dimmed and middle-elided. `j`/`k` or arrows select, `Enter` opens,
@@ -516,7 +530,10 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 - **Buffers & windows:** several files can be open at once, each with its own
   cursor, undo, tree-sitter and LSP. `:e <file>` opens (or, in the picker,
   `Enter`) a file in the active window — already-open files are reused, not
-  reloaded. `:bn`/`:bp` and `]b`/`[b` cycle the active window through buffers
+  reloaded, and opening on top of an *untouched* `[No Name]` buffer (unnamed,
+  unmodified, empty, shown in no other window) replaces it, vim's rule
+  (nvim-verified) — a `zedit .` session does not keep its startup buffer in
+  `:ls`. `:bn`/`:bp` and `]b`/`[b` cycle the active window through buffers
   (`]b` takes a count: `2]b` skips one), `:bd` closes
   one, `:ls` lists them. Split the view with `:split`/`:vsplit` (or `Ctrl-w s`/
   `Ctrl-w v`), move focus with `Ctrl-w w`/`h`/`j`/`k`/`l`, and `:close`/`Ctrl-w
@@ -768,7 +785,10 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   pane's tree-sitter highlighting covers only the viewport it last had focus
   in (lockstep-scrolled rows beyond it render plain until refocused), and the
   inline diff buffer is a static, editable snapshot (only the index pane is
-  read-only). Mouse support is wheel-scrolling only (no click-to-move or drag
+  read-only). A pane's stored top is a buffer row, so when a leading deletion
+  gap (`@@ -1,N +0,0 @@`) is taller than the window only its tail shows
+  (cursor-clamped) and the rows above cannot be scrolled into — the full fix
+  is a display-space pane top (a per-Win leading-filler offset). Mouse support is wheel-scrolling only (no click-to-move or drag
   selection), and the wheel scrolls the focused window, not the one under the
   pointer.
 - Remote editing is whole-file over ssh: every read/write moves the entire file

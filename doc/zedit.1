@@ -525,7 +525,8 @@ virtual filler rows (green for additions, red for deletions; changed lines
 are tinted in both panes), and the two panes scroll as one. Soft wrap is off
 inside the paired panes \(em a wrapped line would break the row alignment;
 horizontal scrolling still works there. Pressing either key again \(em from
-either pane \(em closes its view; a file with no changes reports so instead
+either pane \(em closes its view, and the two views are exclusive per file:
+opening one closes the other first. A file with no changes reports so instead
 of opening an empty split.
 .TP
 .B Space e

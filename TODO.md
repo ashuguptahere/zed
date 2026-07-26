@@ -41,6 +41,9 @@ The shortlist is done; these are the next-highest gaps from
 
 - [ ] Windows console support (`term.zig` gate marks the spot).
 - [ ] Nested/mixed window layouts and per-window resizing.
+- [ ] Side-by-side diff: a leading deletion gap taller than the window shows
+      only its tail (the pane top is a buffer row, clamped to keep the cursor
+      on screen; a display-space pane top would make the whole gap reachable).
 - [ ] True rectangular block paste; block `A` padding on short lines.
 - [ ] Tree-sitter injections (Markdown uses two layers; HTML JS/CSS plain),
       query predicates (`#match?`/`#eq?`), tree-sitter indent queries.
@@ -268,3 +271,22 @@ The shortlist is done; these are the next-highest gaps from
       cursor to the last cell (both proven fail-without), and added
       search-prompt mid-line, CJK backspace, ghost-reappear, Left/Right
       match-select, Tab-after-descend and root-parent checks (+15 checks).
+- [x] Root-caused audit batch (5 fixes, each proven fail-without): (1) the
+      side-by-side diff can show hunks whose deletion precedes line 1
+      (`paneDisplayTop` anchors a row-0 pane top at display row 0,
+      cursor-clamped, routed through render/scroll/cursor-row/H-M-L; total
+      deletion no longer shows an empty index pane — residual known gap: a
+      gap taller than the window shows only its tail); (2) the two diff
+      views are exclusive per file and *both* toggles key on a visible
+      window (no third window, no orientation clobber, no phantom "diff
+      closed" from either `Space g d` or `Space g s` after `:bn`/`:close`);
+      (3) born-empty buffers highlight: reparse computes the
+      incremental edit for empty↔non-empty transitions instead of handing
+      tree-sitter an unedited old tree (api.h contract), and `:w name.py`
+      on an unnamed buffer now detects filetype + starts TS/LSP; (4) `:e`/
+      picker-open on an untouched `[No Name]` buffer replaces it (vim's
+      rule, nvim-verified; modified/split-visible/tutor buffers kept);
+      (5) `build.zig.zon` version corrected to match `VERSION`, with a
+      comptime build check that fails on any future mismatch (proven by
+      planting one). 2 new unit tests + 20 pty checks failing before /
+      passing after; full suites green (152 unit, 571 itest).

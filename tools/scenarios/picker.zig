@@ -548,4 +548,92 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("\x1b:q!\r");
         s.drain(200);
     }
+
+    try nonameBuffer(ctx);
+}
+
+/// vim's rule (nvim-verified: `:e file` from an *unmodified* unnamed buffer
+/// reuses it — gone even from `:ls!`; a modified one is kept): opening a file
+/// on top of the untouched [No Name] buffer a `zedit .`/empty session starts
+/// with must not leave it behind in `:ls` and the tab bar.
+fn nonameBuffer(ctx: *h.Ctx) !void {
+    const dir = try h.tempDir(ctx.gpa);
+    defer ctx.gpa.free(dir);
+    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const hello = h.join(ctx, dir, "hello.txt");
+    defer ctx.gpa.free(hello);
+    h.writeFile(ctx.io, hello, "hello\n");
+    const other = h.join(ctx, dir, "other.txt");
+    defer ctx.gpa.free(other);
+    h.writeFile(ctx.io, other, "other\n");
+
+    // Picker route: `zedit .`, pick hello.txt.
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "." }, .cwd = dir });
+        defer s.finish();
+        s.drain(600);
+        s.send("hello\r");
+        s.drain(600);
+        s.send(":ls\r");
+        s.drain(400);
+        ctx.check("picker open adopts the untouched [No Name] buffer", onScreen(ctx, &s, "1*:hello.txt") and
+            !onScreen(ctx, &s, "[No Name]"));
+        s.send("\x0f"); // Ctrl-o: any jump entry into the freed doc must be purged
+        s.drain(300);
+        s.send(":q\r");
+        s.drain(400);
+        ctx.check("jumplist survives the adoption", s.contains("\x1b[?1049l"));
+    }
+    // `:e` route from the empty buffer behind a cancelled picker.
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "." }, .cwd = dir });
+        defer s.finish();
+        s.drain(600);
+        s.send("\x1b:e hello.txt\r");
+        s.drain(500);
+        s.send(":ls\r");
+        s.drain(400);
+        ctx.check(":e adopts the untouched [No Name] buffer", onScreen(ctx, &s, "1*:hello.txt") and
+            !onScreen(ctx, &s, "[No Name]"));
+        s.send(":q\r");
+        s.drain(300);
+    }
+    // Negative: a *modified* unnamed buffer is kept (vim keeps it too).
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "." }, .cwd = dir });
+        defer s.finish();
+        s.drain(600);
+        s.send("\x1bihi\x1b"); // dirty the unnamed buffer
+        s.drain(300);
+        s.send(":e hello.txt\r:ls\r");
+        s.drain(500);
+        ctx.check("a modified [No Name] buffer is kept", onScreen(ctx, &s, "1:[No Name]") and
+            onScreen(ctx, &s, "2*:hello.txt"));
+        s.send(":qa!\r");
+        s.drain(300);
+    }
+    // Negative: an unnamed buffer still shown in another window is kept.
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "." }, .cwd = dir });
+        defer s.finish();
+        s.drain(600);
+        s.send("\x1b:split\r:e hello.txt\r:ls\r");
+        s.drain(600);
+        ctx.check("an unnamed buffer visible in another window is kept", onScreen(ctx, &s, "1:[No Name]") and
+            onScreen(ctx, &s, "2*:hello.txt"));
+        s.send(":qa\r");
+        s.drain(300);
+    }
+    // Negative: the tutor buffer is unnamed but *non-empty* — never discarded.
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "--tutor" }, .cwd = dir });
+        defer s.finish();
+        s.drain(600);
+        s.send(":e hello.txt\r:ls\r");
+        s.drain(500);
+        ctx.check("the tutor buffer is kept across :e", onScreen(ctx, &s, "1:[No Name]") and
+            onScreen(ctx, &s, "2*:hello.txt"));
+        s.send(":qa\r");
+        s.drain(300);
+    }
 }

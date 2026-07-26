@@ -126,6 +126,12 @@ pub fn run(ctx: *h.Ctx) !void {
     try sideThirdWindowFocus(ctx);
     try sideNoChanges(ctx);
     try inlineToggle(ctx);
+    try sideLeadingDeletion(ctx);
+    try sideTallGap(ctx);
+    try sideDirtyNoChanges(ctx);
+    try diffViewsExclusive(ctx);
+    try sidePhantomToggle(ctx);
+    try inlinePhantomToggle(ctx);
 }
 
 // === side-by-side diff view (Space g s) =====================================
@@ -499,6 +505,241 @@ fn sideNoChanges(ctx: *h.Ctx) !void {
         defer scr.deinit();
         ctx.check("untracked file: message, no split", s.containsPlain(ctx.gpa, "not tracked by git") and
             screenCount(&scr, ctx.gpa, "(index)") == 0);
+    }
+    s.send(":qa\r");
+    s.drain(300);
+}
+
+/// A hunk whose deletion precedes line 1 (`@@ -1,N +0,0 @@`, new-side start 0)
+/// puts its old lines *above* buffer row 0 in aligned display space. The pane
+/// anchor must show that leading gap: a total deletion used to render an
+/// all-tilde index pane, and a first-lines deletion silently hid the old lines.
+fn sideLeadingDeletion(ctx: *h.Ctx) !void {
+    // Total deletion: every committed line exists only in the index pane.
+    {
+        const dir = try diffRepo(ctx, "alpha\nbravo\ncharlie\ndelta\necho5\n", "");
+        defer ctx.gpa.free(dir);
+        defer h.removeTree(ctx.gpa, ctx.io, dir);
+
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "f.txt" }, .cwd = dir, .term = "xterm-256color" });
+        defer s.finish();
+        s.drain(500);
+        s.send(" gs");
+        s.drain(700);
+        {
+            var scr = try snapshot(ctx, &s);
+            defer scr.deinit();
+            // Rows (tab bar = 1): 2-6 FILL|alpha..echo5, 7 the empty worktree line.
+            const a = scr.colOf(ctx.gpa, 2, "alpha");
+            const e = scr.colOf(ctx.gpa, 6, "echo5");
+            ctx.check("total deletion: index pane shows the old lines", a != null and a.? > 40 and
+                e != null and e.? > 40);
+            ctx.check("total deletion: worktree pane fills the gap", scr.at(2, 20).bg == TINT_DELETE and
+                scr.at(6, 20).bg == TINT_DELETE);
+        }
+        // Moving inside the index pane must not yank the pair off the gap.
+        s.send("\x17wjj");
+        s.drain(400);
+        {
+            var scr = try snapshot(ctx, &s);
+            defer scr.deinit();
+            ctx.check("total deletion: index-pane movement stays anchored", scr.colOf(ctx.gpa, 2, "alpha") != null);
+        }
+        s.send(" gs"); // toggle closed from the index pane
+        s.drain(500);
+        {
+            var scr = try snapshot(ctx, &s);
+            defer scr.deinit();
+            ctx.check("total deletion: Space g s still toggles closed", screenCount(&scr, ctx.gpa, "(index)") == 0);
+        }
+        s.send(":qa\r");
+        s.drain(300);
+    }
+    // First lines deleted with survivors: the old lines show above, and the
+    // first surviving line stays level across the panes.
+    {
+        const dir = try diffRepo(ctx, "alpha\nbravo\ncharlie\ndelta\necho5\n", "charlie\ndelta\necho5\n");
+        defer ctx.gpa.free(dir);
+        defer h.removeTree(ctx.gpa, ctx.io, dir);
+
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "f.txt" }, .cwd = dir, .term = "xterm-256color" });
+        defer s.finish();
+        s.drain(500);
+        s.send(" gs");
+        s.drain(700);
+        var scr = try snapshot(ctx, &s);
+        defer scr.deinit();
+        // Rows: 2 FILL|alpha  3 FILL|bravo  4 charlie|charlie ...
+        const a = scr.colOf(ctx.gpa, 2, "alpha");
+        const b = scr.colOf(ctx.gpa, 3, "bravo");
+        ctx.check("leading deletion: deleted lines visible in the index pane", a != null and a.? > 40 and
+            b != null and b.? > 40);
+        ctx.check("leading deletion: worktree pane fills the gap", scr.at(2, 20).bg == TINT_DELETE and
+            scr.at(3, 20).bg == TINT_DELETE);
+        ctx.check("leading deletion: survivors align", rowCount(&scr, ctx.gpa, 4, "charlie") == 2);
+        s.send(":qa\r");
+        s.drain(300);
+    }
+}
+
+/// A leading gap taller than the window: the anchor clamps so the cursor (on
+/// the worktree's single empty line, below the gap) stays on screen — the tail
+/// of the old lines shows, not an empty pane.
+fn sideTallGap(ctx: *h.Ctx) !void {
+    var committed: std.ArrayList(u8) = .empty;
+    defer committed.deinit(ctx.gpa);
+    var n: usize = 1;
+    while (n <= 40) : (n += 1) {
+        var b: [12]u8 = undefined;
+        const line = std.fmt.bufPrint(&b, "line{d:0>3}\n", .{n}) catch unreachable;
+        try committed.appendSlice(ctx.gpa, line);
+    }
+    const dir = try diffRepo(ctx, committed.items, "");
+    defer ctx.gpa.free(dir);
+    defer h.removeTree(ctx.gpa, ctx.io, dir);
+
+    var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "f.txt" }, .cwd = dir, .term = "xterm-256color" });
+    defer s.finish();
+    s.drain(500);
+    s.send(" gs");
+    s.drain(700);
+    var scr = try snapshot(ctx, &s);
+    defer scr.deinit();
+    ctx.check("tall gap: the gap's tail is visible (not an empty pane)", screenCount(&scr, ctx.gpa, "line040") >= 1);
+    ctx.check("tall gap: clamped to the cursor, so the top is off screen", screenCount(&scr, ctx.gpa, "line001") == 0);
+    s.send(":qa\r");
+    s.drain(300);
+}
+
+/// An emptied but UNSAVED buffer: `git diff` still compares the on-disk file,
+/// so the view reports "no changes" and never opens — the same disk-vs-index
+/// semantic as the gutter signs (pinned so a future change is deliberate).
+fn sideDirtyNoChanges(ctx: *h.Ctx) !void {
+    const dir = try diffRepo(ctx, "one\ntwo\n", "one\ntwo\n");
+    defer ctx.gpa.free(dir);
+    defer h.removeTree(ctx.gpa, ctx.io, dir);
+
+    var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "f.txt" }, .cwd = dir, .term = "xterm-256color" });
+    defer s.finish();
+    s.drain(500);
+    s.send("dG"); // empty the buffer, do not save
+    s.drain(300);
+    s.send(" gs");
+    s.drain(500);
+    var scr = try snapshot(ctx, &s);
+    defer scr.deinit();
+    ctx.check("unsaved delete-all: message, no split", s.containsPlain(ctx.gpa, "no changes") and
+        screenCount(&scr, ctx.gpa, "(index)") == 0);
+    s.send(":q!\r");
+    s.drain(300);
+}
+
+/// The two diff views are exclusive per file: opening one closes the other
+/// first, so they can never stack into a third window — and the tiling
+/// orientation always belongs to the view being opened (the side pair
+/// re-tiles side by side even after the inline diff's horizontal split).
+fn diffViewsExclusive(ctx: *h.Ctx) !void {
+    const dir = try diffRepo(ctx, "one\ntwo\nthree\nfour\n", "one\nTWO\nthree\nfour\nfive\n");
+    defer ctx.gpa.free(dir);
+    defer h.removeTree(ctx.gpa, ctx.io, dir);
+
+    var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "f.txt" }, .cwd = dir, .term = "xterm-256color" });
+    defer s.finish();
+    s.drain(500);
+    s.send(" gs"); // side pair open
+    s.drain(700);
+    s.send(" gd"); // must replace it with the inline diff, not add a window
+    s.drain(700);
+    {
+        var scr = try snapshot(ctx, &s);
+        defer scr.deinit();
+        ctx.check("gd over gs: side pair replaced by the inline diff", screenCount(&scr, ctx.gpa, "(index)") == 0 and
+            screenCount(&scr, ctx.gpa, "[diff]") > 0 and screenCount(&scr, ctx.gpa, "@@") > 0);
+    }
+    s.send(" gd"); // plain toggle: back to a single window
+    s.drain(500);
+    {
+        var scr = try snapshot(ctx, &s);
+        defer scr.deinit();
+        ctx.check("gd toggle after the swap: single window again", screenCount(&scr, ctx.gpa, "[diff]") == 0 and
+            screenCount(&scr, ctx.gpa, "(index)") == 0);
+    }
+    s.send(" gs"); // the side pair re-tiles in columns despite the earlier horizontal split
+    s.drain(700);
+    {
+        var scr = try snapshot(ctx, &s);
+        defer scr.deinit();
+        ctx.check("gs over gd: side pair back, side by side", rowCount(&scr, ctx.gpa, 2, "one") == 2 and
+            screenCount(&scr, ctx.gpa, "[diff]") == 0);
+    }
+    s.send(":qa\r");
+    s.drain(300);
+}
+
+/// The side toggle keys on a *visible* snapshot the same way: `:bn` (or
+/// `:close`) in the index pane leaves the scratch windowless, and the next
+/// Space g s must show the pair again — not a phantom "diff closed" that
+/// changes nothing on screen.
+fn sidePhantomToggle(ctx: *h.Ctx) !void {
+    const dir = try diffRepo(ctx, "alpha\nbeta\n", "alpha\nBETA\n");
+    defer ctx.gpa.free(dir);
+    defer h.removeTree(ctx.gpa, ctx.io, dir);
+
+    var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "f.txt" }, .cwd = dir, .term = "xterm-256color" });
+    defer s.finish();
+    s.drain(500);
+    s.send(" gs");
+    s.drain(700);
+    s.send("\x17w:bn\r"); // the index window now shows f.txt; the snapshot lingers windowless
+    s.drain(400);
+    s.send(" gs");
+    s.drain(700);
+    {
+        var scr = try snapshot(ctx, &s);
+        defer scr.deinit();
+        ctx.check("gs after :bn shows the pair again (no phantom toggle)", screenCount(&scr, ctx.gpa, "(index)") > 0);
+    }
+    s.send(" gs"); // and it still toggles closed
+    s.drain(500);
+    {
+        var scr = try snapshot(ctx, &s);
+        defer scr.deinit();
+        ctx.check("and the side view toggles closed again", screenCount(&scr, ctx.gpa, "(index)") == 0);
+    }
+    s.send(":qa\r");
+    s.drain(300);
+}
+
+/// The inline toggle keys on a *visible* window: a scratch left windowless by
+/// `:bn` is stale, and the next Space g d must show the diff again — not a
+/// phantom "diff closed" that changes nothing on screen.
+fn inlinePhantomToggle(ctx: *h.Ctx) !void {
+    const dir = try diffRepo(ctx, "alpha\nbeta\n", "alpha\nBETA\n");
+    defer ctx.gpa.free(dir);
+    defer h.removeTree(ctx.gpa, ctx.io, dir);
+
+    var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "f.txt" }, .cwd = dir, .term = "xterm-256color" });
+    defer s.finish();
+    s.drain(500);
+    s.send(" gd");
+    s.drain(600);
+    s.send(":bn\r"); // the diff window now shows f.txt; the scratch lingers windowless
+    s.drain(400);
+    s.send(" gd");
+    s.drain(600);
+    {
+        var scr = try snapshot(ctx, &s);
+        defer scr.deinit();
+        ctx.check("gd after :bn shows the diff again (no phantom toggle)", screenCount(&scr, ctx.gpa, "@@") > 0 and
+            screenCount(&scr, ctx.gpa, "[diff]") > 0);
+    }
+    s.send(" gd"); // and it still toggles closed
+    s.drain(500);
+    {
+        var scr = try snapshot(ctx, &s);
+        defer scr.deinit();
+        ctx.check("and toggles closed again", screenCount(&scr, ctx.gpa, "@@") == 0 and
+            screenCount(&scr, ctx.gpa, "[diff]") == 0);
     }
     s.send(":qa\r");
     s.drain(300);

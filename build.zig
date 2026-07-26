@@ -1,5 +1,26 @@
 const std = @import("std");
 
+// The VERSION file is the single source of truth (embedded into `--version`
+// below); build.zig.zon must carry the same value for package metadata. A
+// mismatch fails every build right here instead of shipping two versions.
+comptime {
+    const v = std.mem.trim(u8, @embedFile("VERSION"), " \t\r\n");
+    const z = zonVersion(@embedFile("build.zig.zon"));
+    if (!std.mem.eql(u8, v, z))
+        @compileError("version mismatch: VERSION says \"" ++ v ++
+            "\" but build.zig.zon's .version says \"" ++ z ++
+            "\" — update build.zig.zon to match the VERSION file");
+}
+
+/// The first quoted string after `.version` in build.zig.zon — a plain scan;
+/// the file is ours and its shape is fixed.
+fn zonVersion(comptime zon: []const u8) []const u8 {
+    const at = std.mem.indexOf(u8, zon, ".version") orelse return "";
+    const q1 = std.mem.indexOfScalarPos(u8, zon, at + ".version".len, '"') orelse return "";
+    const q2 = std.mem.indexOfScalarPos(u8, zon, q1 + 1, '"') orelse return "";
+    return zon[q1 + 1 .. q2];
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});

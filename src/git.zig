@@ -343,6 +343,22 @@ test "malformed hunk headers stay inert" {
     try std.testing.expectEqual(@as(usize, 9), rowAtOrAfter(&bad, false, 9));
 }
 
+test "a deletion before line 1 puts its old rows above buffer row 0" {
+    // `: > f` on a committed 5-line file: `@@ -1,5 +0,0 @@` — new-side start 0,
+    // count 0. The whole hunk sits *above* the new side's buffer row 0 in
+    // display space. This geometry is the contract editor.zig's paneDisplayTop
+    // anchors on (a buffer-row viewport top of 0 alone can never reach it).
+    const h = [_]Hunk{.{ .old = .{ .start = 1, .count = 5 }, .new = .{ .start = 0, .count = 0 } }};
+    try std.testing.expectEqual(@as(usize, 5), displayRow(&h, true, 0)); // row 0 sits below the gap
+    try std.testing.expectEqual(@as(usize, 0), displayRow(&h, false, 0));
+    var d: usize = 0;
+    while (d < 5) : (d += 1) {
+        try std.testing.expectEqual(Slot.filler, slotAt(&h, true, d));
+        try std.testing.expectEqual(Slot{ .row = d }, slotAt(&h, false, d));
+    }
+    try std.testing.expectEqual(Slot{ .row = 0 }, slotAt(&h, true, 5));
+}
+
 test "rowAtOrAfter snaps a mid-filler top to the next real line" {
     const h = &align_hunks;
     try std.testing.expectEqual(@as(usize, 3), rowAtOrAfter(h, false, 3)); // filler → four

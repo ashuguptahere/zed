@@ -187,8 +187,14 @@ pub const Highlighter = struct {
     /// edit derived from the common prefix/suffix of the old and new text means
     /// tree-sitter only re-parses the region that changed. Run `queryRange` for
     /// the styles.
+    ///
+    /// The edit is computed whenever a previous tree exists — including when
+    /// either side is empty (a buffer born empty, or delete-all). Passing the
+    /// old tree to ts_parser_parse_string *without* ts_tree_edit violates its
+    /// contract (vendor api.h) and freezes the stale tree: a `zedit new.py`
+    /// buffer used to stay unhighlighted forever.
     pub fn reparse(self: *Highlighter, content: []const u8) void {
-        const edit: ?c.TSInputEdit = if (self.primary.tree != null and content.len > 0 and self.content.items.len > 0)
+        const edit: ?c.TSInputEdit = if (self.primary.tree != null)
             computeEdit(self.content.items, content)
         else
             null;
@@ -539,6 +545,43 @@ test "computeEdit prefix/suffix diff" {
     try std.testing.expectEqual(@as(u32, 2), e.start_byte);
     try std.testing.expectEqual(@as(u32, 3), e.old_end_byte);
     try std.testing.expectEqual(@as(u32, 4), e.new_end_byte);
+    // Empty sides: a born-empty buffer's first keystroke (insert-all) and a
+    // delete-all must both come out as exact edits, not underflow.
+    const ins = computeEdit("", "abc");
+    try std.testing.expectEqual(@as(u32, 0), ins.start_byte);
+    try std.testing.expectEqual(@as(u32, 0), ins.old_end_byte);
+    try std.testing.expectEqual(@as(u32, 3), ins.new_end_byte);
+    const del = computeEdit("abc", "");
+    try std.testing.expectEqual(@as(u32, 0), del.start_byte);
+    try std.testing.expectEqual(@as(u32, 3), del.old_end_byte);
+    try std.testing.expectEqual(@as(u32, 0), del.new_end_byte);
+}
+
+test "highlighting survives an initially-empty parse" {
+    // A buffer born empty (`zedit brandnew.py`) parses "" first. The next
+    // reparse must describe the empty→text change as a real edit: passing the
+    // old tree to ts_parser_parse_string without ts_tree_edit violates the
+    // documented contract (vendor api.h) and freezes the stale zero-length
+    // root — zero captures, forever.
+    const src = "def f():\n    return 1\n";
+    var styles: [src.len]syntax.Style = undefined;
+    const any = struct {
+        fn styled(s: []const syntax.Style) bool {
+            for (s) |x| if (x != .normal) return true;
+            return false;
+        }
+    };
+    var h = Highlighter.init(std.testing.allocator, .python).?;
+    defer h.deinit();
+    h.reparse("");
+    h.reparse(src);
+    h.queryRange(0, src.len, &styles);
+    try std.testing.expect(any.styled(&styles));
+    // And the inverse transition: delete-all, then retype.
+    h.reparse("");
+    h.reparse(src);
+    h.queryRange(0, src.len, &styles);
+    try std.testing.expect(any.styled(&styles));
 }
 
 test "pointAt rows and columns" {
@@ -579,6 +622,3 @@ fn mapCapture(name: []const u8) syntax.Style {
     if (p.has(name, "punctuation.special")) return .operator;
     return .normal;
 }
-
-
-

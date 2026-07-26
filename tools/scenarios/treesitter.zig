@@ -92,7 +92,73 @@ fn checkMarkdown(ctx: *h.Ctx, s: *h.Session) void {
     ctx.check("markdown: bold highlighted (inline layer)", s.contains(BUILTIN));
 }
 
+/// A buffer born empty (the named file is not on disk yet) must highlight as
+/// soon as code is typed. The first keystroke's reparse used to hand the old
+/// empty tree to tree-sitter without an edit (an api.h contract violation), so
+/// the stale zero-length root won forever: no colours, not even the lexer's.
+fn newFileHighlighting(ctx: *h.Ctx) !void {
+    const dir = try h.tempDir(ctx.gpa);
+    defer ctx.gpa.free(dir);
+    defer h.removeTree(ctx.gpa, ctx.io, dir);
+
+    // CLI path: `zedit brandnew.py` with no such file on disk.
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "brandnew.py" }, .cwd = dir, .term = "xterm-256color" });
+        defer s.finish();
+        s.drain(600);
+        s.send("idef foo():");
+        s.drain(500);
+        s.send("\x1b");
+        s.drain(300);
+        ctx.check("typing into a brand-new .py file highlights", s.contains(KEYWORD));
+        s.send(":q!\r");
+        s.drain(200);
+    }
+    // In-session path (`:e brandnew2.py`), with the existing file as the
+    // contrast that guards the incremental path.
+    {
+        const existing = h.join(ctx, dir, "existing.py");
+        defer ctx.gpa.free(existing);
+        h.writeFile(ctx.io, existing, "def hello():\n    return 42\n");
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "existing.py" }, .cwd = dir, .term = "xterm-256color" });
+        defer s.finish();
+        s.drain(700);
+        ctx.check("existing .py file highlights (contrast)", s.contains(KEYWORD));
+        const from = s.mark();
+        s.send(":e brandnew2.py\r");
+        s.drain(500);
+        s.send("idef foo():");
+        s.drain(500);
+        s.send("\x1b");
+        s.drain(300);
+        ctx.check(":e to a brand-new .py file highlights as typed", std.mem.indexOf(u8, s.out.items[from..], KEYWORD) != null);
+        s.send(":q!\r");
+        s.drain(200);
+    }
+    // `:w name.py` naming a previously-unnamed buffer decides its language on
+    // the spot: filetype, highlighting (and LSP) come up without a reopen.
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "." }, .cwd = dir, .term = "xterm-256color" });
+        defer s.finish();
+        s.drain(600);
+        s.send("\x1b"); // cancel the picker: an unnamed empty buffer
+        s.drain(300);
+        s.send("idef foo():");
+        s.drain(400);
+        s.send("\x1b");
+        s.drain(300);
+        const from = s.mark();
+        s.send(":w named.py\r");
+        s.drain(700);
+        ctx.check(":w name.py highlights the newly-named buffer", std.mem.indexOf(u8, s.out.items[from..], KEYWORD) != null);
+        ctx.check(":w name.py sets the filetype", s.containsPlainSince(ctx.gpa, from, "python"));
+        s.send(":q\r");
+        s.drain(200);
+    }
+}
+
 pub fn run(ctx: *h.Ctx) !void {
+    try newFileHighlighting(ctx);
     // A file taller than the screen, with a multiline string near the bottom
     // that is off-screen until we scroll down.
     var tall: std.ArrayList(u8) = .empty;

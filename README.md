@@ -116,9 +116,11 @@
   the statusline)
 - **Git diff views**: `Space g d` inline unified diff (coloured +/- lines) in
   a split, `Space g s` the index version side by side — panes row-aligned with
-  tinted filler rows (VS Code-style), scrolled in lockstep, changed/added/
+  tinted filler rows (VS Code-style, deletions before line 1 included),
+  scrolled in lockstep, changed/added/
   removed lines tinted vimdiff-style, the index pane read-only, focus staying
-  on your file; either key pressed again closes its view — plus the always-on
+  on your file; either key pressed again closes its view, and the two views
+  swap for each other per file — plus the always-on
   gutter change signs
 - **Themes**: `tokyonight` (default), `gruvbox`, `catppuccin`, `nord`,
   `onedark` — set in the config, switch live with `:theme <name>` or `Space f t`

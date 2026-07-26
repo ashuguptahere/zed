@@ -2,6 +2,43 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.16.0 - 2026-07-26
+
+### Fixed
+
+- The side-by-side diff view can now show a hunk whose deletion precedes
+  line 1: deleting a file's first lines hid them above the viewport, and a
+  *total* deletion rendered an entirely empty index pane (the aligned rows
+  sat above buffer row 0, which the buffer-row viewport top could never
+  reach). A pane whose top is row 0 now anchors at display row 0, clamped so
+  the cursor stays on screen when the gap is taller than the window — in
+  that case only the gap's tail is reachable (known gap).
+- The two git diff views are now exclusive per file: opening one closes the
+  other first. `Space g s` then `Space g d` used to stack a third window and
+  flip the whole tiling to rows, leaving the "side-by-side" pair stacked
+  even after closing the inline diff.
+- Both diff toggles key on a *visible* window: after `:bn` or `:close` moved
+  the window off the scratch, `Space g d` / `Space g s` used to report "diff
+  closed" while changing nothing on screen (a phantom toggle) — they now
+  destroy the stale scratch and reopen the view.
+- A buffer born empty (`zedit brandnew.py`, `:e newfile.c`) never
+  highlighted: the first keystroke's reparse handed tree-sitter the old
+  empty tree without `ts_tree_edit` (an API-contract violation), freezing a
+  stale zero-length parse forever — and the active-but-empty highlighter
+  also shadowed the lexer fallback. The empty↔non-empty transitions now
+  compute a real incremental edit.
+- `:w name.py` on an unnamed buffer now detects the filetype from the new
+  name and starts highlighting and LSP immediately (the buffer used to stay
+  plain "text" until reopened).
+- Opening a file on top of an untouched `[No Name]` buffer (unnamed,
+  unmodified, empty, shown in no other window) now replaces it — vim's rule,
+  nvim-verified — so `zedit .` plus a picker pick no longer leaves a stray
+  `[No Name]` in `:ls` and the tab bar. A modified unnamed buffer is kept,
+  exactly like nvim.
+- `build.zig.zon`'s `.version` said 0.2.0 while `VERSION` said 0.15.0; the
+  copy is now correct, and a comptime check in `build.zig` fails the build
+  with a clear message whenever the two files disagree.
+
 ## 0.15.0 - 2026-07-26
 
 ### Added
