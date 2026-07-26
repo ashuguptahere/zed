@@ -345,6 +345,7 @@ pub const Editor = struct {
 
     // command/search line
     cmd: std.ArrayList(u8) = .empty,
+    cmd_cur: usize = 0, // cursor: byte index into `cmd`, kept on codepoint boundaries
     cmd_kind: CmdKind = .ex,
     // command-line history (`:` and `/ ?` kept separate, like vim) and
     // Tab-completion state (the "wildmenu").
@@ -355,6 +356,7 @@ pub const Editor = struct {
     wild: std.ArrayList(WildItem) = .empty,
     wild_idx: ?usize = null, // selected candidate; null = original text shown
     wild_stem: std.ArrayList(u8) = .empty, // cmd content when completion started
+    wild_paths: bool = false, // the ring completes :e/:w paths (Up/Down navigate directories)
     // Fish-style inline suggestion: what would complete `cmd` (dim ghost text
     // after the cursor; Right/End accepts). Recomputed on every edit of `cmd`.
     ghost: std.ArrayList(u8) = .empty,
@@ -831,7 +833,8 @@ pub const Editor = struct {
                 // the inline suggestion.
                 self.wildClear();
                 const end = std.mem.indexOfAny(u8, bytes, "\r\n") orelse bytes.len;
-                try self.cmd.appendSlice(self.gpa, bytes[0..end]);
+                try self.cmd.insertSlice(self.gpa, self.cmd_cur, bytes[0..end]);
+                self.cmd_cur += end;
                 self.histEdited();
                 if (self.searching()) self.searchLive();
                 self.ghostUpdate();
@@ -4328,6 +4331,7 @@ pub const Editor = struct {
         self.mode = .command;
         self.cmd_kind = kind;
         self.cmd.clearRetainingCapacity();
+        self.cmd_cur = 0;
         self.hist_pos = null;
         self.wildClear();
         self.ghostUpdate(); // empty line: clears any suggestion left behind
@@ -4365,6 +4369,7 @@ pub const Editor = struct {
         self.cmd_kind = .rename;
         self.cmd.clearRetainingCapacity();
         self.cmd.appendSlice(self.gpa, self.identUnderCursor()) catch {};
+        self.cmd_cur = self.cmd.items.len;
         // The rename prompt never ghosts (it has no history, and command
         // names make no sense there); this clears any stale `:` suggestion.
         self.ghostUpdate();
@@ -4418,8 +4423,12 @@ pub const Editor = struct {
                 self.wildClear();
                 if (self.cmd.items.len == 0) {
                     try self.commandKey(.escape);
-                } else {
-                    self.cmd.items.len = unicode.prevBoundary(self.cmd.items, self.cmd.items.len);
+                } else if (self.cmd_cur > 0) {
+                    // Delete the codepoint before the cursor; at the start of
+                    // a non-empty line this is a no-op (nvim, probe M8).
+                    const p = unicode.prevBoundary(self.cmd.items, self.cmd_cur);
+                    self.cmd.replaceRange(self.gpa, p, self.cmd_cur - p, "") catch {};
+                    self.cmd_cur = p;
                     self.histEdited();
                     if (self.searching()) self.searchLive();
                     self.ghostUpdate();
@@ -4427,43 +4436,74 @@ pub const Editor = struct {
             },
             .tab => self.wildNext(true),
             .shift_tab => self.wildNext(false),
-            .up => self.histRecall(true, true),
-            .down => self.histRecall(false, true),
-            // vim's c_CTRL-P/c_CTRL-N: history without the prefix filter.
+            // While a path-completion popup is open, Up/Down navigate
+            // directories (nvim 'wildmenu', probes W1/W2/W6); any other popup
+            // falls through to plain history recall, which is exactly what
+            // nvim does there (probes W5c/W5e — the completed line filters).
+            .up => if (self.wildPathsActive()) self.wildParent() else self.histRecall(true, true),
+            .down => if (self.wildPathsActive()) self.wildDescend() else self.histRecall(false, true),
             .ctrl => |c| switch (c) {
+                // vim's c_CTRL-P/c_CTRL-N: history without the prefix filter.
                 'p' => self.histRecall(true, false),
                 'n' => self.histRecall(false, false),
+                // vim's c_CTRL-B/c_CTRL-E: line start / line end.
+                'b' => self.cmd_cur = 0,
+                'e' => self.cmdEnd(),
                 else => {},
             },
             .char => |c| {
                 self.wildClear();
                 var enc: [4]u8 = undefined;
                 const len = std.unicode.utf8Encode(c, &enc) catch return;
-                try self.cmd.appendSlice(self.gpa, enc[0..len]);
+                try self.cmd.insertSlice(self.gpa, self.cmd_cur, enc[0..len]);
+                self.cmd_cur += len;
                 self.histEdited();
                 if (self.searching()) self.searchLive();
                 self.ghostUpdate();
             },
-            // Right / End accept the inline suggestion, fish-style. With no
-            // ghost showing they stay the no-ops they always were (the cmdline
-            // cursor is end-of-line only); while the wildmenu ring holds the
-            // line the ghost is hidden, so it cannot be accepted either.
-            .right, .end => if (self.wild.items.len == 0 and self.ghost.items.len > 0) {
-                try self.cmd.appendSlice(self.gpa, self.ghost.items);
-                self.histEdited();
-                if (self.searching()) self.searchLive();
-                self.ghostUpdate();
+            // While the wildmenu popup is open, Left/Right select the
+            // previous/next match (nvim, probes W3a-W3d); otherwise they move
+            // the cursor, and Right at end-of-line accepts the inline
+            // suggestion (fish — mid-line it only moves, never accepts).
+            .left => if (self.wild.items.len > 0) self.wildNext(false) else {
+                self.cmd_cur = unicode.prevBoundary(self.cmd.items, self.cmd_cur);
             },
+            .right => if (self.wild.items.len > 0) self.wildNext(true) else if (self.cmd_cur < self.cmd.items.len) {
+                self.cmd_cur = unicode.nextBoundary(self.cmd.items, self.cmd_cur);
+            } else self.acceptGhost(),
+            .home => self.cmd_cur = 0,
+            .end => self.cmdEnd(),
             else => {},
         }
     }
 
-    /// Replace the command line's content (history recall / completion).
+    /// End / Ctrl-e: to end-of-line; already there, accept the ghost (fish).
+    fn cmdEnd(self: *Editor) void {
+        if (self.cmd_cur < self.cmd.items.len) {
+            self.cmd_cur = self.cmd.items.len;
+        } else self.acceptGhost();
+    }
+
+    /// Accept the inline suggestion (Right/End/Ctrl-e at end-of-line). With
+    /// no ghost it is a no-op, and while the wildmenu ring holds the line the
+    /// ghost is hidden, so it cannot be accepted either.
+    fn acceptGhost(self: *Editor) void {
+        if (self.wild.items.len > 0 or self.ghost.items.len == 0) return;
+        self.cmd.appendSlice(self.gpa, self.ghost.items) catch return;
+        self.cmd_cur = self.cmd.items.len;
+        self.histEdited();
+        if (self.searching()) self.searchLive();
+        self.ghostUpdate();
+    }
+
+    /// Replace the command line's content (history recall / completion). The
+    /// cursor goes to end-of-line (vim's rule, probe M9).
     fn setCmd(self: *Editor, text: []const u8) void {
         if (text.ptr != self.cmd.items.ptr) {
             self.cmd.clearRetainingCapacity();
             self.cmd.appendSlice(self.gpa, text) catch {};
         }
+        self.cmd_cur = self.cmd.items.len;
         if (self.searching()) self.searchLive();
         self.ghostUpdate();
     }
@@ -4623,6 +4663,7 @@ pub const Editor = struct {
     /// names for :theme).
     fn wildCompute(self: *Editor) void {
         self.wildClear();
+        self.wild_paths = false;
         self.wild_stem.clearRetainingCapacity();
         self.wild_stem.appendSlice(self.gpa, self.cmd.items) catch return;
         const raw = self.wild_stem.items;
@@ -4633,11 +4674,53 @@ pub const Editor = struct {
             if (eql(cmd0, "theme")) {
                 self.wildThemes(head, arg);
             } else if (eql(cmd0, "e") or eql(cmd0, "edit") or eql(cmd0, "w") or eql(cmd0, "write")) {
+                self.wild_paths = true;
                 self.wildPaths(head, arg);
             }
         } else {
             self.wildCommands(raw);
         }
+    }
+
+    /// A path-completion popup is on screen — the state in which Up/Down are
+    /// nvim's wildmenu directory-navigation keys rather than history.
+    fn wildPathsActive(self: *Editor) bool {
+        return self.wild.items.len > 0 and self.wild_paths;
+    }
+
+    /// Down in a path popup: descend into the selected directory and
+    /// re-complete inside it, first match selected (nvim probes W1/W1b); on
+    /// a file it just closes the popup, keeping the line (probe W4). The
+    /// selected candidate is already on the line, so "is it a directory?"
+    /// is its trailing '/'.
+    fn wildDescend(self: *Editor) void {
+        const line = self.cmd.items;
+        const is_dir = line.len > 0 and line[line.len - 1] == '/';
+        self.wildClear();
+        if (is_dir) self.wildNext(true);
+    }
+
+    /// Up in a path popup: re-complete in the parent of the ring's directory,
+    /// dropping the typed basename — "e sub/in" lists "", "e al" lists "../"
+    /// — first match selected (nvim probes W2/W6).
+    fn wildParent(self: *Editor) void {
+        const stem = self.wild_stem.items;
+        const sp = std.mem.indexOfScalar(u8, stem, ' ') orelse return;
+        const head = stem[0 .. sp + 1];
+        const arg = stem[sp + 1 ..];
+        const dir = if (std.mem.lastIndexOfScalar(u8, arg, '/')) |s| arg[0 .. s + 1] else "";
+        var buf: [1088]u8 = undefined;
+        const line = blk: {
+            if (dir.len == 0) break :blk std.fmt.bufPrint(&buf, "{s}../", .{head});
+            if (eql(dir, "/")) break :blk std.fmt.bufPrint(&buf, "{s}/", .{head}); // the root is its own parent
+            if (std.mem.endsWith(u8, dir, "../")) break :blk std.fmt.bufPrint(&buf, "{s}{s}../", .{ head, dir });
+            const last = std.mem.lastIndexOfScalar(u8, dir[0 .. dir.len - 1], '/');
+            const parent = if (last) |s| dir[0 .. s + 1] else "";
+            break :blk std.fmt.bufPrint(&buf, "{s}{s}", .{ head, parent });
+        } catch return;
+        self.wildClear();
+        self.setCmd(line);
+        self.wildNext(true);
     }
 
     fn wildAdd(self: *Editor, text: []const u8, show: usize) void {
@@ -7848,8 +7931,12 @@ pub const Editor = struct {
             const w = items[idx];
             const shown = w.text[w.show..];
             try self.emit(" ");
-            try self.emitSanitized(shown[0..@min(shown.len, width - 2)]);
-            const used = 1 + @min(unicode.displayWidth(shown), width - 2);
+            // Clip by display cells on a codepoint boundary (same helper as
+            // the cmdline row): a byte clip tears wide names into '?' and
+            // counts cells the row never painted.
+            const clip = clipCells(shown, width -| 2);
+            try self.emitSanitized(shown[0..clip.bytes]);
+            const used = 1 + clip.cells;
             if (used < width) try self.emitSpaces(width - used);
         }
     }
@@ -8329,28 +8416,21 @@ pub const Editor = struct {
             const prompt = self.cmdPrompt();
             try self.emit(prompt);
             const room = if (cols > prompt.len) cols - prompt.len else 0;
-            const shown = @min(self.cmd.items.len, room);
-            try self.emitSanitized(self.cmd.items[0..shown]);
-            var pad = room - shown;
+            // Both the typed text and the ghost are clipped to the row by
+            // display cells on codepoint boundaries (a byte clip underfills
+            // the row on wide chars and can tear a codepoint).
+            const line = clipCells(self.cmd.items, room);
+            try self.emitSanitized(self.cmd.items[0..line.bytes]);
+            var pad = room - line.cells;
             // Inline suggestion: the rest of the best match, dim, painted
-            // after the terminal cursor (which sits at the end of the typed
-            // text). Hidden while the wildmenu ring holds the line. Clipped
-            // to the row on codepoint boundaries, counting the cells
-            // emitSanitized actually renders (controls become a one-cell '?').
-            if (self.wild.items.len == 0 and self.ghost.items.len > 0) {
-                const ghost = self.ghost.items;
-                var gb: usize = 0; // bytes taken
-                var gc: usize = 0; // cells they render as
-                while (gb < ghost.len) {
-                    const d = unicode.decode(ghost[gb..]);
-                    const w: usize = if (isControlCp(d.cp) or invalidDecode(d)) 1 else unicode.width(d.cp);
-                    if (gc + w > pad) break;
-                    gb += d.len;
-                    gc += w;
-                }
+            // after the terminal cursor. Shown only with the cursor at
+            // end-of-line (fish hides suggestions mid-line) and hidden while
+            // the wildmenu ring holds the line.
+            if (self.wild.items.len == 0 and self.ghost.items.len > 0 and self.cmd_cur == self.cmd.items.len) {
+                const g = clipCells(self.ghost.items, pad);
                 try self.setFg(th.fg_dim);
-                try self.emitSanitized(ghost[0..gb]);
-                pad -= gc;
+                try self.emitSanitized(self.ghost.items[0..g.bytes]);
+                pad -= g.cells;
             }
             try self.emitSpaces(pad);
             return;
@@ -8503,7 +8583,10 @@ pub const Editor = struct {
         var col: usize = undefined;
         if (self.mode == .command) {
             row = self.win.rows;
-            col = self.cmdPrompt().len + 1 + unicode.displayWidth(self.cmd.items);
+            // A line longer than the row is clipped (no horizontal cmdline
+            // scroll), so pin the cursor to the last cell rather than sending
+            // the terminal a column past the edge.
+            col = @min(self.cmdPrompt().len + 1 + unicode.displayWidth(self.cmd.items[0..self.cmd_cur]), self.win.cols);
         } else if (self.sb_focus) {
             // On the sidebar's selected row.
             row = 2 + (self.sb_sel -| self.sb_scroll);
@@ -8939,6 +9022,22 @@ fn isControlCp(cp: u21) bool {
 /// and desynchronise the width accounting from what the terminal displays.
 fn invalidDecode(d: unicode.Decoded) bool {
     return d.cp == 0xFFFD and d.len == 1;
+}
+
+/// The longest prefix of `text` that renders in at most `cells` display
+/// cells, cut on a codepoint boundary — counting the cells `emitSanitized`
+/// actually paints (controls and invalid bytes become a one-cell '?').
+fn clipCells(text: []const u8, cells: usize) struct { bytes: usize, cells: usize } {
+    var b: usize = 0;
+    var used: usize = 0;
+    while (b < text.len) {
+        const d = unicode.decode(text[b..]);
+        const w: usize = if (isControlCp(d.cp) or invalidDecode(d)) 1 else unicode.width(d.cp);
+        if (used + w > cells) break;
+        b += d.len;
+        used += w;
+    }
+    return .{ .bytes = b, .cells = used };
 }
 
 fn textEditAfter(_: void, a: lsp.TextEdit, b: lsp.TextEdit) bool {

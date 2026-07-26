@@ -2,6 +2,40 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.15.0 - 2026-07-26
+
+### Added
+
+- Mid-line command-line editing: the cmdline cursor moves with
+  `Left`/`Right` and `Home`/`End` (vim's `Ctrl-b`/`Ctrl-e` too), typed and
+  pasted text inserts at the cursor, and backspace deletes before it (a
+  no-op at the start of a non-empty line; an empty line still cancels).
+  History recall and wildmenu cycling put the cursor at the end of the
+  line. All pinned to real nvim through a pty (`vim_compat` nvim#e1–e9).
+  The inline suggestion follows fish exactly: it renders only with the
+  cursor at end-of-line, where `Right`/`End` accept it — mid-line they
+  only move the cursor.
+- Wildmenu directory-navigation keys (nvim `'wildmenu'`, pty-probed):
+  while a `:e`/`:w` path popup is open, `Down` descends into the selected
+  directory and re-completes inside it (on a file it just closes the
+  popup), `Up` re-completes in the parent directory, and `Left`/`Right`
+  select the previous/next match for every completion kind. With any
+  other popup — where real nvim recalls history filtered by the completed
+  line, exactly what zedit already did — or none, Up/Down stay history.
+
+### Fixed
+
+- The typed command line was clipped to the row in bytes, not display
+  cells: wide (CJK) characters could tear a codepoint into `?` and leave
+  stale cells at the end of the row. Both the typed text and the ghost now
+  clip by cells on codepoint boundaries through one helper.
+- The wildmenu popup rows had the same byte clip: a CJK filename wider
+  than the popup was torn mid-codepoint into `?` and its row's padding
+  miscounted. Popup rows now clip through the same cell-based helper.
+- A command line longer than the row sent the terminal a cursor column
+  past the right edge; the cursor now pins to the last cell (the line
+  itself still clips — no horizontal cmdline scroll yet).
+
 ## 0.14.0 - 2026-07-26
 
 ### Added

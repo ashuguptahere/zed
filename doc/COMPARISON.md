@@ -27,7 +27,10 @@ batteries-included editor.
 6. ~~**Command-line completion** for `:e`/`:theme`/commands + history~~ —
    **DONE** (Tab/Shift-Tab wildmenu with nvim `wildmode=full` ring semantics
    pinned by pty probes; separate `:` / `/` histories on Up/Down with prefix
-   filtering, Ctrl-p/n unfiltered — nvim-verified in `vim_compat`).
+   filtering, Ctrl-p/n unfiltered — nvim-verified in `vim_compat`; later
+   rounds added the wildmenu's Left/Right match selection and Down/Up
+   directory navigation for path popups, plus mid-line cursor editing —
+   both pty-probed against real nvim).
 7. ~~**Paragraph text objects/motions** `ip`/`ap`/`{`/`}`~~ — **DONE**
    (linewise `ip`/`ap` with counts, `{`/`}` as jump motions, visual-mode
    objects; 16 nvim-verified cases — which also uncovered and fixed the

@@ -606,7 +606,10 @@ paths for
 and the next Tab descends into it) and
 .B :theme
 names. Multiple matches show a popup; Tab cycles matches then the text as
-typed, Shift\-Tab cycles backward.
+typed, Shift\-Tab cycles backward, and Left/Right select matches too (nvim's
+wildmenu). While a path popup is open, Down descends into the selected
+directory and re\-completes inside it, and Up re\-completes in the parent
+directory; with any other popup, or none, Up/Down are history.
 .TP
 .B Up\fR/\fPDown\fR, \fPCtrl\-p\fR/\fPCtrl\-n
 Command\-line history:
@@ -615,13 +618,21 @@ and
 .BR / \| ?
 keep separate histories. Up/Down recall entries starting with the text
 already typed (vim's prefix filter); Down past the newest restores the typed
-line; Ctrl\-p/Ctrl\-n recall without filtering.
+line; Ctrl\-p/Ctrl\-n recall without filtering. Recall leaves the cursor at
+the end of the line (vim).
 .TP
-.B Right\fR/\fPEnd
+.B Left\fR/\fPRight\fR, \fPHome\fR/\fPEnd\fR, \fPCtrl\-b\fR/\fPCtrl\-e
+Move the cursor within the command line (vim's cmdline keys): typed and
+pasted text inserts at the cursor, backspace deletes before it (an empty
+line still cancels).
+.TP
+.B Right\fR/\fPEnd\fR at end\-of\-line
 Accept the inline suggestion (fish\-style ghost text): while typing, the rest
 of the newest history entry extending the typed text \(em or, for
 .BR : ,
 the first matching command name \(em is shown dimmed after the cursor.
+Mid\-line the keys only move the cursor and the suggestion hides until the
+cursor returns to the end (fish's rule).
 Enter always runs only what you typed; the suggestion hides while the Tab
 wildmenu is open, and the rename prompt never shows one. Disable with
 .B cmdline_suggestions = false

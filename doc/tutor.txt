@@ -356,14 +356,21 @@
 
   The command line completes too: type  :e   and press Tab to cycle
   through the files here (Shift-Tab goes backward), or  :the<Tab>  to
-  get  :theme .  Up and Down recall earlier commands that start with
-  what you have typed — try  :  then Up.
+  get  :theme .  While the completion popup is open, Left and Right
+  select matches too, and for file paths Down steps into the selected
+  directory while Up climbs to its parent.  Up and Down otherwise
+  recall earlier commands that start with what you have typed — try
+  :  then Up.
+
+  You can edit anywhere in the line: Left and Right move the cursor,
+  Home and End jump, typing inserts and backspace deletes before the
+  cursor, just like vim.
 
   And it suggests as you type, like the fish shell: the rest of the
   newest matching earlier command (or a command name) appears as dim
-  ghost text after the cursor.  Press Right (or End) to accept it;
-  Enter always runs only what you actually typed, so the ghost can
-  never surprise you.
+  ghost text after the cursor.  Press Right (or End) at the end of
+  the line to accept it; Enter always runs only what you actually
+  typed, so the ghost can never surprise you.
 
   This tutor file has no language server, so try these keys later in a
   real source file — diagnostics appear as gutter signs on their own.

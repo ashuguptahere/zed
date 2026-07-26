@@ -89,10 +89,14 @@
 - **Partial commands shown as you type them** (`d`, `di`, `2d`, `"ay`, `^W`) in
   the statusline, vim's `showcmd`
 - **Command line** with fish-style inline suggestions (the rest of the best
-  history or command-name match as dim ghost text; `Right`/`End` accepts,
-  Enter always runs only what you typed — config `cmdline_suggestions`),
+  history or command-name match as dim ghost text; `Right`/`End` at the end
+  of the line accepts, Enter always runs only what you typed — config
+  `cmdline_suggestions`), mid-line editing (`Left`/`Right`, `Home`/`End`,
+  `Ctrl-b`/`Ctrl-e`; typing inserts at the cursor — nvim-pinned),
   Tab completion (command names, `:e`/`:w` paths, `:theme` names — nvim
-  wildmenu semantics, popup included) and per-kind history on Up/Down with
+  wildmenu semantics, popup included: `Left`/`Right` select matches, and in
+  a path popup `Down` descends into the selected directory while `Up`
+  re-completes in the parent) and per-kind history on Up/Down with
   vim's prefix filtering
 - **Multiple buffers and windows**: `:e`, `:bn`/`:bp`/`:bd`/`:ls`, `]b`/`[b`
   to cycle (counts work: `2]b`), a `Space b` Buffers menu;

@@ -406,8 +406,19 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   completes command names, `:e`/`:w` file paths (a unique directory gets a
   trailing `/` and the next Tab descends into it; hidden files only offered
   when the prefix starts with `.`) and `:theme` names; multiple matches show a
-  vertical popup and Tab/Shift-Tab cycle the ring [matches…, original text]; a
-  unique match completes silently. **History** (nvim-verified in
+  vertical popup and Tab/Shift-Tab cycle the ring [matches…, original text]
+  (`Left`/`Right` select too, like nvim's wildmenu); a
+  unique match completes silently. While a *path* popup is open, `Down`
+  descends into the selected directory (re-completing inside it; on a file it
+  just closes the popup) and `Up` re-completes in the parent directory —
+  nvim's wildmenu file-navigation keys, pty-probed; with any other popup, or
+  none, Up/Down stay history. **Mid-line editing** (nvim-pinned in
+  `vim_compat`): the cmdline cursor moves with `Left`/`Right`,
+  `Home`/`End` (vim's `Ctrl-b`/`Ctrl-e` too); typed and pasted text inserts
+  at the cursor, backspace deletes before it (a no-op at column 0 of a
+  non-empty line; an empty line still cancels), and history recall or wild
+  cycling puts the cursor at end-of-line (vim's rule). **History**
+  (nvim-verified in
   `vim_compat`): `:` and `/ ?` keep separate 100-entry histories; Up/Down
   recall entries filtered by the typed prefix (edits keep the browse position,
   updating the filter), Down past the newest restores the typed line,
@@ -416,7 +427,9 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   (fish-style, config `cmdline_suggestions`, on by default): while typing
   after `:` (or `/ ?`), the rest of the newest history entry strictly
   extending the typed text — else, for `:`, the first command name that
-  does — shows as dim ghost text after the cursor; `Right`/`End` accepts it,
+  does — shows as dim ghost text after the cursor; `Right`/`End` at
+  end-of-line accepts it (mid-line they only move the cursor, and the ghost
+  hides until the cursor is back at the end — fish's rule),
   every edit recomputes it, Enter always runs only the typed text, and the
   ghost hides while the wildmenu ring has the line. The rename prompt never
   ghosts (no history, and command names make no sense there). No filesystem
@@ -654,12 +667,13 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   The trickier dot-repeat/macro interactions are not (fully)
   implemented; autoindent is vim's 'autoindent' only (no smartindent/
   tree-sitter indent queries). Cmdline completion covers command names,
-  `:e`/`:w` paths and `:theme` (not every command's arguments), and the
-  wildmenu's special file-navigation keys (Down = enter directory, Up = parent
-  directory while the popup is open) are not implemented — Up/Down are always
-  history. The cmdline cursor is end-of-line only (no mid-line editing —
-  `Right`/`End` accept the inline suggestion when one shows, else do
-  nothing). In-buffer search/`:s` are regex, but the syntax is
+  `:e`/`:w` paths and `:theme` (not every command's arguments). The cmdline
+  cursor moves (Left/Right/Home/End/Ctrl-b/Ctrl-e, insert-at-cursor), but
+  there is no `Delete`-under-cursor, no `Ctrl-w`/`Ctrl-u` word/line erase and
+  no `c_CTRL-R` register insertion; Tab mid-line completes the whole line
+  (nvim, probed, completes only the text before the cursor and keeps the
+  tail), and a cmdline longer than the row is clipped with the cursor pinned
+  to the last cell (nvim scrolls it horizontally). In-buffer search/`:s` are regex, but the syntax is
   modern ("very magic"-like), not vim's magic mode — `\(` groups etc. differ.
 - Highlighting is a per-line lexer (no cross-line block comments; a handful of
   languages). Tree-sitter is the upgrade path now that deps are allowed.

@@ -44,7 +44,10 @@ The shortlist is done; these are the next-highest gaps from
 - [ ] True rectangular block paste; block `A` padding on short lines.
 - [ ] Tree-sitter injections (Markdown uses two layers; HTML JS/CSS plain),
       query predicates (`#match?`/`#eq?`), tree-sitter indent queries.
-- [ ] Cmdline: wildmenu directory-navigation keys, mid-line cursor editing.
+- [ ] Cmdline: `Delete` under the cursor, `Ctrl-w`/`Ctrl-u` word/line erase,
+      `c_CTRL-R` register insertion, Tab completing only the text before the
+      cursor (nvim keeps the tail — probed), horizontal scroll for lines
+      longer than the row (they clip; the cursor pins to the last cell).
 - [ ] Remote: atomic remote writes (temp file + rename instead of `cat >`),
       remote git signs/sidebar, partial transfers for huge remote files.
 - [ ] More nvim ground-truth test tranches (dot-repeat/macro edge cases).
@@ -244,3 +247,24 @@ The shortlist is done; these are the next-highest gaps from
       + tag + recompile, Ctrl-r-under-invalid-query reset); the three
       literal-narrowing checks and the mid-walk streaming check pass
       unchanged.
+- [x] Cmdline mid-line editing + wildmenu directory-navigation keys (the two
+      remaining cmdline gaps) and a CJK clip fix: a cursor column
+      (Left/Right/Home/End/Ctrl-b/Ctrl-e, insert-at-cursor,
+      backspace-before-cursor, recall/completion leave it at end-of-line;
+      ghost renders/accepts only at end-of-line, fish's rule); while a path
+      popup is open Down descends into the selected directory, Up
+      re-completes in the parent, Left/Right select matches (non-path popups:
+      Up/Down are plain filtered history recall — probed nvim already matched
+      zedit's existing behaviour there); the typed cmdline row now clips by
+      display cells on codepoint boundaries (shared `clipCells` with the
+      ghost) instead of bytes. 9 nvim-pinned `vim_compat` cases (tmux-pty
+      ground truth, incl. BS-at-col-0 no-op and recall-cursor-at-end) + 14
+      pty checks (Screen-model hardware-cursor column, ghost hidden
+      mid-line, dir descend/parent, history-with-popup-closed guard,
+      CJK row fill), 16 proven fail-without. Review pass re-probed nvim
+      (M1/M8/M9/W1b/W2/W4 confirmed byte-for-byte), pinned Enter-mid-line
+      runs the whole line (nvim#e10), fixed the wildmenu popup's byte clip
+      (same cell-based helper as the cmdline row) and pinned the overflow
+      cursor to the last cell (both proven fail-without), and added
+      search-prompt mid-line, CJK backspace, ghost-reappear, Left/Right
+      match-select, Tab-after-descend and root-parent checks (+15 checks).

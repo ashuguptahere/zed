@@ -206,6 +206,10 @@ pub const Screen = struct {
     rows: usize,
     cols: usize,
     cells: []Cell,
+    // Where the hardware cursor ended up after `apply` (1-based) — the last
+    // position the editor's end-of-frame placement left it at.
+    cur_row: usize = 1,
+    cur_col: usize = 1,
 
     pub fn init(gpa: std.mem.Allocator, rows: usize, cols: usize) !Screen {
         const cells = try gpa.alloc(Cell, rows * cols);
@@ -249,6 +253,10 @@ pub const Screen = struct {
     pub fn apply(self: *Screen, bytes: []const u8) void {
         var row: usize = 1;
         var col: usize = 1;
+        defer {
+            self.cur_row = row;
+            self.cur_col = col;
+        }
         var fg: u32 = default_color;
         var bg: u32 = default_color;
         var i: usize = 0;

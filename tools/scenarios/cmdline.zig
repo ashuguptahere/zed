@@ -1,19 +1,27 @@
 //! Command-line Tab completion (the "wildmenu"): command names, `:e`/`:w`
 //! paths (directories complete with a trailing `/` and descend on the next
-//! Tab), `:theme` names, the [matches..., original] cycle ring, and hidden
-//! files staying hidden. Semantics pinned to real nvim (see the vim_compat
-//! history cases for the Up/Down side). Plus the fish-style inline
-//! suggestions ("ghost text"): history/command-name completion shown dim
-//! after the cursor, accepted with Right/End, never executed unaccepted,
-//! hidden while the wildmenu is open, sanitized, and `cmdline_suggestions`
-//! turning it off.
+//! Tab), `:theme` names, the [matches..., original] cycle ring, hidden
+//! files staying hidden, and the directory-navigation keys while a path
+//! popup is open (Down descends into the selected directory, Up re-completes
+//! in the parent — nvim 'wildmenu'). Semantics pinned to real nvim (see the
+//! vim_compat history and mid-line editing cases for the Up/Down and cursor
+//! side). Plus the fish-style inline suggestions ("ghost text"):
+//! history/command-name completion shown dim after the cursor, accepted with
+//! Right/End only at end-of-line (hidden mid-line, like fish), never executed
+//! unaccepted, hidden while the wildmenu is open, sanitized, and
+//! `cmdline_suggestions` turning it off. Mid-line editing itself (cursor
+//! column, insert-at-cursor, the hardware cursor) is checked here through the
+//! Screen model; the nvim-pinned file-effect cases live in vim_compat.
 
 const std = @import("std");
 const h = @import("../harness.zig");
 
 const TAB = "\t";
+const LEFT = "\x1b[D";
 const RIGHT = "\x1b[C";
 const END = "\x1b[F";
+const UP = "\x1b[A";
+const DOWN = "\x1b[B";
 const GRUVBOX_BG = "\x1b[48;2;40;40;40m"; // #282828
 const NORD_BG = "\x1b[48;2;46;52;64m"; // #2e3440
 
@@ -31,11 +39,26 @@ pub fn run(ctx: *h.Ctx) !void {
     defer ctx.gpa.free(sub);
     const inner = h.join(ctx, dir, "sub/inner.txt");
     defer ctx.gpa.free(inner);
+    // Two directories sharing the prefix "pa" (so ":e pa" Tab opens a popup
+    // with a directory selected), one holding two files (so completion inside
+    // it opens a popup too) — for the Down/Up directory-navigation keys.
+    const pair = h.join(ctx, dir, "pair");
+    defer ctx.gpa.free(pair);
+    const park = h.join(ctx, dir, "park");
+    defer ctx.gpa.free(park);
+    const pone = h.join(ctx, dir, "pair/one.txt");
+    defer ctx.gpa.free(pone);
+    const ptwo = h.join(ctx, dir, "pair/two.txt");
+    defer ctx.gpa.free(ptwo);
     h.writeFile(ctx.io, alpha, "aaa\n");
     h.writeFile(ctx.io, alpine, "ppp\n");
     h.writeFile(ctx.io, hidden, "hhh\n");
     std.Io.Dir.cwd().createDirPath(ctx.io, sub) catch {};
     h.writeFile(ctx.io, inner, "iii\n");
+    std.Io.Dir.cwd().createDirPath(ctx.io, pair) catch {};
+    std.Io.Dir.cwd().createDirPath(ctx.io, park) catch {};
+    h.writeFile(ctx.io, pone, "11\n");
+    h.writeFile(ctx.io, ptwo, "22\n");
 
     // Path completion: first Tab takes the first match and shows the menu;
     // the second Tab cycles to the next candidate, Enter opens it.
@@ -353,6 +376,288 @@ pub fn run(ctx: *h.Ctx) !void {
         defer ctx.gpa.free(got);
         ctx.check("accepted search ghost drives the live jump", std.mem.startsWith(u8, got, "ebra42"));
         s.send(":qa\r");
+        s.drain(200);
+    }
+
+    // Mid-line editing, on screen: typed chars insert at the cursor (not the
+    // end), and the hardware cursor sits at prompt + width of the text before
+    // it. ":abc" Left Left "X" must render ":aXbc" with the cursor on the 'b'
+    // (column 4) — pinned to nvim in vim_compat (nvim#e1..e9); this checks
+    // the rendering and cursor placement side through the Screen model.
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "alpha.txt" }, .cwd = dir, .term = "xterm-256color" });
+        defer s.finish();
+        s.drain(400);
+        s.send(":abc");
+        s.drain(200);
+        s.send(LEFT ++ LEFT);
+        s.drain(200);
+        s.send("X");
+        s.drain(250);
+        var scr = try h.Screen.init(ctx.gpa, 24, 80);
+        defer scr.deinit();
+        scr.apply(s.out.items);
+        const row = try scr.rowText(ctx.gpa, 24);
+        defer ctx.gpa.free(row);
+        ctx.check("typing mid-line inserts at the cursor", std.mem.eql(u8, row, ":aXbc"));
+        ctx.check("hardware cursor sits at the edit point", scr.cur_row == 24 and scr.cur_col == 4);
+        // A bracketed paste inserts at the cursor too, and the cursor lands
+        // after the pasted text (here: paste "Y" before the 'b').
+        s.send("\x1b[200~Y\x1b[201~");
+        s.drain(250);
+        var scr2 = try h.Screen.init(ctx.gpa, 24, 80);
+        defer scr2.deinit();
+        scr2.apply(s.out.items);
+        const row2 = try scr2.rowText(ctx.gpa, 24);
+        defer ctx.gpa.free(row2);
+        ctx.check("paste mid-line inserts at the cursor", std.mem.eql(u8, row2, ":aXYbc"));
+        ctx.check("cursor follows the pasted text", scr2.cur_row == 24 and scr2.cur_col == 5);
+        s.send("\x1b:qa\r");
+        s.drain(200);
+    }
+
+    // The ghost is a fish suggestion: it renders only with the cursor at
+    // end-of-line, and mid-line Right MOVES the cursor rather than accepting.
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "alpha.txt" }, .cwd = dir, .term = "xterm-256color" });
+        defer s.finish();
+        s.drain(400);
+        s.send(":theme gruvbox\x1b"); // seed history (abandoned, not applied)
+        s.drain(200);
+        const m1 = s.mark();
+        s.send(":th");
+        s.drain(250);
+        ctx.check("ghost shows at end-of-line", s.containsPlainSince(ctx.gpa, m1, "theme gruvbox"));
+        s.send(LEFT); // cursor mid-line: the ghost must vanish from the frame
+        s.drain(250);
+        var scr = try h.Screen.init(ctx.gpa, 24, 80);
+        defer scr.deinit();
+        scr.apply(s.out.items);
+        const row = try scr.rowText(ctx.gpa, 24);
+        defer ctx.gpa.free(row);
+        ctx.check("ghost hidden while the cursor is mid-line", std.mem.eql(u8, row, ":th"));
+        ctx.check("cursor moved left of the 'h'", scr.cur_row == 24 and scr.cur_col == 3);
+        const m2 = s.mark();
+        s.send(RIGHT); // moves back to end-of-line — must NOT accept the ghost
+        s.drain(250);
+        ctx.check("ghost reappears at end-of-line", s.containsPlainSince(ctx.gpa, m2, "eme gruvbox"));
+        s.send("\r");
+        s.drain(300);
+        ctx.check("mid-line Right moves, never accepts", s.containsPlain(ctx.gpa, "unknown command: th") and
+            !s.contains(GRUVBOX_BG));
+        s.send(":qa\r");
+        s.drain(200);
+    }
+
+    // Wildmenu directory navigation (nvim 'wildmenu' probes W1/W2/W4/W6):
+    // with a path popup open, Down descends into the selected directory and
+    // re-completes inside it; Up re-completes in the parent directory.
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "alpha.txt" }, .cwd = dir, .term = "xterm-256color" });
+        defer s.finish();
+        s.drain(400);
+        s.send(":e pa");
+        s.drain(200);
+        s.send(TAB); // popup [pair/ park/], line ":e pair/"
+        s.drain(250);
+        const m1 = s.mark();
+        s.send(DOWN); // descend: popup [one.txt two.txt], line ":e pair/one.txt"
+        s.drain(300);
+        ctx.check("Down descends into the selected directory", s.containsPlainSince(ctx.gpa, m1, "pair/one.txt"));
+        s.send(TAB); // the re-completed ring keeps cycling inside pair/
+        s.drain(250);
+        ctx.check("Tab cycles inside the descended directory", s.containsPlainSince(ctx.gpa, m1, "pair/two.txt"));
+        s.send("\x1b[Z"); // Shift-Tab back to one.txt
+        s.drain(250);
+        s.send("\r");
+        s.drain(400);
+        s.send("x:w\r"); // prove the descended-to file really opened
+        s.drain(300);
+        const t = h.readFile(ctx.gpa, ctx.io, pone);
+        defer ctx.gpa.free(t);
+        ctx.check("Enter opens the descended-to file", std.mem.eql(u8, t, "1\n"));
+        s.send(":e pair/");
+        s.drain(200);
+        s.send(TAB); // popup [one.txt two.txt] inside pair/
+        s.drain(250);
+        const m2 = s.mark();
+        s.send(UP); // parent: re-completes in the temp dir — park/ appears
+        s.drain(300);
+        ctx.check("Up re-completes in the parent directory", s.containsPlainSince(ctx.gpa, m2, "park/"));
+        s.send("\x1b:qa\r");
+        s.drain(200);
+    }
+
+    // Up at the filesystem root: "/" is its own parent, so the popup simply
+    // re-completes there — the line stays rooted, nothing crashes or climbs
+    // out of the filesystem. (Entry names vary per machine; assert the stem.)
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "alpha.txt" }, .cwd = dir, .term = "xterm-256color" });
+        defer s.finish();
+        s.drain(400);
+        s.send(":e /");
+        s.drain(200);
+        s.send(TAB); // popup listing "/"
+        s.drain(300);
+        s.send(UP); // parent of "/" is "/"
+        s.drain(300);
+        var scr = try h.Screen.init(ctx.gpa, 24, 80);
+        defer scr.deinit();
+        scr.apply(s.out.items);
+        const row = try scr.rowText(ctx.gpa, 24);
+        defer ctx.gpa.free(row);
+        ctx.check("Up at the root stays at the root", std.mem.startsWith(u8, row, ":e /"));
+        ctx.check("still a completed entry on the line", row.len > ":e /".len);
+        s.send("\x1b:qa\r");
+        s.drain(200);
+    }
+
+    // History recall must keep working when no popup is open (the directory
+    // keys are gated on the popup, exactly nvim's rule).
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "alpha.txt" }, .cwd = dir, .term = "xterm-256color" });
+        defer s.finish();
+        s.drain(400);
+        s.send(":theme gruvbox\x1b"); // seed (abandoned, not applied)
+        s.drain(200);
+        const m = s.mark();
+        s.send(":" ++ UP); // no popup: Up is plain history recall
+        s.drain(250);
+        ctx.check("Up without a popup recalls history", s.containsPlainSince(ctx.gpa, m, "theme gruvbox"));
+        s.send("\r");
+        s.drain(400);
+        ctx.check("recalled line executes", s.contains(GRUVBOX_BG));
+        s.send(":qa\r");
+        s.drain(200);
+    }
+
+    // The typed text itself is clipped by display cells, not bytes: on a
+    // 20-column pty a CJK command line fills the row exactly — nine wide
+    // chars (18 cells) after the prompt, then one pad space; the tenth char
+    // (2 cells into 1) never renders and no codepoint is ever torn into '?'.
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "alpha.txt" }, .cwd = dir, .term = "xterm-256color", .cols = 20 });
+        defer s.finish();
+        s.drain(400);
+        const m = s.mark();
+        s.send(":日本語のファイル名がとても長い");
+        s.drain(400);
+        ctx.check("CJK line fills the row exactly", s.containsPlainSince(ctx.gpa, m, ":日本語のファイル名 "));
+        ctx.check("no overflow past the row", !s.containsPlainSince(ctx.gpa, m, "が"));
+        ctx.check("no codepoint torn by the clip", !s.containsPlainSince(ctx.gpa, m, "?"));
+        s.send("\x1b:qa\r");
+        s.drain(200);
+    }
+
+    // Mid-line editing across wide chars: Left from the end of ":日本語"
+    // steps over 語 (one codepoint, never a byte), backspace deletes the
+    // whole 本, and the hardware cursor lands after the 2-cell 日.
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "alpha.txt" }, .cwd = dir, .term = "xterm-256color" });
+        defer s.finish();
+        s.drain(400);
+        s.send(":日本語");
+        s.drain(250);
+        s.send(LEFT);
+        s.drain(150);
+        s.send("\x7f"); // backspace: delete the codepoint before the cursor (本)
+        s.drain(250);
+        var scr = try h.Screen.init(ctx.gpa, 24, 80);
+        defer scr.deinit();
+        scr.apply(s.out.items);
+        // The Screen model advances one column per codepoint (it does not
+        // model wide cells), so assert the prefix rather than the whole row.
+        const row = try scr.rowText(ctx.gpa, 24);
+        defer ctx.gpa.free(row);
+        ctx.check("backspace mid-CJK deletes one whole codepoint", std.mem.startsWith(u8, row, ":日語 ") and std.mem.indexOf(u8, row, "本") == null);
+        ctx.check("no torn codepoint after mid-CJK edits", std.mem.indexOfScalar(u8, row, '?') == null);
+        ctx.check("cursor sits after the 2-cell 日", scr.cur_row == 24 and scr.cur_col == 4);
+        s.send("\x1b:qa\r");
+        s.drain(200);
+    }
+
+    // A line longer than the row: the text clips (no horizontal cmdline
+    // scroll — a documented gap) and the hardware cursor pins to the last
+    // cell instead of being sent past the terminal's edge; Home brings it
+    // back into the visible prefix.
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "alpha.txt" }, .cwd = dir, .term = "xterm-256color", .cols = 20 });
+        defer s.finish();
+        s.drain(400);
+        s.send(":0123456789012345678901234"); // prompt + 25 chars > 20 cols
+        s.drain(300);
+        var scr = try h.Screen.init(ctx.gpa, 24, 20);
+        defer scr.deinit();
+        scr.apply(s.out.items);
+        ctx.check("overflowing line pins the cursor to the last cell", scr.cur_row == 24 and scr.cur_col == 20);
+        s.send("\x1b[H"); // Home
+        s.drain(250);
+        var scr2 = try h.Screen.init(ctx.gpa, 24, 20);
+        defer scr2.deinit();
+        scr2.apply(s.out.items);
+        ctx.check("Home returns the cursor on screen", scr2.cur_row == 24 and scr2.cur_col == 2);
+        s.send("\x1b:qa\r");
+        s.drain(200);
+    }
+
+    // While a popup is open, Left/Right select the previous/next match
+    // (nvim probes W3a-W3d): from ":e pair/" Right selects ":e park/",
+    // Left comes back.
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "alpha.txt" }, .cwd = dir, .term = "xterm-256color" });
+        defer s.finish();
+        s.drain(400);
+        s.send(":e pa");
+        s.drain(200);
+        s.send(TAB); // popup [pair/ park/], line ":e pair/"
+        s.drain(250);
+        s.send(RIGHT);
+        s.drain(250);
+        var scr = try h.Screen.init(ctx.gpa, 24, 80);
+        defer scr.deinit();
+        scr.apply(s.out.items);
+        const row = try scr.rowText(ctx.gpa, 24);
+        defer ctx.gpa.free(row);
+        ctx.check("Right selects the next match", std.mem.eql(u8, row, ":e park/"));
+        s.send(LEFT);
+        s.drain(250);
+        var scr2 = try h.Screen.init(ctx.gpa, 24, 80);
+        defer scr2.deinit();
+        scr2.apply(s.out.items);
+        const row2 = try scr2.rowText(ctx.gpa, 24);
+        defer ctx.gpa.free(row2);
+        ctx.check("Left selects the previous match", std.mem.eql(u8, row2, ":e pair/"));
+        s.send("\x1b:qa\r");
+        s.drain(200);
+    }
+
+    // Popup rows clip by display cells too: a CJK filename wider than the
+    // popup on a narrow pty must never be torn mid-codepoint into '?' (the
+    // same clipCells rule as the cmdline row).
+    {
+        const cjkd = h.join(ctx, dir, "cjkd");
+        defer ctx.gpa.free(cjkd);
+        std.Io.Dir.cwd().createDirPath(ctx.io, cjkd) catch {};
+        const ca = h.join(ctx, dir, "cjkd/a.txt");
+        defer ctx.gpa.free(ca);
+        const c1 = h.join(ctx, dir, "cjkd/日本語のとても長い名前.txt");
+        defer ctx.gpa.free(c1);
+        const c2 = h.join(ctx, dir, "cjkd/日本語のとても長い別名.txt");
+        defer ctx.gpa.free(c2);
+        h.writeFile(ctx.io, ca, "a\n");
+        h.writeFile(ctx.io, c1, "1\n");
+        h.writeFile(ctx.io, c2, "2\n");
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "a.txt" }, .cwd = cjkd, .term = "xterm-256color", .cols = 20 });
+        defer s.finish();
+        s.drain(400);
+        s.send(":e ");
+        s.drain(200);
+        const m = s.mark();
+        s.send(TAB); // popup [a.txt 日本語… 日本語…], rows clipped to the pty
+        s.drain(300);
+        ctx.check("popup shows the clipped CJK names", s.containsPlainSince(ctx.gpa, m, "日本語"));
+        ctx.check("popup never tears a codepoint", !s.containsPlainSince(ctx.gpa, m, "?"));
+        s.send("\x1b\x1b:qa\r");
         s.drain(200);
     }
 }

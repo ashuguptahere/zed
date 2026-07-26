@@ -18,6 +18,14 @@ pub fn run(ctx: *h.Ctx) !void {
     // n repeats to the next match.
     h.case(ctx, target, "n repeats to next match", &.{ "/foo", CR, "n", "x", ":wq", CR }, "foo\nfoo\nfoo\n", "foo\nfoo\noo\n");
 
+    // Mid-line editing in the search prompt: "/ab" then Left and "X" edits
+    // the pattern to "aXb" — the live preview must re-run on the full line,
+    // so Enter lands on line 3's "aXb", not line 2's "ab".
+    h.case(ctx, target, "mid-line insert re-previews the whole pattern", &.{ "/ab", "\x1b[D", "X", CR, "rZ", ":wq", CR }, "qq\nab\naXb\n", "qq\nab\nZXb\n");
+
+    // Esc after a mid-line edit still cancels and restores the origin.
+    h.case(ctx, target, "Esc after a mid-line edit restores the cursor", &.{ "/ab", "\x1b[D", "X", ESC, "x", ":wq", CR }, "qq\nab\naXb\n", "q\nab\naXb\n");
+
     // Live highlight uses the match colour while typing (theme.match = 61;89;161).
     {
         h.writeFile(ctx.io, target, "alpha\nbeta\ngamma\n");
