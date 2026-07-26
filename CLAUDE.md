@@ -403,7 +403,16 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   recall entries filtered by the typed prefix (edits keep the browse position,
   updating the filter), Down past the newest restores the typed line,
   `Ctrl-p`/`Ctrl-n` recall unfiltered, duplicates move to newest, and an
-  Esc-abandoned line is remembered too (vim's rule).
+  Esc-abandoned line is remembered too (vim's rule). **Inline suggestions**
+  (fish-style, config `cmdline_suggestions`, on by default): while typing
+  after `:` (or `/ ?`), the rest of the newest history entry strictly
+  extending the typed text — else, for `:`, the first command name that
+  does — shows as dim ghost text after the cursor; `Right`/`End` accepts it,
+  every edit recomputes it, Enter always runs only the typed text, and the
+  ghost hides while the wildmenu ring has the line. The rename prompt never
+  ghosts (no history, and command names make no sense there). No filesystem
+  I/O per keystroke (Tab completion covers paths) and no timers; the ghost is
+  drawn dim (`fg_dim`) through the render sanitizer like any untrusted text.
 - **Sidebar (`Space e`):** a file-tree of the cwd on the configured side
   (config `sidebar = left|right`), which carves its width off the window
   tiling. Its "EXPLORER" header lives in the title bar when that row is shown
@@ -573,8 +582,8 @@ Runtime configuration is one documented file (see `config.zig`): theme,
 `tab_width`, `nerd_font`, `sidebar` (left/right), `relative_numbers`,
 `large_file_mb`, `autoindent`, `buffer_tabs`, `auto_completion`,
 `completion_delay_ms`, `inline_diagnostics`, `soft_wrap`, `wrap_indent`,
-`wrap_column`, `persistent_undo`, `format_on_save`; `zedit --init-config` writes
-the annotated default.
+`wrap_column`, `persistent_undo`, `format_on_save`, `cmdline_suggestions`;
+`zedit --init-config` writes the annotated default.
 `zedit --tutor` opens the embedded interactive tutorial (`doc/tutor.txt`,
 embedded via `build.zig`).
 
@@ -639,8 +648,9 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   `:e`/`:w` paths and `:theme` (not every command's arguments), and the
   wildmenu's special file-navigation keys (Down = enter directory, Up = parent
   directory while the popup is open) are not implemented — Up/Down are always
-  history. The cmdline cursor is end-of-line only (no `Left`/`Right` editing
-  within the line). In-buffer search/`:s` are regex, but the syntax is
+  history. The cmdline cursor is end-of-line only (no mid-line editing —
+  `Right`/`End` accept the inline suggestion when one shows, else do
+  nothing). In-buffer search/`:s` are regex, but the syntax is
   modern ("very magic"-like), not vim's magic mode — `\(` groups etc. differ.
 - Highlighting is a per-line lexer (no cross-line block comments; a handful of
   languages). Tree-sitter is the upgrade path now that deps are allowed.

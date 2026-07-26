@@ -219,3 +219,13 @@ The shortlist is done; these are the next-highest gaps from
       saturates instead of underflowing. 31 pty checks (edge hunks at line
       1/EOF, untracked file, third-window focus among them) + hunk/alignment
       unit tests incl. malformed headers.
+- [x] Fish-style inline suggestions on the command line (owner request):
+      dim ghost text after the cursor from the newest matching history entry
+      (or a command name for `:`), Right/End accepts, Enter runs only the
+      typed text, hidden while the wildmenu cycles, sanitized, no per-key
+      filesystem I/O or timers; `cmdline_suggestions` config. Also made a
+      cmdline paste behave like typing (it now invalidates the wildmenu ring
+      and updates the history filter). 18 pty checks, 11 proven fail-without
+      (incl. narrow-pty/CJK clip, accepted-search-ghost live jump); fixed the
+      pre-existing "relative numbers by default" check that the 0.12.0
+      version string had broken.

@@ -355,6 +355,9 @@ pub const Editor = struct {
     wild: std.ArrayList(WildItem) = .empty,
     wild_idx: ?usize = null, // selected candidate; null = original text shown
     wild_stem: std.ArrayList(u8) = .empty, // cmd content when completion started
+    // Fish-style inline suggestion: what would complete `cmd` (dim ghost text
+    // after the cursor; Right/End accepts). Recomputed on every edit of `cmd`.
+    ghost: std.ArrayList(u8) = .empty,
 
     // picker (fuzzy file finder / global search)
     picker_kind: PickerKind = .files,
@@ -555,6 +558,7 @@ pub const Editor = struct {
         self.wildClear();
         self.wild.deinit(self.gpa);
         self.wild_stem.deinit(self.gpa);
+        self.ghost.deinit(self.gpa);
         self.cmd.deinit(self.gpa);
         self.macro_buf.deinit(self.gpa);
         self.dot_keys.deinit(self.gpa);
@@ -808,9 +812,15 @@ pub const Editor = struct {
         if (bytes.len == 0) return;
         switch (self.mode) {
             .command => {
+                // A paste edits the line exactly like typing: it invalidates
+                // the wildmenu ring, updates the history filter and recomputes
+                // the inline suggestion.
+                self.wildClear();
                 const end = std.mem.indexOfAny(u8, bytes, "\r\n") orelse bytes.len;
                 try self.cmd.appendSlice(self.gpa, bytes[0..end]);
+                self.histEdited();
                 if (self.searching()) self.searchLive();
+                self.ghostUpdate();
             },
             .picker => {
                 const end = std.mem.indexOfAny(u8, bytes, "\r\n") orelse bytes.len;
@@ -4220,6 +4230,7 @@ pub const Editor = struct {
         self.cmd.clearRetainingCapacity();
         self.hist_pos = null;
         self.wildClear();
+        self.ghostUpdate(); // empty line: clears any suggestion left behind
         if (kind != .ex) {
             // Remember where we started so the search can preview live and be
             // cancelled, and save the previous pattern to restore on cancel.
@@ -4254,6 +4265,9 @@ pub const Editor = struct {
         self.cmd_kind = .rename;
         self.cmd.clearRetainingCapacity();
         self.cmd.appendSlice(self.gpa, self.identUnderCursor()) catch {};
+        // The rename prompt never ghosts (it has no history, and command
+        // names make no sense there); this clears any stale `:` suggestion.
+        self.ghostUpdate();
     }
 
     /// The identifier spanning the cursor on the current line (empty if none).
@@ -4308,6 +4322,7 @@ pub const Editor = struct {
                     self.cmd.items.len = unicode.prevBoundary(self.cmd.items, self.cmd.items.len);
                     self.histEdited();
                     if (self.searching()) self.searchLive();
+                    self.ghostUpdate();
                 }
             },
             .tab => self.wildNext(true),
@@ -4327,6 +4342,17 @@ pub const Editor = struct {
                 try self.cmd.appendSlice(self.gpa, enc[0..len]);
                 self.histEdited();
                 if (self.searching()) self.searchLive();
+                self.ghostUpdate();
+            },
+            // Right / End accept the inline suggestion, fish-style. With no
+            // ghost showing they stay the no-ops they always were (the cmdline
+            // cursor is end-of-line only); while the wildmenu ring holds the
+            // line the ghost is hidden, so it cannot be accepted either.
+            .right, .end => if (self.wild.items.len == 0 and self.ghost.items.len > 0) {
+                try self.cmd.appendSlice(self.gpa, self.ghost.items);
+                self.histEdited();
+                if (self.searching()) self.searchLive();
+                self.ghostUpdate();
             },
             else => {},
         }
@@ -4339,6 +4365,39 @@ pub const Editor = struct {
             self.cmd.appendSlice(self.gpa, text) catch {};
         }
         if (self.searching()) self.searchLive();
+        self.ghostUpdate();
+    }
+
+    /// Recompute the command line's inline suggestion (fish-style "ghost"):
+    /// the newest history entry that strictly extends the typed text, else —
+    /// for `:` — the first command name that does. Runs on every edit of
+    /// `cmd`; a scan over at most 100 history entries plus the command-name
+    /// table, and never any filesystem I/O (Tab completion covers paths).
+    /// The rename prompt gets no ghost: it has no history (`historyList`
+    /// returns null) and command names make no sense there.
+    fn ghostUpdate(self: *Editor) void {
+        self.ghost.clearRetainingCapacity();
+        if (!config.settings.cmdline_suggestions) return;
+        const typed = self.cmd.items;
+        if (typed.len == 0) return; // an empty prompt suggests nothing (fish)
+        if (self.historyList()) |list| {
+            var i = list.items.len;
+            while (i > 0) {
+                i -= 1;
+                const entry = list.items[i];
+                if (entry.len > typed.len and std.mem.startsWith(u8, entry, typed)) {
+                    self.ghost.appendSlice(self.gpa, entry[typed.len..]) catch {};
+                    return;
+                }
+            }
+        }
+        if (self.cmd_kind != .ex) return;
+        for (command_names) |name| {
+            if (name.len > typed.len and std.mem.startsWith(u8, name, typed)) {
+                self.ghost.appendSlice(self.gpa, name[typed.len..]) catch {};
+                return;
+            }
+        }
     }
 
     /// Editing mid-browse updates the history filter to the new line but keeps
@@ -8163,7 +8222,28 @@ pub const Editor = struct {
             const room = if (cols > prompt.len) cols - prompt.len else 0;
             const shown = @min(self.cmd.items.len, room);
             try self.emitSanitized(self.cmd.items[0..shown]);
-            try self.emitSpaces(room - shown);
+            var pad = room - shown;
+            // Inline suggestion: the rest of the best match, dim, painted
+            // after the terminal cursor (which sits at the end of the typed
+            // text). Hidden while the wildmenu ring holds the line. Clipped
+            // to the row on codepoint boundaries, counting the cells
+            // emitSanitized actually renders (controls become a one-cell '?').
+            if (self.wild.items.len == 0 and self.ghost.items.len > 0) {
+                const ghost = self.ghost.items;
+                var gb: usize = 0; // bytes taken
+                var gc: usize = 0; // cells they render as
+                while (gb < ghost.len) {
+                    const d = unicode.decode(ghost[gb..]);
+                    const w: usize = if (isControlCp(d.cp) or invalidDecode(d)) 1 else unicode.width(d.cp);
+                    if (gc + w > pad) break;
+                    gb += d.len;
+                    gc += w;
+                }
+                try self.setFg(th.fg_dim);
+                try self.emitSanitized(ghost[0..gb]);
+                pad -= gc;
+            }
+            try self.emitSpaces(pad);
             return;
         }
 

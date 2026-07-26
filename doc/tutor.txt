@@ -358,6 +358,12 @@
   get  :theme .  Up and Down recall earlier commands that start with
   what you have typed — try  :  then Up.
 
+  And it suggests as you type, like the fish shell: the rest of the
+  newest matching earlier command (or a command name) appears as dim
+  ghost text after the cursor.  Press Right (or End) to accept it;
+  Enter always runs only what you actually typed, so the ghost can
+  never surprise you.
+
   This tutor file has no language server, so try these keys later in a
   real source file — diagnostics appear as gutter signs on their own.
 

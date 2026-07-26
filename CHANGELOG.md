@@ -2,6 +2,25 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.13.0 - 2026-07-26
+
+### Added
+
+- Fish-style inline suggestions on the command line: as you type after `:`
+  (or `/` `?`), the rest of the newest history entry extending the typed
+  text — or, for `:`, the first matching command name — appears as dim
+  ghost text after the cursor. `Right` or `End` accepts it; `Enter` always
+  runs only what you typed, and the ghost hides while the Tab wildmenu has
+  the line. The rename prompt never ghosts. Recomputed only on edits (no
+  timers, no filesystem I/O — idle CPU stays zero) and drawn through the
+  control-byte sanitizer, so hostile history bytes stay inert.
+  `cmdline_suggestions = false` turns it off.
+
+### Fixed
+
+- A pty test that broke when the version hit 0.12.0 (its "no absolute line
+  numbers" needle matched the version string in the startup status).
+
 ## 0.12.0 - 2026-07-26
 
 ### Changed

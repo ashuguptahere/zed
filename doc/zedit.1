@@ -184,6 +184,18 @@ appear either way.
 when the server advertises formatting;
 .B :format
 formats on demand.
+.TP
+.B cmdline_suggestions
+.BR true / false
+(default true). Inline suggestions on the command line (fish\-style): the
+rest of the newest matching history entry, or a command name, appears as dim
+ghost text after the cursor;
+.B Right
+or
+.B End
+accepts it. Enter always runs only what you typed. Set
+.B false
+to turn the ghost text off.
 .SH SNIPPETS
 A completion item the server marks as a snippet expands its placeholders and
 starts a tabstop session:
@@ -599,6 +611,17 @@ and
 keep separate histories. Up/Down recall entries starting with the text
 already typed (vim's prefix filter); Down past the newest restores the typed
 line; Ctrl\-p/Ctrl\-n recall without filtering.
+.TP
+.B Right\fR/\fPEnd
+Accept the inline suggestion (fish\-style ghost text): while typing, the rest
+of the newest history entry extending the typed text \(em or, for
+.BR : ,
+the first matching command name \(em is shown dimmed after the cursor.
+Enter always runs only what you typed; the suggestion hides while the Tab
+wildmenu is open, and the rename prompt never shows one. Disable with
+.B cmdline_suggestions = false
+(see
+.BR CONFIGURATION ).
 .SH "BUFFERS & WINDOWS"
 Several files can be open at once, each with its own cursor, undo history and
 language server.

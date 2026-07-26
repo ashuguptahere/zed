@@ -358,6 +358,20 @@ pub fn run(ctx: *h.Ctx) !void {
         ctx.check("rename applied to buffer", r.textHas("const xyz = 1;"));
     }
 
+    // The rename prompt never ghosts (decision: it has no history, and
+    // command names make no sense there) — and a suggestion left over from a
+    // `:` line must not leak into it. "able was I" strictly extends the
+    // pre-filled identifier "a", so a leak would render "rename: able".
+    {
+        const r = drive(ctx, &.{
+            .{ .keys = ":able was I\x1b", .ms = 300 }, // seed ex history
+            .{ .keys = ":a\x1b", .ms = 300 }, // ghost "ble was I" shows, then Esc
+            .{ .keys = "0wgr", .ms = 500 },
+        }, "\x1b" ++ quit);
+        defer r.deinit(ctx.gpa);
+        ctx.check("rename prompt shows no ghost", r.plainHas("rename: a") and !r.plainHas("rename: able"));
+    }
+
     // Code action: ga opens a picker; Enter on the first applies its inline edit.
     {
         const r = drive(ctx, &.{ .{ .keys = "ga", .ms = 800 }, .{ .keys = "\r", .ms = 800 } }, "\x1b:wq\r");

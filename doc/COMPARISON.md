@@ -133,6 +133,7 @@ Per `/home/origo/Desktop/zed/CLAUDE.md`:
 - Live file preview in every picker (tree-sitter highlighted, independently scrollable) — Helix previews only in some pickers
 - Snippet completion with tabstops, fuzzy-ranked auto-completion, workspace-symbol search and a cross-buffer diagnostics list
 - Structural text objects from the syntax tree (`af`/`if`, `ac`/`ic`, `aa`/`ia`, `aC`/`iC`, `]f`/`[f`) — Helix's tree-sitter object set is larger, but the mechanism is there
+- Fish-style inline suggestions on the command line (history/command-name ghost text, Right/End to accept) — neither Helix nor stock Neovim ships this
 - Mouse wheel scrolling; buffer tabs along the top; a recently-opened startup screen; `:update` against the release tags
 - Remote editing over plain SSH (`ssh://host/path`) with nothing installed on the far side — neither Helix nor stock Neovim does this
 

@@ -66,6 +66,10 @@ pub const Settings = struct {
     /// (skipped when no server is running or it cannot format). AstroNvim and
     /// Helix both format on save by default; `:format` formats on demand.
     format_on_save: bool = true,
+    /// Fish-style inline suggestion on the command line: the rest of the
+    /// newest matching history entry (or a command name) shown as dim ghost
+    /// text after the cursor; Right/End accepts it. False turns it off.
+    cmdline_suggestions: bool = true,
 };
 
 /// The live settings, read by the editor/renderer. Defaults apply when there
@@ -156,6 +160,12 @@ pub const default_text =
     \\# advertises formatting; :format always formats on demand.
     \\format_on_save = true
     \\
+    \\# Inline suggestions on the command line (fish-style): the rest of the
+    \\# newest matching history entry, or a command name, appears as dim ghost
+    \\# text after the cursor; Right or End accepts it. Enter always runs only
+    \\# what you typed. Set false to turn the ghost text off.
+    \\cmdline_suggestions = true
+    \\
 ;
 
 /// "true"/"false" → the bool; anything else is null (setting left untouched).
@@ -214,6 +224,8 @@ pub fn apply(text: []const u8) void {
             if (parseBool(value)) |b| settings.inline_diagnostics = b;
         } else if (std.mem.eql(u8, key, "format_on_save")) {
             if (parseBool(value)) |b| settings.format_on_save = b;
+        } else if (std.mem.eql(u8, key, "cmdline_suggestions")) {
+            if (parseBool(value)) |b| settings.cmdline_suggestions = b;
         }
     }
 }

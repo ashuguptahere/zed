@@ -173,7 +173,10 @@ pub fn run(ctx: *h.Ctx) !void {
         var s2 = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "many.txt" }, .cwd = dir, .term = "xterm-256color" });
         defer s2.finish();
         s2.drain(500);
-        ctx.check("relative numbers by default", s2.containsPlain(ctx.gpa, "11") and !s2.containsPlain(ctx.gpa, "12"));
+        // Match gutter+text ("11 x"), not a bare "11"/"12": the startup status
+        // shows the version ("zedit 0.12.0 — …"), whose digits a bare needle
+        // would false-match.
+        ctx.check("relative numbers by default", s2.containsPlain(ctx.gpa, "11 x") and !s2.containsPlain(ctx.gpa, "12 x"));
         s2.send(":q!\r");
         s2.drain(200);
     }
