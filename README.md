@@ -107,8 +107,10 @@
   (config `buffer_tabs = false` removes the row and puts the filename back in
   the statusline)
 - **Git diff views**: `Space g d` inline unified diff (coloured +/- lines) in
-  a split, `Space g s` the index version side by side with changed/added/
-  removed lines tinted vimdiff-style in both panes — plus the always-on
+  a split, `Space g s` the index version side by side — panes row-aligned with
+  tinted filler rows (VS Code-style), scrolled in lockstep, changed/added/
+  removed lines tinted vimdiff-style, the index pane read-only, focus staying
+  on your file; either key pressed again closes its view — plus the always-on
   gutter change signs
 - **Themes**: `tokyonight` (default), `gruvbox`, `catppuccin`, `nord`,
   `onedark` — set in the config, switch live with `:theme <name>` or `Space f t`

@@ -423,12 +423,31 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   (worktree vs index) in a horizontal split, coloured by the `.diff` lexer
   (`+` green, `-` red, `@@` hunk headers); `Space g s` / `:vdiff` opens the
   index version side by side in a vertical split with normal syntax
-  highlighting — the same base the gutter signs compare against — and both
-  panes tint changed/added/removed lines vimdiff-style (25% of the git
-  add/change/delete colour blended into the theme background via `mixColor`;
-  the index pane carries old-side signs from `git.computeOldSide`). Both are
-  named scratch buffers (`[diff] name`, `name (index)`) closable with
-  `:close`/`Space c`.
+  highlighting — the same base the gutter signs compare against. Focus stays
+  on the **worktree pane** (the file you edit); the index pane is a
+  **read-only snapshot** (any mutating command answers "index snapshot is
+  read-only", so it can never go dirty, block `:q`/`:qa`, or be written out
+  with `:w <name>`). The panes are **row-aligned** through the diff's hunk
+  pairs (`git.computeHunks`; one `git diff` feeds alignment and both panes'
+  tint rows via `git.signsFromHunks`): where one side has lines the other
+  lacks, the shorter side renders virtual **filler rows** — tinted git-add in
+  the index pane, git-delete in the worktree pane, blank gutter, in no
+  buffer, never under the cursor — so matching text sits level, VS Code
+  style. Both panes **scroll in lockstep**: the unfocused pane's top is
+  derived from the focused pane's top through the alignment map every frame
+  (`syncDiffPanes`, which also pulls that pane's bookmarked cursor into the
+  synced view so focusing it later never yanks the pair to a stale row), wheel
+  and `Ctrl-d/u/f/b` included; crossing the pair with `Ctrl-w w` lands the
+  cursor on the aligned row, and opening the view keeps the cursor where the
+  user was. Soft wrap is forced
+  off inside a visible pair (a wrapped line would break row alignment;
+  horizontal scrolling still works there). Changed/added/removed lines tint
+  vimdiff-style in both panes (25% of the git colour into the theme
+  background via `mixColor`). Pressing the key again — from either pane —
+  **toggles the view closed** (windows and scratch doc both; `Space g d`
+  toggles the inline diff the same way), and a file with no changes reports
+  "no changes" instead of opening a split. The alignment reflects the file as
+  last saved, like the gutter signs; both refresh on `:w`.
 - **Startup screen:** launched with no file, zedit shows the recently-opened
   list (files and directories, newest first) with the leaf name first and the
   location dimmed and middle-elided. `j`/`k` or arrows select, `Enter` opens,
@@ -710,11 +729,15 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   wheel + tab clicks only (no click-to-move-cursor or drag selection).
 - The sidebar tree is flat-file only (no rename/create/delete operations from
   the tree), rebuilt on expand/toggle rather than watched (reveal-on-switch
-  rebuilds only when it has to expand an ancestor); the side-by-side
-  diff tints changed lines in both panes but has no aligned filler lines or
-  synced scrolling like vimdiff. The inline diff buffer is a static snapshot.
-  Mouse support is wheel-scrolling only (no click-to-move or drag selection),
-  and the wheel scrolls the focused window, not the one under the pointer.
+  rebuilds only when it has to expand an ancestor). The side-by-side diff's
+  alignment and tints reflect the file as last *saved* (they refresh on `:w`,
+  like the gutter signs — unsaved edits shift rows until then), the index
+  pane's tree-sitter highlighting covers only the viewport it last had focus
+  in (lockstep-scrolled rows beyond it render plain until refocused), and the
+  inline diff buffer is a static, editable snapshot (only the index pane is
+  read-only). Mouse support is wheel-scrolling only (no click-to-move or drag
+  selection), and the wheel scrolls the focused window, not the one under the
+  pointer.
 - Remote editing is whole-file over ssh: every read/write moves the entire file
   (no partial or incremental transfer), there is no remote LSP/tree-sitter
   beyond what the local process computes on the fetched text, no remote git

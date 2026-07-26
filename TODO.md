@@ -202,3 +202,20 @@ The shortlist is done; these are the next-highest gaps from
       width clip that shifted the bar when a message held an em dash, and a
       crash opening the sidebar under 18 columns with `buffer_tabs = false`
       (the "EXPLORER" header assumed 9 columns; it now clips).
+- [x] Side-by-side diff rework (owner request): focus stays on the worktree
+      pane, the index snapshot is read-only ("index snapshot is read-only";
+      kills the dirty-scratch-blocks-`:qa` and `:w <name>` foot-guns),
+      VS Code-style row alignment via `git.computeHunks` (one `git diff`
+      feeds hunks + both sign maps) with tinted virtual filler rows (git-add
+      in the index pane, git-delete in the worktree pane, blank gutter),
+      lockstep scrolling derived through the alignment map every frame (wrap
+      forced off in a visible pair), aligned-cursor `Ctrl-w w`, and
+      `Space g s`/`Space g d` toggling their views closed from either pane
+      ("no changes" instead of an empty split). Review round fixed: opening
+      the view no longer yanks the cursor to the top, entering a pane from a
+      third window pulls its stale cursor into the synced view instead of
+      yanking the pair, `:bd` on the compared file strips the orphaned
+      snapshot's alignment/tint state, and a malformed zero-start hunk header
+      saturates instead of underflowing. 31 pty checks (edge hunks at line
+      1/EOF, untracked file, third-window focus among them) + hunk/alignment
+      unit tests incl. malformed headers.

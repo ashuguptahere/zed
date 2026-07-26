@@ -498,8 +498,18 @@ saves them).
 .B Space g d\fR, \fPSpace g s
 Git: unified diff of the current file in a split (also
 .BR :diff ),
-and the index version side by side (changed lines tinted in both panes) (also
+and the index version side by side (also
 .BR :vdiff ).
+In the side\-by\-side view focus stays on the worktree pane (the file you
+edit), the cursor keeps its place, and the index pane is a read\-only
+snapshot. The panes are row\-aligned:
+where one side has lines the other lacks, the shorter side shows tinted
+virtual filler rows (green for additions, red for deletions; changed lines
+are tinted in both panes), and the two panes scroll as one. Soft wrap is off
+inside the paired panes \(em a wrapped line would break the row alignment;
+horizontal scrolling still works there. Pressing either key again \(em from
+either pane \(em closes its view; a file with no changes reports so instead
+of opening an empty split.
 .TP
 .B Space e
 Toggle the file-tree explorer. Its header lives in the title bar; while the

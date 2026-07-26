@@ -2,7 +2,41 @@
 
 Notable changes to zedit. Dates are commit dates.
 
-## 0.11.0 - 2026-07-26
+## 0.12.0 - 2026-07-26
+
+### Changed
+
+- The side-by-side git diff (`Space g s` / `:vdiff`) was reworked into a real
+  two-pane diff view:
+  - **Focus stays on the worktree pane** — the file you edit — instead of the
+    index snapshot.
+  - The index pane is **read-only**: every buffer-mutating command (operators,
+    insert, paste, undo, `:s`, `:w <name>`, …) answers "index snapshot is
+    read-only" and does nothing, so the snapshot can never be edited into
+    lying, go dirty and block `:q`/`:qa`, or be written out to a file.
+  - The panes are **row-aligned, VS Code-style**: one `git diff` provides the
+    hunk pairs (`git.computeHunks`; the gutter-sign maps now derive from the
+    same parse), and where one side has lines the other lacks, the shorter
+    side renders virtual **filler rows** — tinted with the git-add colour in
+    the index pane (additions) and git-delete in the worktree pane
+    (deletions), blank gutter, in no buffer, never under the cursor — so
+    matching text sits level across the panes.
+  - The panes **scroll in lockstep**: the unfocused pane's viewport derives
+    from the focused one through the alignment map every frame — wheel,
+    `Ctrl-d/u/f/b`, everything — and `Ctrl-w w` across the pair lands the
+    cursor on the aligned row. Opening the view keeps the cursor (and
+    viewport) where it was, entering a pane from a third window pulls its
+    bookmarked cursor into the synced view instead of yanking the pair to a
+    stale row, and `:bd` on the compared file turns the leftover snapshot
+    into an ordinary scratch (alignment and tint rows dropped). Soft wrap is
+    forced off inside a visible pair (a wrapped line would shear the row
+    alignment; horizontal scrolling still works there).
+  - `Space g s` (and `:vdiff`) **toggles**: pressed again — from either pane,
+    even after `:close` left the scratch lingering — it closes the split *and*
+    destroys the snapshot. `Space g d` / `:diff` toggles the inline diff the
+    same way. A file with no changes reports "no changes" instead of opening
+    a split.
+  - Alignment and tints refresh when the file is saved, like the gutter signs.
 
 ### Added
 

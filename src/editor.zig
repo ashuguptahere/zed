@@ -187,6 +187,7 @@ const Doc = struct {
     buf: buffer.Buffer,
     name: ?[]u8 = null, // display name for scratch buffers (buf.path == null)
     diff_of: ?*Doc = null, // side-by-side index snapshot: the worktree doc it mirrors
+    diff_hunks: []git.Hunk = &.{}, // set on the index snapshot: aligns the pair's panes
     lang: syntax.Language,
     history: undo.History,
     marks: [26]?Pos = [_]?Pos{null} ** 26,
@@ -242,6 +243,7 @@ const View = struct {
     left: usize,
     gutter: usize,
     cols: usize, // text width = gw - gutter
+    wrap: bool, // soft wrap (off for diff-pair panes: it breaks row alignment)
 };
 
 pub const Editor = struct {
@@ -491,6 +493,7 @@ pub const Editor = struct {
 
     fn freeDocState(doc: *Doc, gpa: Allocator) void {
         if (doc.name) |n| gpa.free(n);
+        gpa.free(doc.diff_hunks);
         doc.history.deinit();
         doc.git_signs.deinit();
         if (doc.ts) |*t| t.deinit();
@@ -743,6 +746,7 @@ pub const Editor = struct {
         self.paste_carry_len = 0;
         self.comp_open = false;
         self.sig_open = false;
+        if (self.d.diff_of != null) return; // read-only: pasteInsert refuses too
         switch (self.mode) {
             .normal, .insert, .visual, .visual_line, .visual_block => self.pushUndo(),
             else => {},
@@ -814,6 +818,7 @@ pub const Editor = struct {
                 self.onQueryChange();
             },
             else => {
+                if (self.rejectReadOnly()) return;
                 var i: usize = 0;
                 while (i < bytes.len) {
                     const nl = std.mem.indexOfScalarPos(u8, bytes, i, '\n') orelse bytes.len;
@@ -1464,6 +1469,7 @@ pub const Editor = struct {
     }
 
     fn surroundAdd(self: *Editor, c: u8) !void {
+        if (self.rejectReadOnly()) return;
         const span = self.surr_span orelse return;
         self.surr_span = null;
         const pair = surroundPair(c) orelse return;
@@ -1474,6 +1480,7 @@ pub const Editor = struct {
     }
 
     fn surroundDelete(self: *Editor, c: u8) !void {
+        if (self.rejectReadOnly()) return;
         const sp = self.findSurroundSpan(c) orelse {
             self.setStatus("no surrounding pair", .{});
             return;
@@ -1487,6 +1494,7 @@ pub const Editor = struct {
     }
 
     fn surroundChange(self: *Editor, from: u8, to: u8) !void {
+        if (self.rejectReadOnly()) return;
         const sp = self.findSurroundSpan(from) orelse {
             self.setStatus("no surrounding pair", .{});
             return;
@@ -1892,6 +1900,7 @@ pub const Editor = struct {
     // === operator application ==============================================
 
     fn applyOperator(self: *Editor, op: Operator, span: Span) void {
+        if (op != .yank and self.rejectReadOnly()) return;
         switch (op) {
             .indent_right => return self.indent(span, true),
             .indent_left => return self.indent(span, false),
@@ -2047,6 +2056,7 @@ pub const Editor = struct {
     // === immediate edits ===================================================
 
     fn deleteChars(self: *Editor, n: usize, forward: bool) !void {
+        if (self.rejectReadOnly()) return;
         const line = self.curLine();
         if (forward) {
             if (self.cx >= line.len) {
@@ -2081,6 +2091,7 @@ pub const Editor = struct {
     }
 
     fn changeToLineEnd(self: *Editor, change: bool) !void {
+        if (self.rejectReadOnly()) return;
         const line = self.curLine();
         const span: Span = .{ .lines = false, .start = .{ .row = self.cy, .col = self.cx }, .end = .{ .row = self.cy, .col = line.len } };
         try self.charwiseDelete(span);
@@ -2101,11 +2112,13 @@ pub const Editor = struct {
     }
 
     fn substituteChars(self: *Editor, n: usize) !void {
+        if (self.rejectReadOnly()) return;
         try self.deleteChars(n, true);
         self.mode = .insert;
     }
 
     fn replaceChars(self: *Editor, k: key.Key) !void {
+        if (self.rejectReadOnly()) return;
         defer self.resetPending();
         const ch = charOf(k) orelse return;
         const n = self.eff();
@@ -2133,6 +2146,7 @@ pub const Editor = struct {
     }
 
     fn toggleCase(self: *Editor, n: usize) !void {
+        if (self.rejectReadOnly()) return;
         self.pushUndo();
         var i: usize = 0;
         while (i < n) : (i += 1) {
@@ -2154,6 +2168,7 @@ pub const Editor = struct {
     }
 
     fn joinLines(self: *Editor, count: usize) !void {
+        if (self.rejectReadOnly()) return;
         const joins = if (count > 1) count - 1 else 1;
         self.pushUndo();
         var i: usize = 0;
@@ -2178,6 +2193,7 @@ pub const Editor = struct {
     }
 
     fn paste(self: *Editor, after: bool) !void {
+        if (self.rejectReadOnly()) return;
         const reg = self.registers.get(self.pending_register) orelse {
             self.resetPending();
             return;
@@ -2242,6 +2258,7 @@ pub const Editor = struct {
     // === insert / open =====================================================
 
     fn enterInsert(self: *Editor, pos: Pos) !void {
+        if (self.rejectReadOnly()) return;
         self.pushUndo();
         self.setCursor(pos);
         self.mode = .insert;
@@ -2249,6 +2266,7 @@ pub const Editor = struct {
     }
 
     fn openLine(self: *Editor, below: bool) !void {
+        if (self.rejectReadOnly()) return;
         self.pushUndo();
         const inherit = if (config.settings.autoindent) leadingIndent(self.curLine()) else "";
         self.setAutoIndent(self.cy, inherit); // copy before the insert shifts rows
@@ -2641,6 +2659,7 @@ pub const Editor = struct {
     /// Visual-mode `U`/`u`/`~`: set or toggle the case of the selection
     /// (charwise and linewise; ASCII, like `~` in normal mode).
     fn visualCase(self: *Editor, how: enum { upper, lower, toggle }) !void {
+        if (self.rejectReadOnly()) return;
         self.pushUndo();
         const linewise = self.mode == .visual_line;
         var start = self.vstart;
@@ -2723,6 +2742,7 @@ pub const Editor = struct {
     }
 
     fn blockDelete(self: *Editor) !void {
+        if (self.rejectReadOnly()) return;
         const r = self.blockCols();
         self.pushUndo();
         var i = r.top;
@@ -2760,6 +2780,7 @@ pub const Editor = struct {
     /// Block insert/append: place a caret at the left/right edge of every row in
     /// the block, then enter multi-cursor insert (typing replicates to all rows).
     fn blockInsert(self: *Editor, at_right: bool) !void {
+        if (self.rejectReadOnly()) return;
         const r = self.blockCols();
         const dc = if (at_right) r.right + 1 else r.left;
         self.clearExtra();
@@ -2774,6 +2795,7 @@ pub const Editor = struct {
     }
 
     fn blockChange(self: *Editor) !void {
+        if (self.rejectReadOnly()) return;
         const r = self.blockCols();
         try self.blockDelete(); // sets cursor to (top, left); pushes undo
         self.cy = r.top;
@@ -2938,6 +2960,7 @@ pub const Editor = struct {
     }
 
     fn multiX(self: *Editor) !void {
+        if (self.rejectReadOnly()) return;
         self.pushUndo();
         if (self.cx < self.curLine().len) try self.buf.deleteForward(self.cy, self.cx);
         for (self.extra.items) |*e| {
@@ -2951,6 +2974,7 @@ pub const Editor = struct {
     }
 
     fn enterInsertMulti(self: *Editor, place: Place) !void {
+        if (self.rejectReadOnly()) return;
         self.pushUndo();
         self.cx = self.insertCol(self.cy, self.cx, place);
         for (self.extra.items) |*e| e.col = self.insertCol(e.row, e.col, place);
@@ -3725,6 +3749,8 @@ pub const Editor = struct {
     /// Move focus to window `w`, swapping its document in if different.
     fn focusWin(self: *Editor, w: *Win) void {
         if (w == self.cur) return;
+        const prev = self.cur;
+        const prev_cy = self.cy;
         self.saveViewport();
         self.loadDoc(w.doc);
         self.cur = w;
@@ -3732,6 +3758,19 @@ pub const Editor = struct {
         self.comp_open = false;
         self.sig_open = false;
         self.clearExtra();
+        // Crossing a diff pair lands the cursor on the row aligned with where
+        // it was (vimdiff's cursorbind) — not on the pane's stale own cursor,
+        // which would yank both lockstepped panes to wherever that was.
+        if (self.diffPairOf(w)) |p| {
+            const partner = if (w == p.wt) p.ix else p.wt;
+            if (partner == prev) {
+                const d = git.displayRow(p.hunks, partner == p.wt, prev_cy);
+                self.cy = @min(git.rowAtOrAfter(p.hunks, w == p.wt, d), self.buf.lineCount() - 1);
+                self.cx = 0;
+                self.goal_col = 0;
+                self.clampCursor();
+            }
+        }
     }
 
     fn nextWindow(self: *Editor, forward: bool) void {
@@ -4450,9 +4489,9 @@ pub const Editor = struct {
     /// Every completable command, by its full name (all are also accepted
     /// spelled out by execEx; the short forms still work typed by hand).
     const command_names = [_][]const u8{
-        "bdelete", "bnext",  "bprevious", "buffers", "close",  "diff",     "earlier",
-        "edit",    "format", "later",     "ls",      "only",   "quit",     "quitall",
-        "split",   "theme",  "undolist",  "vdiff",   "vsplit", "wall",     "wq",
+        "bdelete", "bnext",  "bprevious", "buffers", "close",  "diff", "earlier",
+        "edit",    "format", "later",     "ls",      "only",   "quit", "quitall",
+        "split",   "theme",  "undolist",  "vdiff",   "vsplit", "wall", "wq",
         "write",   "x",
     };
 
@@ -4671,6 +4710,7 @@ pub const Editor = struct {
     /// Apply a parsed `:s` as a single undoable change. The replacement
     /// understands `&` (whole match), `\1`-`\9` (groups), `\\`, `\&` and `\/`.
     fn doSubstitute(self: *Editor, sub: Substitute) void {
+        if (self.rejectReadOnly()) return;
         var re = regex.Regex.compile(self.gpa, sub.pat, sub.icase) catch {
             self.setStatus("invalid pattern: {s}", .{sub.pat});
             return;
@@ -4753,6 +4793,10 @@ pub const Editor = struct {
     }
 
     fn write(self: *Editor, arg: []const u8) !bool {
+        if (self.d.diff_of != null) { // includes `:w <name>`: never write the snapshot out
+            self.setStatus("index snapshot is read-only", .{});
+            return false;
+        }
         self.formatBeforeSave();
         if (arg.len > 0) try self.buf.setPath(arg);
         self.buf.save(self.io) catch |err| switch (err) {
@@ -4838,9 +4882,25 @@ pub const Editor = struct {
         for (self.wins.items) |w| {
             if (w.doc == victim) w.doc = repl;
         }
+        self.destroyDoc(victim);
+        self.clearExtra();
+        self.placeAt(self.cy);
+        self.setStatus("{s}", .{docLabel(self.d)});
+    }
+
+    /// Remove `victim` from the open documents and free it. Every window (and
+    /// the focus) must already point elsewhere.
+    fn destroyDoc(self: *Editor, victim: *Doc) void {
         _ = self.docs.orderedRemove(self.docIndex(victim));
         for (self.docs.items) |doc| {
-            if (doc.diff_of == victim) doc.diff_of = null;
+            if (doc.diff_of != victim) continue;
+            // The orphaned snapshot is an ordinary scratch now: drop the
+            // pair's alignment and its old-side tint rows (which live in the
+            // mirror while the snapshot is the active doc).
+            doc.diff_of = null;
+            self.gpa.free(doc.diff_hunks);
+            doc.diff_hunks = &.{};
+            if (doc == self.d) self.git_signs.clearRetainingCapacity() else doc.git_signs.clearRetainingCapacity();
         }
         var ji: usize = 0;
         while (ji < self.jumps.items.len) {
@@ -4853,9 +4913,6 @@ pub const Editor = struct {
         victim.buf.deinit();
         freeDocState(victim, self.gpa);
         self.gpa.destroy(victim);
-        self.clearExtra();
-        self.placeAt(self.cy);
-        self.setStatus("{s}", .{docLabel(self.d)});
     }
 
     // === undo / macros / dot ===============================================
@@ -4865,12 +4922,32 @@ pub const Editor = struct {
         self.change_started = true;
     }
 
+    /// The side-by-side index snapshot is read-only: it mirrors repository
+    /// state, and edits would desync the pair's alignment (and leave a dirty
+    /// scratch blocking `:q`). Every buffer-mutating command calls this first;
+    /// true means the command was refused and reported.
+    fn rejectReadOnly(self: *Editor) bool {
+        if (self.d.diff_of == null) return false;
+        self.setStatus("index snapshot is read-only", .{});
+        self.resetPending();
+        return true;
+    }
+
     /// Recompute the git change signs for the current file (best-effort).
     fn refreshGit(self: *Editor) void {
         if (self.isLargeFile()) return;
         if (self.buf.path) |p| {
             git.compute(self.gpa, self.io, p, &self.git_signs);
-        } else {
+            // A saved worktree file re-aligns its open side-by-side view: the
+            // snapshot's hunks and tint rows follow the same diff the gutter
+            // signs just did.
+            for (self.docs.items) |doc| {
+                if (doc.diff_of != self.d) continue;
+                self.gpa.free(doc.diff_hunks);
+                doc.diff_hunks = git.computeHunks(self.gpa, self.io, p);
+                git.signsFromHunks(doc.diff_hunks, false, &doc.git_signs);
+            }
+        } else if (self.d.diff_of == null) {
             self.git_signs.clearRetainingCapacity();
         }
     }
@@ -5790,6 +5867,7 @@ pub const Editor = struct {
     }
 
     fn undoChange(self: *Editor) void {
+        if (self.rejectReadOnly()) return;
         if (!self.history.undo(self.buf, &self.cy, &self.cx)) self.setStatus("already at oldest change", .{});
         self.clampCursor();
         self.updateGoal();
@@ -5797,6 +5875,7 @@ pub const Editor = struct {
     }
 
     fn redoChange(self: *Editor) void {
+        if (self.rejectReadOnly()) return;
         if (!self.history.redo(self.buf, &self.cy, &self.cx)) self.setStatus("already at newest change", .{});
         self.clampCursor();
         self.updateGoal();
@@ -5852,6 +5931,7 @@ pub const Editor = struct {
     /// the states in the order they were made, across branches. This is how a
     /// change stranded by an undo-then-edit is reached again.
     fn timeTravel(self: *Editor, count: usize, back: bool) void {
+        if (self.rejectReadOnly()) return;
         const moved = self.history.travel(self.buf, &self.cy, &self.cx, count, back);
         if (moved == 0) {
             self.setStatus("already at {s} change", .{if (back) "oldest" else "newest"});
@@ -5863,6 +5943,7 @@ pub const Editor = struct {
 
     /// `:earlier 10s` / `:later 2m`: the same, counted in time.
     fn timeTravelSpan(self: *Editor, ms: i64, back: bool) void {
+        if (self.rejectReadOnly()) return;
         if (self.history.travelTime(self.buf, &self.cy, &self.cx, ms, back)) {
             self.setStatus("moved {s} {d}s", .{ if (back) "back" else "forward", @divTrunc(ms, 1000) });
         } else {
@@ -6073,8 +6154,8 @@ pub const Editor = struct {
     /// row instead of scrolling the view sideways (vim's `wrap`). The top of a
     /// window is always the start of a buffer line, which is also nvim's
     /// default — partial scrolling of a tall line is its `smoothscroll`.
-    fn wrapping(_: *Editor) bool {
-        return config.settings.soft_wrap;
+    fn wrapping(self: *Editor) bool {
+        return self.winWrap(self.cur);
     }
 
     /// The most screen rows one buffer line may occupy. Bounds the layout scan
@@ -6203,6 +6284,11 @@ pub const Editor = struct {
     /// (clamped to the last line) — what `H`, `M` and `L` count in.
     fn lineAtScreenRow(self: *Editor, n: usize) usize {
         const last = self.buf.lineCount() - 1;
+        if (self.diffPairOf(self.cur)) |p| { // skip over this pane's filler rows
+            const new_side = self.cur == p.wt;
+            const dtop = git.displayRow(p.hunks, new_side, self.top);
+            return @min(git.rowAtOrAfter(p.hunks, new_side, dtop + n), last);
+        }
         if (!self.wrapping()) return @min(self.top + n, last);
         var row = self.top;
         var used: usize = 0;
@@ -6217,6 +6303,10 @@ pub const Editor = struct {
 
     /// Screen rows from the top of the window to the cursor.
     fn cursorScreenRow(self: *Editor) usize {
+        if (self.diffPairOf(self.cur)) |p| { // count the pane's filler rows too
+            const new_side = self.cur == p.wt;
+            return git.displayRow(p.hunks, new_side, self.cy) -| git.displayRow(p.hunks, new_side, self.top);
+        }
         if (!self.wrapping()) return self.cy -| self.top;
         var used: usize = 0;
         var row = self.top;
@@ -6237,6 +6327,7 @@ pub const Editor = struct {
     /// mid-screen, not glued to the bottom row where every wheel notch would
     /// drag it along.
     fn scroll(self: *Editor) void {
+        if (self.diffPairOf(self.cur)) |p| return self.scrollDiffPane(p);
         if (self.wrapping()) return self.scrollWrapped();
         const rows = self.textRows();
         const half = rows / 2;
@@ -6246,7 +6337,30 @@ pub const Editor = struct {
             const bot = self.top + rows - 1;
             self.top = if (self.cy - bot > half) self.centredTop(rows) else self.cy - rows + 1;
         }
+        self.scrollHorizontal();
+    }
 
+    /// The same rule counted in aligned display rows: a diff pane's screen
+    /// rows include its partner's filler rows, so keeping the cursor visible
+    /// means keeping its *display* row inside the window.
+    fn scrollDiffPane(self: *Editor, p: DiffPair) void {
+        const new_side = self.cur == p.wt;
+        const rows = self.textRows();
+        const half = rows / 2;
+        const dcy = git.displayRow(p.hunks, new_side, self.cy);
+        const dtop = git.displayRow(p.hunks, new_side, self.top);
+        if (dcy < dtop) {
+            const want = if (dtop - dcy > half) dcy -| (rows -| 1) / 2 else dcy;
+            self.top = git.rowAtOrAfter(p.hunks, new_side, want);
+        } else if (dcy >= dtop + rows) {
+            const bot = dtop + rows - 1;
+            const want = if (dcy - bot > half) dcy -| (rows -| 1) / 2 else dcy - rows + 1;
+            self.top = git.rowAtOrAfter(p.hunks, new_side, want);
+        }
+        self.scrollHorizontal();
+    }
+
+    fn scrollHorizontal(self: *Editor) void {
         const cols = self.textCols();
         const cur = displayCol(self.curLine(), self.cx) + self.inlayCols(self.cy, self.cx);
         if (cur < self.left) self.left = cur;
@@ -6278,8 +6392,24 @@ pub const Editor = struct {
 
     /// `Space g d` / `:diff`: the current file's unified diff (worktree vs
     /// index) in a horizontal split, highlighted by the `.diff` lexer.
+    /// Pressed again — for the same file, or inside the diff itself — it
+    /// closes the view (split and scratch both).
     fn gitDiffInline(self: *Editor) void {
-        const path = self.buf.path orelse return self.setStatus("no file to diff", .{});
+        const path = self.buf.path orelse {
+            // Inside the inline diff scratch itself: toggle it closed.
+            if (self.d.name) |n| if (std.mem.startsWith(u8, n, "[diff] ")) {
+                for (self.docs.items) |doc| {
+                    if (doc != self.d) return self.closeDiffScratch(self.d, doc);
+                }
+            };
+            return self.setStatus("no file to diff", .{});
+        };
+        var nb: [300]u8 = undefined;
+        const label = std.fmt.bufPrint(&nb, "[diff] {s}", .{std.fs.path.basename(path)}) catch "[diff]";
+        for (self.docs.items) |doc| { // toggle: this file's diff is already open
+            if (doc.buf.path == null and doc.name != null and std.mem.eql(u8, doc.name.?, label))
+                return self.closeDiffScratch(doc, self.d);
+        }
         const res = std.process.run(self.gpa, self.io, .{
             .argv = &.{ "git", "diff", "--no-color", "--", path },
             .stdout_limit = .limited(8 << 20),
@@ -6292,14 +6422,22 @@ pub const Editor = struct {
             else => return,
         }
         if (std.mem.trim(u8, res.stdout, " \t\r\n").len == 0) return self.setStatus("no changes", .{});
-        var nb: [300]u8 = undefined;
-        const label = std.fmt.bufPrint(&nb, "[diff] {s}", .{std.fs.path.basename(path)}) catch "[diff]";
         self.openScratch(label, res.stdout, .diff, false);
     }
 
     /// `Space g s` / `:vdiff`: the file's index (staged) version side by side
     /// with the working copy — the same base the gutter signs compare against.
+    /// Focus stays on the worktree pane (the file you edit); the index pane is
+    /// a read-only snapshot. Pressed again — from either pane — it closes the
+    /// view. The panes are row-aligned through the diff's hunks (see
+    /// `renderWindow`) and scroll in lockstep.
     fn gitDiffSide(self: *Editor) void {
+        // Toggle: this file's pair is already open (or its scratch lingers
+        // from a closed window) — close it instead, from whichever side.
+        if (self.d.diff_of) |wt| return self.closeDiffScratch(self.d, wt);
+        for (self.docs.items) |doc| {
+            if (doc.diff_of == self.d) return self.closeDiffScratch(doc, self.d);
+        }
         const path = self.buf.path orelse return self.setStatus("no file to diff", .{});
         var sb: [300]u8 = undefined;
         const spec = std.fmt.bufPrint(&sb, ":./{s}", .{path}) catch return;
@@ -6314,16 +6452,66 @@ pub const Editor = struct {
             .exited => |code| if (code != 0) return self.setStatus("file is not tracked by git", .{}),
             else => return,
         }
+        // One `git diff` feeds the row alignment and both panes' tint rows.
+        const hunks = git.computeHunks(self.gpa, self.io, path);
+        if (hunks.len == 0) {
+            self.gpa.free(hunks);
+            return self.setStatus("no changes", .{});
+        }
         var nb: [300]u8 = undefined;
         const label = std.fmt.bufPrint(&nb, "{s} (index)", .{std.fs.path.basename(path)}) catch "(index)";
         const wt = self.d; // the worktree document being compared
+        const wt_win = self.cur;
         self.openScratch(label, res.stdout, syntax.detect(path), true);
-        if (self.d != wt) { // openScratch focused the new index pane
-            self.d.diff_of = wt;
-            // Old-side change rows tint the index pane; the worktree pane
-            // reuses its normal gutter signs.
-            git.computeOldSide(self.gpa, self.io, path, &self.git_signs);
+        if (self.d == wt) { // scratch failed to open
+            self.gpa.free(hunks);
+            return;
         }
+        self.d.diff_of = wt;
+        self.d.diff_hunks = hunks;
+        // Old-side change rows tint the index pane; the worktree pane reuses
+        // its normal gutter signs (same hunks, new side).
+        git.signsFromHunks(hunks, false, &self.git_signs);
+        self.focusWin(wt_win); // the worktree pane is the one you edit
+        // focusWin's pair-crossing remap mapped the cursor from the fresh
+        // scratch (row 0) — put it back where the user actually was: opening
+        // the view must not move their place in the file.
+        self.cy = wt_win.cy;
+        self.cx = wt_win.cx;
+        self.goal_col = wt_win.goal_col;
+    }
+
+    /// The toggle's close half: remove every window showing a diff scratch
+    /// *and* destroy the scratch document — the two halves `:close` and
+    /// `Space c` each do alone. `wt` is what a window that cannot be removed
+    /// (the last one) shows instead.
+    fn closeDiffScratch(self: *Editor, scratch: *Doc, wt: *Doc) void {
+        var i: usize = 0;
+        while (i < self.wins.items.len) {
+            const w = self.wins.items[i];
+            if (w.doc != scratch) {
+                i += 1;
+                continue;
+            }
+            if (self.wins.items.len == 1) { // the only window: show the file instead
+                self.focusWin(w);
+                self.focusDoc(wt);
+                break;
+            }
+            _ = self.wins.orderedRemove(i);
+            if (self.cur == w) {
+                const target = self.wins.items[if (i < self.wins.items.len) i else i - 1];
+                self.cur = target;
+                self.loadDoc(target.doc);
+                self.loadViewport();
+            }
+            self.gpa.destroy(w);
+        }
+        if (self.d == scratch) self.focusDoc(wt);
+        self.destroyDoc(scratch);
+        self.clearExtra();
+        self.clampCursor();
+        self.setStatus("diff closed", .{});
     }
 
     /// Open `content` as a named scratch document in a new split (vertical or
@@ -6666,6 +6854,7 @@ pub const Editor = struct {
         const g = gutterFor(doc.buf.lineCount());
         const cols = if (w.gw > g) w.gw - g else 1;
         const large = docIsLarge(doc);
+        const wrap = self.winWrap(w);
         if (w == self.cur) return .{
             .buf = self.buf,
             .active = true,
@@ -6680,6 +6869,7 @@ pub const Editor = struct {
             .left = self.left,
             .gutter = g,
             .cols = cols,
+            .wrap = wrap,
         };
         return .{
             .buf = &doc.buf,
@@ -6695,6 +6885,7 @@ pub const Editor = struct {
             .left = w.left,
             .gutter = g,
             .cols = cols,
+            .wrap = wrap,
         };
     }
 
@@ -6716,11 +6907,74 @@ pub const Editor = struct {
         return false;
     }
 
+    /// A fully visible side-by-side pair: the worktree window, the index
+    /// window, and the hunks that align their rows.
+    const DiffPair = struct { wt: *Win, ix: *Win, hunks: []const git.Hunk };
+
+    /// The visible pair `w` belongs to. Null unless *both* panes are on screen
+    /// with hunks to align — a lone pane renders like any other window.
+    fn diffPairOf(self: *Editor, w: *Win) ?DiffPair {
+        if (w.doc.diff_of) |wt_doc| {
+            if (w.doc.diff_hunks.len == 0) return null;
+            if (self.cur.doc == wt_doc) return .{ .wt = self.cur, .ix = w, .hunks = w.doc.diff_hunks };
+            for (self.wins.items) |other| {
+                if (other.doc == wt_doc) return .{ .wt = other, .ix = w, .hunks = w.doc.diff_hunks };
+            }
+            return null;
+        }
+        for (self.wins.items) |other| {
+            if (other.doc.diff_of == w.doc and other.doc.diff_hunks.len > 0)
+                return .{ .wt = w, .ix = other, .hunks = other.doc.diff_hunks };
+        }
+        return null;
+    }
+
+    /// The pair's shared viewport top in aligned display-row space, derived
+    /// every frame from the focused pane (or the worktree pane when neither
+    /// side has focus) — the two panes scroll as one without duplicated state.
+    fn diffDisplayTop(self: *Editor, p: DiffPair) usize {
+        if (self.cur == p.ix) return git.displayRow(p.hunks, false, self.top);
+        if (self.cur == p.wt) return git.displayRow(p.hunks, true, self.top);
+        return git.displayRow(p.hunks, true, p.wt.top);
+    }
+
+    /// Carry the derived top back onto the unfocused pane's Win each frame, so
+    /// a later focus switch starts from where the pane actually is.
+    fn syncDiffPanes(self: *Editor) void {
+        for (self.wins.items) |w| {
+            if (w.doc.diff_of == null) continue;
+            const p = self.diffPairOf(w) orelse continue;
+            const dtop = self.diffDisplayTop(p);
+            const partner = if (self.cur == p.ix) p.wt else p.ix;
+            if (partner == self.cur) continue;
+            const lines = partner.doc.buf.lineCount();
+            partner.top = @min(git.rowAtOrAfter(p.hunks, partner == p.wt, dtop), lines - 1);
+            // Pull the pane's bookmarked cursor into the synced viewport (vim's
+            // rule for scrollbound windows): focusing it later must never yank
+            // the lockstepped pair back to a stale row.
+            const pd = git.displayRow(p.hunks, partner == p.wt, partner.cy);
+            if (pd < dtop or pd >= dtop + self.winTextRows(partner)) partner.cy = partner.top;
+        }
+    }
+
+    /// Soft wrap for window `w`: forced off while it takes part in a visible
+    /// diff pair — a wrapped line fills several screen rows and would break
+    /// the panes' row alignment (horizontal scrolling still works there).
+    fn winWrap(self: *Editor, w: *Win) bool {
+        return config.settings.soft_wrap and self.diffPairOf(w) == null;
+    }
+
     fn renderWindow(self: *Editor, w: *Win) !void {
         const th = theme.current;
         const view = self.buildView(w);
         const text_rows = self.winTextRows(w);
         const tinted = self.diffTinted(w);
+        // A visible diff pair renders in aligned display rows: each screen row
+        // resolves through the hunks to a buffer row or a virtual filler, so
+        // matching text sits level across the panes (VS Code style).
+        const pair = self.diffPairOf(w);
+        const new_side = if (pair) |p| w == p.wt else false;
+        const dtop = if (pair) |p| self.diffDisplayTop(p) else 0;
         var r: usize = 0;
         var file_row = view.top;
         // With soft wrap one buffer line can fill several screen rows, so the
@@ -6731,6 +6985,13 @@ pub const Editor = struct {
         while (r < text_rows) : (r += 1) {
             self.beginSeg(w.gy + r, w.gx);
             try self.emitFmt("\x1b[{d};{d}H", .{ w.gy + r, w.gx });
+            if (pair) |p| switch (git.slotAt(p.hunks, new_side, dtop + r)) {
+                .filler => {
+                    try self.emitFillerRow(w, new_side);
+                    continue;
+                },
+                .row => |br| file_row = br,
+            };
             if (file_row >= view.buf.lineCount()) {
                 try self.setBg(th.bg);
                 try self.setFg(th.fg_dim);
@@ -6757,7 +7018,7 @@ pub const Editor = struct {
                     view.buf.line(file_row),
                     view.cols,
                     if (is_cur) self.cursorDisplayCol() else null,
-                    self.wrapping(),
+                    view.wrap,
                     @max(1, text_rows),
                 );
                 try self.emitGutter(&view, file_row);
@@ -6770,6 +7031,16 @@ pub const Editor = struct {
             }
         }
         if (self.wins.items.len > 1) try self.emitWinStatus(w, view);
+    }
+
+    /// A virtual filler row in a diff pane: where the other side has lines
+    /// this one lacks. It lives in no buffer — blank gutter, no line number,
+    /// the cursor never lands on it — and carries the tint of the change it
+    /// stands for: git-delete on the worktree side, git-add on the index side.
+    fn emitFillerRow(self: *Editor, w: *Win, new_side: bool) !void {
+        const th = theme.current;
+        try self.setBg(mixColor(th.bg, if (new_side) th.git_delete else th.git_add, 25));
+        try self.emitSpaces(w.gw);
     }
 
     /// A per-window status line (filename + position), drawn on the window's
@@ -6932,6 +7203,7 @@ pub const Editor = struct {
         self.scroll(); // active window viewport
         self.tsUpdate(); // query the active doc's visible range (needs scrolled top)
         self.saveViewport(); // mirror back into the active Win for rendering
+        self.syncDiffPanes(); // lockstep: derive the unfocused diff pane's top
 
         if (tabsVisible()) try self.renderTitleBar();
         for (self.wins.items) |w| try self.renderWindow(w);
@@ -7686,13 +7958,13 @@ pub const Editor = struct {
         // after the indent a continuation row hangs under; otherwise the window
         // is the horizontal scroll position. Everything below clips to
         // [left, right), so this is the whole of it.
-        const pad = if (self.wrapping()) wl.pad(seg) else 0;
-        const left = if (self.wrapping()) wl.starts[seg] else view.left;
+        const pad = if (view.wrap) wl.pad(seg) else 0;
+        const left = if (view.wrap) wl.starts[seg] else view.left;
         const usable = cols - pad;
         // A row ends where the next one begins — at the word break, not at the
         // window edge — so a wrapped word is drawn once, and a `wrap_column`
         // narrower than the window is honoured.
-        const right = if (self.wrapping() and seg + 1 < wl.n) wl.starts[seg + 1] else left + usable;
+        const right = if (view.wrap and seg + 1 < wl.n) wl.starts[seg + 1] else left + usable;
         if (pad > 0) {
             try self.setBg(row_bg);
             try self.emitSpaces(pad);
