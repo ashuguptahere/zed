@@ -202,13 +202,13 @@ Ground truth: `/home/origo/Desktop/zed/CLAUDE.md` (note: the on-disk version is 
 - **neo-tree-equivalent** sidebar file explorer (navigation/open + reveal of the active file on buffer switch; no create/rename/delete, not watched)
 - **Vim core:** motions/operators/registers/marks/macros/dot-repeat, text objects (word + bracket/quote), visual char/line/block (block I/A works; block paste and short-line `A` padding are approximate), surround, incremental highlighted literal search (incsearch+hlsearch defaults)
 - **Multiple cursors** (one-per-line column editing — beyond stock Neovim)
-- **Buffers + splits:** `:e :bn :bp :bd :ls`, `:split`/`:vsplit`, `Ctrl-w` focus/close/only (flat tiling, no resize)
+- **Buffers + splits:** `:e :bn :bp :bd :bd! :ls` (vim's `:bd` rules: the last buffer becomes `[No Name]`, dirty refuses without `!`), `:split`/`:vsplit`, `Ctrl-w` focus/close/only (flat tiling, no resize)
 - **Appearance:** true-colour themes (Tokyo Night + 4 more, live-switchable), powerline statusline, relative+absolute numbers, cursorline, indent guides
 - **Config file** (`~/.config/zedit/config`) and an embedded **`--tutor`** (vimtutor equivalent)
 - **Bufferline-equivalent** powerline title bar across the top (buffer tabs — click to switch, unsaved marker — plus the explorer header), always on by default, VS Code-style
 - **Telescope-preview-equivalent** live file preview beside every picker that names a file, tree-sitter highlighted and scrollable with `Ctrl-d`/`Ctrl-u` or the wheel
 - **Alpha/dashboard-equivalent** startup screen listing recently opened files and directories
-- **Mouse wheel scrolling** (3-line step) and tab clicks; **`:update`** checks the release tags on demand
+- **Mouse wheel scrolling** (3-line step), tab clicks, explorer clicks and picker result-row clicks (select, then click-again opens); **`:update`** checks the release tags on demand
 - **Remote editing over SSH** (`ssh://host/path`, `:ssh`) with no agent on the remote host — beyond Neovim's built-in netrw/scp handling
 - Explicitly **not** yet AstroNvim-complete: no notify-style popups, no mason-style server install/management, and only the active window gets live LSP/overlay rendering.
 

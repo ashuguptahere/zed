@@ -221,4 +221,89 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send(":q!\r");
         s.drain(200);
     }
+
+    // "Modified" is the undo-state identity of the last write, not a
+    // touched-flag and not content equality. nvim ground truth (0.12.4
+    // --clean through a pty, no -c args; file "one\n" analog):
+    //   1. `x u :q`            -> `:ls` no `+`, process exited
+    //   2. `x :w rz u :q`      -> `:ls` no `+`, exited (undo *to* the write)
+    //   3. `x :w u :q`         -> `:ls` `+`, E37, alive (undo *past* it)
+    //   4. `x` retype `:q`     -> `:ls` `+`, E37, alive (content equality
+    //      does not clear modified — identity does)
+    const LEAVE_ALT = "\x1b[?1049l"; // emitted only when the editor exits
+
+    // 1. Undo back to the never-written original: clean, :q exits.
+    {
+        h.writeFile(ctx.io, path, "one\n");
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "u.txt" }, .cwd = dir, .cols = 100 });
+        defer s.finish();
+        s.drain(400);
+        s.sendKeys(&.{ "x", "u", ":q", CR });
+        s.drain(500);
+        ctx.check("undo to the loaded state lets :q exit", s.contains(LEAVE_ALT));
+    }
+
+    // 2. Undo back *to* the written state: clean, :q exits.
+    {
+        h.writeFile(ctx.io, path, "one\n");
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "u.txt" }, .cwd = dir, .cols = 100 });
+        defer s.finish();
+        s.drain(400);
+        s.sendKeys(&.{ "x", ":w", CR, "rz", "u", ":q", CR });
+        s.drain(500);
+        ctx.check("undo back to the written state lets :q exit", s.contains(LEAVE_ALT));
+    }
+
+    // 3. Undo *past* the written state: modified, :q refuses — even though
+    //    the text now equals what the file held at open.
+    {
+        h.writeFile(ctx.io, path, "one\n");
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "u.txt" }, .cwd = dir, .cols = 100 });
+        defer s.finish();
+        s.drain(400);
+        s.sendKeys(&.{ "x", ":w", CR, "u" });
+        s.drain(300);
+        const m = s.mark();
+        s.send(":q\r");
+        s.drain(400);
+        ctx.check("undo past the write leaves :q refused", s.containsPlainSince(ctx.gpa, m, "unsaved changes") and
+            !s.contains(LEAVE_ALT));
+        s.send(":q!\r");
+        s.drain(200);
+    }
+
+    // 4. Retyping the deleted character by hand: content equals the disk
+    //    file, but no undo travel happened — still modified, :q refuses.
+    {
+        h.writeFile(ctx.io, path, "one\n");
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "u.txt" }, .cwd = dir, .cols = 100 });
+        defer s.finish();
+        s.drain(400);
+        s.sendKeys(&.{ "x", "io", ESC });
+        s.drain(300);
+        const m = s.mark();
+        s.send(":q\r");
+        s.drain(400);
+        ctx.check("manually retyped identical text stays modified", s.containsPlainSince(ctx.gpa, m, "unsaved changes") and
+            !s.contains(LEAVE_ALT));
+        s.send(":q!\r");
+        s.drain(200);
+    }
+
+    // 5. `:wa` marks every written buffer's state: undo+redo around the
+    //    write in both buffers, then :qa exits.
+    {
+        const path2 = try std.fmt.allocPrint(ctx.gpa, "{s}/v.txt", .{dir});
+        defer ctx.gpa.free(path2);
+        h.writeFile(ctx.io, path, "one\n");
+        h.writeFile(ctx.io, path2, "two\n");
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "u.txt" }, .cwd = dir, .cols = 100 });
+        defer s.finish();
+        s.drain(400);
+        s.sendKeys(&.{ ":e v.txt", CR, "x", ":bp", CR, "x", ":wa", CR });
+        s.drain(400);
+        s.sendKeys(&.{ "u", "\x12", ":bn", CR, "u", "\x12", ":qa", CR }); // undo+redo in each
+        s.drain(500);
+        ctx.check(":wa marks both buffers' written states for :qa", s.contains(LEAVE_ALT));
+    }
 }

@@ -549,7 +549,141 @@ pub fn run(ctx: *h.Ctx) !void {
         s.drain(200);
     }
 
+    try pickerClicks(ctx);
     try nonameBuffer(ctx);
+}
+
+/// The `▶` selection marker's screen row within the picker's result column
+/// (`body_x` = sidebar width + 1 when the tree is open, else 1), or null.
+fn markerRow(ctx: *h.Ctx, s: *h.Session, marker_col: usize) ?usize {
+    var scr = h.Screen.init(ctx.gpa, 24, 110) catch return null;
+    defer scr.deinit();
+    scr.apply(s.out.items);
+    var row: usize = 1;
+    while (row <= 24) : (row += 1) {
+        if (scr.at(row, marker_col).cp == 0x25B6) return row;
+    }
+    return null;
+}
+
+/// Mouse clicks in the picker view (the whole `zedit .` startup): explorer
+/// rows act, result rows select then open, tab clicks land on the buffer,
+/// and the prompt/preview stay inert. All zedit-native UI — no nvim ground
+/// truth exists for a picker, so the assertions pin the spec directly.
+/// Geometry at 110x24: sidebar cols 1-28, prompt row 2 (below the tab bar),
+/// results rows 3+ starting at col 29 (41 wide), preview from col 70.
+fn pickerClicks(ctx: *h.Ctx) !void {
+    const dir = try h.tempDir(ctx.gpa);
+    defer ctx.gpa.free(dir);
+    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const sub = h.join(ctx, dir, "sub");
+    defer ctx.gpa.free(sub);
+    std.Io.Dir.cwd().createDirPath(ctx.io, sub) catch {};
+    const a = h.join(ctx, dir, "alpha.txt");
+    defer ctx.gpa.free(a);
+    const b = h.join(ctx, dir, "beta.txt");
+    defer ctx.gpa.free(b);
+    const g = h.join(ctx, dir, "sub/gamma.txt");
+    defer ctx.gpa.free(g);
+    h.writeFile(ctx.io, a, "ALPHA MARKER\nsecond line\n");
+    h.writeFile(ctx.io, b, "BETA MARKER\n");
+    h.writeFile(ctx.io, g, "GAMMA MARKER\n");
+
+    // Explorer + result-row clicks, and the inert areas, in one session.
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "." }, .cwd = dir, .cols = 110 });
+        defer s.finish();
+        s.drain(700);
+        ctx.check("click test starts in the picker view", onScreen(ctx, &s, "FILES") and onScreen(ctx, &s, "EXPLORER"));
+
+        // (a) A directory row toggles under the live picker. The assert is
+        // column-scoped to the sidebar: "gamma.txt" also shows in the result
+        // column (as sub/gamma.txt), which must not satisfy it.
+        s.send("\x1b[<0;4;2M\x1b[<0;4;2m"); // click tree row 2 ("sub") + release
+        s.drain(500);
+        {
+            var scr = try h.Screen.init(ctx.gpa, 24, 110);
+            defer scr.deinit();
+            scr.apply(s.out.items);
+            const col = scr.colOf(ctx.gpa, 3, "gamma.txt");
+            ctx.check("clicking a directory row expands it in the tree", col != null and col.? < 28);
+        }
+        ctx.check("the picker survives a directory toggle", onScreen(ctx, &s, "FILES"));
+
+        // (b) First click on a result row selects it (the ▶ moves; the
+        // preview follows exactly as Ctrl-n would).
+        s.send("\x1b[<0;35;4M\x1b[<0;35;4m"); // second result row
+        s.drain(400);
+        ctx.check("clicking a result row selects it", markerRow(ctx, &s, 29) == 4);
+
+        // Inert areas: the prompt row, the preview pane, and non-press mouse
+        // reports (wheel release, drag) change nothing.
+        s.send("\x1b[<0;35;2M\x1b[<0;35;2m"); // the prompt row
+        s.drain(300);
+        s.send("\x1b[<0;90;5M\x1b[<0;90;5m"); // the preview pane
+        s.drain(300);
+        s.send("\x1b[<64;80;10m\x1b[<32;80;10M"); // wheel release + drag
+        s.drain(300);
+        ctx.check("prompt, preview and non-press reports stay inert", onScreen(ctx, &s, "FILES") and
+            markerRow(ctx, &s, 29) == 4);
+
+        // (b) A click on the already-selected row opens it — a double-click
+        // opens from anywhere, with no double-click timer.
+        s.send("\x1b[<0;35;4M\x1b[<0;35;4m");
+        s.drain(500);
+        ctx.check("clicking the selected row opens it", !onScreen(ctx, &s, "FILES") and onScreen(ctx, &s, "NORMAL"));
+        s.send(":qa!\r");
+        s.drain(200);
+    }
+
+    // (a) A file row in the explorer: the picker closes first (openFile never
+    // touches the mode), then the file opens.
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "." }, .cwd = dir, .cols = 110 });
+        defer s.finish();
+        s.drain(700);
+        s.send("\x1b[<0;6;3M\x1b[<0;6;3m"); // tree row 3: alpha.txt
+        s.drain(600);
+        ctx.check("an explorer file click closes the picker and opens the file", !onScreen(ctx, &s, "FILES") and
+            onScreen(ctx, &s, "ALPHA MARKER") and onScreen(ctx, &s, "NORMAL"));
+        s.send(":qa!\r");
+        s.drain(200);
+    }
+
+    // (c) Tab clicks while the picker is up close it and land on the buffer.
+    {
+        const one = h.join(ctx, dir, "one.txt");
+        defer ctx.gpa.free(one);
+        const two = h.join(ctx, dir, "two.txt");
+        defer ctx.gpa.free(two);
+        h.writeFile(ctx.io, one, "first\n");
+        h.writeFile(ctx.io, two, "second\n");
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "one.txt" }, .cwd = dir, .cols = 110 });
+        defer s.finish();
+        s.drain(500);
+        s.send(":e two.txt\r"); // two tabs; two.txt active
+        s.drain(400);
+        s.send(" ff");
+        s.drain(400);
+        ctx.check("the picker is up before the tab click", onScreen(ctx, &s, "FILES"));
+        s.send("\x1b[<0;3;1M\x1b[<0;3;1m"); // the inactive one.txt tab
+        s.drain(500);
+        ctx.check("a tab click closes the picker", !onScreen(ctx, &s, "FILES"));
+        s.send("x:w\r"); // the edit lands in one.txt: the click switched to it
+        s.drain(400);
+        const got = h.readFile(ctx.gpa, ctx.io, one);
+        defer ctx.gpa.free(got);
+        ctx.check("a tab click lands on that buffer", std.mem.eql(u8, got, "irst\n"));
+
+        s.send(" ff");
+        s.drain(400);
+        s.send("\x1b[<0;3;1M\x1b[<0;3;1m"); // the *active* tab: just closes
+        s.drain(400);
+        ctx.check("clicking the active tab just closes the picker", !onScreen(ctx, &s, "FILES") and
+            onScreen(ctx, &s, "NORMAL"));
+        s.send(":qa!\r");
+        s.drain(200);
+    }
 }
 
 /// vim's rule (nvim-verified: `:e file` from an *unmodified* unnamed buffer

@@ -370,3 +370,44 @@ The shortlist is done; these are the next-highest gaps from
       undo-named symlink is neither followed nor deleted), and the scratch
       rejecting edits/pastes/`:w` while still toggling and never blocking
       `:qa` — all proven fail-without. Suites green (unit + 666 itest).
+- [x] Four root-caused fixes in one sweep. (1) Picker clicks: `mouseClick`'s
+      mode gate swallowed every click in the picker view (the whole
+      `zedit .` startup) — new `pickerClick` route: result rows select on
+      the first click and open on a click at the already-selected row
+      (double-click opens, no timer), explorer clicks delegate to `sbClick`
+      (with `sbActivate` closing the picker before a file-open), tab clicks
+      close the picker and land on the buffer, prompt/preview stay inert;
+      the layout block is extracted into `pickerLayout`, shared by
+      `renderPickerBody` and the hit-test (the tabline's draw-here-
+      click-here invariant), and `pickerKey`'s unreachable wheel arms are
+      gone. (2) `:bd` vim parity (nvim-probed): the last clean buffer is
+      replaced by a fresh `[No Name]` (window stays, adopted by the next
+      `:e`), dirty refuses with "no write since last change" (E89 parity —
+      it used to silently discard with 2+ buffers), and `:bd!`/`:bdelete!`
+      discards; `Space c`/`Space b c` inherit the refusal. (3) showcmd
+      captures the *decoded* key, not raw bytes: arrows/Esc/paging render
+      nothing and clear the indicator (nvim pty-probed) instead of smearing
+      `^[[B`; `^W`-style caret display stays; macro/dot raw capture
+      untouched (replay proven by scenario). (4) Modified = undo-state
+      identity of the last write (`History.last_saved`, vim's
+      `b_u_save_nr`, four nvim-pinned cases): undo back to the saved state
+      clears dirty so `:q` exits, past it stays dirty, manual retype stays
+      dirty, `:wa` marks every written buffer, prune of the saved node
+      stays conservatively dirty, persistent-undo load anchors it. Unit
+      tests (4 new in undo.zig) + pty scenarios (picker/windows/feature/
+      undotree/sidebar), every behavioural check proven fail-without
+      (10/11/6/3+3 targeted failures with each fix planted out). Suites
+      green (unit + 706 itest).
+- [x] Review sweep over the four fixes: normal-mode arrows/`<BS>` now take
+      a count like `h j k l` (nvim-probed `3<Right>`/`2<Down>`/`2<BS>`;
+      `<Home>` ignores it — the count used to be consumed and dropped),
+      pty scenario in feature.zig proven fail-without (1 targeted FAIL,
+      706 pass with the old arms planted back). Independently re-probed:
+      `:bd` on the sole [No Name] (nvim keeps one, no error — matches),
+      `:bd` with the buffer in two windows (both fall back — matches),
+      `:qa` after `:bd`, `:w` mid-undo-chain + `g-`/`g+` dirty flags, and
+      cross-session persistent-undo (undo into the old session dirties,
+      redo back to the anchor cleans — nvim `:ls` `+` parity). Picker
+      clicks probed at every boundary column, all picker kinds,
+      sidebar=right and a 16-column terminal. Suites green (unit + 707
+      itest).

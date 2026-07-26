@@ -910,7 +910,20 @@ pub const Editor = struct {
             else => {},
         }
         if (!self.in_dot) self.dotCapturePre(raw);
-        self.showcmdPush(raw);
+        // showcmd records the *decoded* key, never raw bytes: an arrow's
+        // escape sequence must not appear as ^[[B. Characters and control
+        // keys read back as text (^W for Ctrl-w, as vim shows); special keys
+        // (arrows, Esc, paging, …) act at once and clear the indicator —
+        // nvim renders nothing for them (pty-probed: bare <Down>/<Esc> show
+        // nothing; `2` then <Down> and `d` then <Down> execute and clear).
+        // Dot-repeat (above) and macro capture keep the raw bytes untouched.
+        switch (k) {
+            .char, .ctrl => self.showcmdPush(raw),
+            else => {
+                self.showcmd_len = 0;
+                self.showcmd_done = false;
+            },
+        }
         try self.handleKey(k);
         if (!self.in_dot) self.dotCapturePost();
         self.showcmdSettle();
@@ -929,13 +942,14 @@ pub const Editor = struct {
         }
         for (raw) |b| {
             // Printable keys read back as themselves; control bytes as ^X so
-            // Ctrl-w or Esc stay legible in the indicator.
+            // Ctrl-w stays legible in the indicator. (Only `.char`/`.ctrl`
+            // raw bytes arrive here — never escape sequences.)
             var enc: [2]u8 = undefined;
             const bytes: []const u8 = if (b >= 0x20 and b != 0x7f)
                 enc[0..1]
             else blk: {
                 enc[0] = '^';
-                enc[1] = if (b == 0x1b) '[' else b + '@';
+                enc[1] = b + '@';
                 break :blk enc[0..2];
             };
             if (bytes.len == 1) enc[0] = b;
@@ -969,8 +983,11 @@ pub const Editor = struct {
     /// toggles a directory or opens a file (VS Code's rule), while its
     /// header or the empty space below the tree just focuses it. Clicks
     /// anywhere else — the text area included — are ignored, so terminal
-    /// text selection keeps working.
+    /// text selection keeps working. The picker view has its own route
+    /// (`pickerClick`); command/visual modes still swallow every click —
+    /// a click must not cancel an operator.
     fn mouseClick(self: *Editor, m: key.Mouse) !void {
+        if (self.mode == .picker) return self.pickerClick(m);
         if (self.mode != .normal and self.mode != .insert) return;
         if (tabsVisible() and m.row == 1) {
             if (self.tabAt(m.col)) |doc| {
@@ -985,6 +1002,43 @@ pub const Editor = struct {
             // to the sidebar hit-test, which owns those columns.
         }
         try self.sbClick(m.row, m.col);
+    }
+
+    /// A left-click while the picker is up (the whole `zedit .` startup view).
+    /// A tab click closes the picker and lands on that buffer (the bar is
+    /// visibly rendered, so it must act); explorer clicks delegate to the
+    /// tree's own hit-test (a directory toggles under the live picker, a file
+    /// opens — `sbActivate` closes the picker first); a result row selects on
+    /// the first click (the preview follows, as Ctrl-n) and *opens* when it is
+    /// already selected — so a double-click opens from anywhere, with no
+    /// double-click timer (SGR carries no click count). The prompt row and the
+    /// preview pane stay inert, so terminal text selection keeps working there.
+    fn pickerClick(self: *Editor, m: key.Mouse) !void {
+        if (tabsVisible() and m.row == 1) {
+            if (self.tabAt(m.col)) |doc| {
+                self.closePicker();
+                if (doc != self.d) {
+                    self.addJump();
+                    self.focusDoc(doc);
+                    self.clampCursor();
+                    self.setStatus("{s}", .{docLabel(doc)});
+                }
+            }
+            // The EXPLORER segment / filler: inert — the focus grab would be
+            // meaningless here (sidebar keys route only in normal mode).
+            return;
+        }
+        if (self.sb_open) {
+            const x = self.sbX();
+            if (m.col >= x and m.col < x + self.sbWidth()) return self.sbClick(m.row, m.col);
+        }
+        const lay = self.pickerLayout();
+        if (m.row <= lay.top) return; // the prompt row
+        if (m.col < lay.body_x or m.col >= lay.body_x + lay.list_w) return; // the preview
+        const fi = self.picker_scroll + (m.row - lay.top - 1);
+        if (fi >= self.picker_filtered.items.len) return;
+        if (fi == self.picker_sel) return self.pickerOpen();
+        self.picker_sel = fi;
     }
 
     /// Wheel scrolling: move the viewport three lines (nvim's step) and carry
@@ -1062,13 +1116,17 @@ pub const Editor = struct {
         switch (k) {
             .char => |c| try self.normalChar(c),
             .ctrl => |c| self.normalCtrl(c),
-            .left => self.doMotion(.{ .pos = self.left1(), .kind = .exclusive, .col_mode = .exact }),
-            .right => self.doMotion(.{ .pos = self.afterCursor(), .kind = .exclusive, .col_mode = .exact }),
-            .up => self.doMotion(self.vertical(true, 1)),
-            .down => self.doMotion(self.vertical(false, 1)),
+            // Arrows take a count exactly like h/l/k/j (nvim-probed: `3<Right>`
+            // then `x` hits column 4, `2<Down>` lands two lines down; `2<Home>`
+            // ignores the count). doMotion consumed the count either way, so
+            // dropping it here silently ate `2<Down>`'s 2.
+            .left => self.doMotion(self.repeatMotion(.left)),
+            .right => self.doMotion(self.repeatMotion(.right)),
+            .up => self.doMotion(self.vertical(true, self.eff())),
+            .down => self.doMotion(self.vertical(false, self.eff())),
             .home => self.doMotion(.{ .pos = .{ .row = self.cy, .col = 0 }, .kind = .exclusive, .col_mode = .exact }),
             .end => self.doMotion(.{ .pos = .{ .row = self.cy, .col = self.curLine().len }, .kind = .inclusive, .col_mode = .exact }),
-            .backspace => self.doMotion(.{ .pos = self.left1(), .kind = .exclusive, .col_mode = .exact }),
+            .backspace => self.doMotion(self.repeatMotion(.left)),
             .page_up => self.pageMove(true),
             .page_down => self.pageMove(false),
             .tab => self.jumpForward(), // Ctrl-i arrives as Tab; vim treats them alike
@@ -1330,7 +1388,7 @@ pub const Editor = struct {
                     'e' => self.sidebarToggle(), // file explorer (AstroNvim <leader>e)
                     'w' => _ = try self.write(""),
                     'q' => self.doQuit(),
-                    'c' => self.closeDoc(), // close buffer (AstroNvim <leader>c)
+                    'c' => self.closeDoc(false), // close buffer (AstroNvim <leader>c)
                     else => {},
                 };
             },
@@ -1340,7 +1398,7 @@ pub const Editor = struct {
                     'b' => self.openBufferPicker(), // same picker as <space>f b
                     'n' => self.cycleDoc(true, 1), // next buffer (]b)
                     'p' => self.cycleDoc(false, 1), // previous buffer ([b)
-                    'c' => self.closeDoc(), // same as <space>c
+                    'c' => self.closeDoc(false), // same as <space>c
                     else => {},
                 };
             },
@@ -1767,10 +1825,6 @@ pub const Editor = struct {
             };
         }
         return .{ .pos = p, .kind = .exclusive, .col_mode = .exact };
-    }
-
-    fn left1(self: *Editor) Pos {
-        return .{ .row = self.cy, .col = unicode.prevBoundary(self.curLine(), self.cx) };
     }
 
     fn vertical(self: *Editor, up: bool, n: usize) MotionResult {
@@ -3726,8 +3780,7 @@ pub const Editor = struct {
             },
             .up => self.selDelta(false),
             .down => self.selDelta(true),
-            .scroll_up => self.scrollPreview(-3), // the wheel scrolls the preview
-            .scroll_down => self.scrollPreview(3),
+            // (the wheel never reaches here: feedKey scrolls the preview)
             .ctrl => |c| switch (c) {
                 'p' => self.selDelta(false),
                 'n' => self.selDelta(true),
@@ -4048,30 +4101,55 @@ pub const Editor = struct {
         self.left = self.cur.left;
     }
 
+    /// The picker view's geometry: the prompt row, how many rows sit below
+    /// it, and where the result list's columns run. Shared by
+    /// `renderPickerBody` and the click hit-test (`pickerClick`) so a row can
+    /// never be drawn at one place and clicked at another — the tabline's
+    /// invariant (`tabArea`), applied here.
+    const PickerLayout = struct {
+        top: usize, // the prompt's screen row (results start one below)
+        visible: usize, // result rows below the prompt
+        body_x: usize, // first column of the prompt/results
+        body_w: usize, // width beside the sidebar
+        list_w: usize, // the results' width (rest is the preview)
+        preview: bool,
+    };
+    fn pickerLayout(self: *Editor) PickerLayout {
+        // The title bar keeps row 1 in the picker view too; the prompt and
+        // results shift below it.
+        const top = 1 + @as(usize, if (tabsVisible()) 1 else 0);
+        const rows: usize = self.win.rows;
+        // Columns: [sidebar] [list] [preview]
+        const side_w = if (self.sb_open) self.sbWidth() else 0;
+        const body_w = self.win.cols -| side_w;
+        // A preview needs room for both panes; below that the results get the
+        // whole width rather than two unreadable columns.
+        const wants_preview = self.previewKind() != .none and body_w >= 40;
+        return .{
+            .top = top,
+            .visible = if (rows > top) rows - top else 1,
+            .body_x = if (self.sb_open and config.settings.sidebar == .left) side_w + 1 else 1,
+            .body_w = body_w,
+            .list_w = if (wants_preview) @max(body_w / 2, 24) else body_w,
+            .preview = wants_preview,
+        };
+    }
+
     /// The picker screen: the file tree on its configured side (when open),
     /// the results next to it, and — for anything that names a file — a live
     /// preview of the selection on the right, Helix-style. Every picker uses
     /// this same layout, so searching looks the same wherever you start it.
     fn renderPickerBody(self: *Editor) !void {
         const th = theme.current;
-        const cols: usize = self.win.cols;
         const rows: usize = self.win.rows;
-        // The title bar keeps row 1 in the picker view too; the prompt and
-        // results shift below it.
-        const tab_h: usize = if (tabsVisible()) 1 else 0;
-        const top = 1 + tab_h; // the prompt's row
-        const visible = if (rows > top) rows - top else 1;
-
-        // Columns: [sidebar] [list] [preview]
-        const side_w = if (self.sb_open) self.sbWidth() else 0;
-        const body_x = if (self.sb_open and config.settings.sidebar == .left) side_w + 1 else 1;
-        const body_w = cols -| side_w;
-        // A preview needs room for both panes; below that the results get the
-        // whole width rather than two unreadable columns.
-        const wants_preview = self.previewKind() != .none and body_w >= 40;
-        const list_w = if (wants_preview) @max(body_w / 2, 24) else body_w;
+        const lay = self.pickerLayout();
+        const top = lay.top;
+        const visible = lay.visible;
+        const body_x = lay.body_x;
+        const list_w = lay.list_w;
+        const wants_preview = lay.preview;
         const prev_x = body_x + list_w;
-        const prev_w = if (wants_preview) body_w - list_w else 0;
+        const prev_w = if (wants_preview) lay.body_w - list_w else 0;
 
         if (self.picker_sel < self.picker_scroll) self.picker_scroll = self.picker_sel;
         if (self.picker_sel >= self.picker_scroll + visible) self.picker_scroll = self.picker_sel - visible + 1;
@@ -4084,7 +4162,7 @@ pub const Editor = struct {
             try self.emit(ansi.clear_line_right);
         }
         if (self.sb_open) try self.renderSidebar();
-        if (tab_h > 0) try self.renderTitleBar();
+        if (tabsVisible()) try self.renderTitleBar();
 
         const klabel = switch (self.picker_kind) {
             .files => " FILES ",
@@ -4881,7 +4959,9 @@ pub const Editor = struct {
         } else if (eql(cmd, "bp") or eql(cmd, "bprev") or eql(cmd, "bprevious")) {
             self.cycleDoc(false, 1);
         } else if (eql(cmd, "bd") or eql(cmd, "bdelete")) {
-            self.closeDoc();
+            self.closeDoc(false);
+        } else if (eql(cmd, "bd!") or eql(cmd, "bdelete!")) {
+            self.closeDoc(true);
         } else if (eql(cmd, "ls") or eql(cmd, "buffers")) {
             self.listBuffers();
         } else if (eql(cmd, "wa") or eql(cmd, "wall")) {
@@ -5120,6 +5200,15 @@ pub const Editor = struct {
                 std.log.scoped(.editor).err("write failed: {s}: {s}", .{ doc.buf.path orelse "<unnamed>", @errorName(err) });
                 continue;
             };
+            // Record the written state, so undoing back to it reads as clean
+            // (`:qa` after undo+redo must not refuse). The active doc's
+            // History lives in the Editor mirror (`swapDocState`); background
+            // docs record at 0,0, as `applyDocEdits` does.
+            if (doc == self.d) {
+                self.history.markSaved(&doc.buf, self.cy, self.cx);
+            } else {
+                doc.history.markSaved(&doc.buf, 0, 0);
+            }
             n += 1;
         }
         self.refreshGit();
@@ -5148,20 +5237,31 @@ pub const Editor = struct {
     }
 
     /// Close the active document (`:bd`). Windows showing it fall back to
-    /// another open document; refuses to close the last buffer.
-    fn closeDoc(self: *Editor) void {
-        if (self.docs.items.len <= 1) {
-            self.setStatus("cannot close the last buffer", .{});
-            return;
-        }
+    /// another open document; the last buffer is replaced by an empty
+    /// [No Name] one and the window stays (vim's rule, nvim-verified). A
+    /// dirty buffer refuses without force (nvim's E89; `:bd!` discards).
+    fn closeDoc(self: *Editor, force: bool) void {
         const victim = self.d;
-        var repl: *Doc = self.docs.items[0];
-        for (self.docs.items) |doc| {
-            if (doc != victim) {
-                repl = doc;
-                break;
-            }
-        }
+        if (victim.buf.dirty and !force)
+            return self.setStatus("no write since last change — :bd! to override", .{});
+        const repl: *Doc = if (self.docs.items.len == 1) blk: {
+            const b = buffer.Buffer.initEmpty(self.gpa) catch return self.setStatus("out of memory", .{});
+            const doc = makeDoc(self.gpa, b) catch {
+                var bb = b;
+                bb.deinit();
+                return self.setStatus("out of memory", .{});
+            };
+            self.docs.append(self.gpa, doc) catch { // same teardown as openFile's
+                doc.buf.deinit();
+                freeDocState(doc, self.gpa);
+                self.gpa.destroy(doc);
+                return self.setStatus("out of memory", .{});
+            };
+            break :blk doc;
+        } else blk: {
+            for (self.docs.items) |doc| if (doc != victim) break :blk doc;
+            unreachable;
+        };
         self.loadDoc(repl); // swaps victim's live state back into its Doc
         for (self.wins.items) |w| {
             if (w.doc == victim) w.doc = repl;
@@ -7101,6 +7201,11 @@ pub const Editor = struct {
         if (e.is_dir) {
             self.sbToggleDir(e.path);
         } else {
+            // A file opened from the tree while the picker is up (a click in
+            // the `zedit .` view) must close the picker first: `openFile`
+            // never touches the mode, and the picker would repaint over the
+            // freshly opened file.
+            if (self.mode == .picker) self.closePicker();
             self.openFile(e.path, 0);
             self.sb_focus = false;
         }

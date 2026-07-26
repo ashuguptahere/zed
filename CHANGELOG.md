@@ -2,6 +2,51 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.20.0 - 2026-07-26
+
+### Added
+
+- `:bd!` / `:bdelete!`: close the current buffer discarding its unsaved
+  changes, now that a dirty `:bd` refuses (see Fixed).
+
+### Fixed
+
+- Mouse clicks work in the picker view (the `zedit .` startup screen and
+  every later picker): a click on a result row selects it (the live preview
+  follows), a click on the already-selected row opens it — a double-click
+  opens from anywhere, with no double-click timer — explorer rows toggle
+  directories or open files under the live picker, and a buffer-tab click
+  closes the picker and lands on that buffer. The prompt row and the preview
+  pane stay inert, so terminal text selection keeps working there. Every
+  such click used to be silently swallowed by the mouse handler's mode gate
+  (command/visual modes still swallow clicks — a click must not cancel an
+  operator). The renderer and the hit-test share one geometry helper
+  (`pickerLayout`), so a row can never be drawn at one place and clicked at
+  another.
+- `:bd` on the last buffer now replaces it with a fresh empty `[No Name]`
+  buffer and the window stays (vim's rule, nvim-verified; the replacement is
+  adopted by the next `:e`, so no phantom buffer lingers) instead of
+  refusing with "cannot close the last buffer" — and a buffer with unsaved
+  changes now refuses with "no write since last change" (nvim's E89 parity)
+  instead of silently discarding the edits when other buffers were open.
+  `Space c` / `Space b c` inherit the refusal.
+- Arrow keys and `<BS>` in normal mode take a count, exactly like
+  `h`/`l`/`k`/`j` (nvim-probed: `3<Right>` moves three columns, `2<Down>`
+  two lines; `<Home>`/`<End>` keep ignoring it, vim's rule). The count was
+  silently consumed and the arrow moved one step.
+- The showcmd indicator records the decoded key, never raw input bytes:
+  arrows, Esc, Home/End and paging keys execute and render nothing (nvim's
+  rule, pty-probed) instead of smearing `^[[B` / `^[` / `^[[6~` across the
+  statusline. Control keys keep their `^W`-style caret display; macro
+  recording and dot-repeat still capture raw bytes, so special keys keep
+  replaying.
+- The modified flag now tracks *which undo state* is on disk (vim's
+  `b_u_save_nr`, all four rules nvim-pinned): undoing back to the last-saved
+  state lets `:q`/`:qa` exit, undoing past it stays modified even when the
+  text matches, retyping identical text stays modified, and `:wa` marks
+  every buffer it writes. Undoing every change used to leave the buffer
+  "modified" forever, with `:q` refusing on text identical to the file.
+
 ## 0.19.0 - 2026-07-26
 
 ### Changed

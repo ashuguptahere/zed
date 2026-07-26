@@ -128,6 +128,13 @@ pub const History = struct {
     dirty: bool,
     next_seq: u32,
     max_nodes: usize,
+    /// The node that was current at the most recent write — vim's
+    /// `b_u_save_nr`: "modified" is undo-state *identity*, not content
+    /// equality (nvim-verified: undoing back to this state clears the
+    /// modified flag; retyping identical text does not). Null when the
+    /// written state has been pruned away — then every travel stays dirty
+    /// until the next write, conservative rather than falsely clean.
+    last_saved: ?u32,
 
     pub fn init(gpa: Allocator) History {
         return .{
@@ -138,6 +145,7 @@ pub const History = struct {
             .dirty = false,
             .next_seq = 0,
             .max_nodes = 256,
+            .last_saved = null,
         };
     }
 
@@ -224,6 +232,11 @@ pub const History = struct {
         self.setBase(data) catch {};
         self.cur = idx;
         self.dirty = false;
+        // The root is the text as loaded — the on-disk state for file-backed
+        // buffers, and vim treats a never-written buffer's initial state the
+        // same way (save-number 0, nvim-verified: undoing everything in a
+        // [No Name] buffer clears the modified flag).
+        self.last_saved = idx;
     }
 
     fn setBase(self: *History, data: []const u8) !void {
@@ -346,6 +359,9 @@ pub const History = struct {
     }
 
     fn free(self: *History, idx: u32) void {
+        // One choke point covers both prune paths — and stops a stale index
+        // from falsely comparing equal after `alloc` recycles the slot.
+        if (self.last_saved == idx) self.last_saved = null;
         self.gpa.free(self.nodes.items[idx].bytes);
         self.nodes.items[idx].alive = false;
     }
@@ -406,7 +422,12 @@ pub const History = struct {
         buf.replaceContents(self.base.items) catch return false;
         cy.* = at.cy;
         cx.* = at.cx;
-        buf.dirty = true;
+        // Modified = "not the state the last write captured" (vim's rule,
+        // state identity rather than content — nvim-verified: undoing *to*
+        // the saved state clears the flag, undoing *past* it to identical
+        // text does not). Compares the actual final `cur`, so a walk that
+        // stopped partway still answers for where it really landed.
+        buf.dirty = self.last_saved == null or self.cur.? != self.last_saved.?;
         self.dirty = false;
         return self.cur.? == target;
     }
@@ -479,6 +500,7 @@ pub const History = struct {
     pub fn markSaved(self: *History, buf: *const buffer.Buffer, cy: usize, cx: usize) void {
         self.seal(buf, cy, cx);
         if (self.cur) |c| self.nodes.items[c].saved = true;
+        self.last_saved = self.cur; // the state on disk from now on
     }
 
     /// `:earlier Nf` / `:later Nf`: step over the states the file was written
@@ -746,6 +768,9 @@ pub const History = struct {
         }
         h.cur = if (cur_seq == no_seq) null else h.indexOfSeq(cur_seq);
         if (h.cur == null and count > 0) return false;
+        // The anchor is hash-checked against the file's current bytes above,
+        // so `cur` *is* the on-disk state by construction.
+        h.last_saved = h.cur;
         h.setBase(content) catch return false;
         return h.rebuildRoot();
     }
@@ -1051,6 +1076,134 @@ test "jumping across branches rebuilds the exact text" {
     try std.testing.expectEqualStrings("Astart", buf.line(0));
     try std.testing.expect(h.goToSeq(&buf, &cy, &cx, 0));
     try std.testing.expectEqualStrings("start", buf.line(0));
+}
+
+test "undo back to the never-saved original clears the modified flag" {
+    // nvim ground truth (0.12.4 --clean, pty, no -c): `x` `u` then `:ls`
+    // shows no `+` and `:q` exits — undoing back to the state the buffer was
+    // loaded with leaves it unmodified even though nothing was ever written;
+    // the same holds for a never-written [No Name] buffer (`ihello<Esc>` `u`
+    // `:q` exits).
+    const gpa = std.testing.allocator;
+    var buf = try buffer.Buffer.fromBytes(gpa, "one\n");
+    defer buf.deinit();
+    var h = History.init(gpa);
+    defer h.deinit();
+    var cy: usize = 0;
+    var cx: usize = 0;
+
+    h.record(&buf, 0, 0);
+    _ = try buf.insertCodepoint(0, 0, 'X');
+    try std.testing.expect(buf.dirty);
+    try std.testing.expect(h.undo(&buf, &cy, &cx));
+    try std.testing.expect(!buf.dirty); // back at the loaded state
+    try std.testing.expect(h.redo(&buf, &cy, &cx));
+    try std.testing.expect(buf.dirty);
+}
+
+test "modified is undo-state identity relative to the last write" {
+    // nvim ground truth (pty): `x :w rz u` -> `:ls` shows no `+`, `:q` exits
+    // (undo *to* the written state ⇒ unmodified); `x :w u` -> `:ls` shows
+    // `+`, `:q` blocked with E37 (undo *past* it ⇒ modified, even though the
+    // text equals what the file held at open — identity, not content).
+    const gpa = std.testing.allocator;
+    var buf = try buffer.Buffer.fromBytes(gpa, "one\n");
+    defer buf.deinit();
+    var h = History.init(gpa);
+    defer h.deinit();
+    var cy: usize = 0;
+    var cx: usize = 0;
+
+    h.record(&buf, 0, 0);
+    _ = try buf.insertCodepoint(0, 0, 'A'); // "Aone"
+    h.markSaved(&buf, 0, 0); // :w
+    h.record(&buf, 0, 0);
+    _ = try buf.insertCodepoint(0, 0, 'B'); // "BAone"
+
+    try std.testing.expect(h.undo(&buf, &cy, &cx)); // at "Aone", the write
+    try std.testing.expect(!buf.dirty);
+    try std.testing.expect(h.undo(&buf, &cy, &cx)); // past it, at "one"
+    try std.testing.expect(buf.dirty);
+    try std.testing.expect(h.redo(&buf, &cy, &cx)); // back to the write
+    try std.testing.expect(!buf.dirty);
+    try std.testing.expect(h.redo(&buf, &cy, &cx)); // "BAone"
+    try std.testing.expect(buf.dirty);
+
+    // Cross-tree jumps answer the same way: `g-`-style travel and the
+    // `:undolist` picker both funnel through goTo.
+    try std.testing.expect(h.goToSeq(&buf, &cy, &cx, 1)); // the saved state
+    try std.testing.expect(!buf.dirty);
+    try std.testing.expect(h.goToSeq(&buf, &cy, &cx, 2));
+    try std.testing.expect(buf.dirty);
+    try std.testing.expect(h.travelWrites(&buf, &cy, &cx, 1, true)); // `:earlier 1f`
+    try std.testing.expectEqualStrings("Aone", buf.line(0));
+    try std.testing.expect(!buf.dirty);
+}
+
+test "a pruned saved state never reads clean again" {
+    const gpa = std.testing.allocator;
+    var buf = try buffer.Buffer.fromBytes(gpa, "\n");
+    defer buf.deinit();
+    var h = History.init(gpa);
+    defer h.deinit();
+    h.max_nodes = 4;
+    var cy: usize = 0;
+    var cx: usize = 0;
+
+    h.record(&buf, 0, 0);
+    _ = try buf.insertCodepoint(0, 0, 'a');
+    h.markSaved(&buf, 0, 0); // the write's state will be pruned below
+    var i: usize = 0;
+    while (i < 8) : (i += 1) {
+        h.record(&buf, 0, 0);
+        _ = try buf.insertCodepoint(0, 0, 'x');
+    }
+    h.record(&buf, 0, 0); // seal the last state so prune has run
+    try std.testing.expect(h.last_saved == null); // dropped with the node
+
+    // Travelling anywhere now stays dirty — conservative, never falsely
+    // clean — and a node allocated into the freed slot must not compare
+    // equal to the stale index (free() nulls it, so it cannot).
+    _ = h.travel(&buf, &cy, &cx, 2, true);
+    try std.testing.expect(buf.dirty);
+    h.record(&buf, 0, 0);
+    _ = try buf.insertCodepoint(0, 0, 'y'); // branches into a recycled slot
+    var moved = h.undo(&buf, &cy, &cx);
+    try std.testing.expect(moved);
+    moved = h.redo(&buf, &cy, &cx);
+    try std.testing.expect(moved);
+    try std.testing.expect(buf.dirty);
+}
+
+test "the written state's identity survives the undo file round trip" {
+    const gpa = std.testing.allocator;
+    var threaded: std.Io.Threaded = .init(gpa, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const path = "/tmp/zedit_undo_saved_roundtrip.undo";
+    defer std.Io.Dir.cwd().deleteFile(io, path) catch {};
+
+    var buf = try buffer.Buffer.fromBytes(gpa, "start\n");
+    defer buf.deinit();
+    var cy: usize = 0;
+    var cx: usize = 0;
+    {
+        var h = History.init(gpa);
+        defer h.deinit();
+        h.record(&buf, 0, 0);
+        _ = try buf.insertCodepoint(0, 0, 'A');
+        h.markSaved(&buf, 0, 0); // "Astart" is on disk
+        h.writeTo(io, path, "/tmp/some/file.txt");
+    }
+    var back = History.readFrom(gpa, io, path, "/tmp/some/file.txt", "Astart\n") orelse return error.NoHistory;
+    defer back.deinit();
+    // The anchor is the on-disk state by construction, so the restored
+    // history starts clean-relative-to-it: undo dirties, redo cleans.
+    try std.testing.expectEqual(back.cur, back.last_saved);
+    try std.testing.expect(back.undo(&buf, &cy, &cx));
+    try std.testing.expect(buf.dirty);
+    try std.testing.expect(back.redo(&buf, &cy, &cx));
+    try std.testing.expect(!buf.dirty);
 }
 
 test "prune policy: only old zedit-shaped .undo files are candidates" {

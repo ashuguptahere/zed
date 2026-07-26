@@ -131,4 +131,158 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send(":qa\r");
         s.drain(200);
     }
+
+    try bufferClose(ctx);
+}
+
+/// `:bd` semantics, pinned to nvim ground truth (0.12.4 --clean through a
+/// pty, no -c args, one buffer /tmp/zbd/one.txt):
+///   clean:  `:bd` -> the window STAYS over an empty buffer, statusline
+///           `[No Name]  0,0-1  All`; `:ls` -> exactly one entry, a NEW
+///           buffer number: `  2 %a   "[No Name]"   line 1`.
+///   dirty:  `:bd` -> `E89: No write since last change for buffer 1 (add !
+///           to override)`, buffer kept; `:bd!` discards -> `[No Name]`.
+///   two buffers, one dirty: `:bd` -> E89 too (zedit used to close it and
+///           silently discard the edits).
+/// Message text is zedit's house style, not E89 verbatim, so the checks are
+/// scenario-level rather than vim_compat byte-parity.
+fn bufferClose(ctx: *h.Ctx) !void {
+    const LEAVE_ALT = "\x1b[?1049l"; // emitted only when the editor exits
+    const dir = try h.tempDir(ctx.gpa);
+    defer ctx.gpa.free(dir);
+    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const one = h.join(ctx, dir, "one.txt");
+    defer ctx.gpa.free(one);
+    const two = h.join(ctx, dir, "two.txt");
+    defer ctx.gpa.free(two);
+
+    // 1. Last buffer, clean: replaced by a fresh [No Name]; window stays.
+    {
+        h.writeFile(ctx.io, one, "alpha\n");
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "one.txt" }, .cwd = dir, .cols = 100 });
+        defer s.finish();
+        s.drain(400);
+        var m = s.mark();
+        s.send(":bd\r");
+        s.drain(400);
+        ctx.check(":bd on the last clean buffer leaves [No Name]", s.containsPlainSince(ctx.gpa, m, "[No Name]"));
+        m = s.mark();
+        s.send(":ls\r");
+        s.drain(300);
+        ctx.check("the closed file is gone from :ls", s.containsPlainSince(ctx.gpa, m, "1*:[No Name]") and
+            !s.containsPlainSince(ctx.gpa, m, "one.txt"));
+        s.send(":q\r"); // the replacement is clean: :q exits
+        s.drain(400);
+        ctx.check("the editor stays usable and :q exits", s.contains(LEAVE_ALT));
+    }
+
+    // 2. Last buffer, dirty: refused without !, discarded with :bd!.
+    {
+        h.writeFile(ctx.io, one, "alpha\n");
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "one.txt" }, .cwd = dir, .cols = 100 });
+        defer s.finish();
+        s.drain(400);
+        s.send("ochanged\x1b");
+        s.drain(200);
+        var m = s.mark();
+        s.send(":bd\r");
+        s.drain(300);
+        ctx.check("a dirty :bd refuses (E89 parity)", s.containsPlainSince(ctx.gpa, m, "no write since last change"));
+        m = s.mark();
+        s.send(":ls\r");
+        s.drain(300);
+        ctx.check("the refused buffer is kept", s.containsPlainSince(ctx.gpa, m, "1*:one.txt"));
+        m = s.mark();
+        s.send(":bd!\r");
+        s.drain(300);
+        ctx.check(":bd! discards the edits", s.containsPlainSince(ctx.gpa, m, "[No Name]"));
+        m = s.mark();
+        s.send(":ls\r");
+        s.drain(300);
+        ctx.check("after :bd! only [No Name] is listed", s.containsPlainSince(ctx.gpa, m, "1*:[No Name]") and
+            !s.containsPlainSince(ctx.gpa, m, "one.txt"));
+        s.send(":q\r");
+        s.drain(400);
+        ctx.check(":bd! left a clean buffer behind", s.contains(LEAVE_ALT));
+        const kept = h.readFile(ctx.gpa, ctx.io, one);
+        defer ctx.gpa.free(kept);
+        ctx.check("the discarded edits never reached the file", std.mem.eql(u8, kept, "alpha\n"));
+    }
+
+    // 3. Two buffers, the dirty one active: :bd refuses (this used to close
+    //    it and silently discard the edits); :bd! lands on the other buffer.
+    {
+        h.writeFile(ctx.io, one, "aaa\n");
+        h.writeFile(ctx.io, two, "bbb\n");
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "one.txt" }, .cwd = dir, .cols = 100 });
+        defer s.finish();
+        s.drain(400);
+        s.send(":e two.txt\r");
+        s.drain(300);
+        s.send(":bp\r"); // back to one.txt
+        s.drain(300);
+        s.send("x"); // dirty it
+        s.drain(200);
+        var m = s.mark();
+        s.send(":bd\r");
+        s.drain(300);
+        ctx.check("a dirty :bd refuses with 2+ buffers too", s.containsPlainSince(ctx.gpa, m, "no write since last change"));
+        m = s.mark();
+        s.send(":ls\r");
+        s.drain(300);
+        ctx.check("both buffers survive the refusal", s.containsPlainSince(ctx.gpa, m, "1*:one.txt") and
+            s.containsPlainSince(ctx.gpa, m, "2:two.txt"));
+        m = s.mark();
+        s.send(":bd!\r");
+        s.drain(300);
+        s.send(":ls\r");
+        s.drain(300);
+        ctx.check(":bd! lands on the other buffer", s.containsPlainSince(ctx.gpa, m, "1*:two.txt") and
+            !s.containsPlainSince(ctx.gpa, m, "one.txt"));
+        s.send(":q\r");
+        s.drain(400);
+        ctx.check("the survivor is clean and :q exits", s.contains(LEAVE_ALT));
+    }
+
+    // 4. Adoption chain: the fresh [No Name] satisfies openFile's adopt rule,
+    //    so a later :e replaces it — vim's full cycle, no phantom buffer.
+    {
+        h.writeFile(ctx.io, one, "alpha\n");
+        h.writeFile(ctx.io, two, "beta\n");
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "one.txt" }, .cwd = dir, .cols = 100 });
+        defer s.finish();
+        s.drain(400);
+        s.send(":bd\r");
+        s.drain(300);
+        s.send(":e two.txt\r");
+        s.drain(400);
+        const m = s.mark();
+        s.send(":ls\r");
+        s.drain(300);
+        ctx.check(":e after a last-buffer :bd adopts the [No Name]", s.containsPlainSince(ctx.gpa, m, "1*:two.txt") and
+            !s.containsPlainSince(ctx.gpa, m, "[No Name]"));
+        s.send(":q\r");
+        s.drain(300);
+    }
+
+    // 5. Space c (and Space b c) route through the same close: clean replaces,
+    //    dirty inherits the refusal.
+    {
+        h.writeFile(ctx.io, one, "alpha\n");
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "one.txt" }, .cwd = dir, .cols = 100 });
+        defer s.finish();
+        s.drain(400);
+        var m = s.mark();
+        s.send(" c"); // Space c: close buffer
+        s.drain(300);
+        ctx.check("Space c on the last clean buffer leaves [No Name]", s.containsPlainSince(ctx.gpa, m, "[No Name]"));
+        s.send("ihello\x1b"); // dirty the replacement
+        s.drain(200);
+        m = s.mark();
+        s.send(" c");
+        s.drain(300);
+        ctx.check("Space c inherits the dirty refusal", s.containsPlainSince(ctx.gpa, m, "no write since last change"));
+        s.send(":q!\r");
+        s.drain(300);
+    }
 }

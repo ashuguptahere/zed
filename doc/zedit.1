@@ -332,6 +332,13 @@ pane. Clicking a buffer tab in the title bar switches to it. In the file-tree
 sidebar a single click on a row selects it and acts as Enter does: a
 directory expands or collapses, a file opens with focus back in the buffer;
 clicking the EXPLORER header or the space below the tree focuses the tree.
+The mouse works inside a picker too (including the view
+.B zedit \fIdirectory\fP
+starts in): a click on a result row selects it and the preview follows, a
+click on the already-selected row opens it \(em so a double-click opens from
+anywhere \(em explorer and tab clicks keep working (a tab click closes the
+picker and lands on that buffer), and the prompt row and preview pane are
+ignored.
 Clicks anywhere else \(em the text area included \(em are ignored, so
 your terminal's own selection still works. A jump further
 than half a window \(em
@@ -345,7 +352,7 @@ your terminal's usual
 .SS Motions
 .TP
 .B h j k l
-Left, down, up, right (arrow keys also work).
+Left, down, up, right (arrow keys also work, counts included).
 .TP
 .B w W b B e E
 Word / WORD motions.
@@ -664,7 +671,11 @@ Open \fIfile\fP in the active window (reusing it if already open).
 .TP
 .B :bn :bp :bd :ls
 Next / previous buffer in the active window, close the current buffer, list
-open buffers.
+open buffers. Closing the last buffer replaces it with an empty [No Name]
+one and the window stays, as in vim; a buffer with unsaved changes refuses
+unless forced with
+.BR :bd! ,
+which discards them.
 .TP
 .B ]b [b
 Cycle to the next / previous buffer; a count skips

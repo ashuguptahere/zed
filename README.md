@@ -85,7 +85,9 @@
   remote directory opens the fuzzy picker over it and `:w` writes back
   atomically (temp file + rename, so a dropped connection never leaves a
   half-written file)
-- **Mouse support** (SGR): wheel scrolling, tab clicks and explorer clicks
+- **Mouse support** (SGR): wheel scrolling, tab clicks and explorer clicks —
+  in the pickers too (`zedit .` starts in one): click a result row to select
+  it, click it again to open, so a double-click opens from anywhere
   (Shift+drag still selects text in your terminal; plain clicks in the text
   area are unbound), with vim's centring on long jumps so scrolling doesn't
   drag the cursor around
@@ -104,7 +106,9 @@
 - **Multiple buffers and windows**: `:e`, `:bn`/`:bp`/`:bd`/`:ls`, `]b`/`[b`
   to cycle (counts work: `2]b`), a `Space b` Buffers menu;
   `:split`/`:vsplit` and `Ctrl-w` navigation; every buffer keeps its own
-  cursor, undo history, highlighting and language server
+  cursor, undo history, highlighting and language server. `:bd` follows
+  vim: the last buffer is replaced by an empty `[No Name]` (the window
+  stays), a dirty buffer refuses unless forced with `:bd!`
 - **File-tree sidebar** (`Space e`): browse and open files, expand
   directories — by key or by mouse (a single click toggles a directory or
   opens a file, VS Code-style); lives on the left or right (config

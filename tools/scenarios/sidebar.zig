@@ -283,18 +283,25 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("\x1b");
         s.drain(300);
 
-        // With a picker open, the picker owns the screen: a click on the tree
-        // it shows must be swallowed, exactly like every other picker key.
+        // With a picker open the explorer still acts: a tree-row click
+        // delegates to the tree's own hit-test, so a directory toggles under
+        // the live picker (mouse parity for the `zedit .` view — clicks used
+        // to be swallowed by the picker's mode gate).
         s.send(" ff");
         s.drain(400);
         s.send("\x1b[<0;5;2M\x1b[<0;5;2m");
         s.drain(400);
+        {
+            var scr = try screen(ctx, &s);
+            defer scr.deinit();
+            ctx.check("an explorer click acts under the live picker", treeHas(ctx, &scr, "inner.txt", 1, 28));
+        }
         s.send("\x1b"); // close the picker
         s.drain(400);
         {
             var scr = try screen(ctx, &s);
             defer scr.deinit();
-            ctx.check("a click while the picker is open is swallowed", !treeHas(ctx, &scr, "inner.txt", 1, 28));
+            ctx.check("the toggle survives closing the picker", treeHas(ctx, &scr, "inner.txt", 1, 28));
         }
         s.send(":qa\r");
         s.drain(200);

@@ -243,7 +243,9 @@
      :ls         list the open buffers
      :bn / :bp   switch to the next / previous buffer
      ]b / [b     the same, as normal-mode keys (2]b skips one)
-     :bd         close the current buffer
+     :bd         close the current buffer (the last one becomes an
+                 empty [No Name]; unsaved changes refuse — :bd!
+                 discards them)
 
   Windows split the screen so two buffers (or two views of one) are
   visible at the same time:
@@ -280,7 +282,8 @@
 
   1. Press  Space f f , type a few letters of a file name, watch the
      preview follow your selection, then press Esc to cancel (or Enter
-     to open it — remember :bp brings you back).
+     to open it — remember :bp brings you back).  The mouse works here
+     too: click a result row to select it, click it again to open.
 
   2. Press  Space f w  and search the project for the word  wombat .
      This very file should show up.

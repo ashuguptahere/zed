@@ -61,12 +61,44 @@ pub fn run(ctx: *h.Ctx) !void {
         defer s.finish();
         s.drain(400);
 
+        // Special keys never render in the indicator — nvim shows nothing
+        // for a bare <Down>, <Esc> or <PageDown> (0.12.4 --clean, pty at
+        // 100x24: last row stays empty after each); showcmd used to capture
+        // their raw escape bytes and paint ^[[B / ^[ / ^[[6~.
         var m = s.mark();
+        s.send("\x1b[B"); // Down
+        s.drain(250);
+        ctx.check("a bare arrow never renders its sequence", !s.containsPlainSince(ctx.gpa, m, "^["));
+        m = s.mark();
+        s.send("\x1b[6~"); // PageDown
+        s.drain(250);
+        ctx.check("a paging key renders nothing", !s.containsPlainSince(ctx.gpa, m, "^["));
+        m = s.mark();
+        s.send("\x1b"); // bare Esc
+        s.drain(250);
+        ctx.check("a bare Esc renders nothing", !s.containsPlainSince(ctx.gpa, m, "^["));
+        s.send("gg");
+        s.drain(150);
+
+        m = s.mark();
         s.send("2");
         s.drain(250);
         ctx.check("showcmd shows a pending count", s.containsPlainSince(ctx.gpa, m, "2 "));
 
+        // nvim (pty-probed): `2` then <Down> executes the counted motion and
+        // the indicator clears — the arrow's bytes never show. (The clearing
+        // itself is asserted via Esc/yy below; the cursor move redraws the
+        // gutter's line numbers, so a "2 " negative would false-fail here.)
         m = s.mark();
+        s.send("\x1b[B");
+        s.drain(250);
+        ctx.check("a special key executes the count and clears", !s.containsPlainSince(ctx.gpa, m, "^["));
+        s.send("gg");
+        s.drain(150);
+
+        m = s.mark();
+        s.send("2");
+        s.drain(250);
         s.send("d");
         s.drain(250);
         ctx.check("showcmd shows count + operator", s.containsPlainSince(ctx.gpa, m, "2d "));
@@ -74,7 +106,8 @@ pub fn run(ctx: *h.Ctx) !void {
         m = s.mark();
         s.send("\x1b"); // abandon it
         s.drain(250);
-        ctx.check("Esc clears the indicator", !s.containsPlainSince(ctx.gpa, m, "2d "));
+        ctx.check("Esc clears the indicator", !s.containsPlainSince(ctx.gpa, m, "2d ") and
+            !s.containsPlainSince(ctx.gpa, m, "^["));
 
         m = s.mark();
         s.send("\"a");
@@ -110,11 +143,82 @@ pub fn run(ctx: *h.Ctx) !void {
         s.drain(150);
 
         m = s.mark();
+        s.send("d");
+        s.drain(250);
+        ctx.check("showcmd shows the pending operator", s.containsPlainSince(ctx.gpa, m, "d "));
+        // nvim (pty-probed): `d` then <Down> executes and clears — no ^[[B
+        // on the statusline, and no lingering "d ".
+        m = s.mark();
+        s.send("\x1b[B");
+        s.drain(250);
+        ctx.check("operator + special key executes and clears", !s.containsPlainSince(ctx.gpa, m, "d ") and
+            !s.containsPlainSince(ctx.gpa, m, "^["));
+        s.send("u");
+        s.drain(150);
+
+        m = s.mark();
         s.send("qa"); // start recording into register a
         s.drain(250);
         ctx.check("recording marker still shows", s.containsPlainSince(ctx.gpa, m, "REC @a"));
         s.send("q:q!\r");
         s.drain(300);
+    }
+
+    // ---- showcmd is display-only: macros and dot-repeat keep raw bytes ----
+    // Recording `qa x <Down> q`, replaying `2@a`, then `d<Down>` and `.`:
+    // the arrow must still replay from its stored escape bytes — only the
+    // indicator's capture changed, never the macro/dot buffers.
+    {
+        const path = "/tmp/zedit_it_showcmd_replay.txt";
+        h.writeFile(ctx.io, path, "a1\na2\na3\nb4\nb5\nb6\nb7\nb8\n");
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, path } });
+        defer s.finish();
+        s.drain(400);
+        s.sendKeys(&.{ "qa", "x", "\x1b[B", "q", "2@a" }); // strip lines 1-3's first char
+        s.drain(300);
+        s.sendKeys(&.{ "d", "\x1b[B", "." }); // delete lines 4-5, repeat for 6-7
+        s.drain(300);
+        s.send(":wq\r");
+        s.drain(500);
+        const got = h.readFile(ctx.gpa, ctx.io, path);
+        defer ctx.gpa.free(got);
+        const ok = std.mem.eql(u8, got, "1\n2\n3\nb8\n");
+        if (!ok) std.debug.print("       got  \"{f}\"\n", .{std.zig.fmtString(got)});
+        ctx.check("macros and dot-repeat still replay special keys", ok);
+        h.removeFile(ctx.io, path);
+    }
+
+    // ---- arrows take a count, like h/l/k/j (nvim-probed) ----
+    // nvim 0.12.4 --clean -n through a pty, file "abcdef\nghijkl", cursor
+    // on line 2 col 1: `3<Right>` `x` -> "ghikl" (column 4, counted);
+    // `$` `2<Left>` `x` -> "ghikl"; `$` `2<BS>` `x` -> "ghikl" (<BS> counts
+    // like <Left>); `$` `2<Home>` `x` -> "hijkl" (<Home> ignores the count).
+    // `2<Down>` lands two lines down (`:ls` "line 4" from line 2). zedit used
+    // to hardcode 1 for every arrow while doMotion consumed the count anyway.
+    {
+        const path = "/tmp/zedit_it_arrow_count.txt";
+        h.writeFile(ctx.io, path, "abcdef\nghijkl\nmnopqr\nstuvwx\n");
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, path } });
+        defer s.finish();
+        s.drain(400);
+        s.sendKeys(&.{ "3\x1b[C", "x" }); // 3<Right> on line 1: col 4, x -> "abcef"
+        s.drain(200);
+        s.sendKeys(&.{ "2\x1b[B", "x" }); // 2<Down> keeps the goal col: line 3 'p', x -> "mnoqr"
+        s.drain(200);
+        s.sendKeys(&.{ "$", "2\x1b[D", "x" }); // $ 2<Left> on "mnoqr": col 3 'o', x -> "mnqr"
+        s.drain(200);
+        s.sendKeys(&.{ "\x1b[B", "$", "2\x7f", "x" }); // line 4, $ 2<BS>: "stuvwx" -> "stuwx"
+        s.drain(200);
+        s.sendKeys(&.{ "2\x1b[A", "\x1b[H", "x" }); // 2<Up>: line 2, Home, x -> "hijkl"
+        s.drain(200);
+        s.send(":wq\r");
+        s.drain(500);
+        const got = h.readFile(ctx.gpa, ctx.io, path);
+        defer ctx.gpa.free(got);
+        const ok = std.mem.eql(u8, got, "abcef\nhijkl\nmnqr\nstuwx\n");
+        if (!ok) std.debug.print("       got  \"{f}\"\n", .{std.zig.fmtString(got)});
+        ctx.check("arrows and <BS> take a count like h/l/k/j", ok);
+        h.removeFile(ctx.io, path);
     }
 
     // ---- viewport centring + wheel drag (nvim-verified) ----

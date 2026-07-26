@@ -273,7 +273,8 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 - **Motions:** `h j k l`, `w W b B e E`, `0 ^ $`, `gg G {n}G`, `f F t T` + `; ,`
   (counted: `3fa` lands on the third, `d2fa` multiplies the counts),
   `%`, `{ }` (paragraph, jump motions), `H M L`, `Ctrl-d/u/f/b`,
-  arrows/Home/End/PageUp/Down. With soft wrap on, `gj`/`gk` step a *screen*
+  arrows/Home/End/PageUp/Down (arrows and `<BS>` take counts like
+  `h j k l`; Home/End ignore them — nvim-probed). With soft wrap on, `gj`/`gk` step a *screen*
   row and `g0`/`g$` reach the ends of one, while `j`/`k`/`0`/`$` keep their
   buffer-line meaning (vim's split). `H M L`, `Ctrl-d/u/f/b` and the wheel all
   count screen rows, so they land where they look like they should on wrapped
@@ -286,12 +287,14 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   screen row (owner's choice over nvim's drag-at-the-edge rule, which stranded
   the cursor at the bottom of the page; at the top or bottom of the file
   nothing moves at all). SGR mouse reporting: the wheel, tab clicks and
-  explorer clicks act; every other mouse report — releases, right/middle
-  buttons, drags — decodes to an inert key swallowed before command
-  dispatch, so it can never reach showcmd or reset a pending operator or
-  count the wheel would keep. A plain click or drag in the text area stays
-  unbound, and text selection still works with the terminal's Shift+drag
-  (which bypasses mouse reporting entirely).
+  explorer clicks act — in the picker view too (the `zedit .` startup;
+  result rows select then open, see Pickers); every other mouse report —
+  releases, right/middle buttons, drags — decodes to an inert key swallowed
+  before command dispatch, so it can never reach showcmd or reset a pending
+  operator or count the wheel would keep. Command and visual modes swallow
+  clicks whole (a click must not cancel an operator). A plain click or drag
+  in the text area stays unbound, and text selection still works with the
+  terminal's Shift+drag (which bypasses mouse reporting entirely).
 - **Operators:** `d` `c` `y`, `> <` (indent), doubled `dd cc yy >> <<`; `D C Y`,
   `x X s S`, `r` `~` `J`. `cw`/`cW` act like `ce`/`cE`.
 - **Structural objects (tree-sitter):** `af`/`if` select a function (whole, or
@@ -336,7 +339,15 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   `$XDG_STATE_HOME/zedit/undo` on every save and picked up when the file is
   next opened, so `u` still reaches yesterday's changes; each write also
   prunes sibling undo files untouched for 90 days (logged), so the state
-  directory cannot grow forever. All nvim-verified in
+  directory cannot grow forever. **"Modified" is undo-state identity**, not
+  a touched-flag: every history move recomputes the buffer's dirty flag as
+  "current state ≠ the state at the last write" (`History.last_saved`,
+  vim's `b_u_save_nr`) — so undoing back to what is on disk lets `:q` exit,
+  undoing *past* the write stays modified even when the text matches, and
+  retyping identical text by hand stays modified too (identity, not
+  content; all four cases nvim-pinned). `:wa` marks every written buffer's
+  state; a pruned saved state means travel stays conservatively dirty until
+  the next write. All nvim-verified in
   `vim_compat`.
   **Repeat:** `.` repeats the last change.
 - **Visual:** `v` (char), `V` (line), `Ctrl-v` (block); move to extend, `o`
@@ -391,7 +402,15 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   `f w`, references) — a **live preview** of the selection on the right,
   tree-sitter highlighted and scrolled to the matching line. `Ctrl-d` /
   `Ctrl-u` and the mouse wheel scroll the preview itself (it stops at the end
-  of the file), independently of the selection. `zedit <dir>` opens
+  of the file), independently of the selection. The mouse works in a picker
+  too (`pickerClick`, sharing the renderer's geometry via `pickerLayout` —
+  the tabline's draw-here-click-here invariant): a click on a result row
+  selects it (the preview follows), a click on the already-selected row
+  opens it — so a double-click opens from anywhere, with no double-click
+  timer — while explorer rows toggle/open exactly as in normal mode (a
+  file-open closes the picker first) and a tab click closes the picker and
+  lands on that buffer; the prompt row and the preview stay inert, so
+  terminal text selection keeps working there. `zedit <dir>` opens
   straight into that view (tree + search + preview), which is what an empty
   session shows instead of a blank buffer. The preview is skipped for remote
   entries (an ssh round trip per keystroke) and on narrow terminals, where the
@@ -569,7 +588,12 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   (nvim-verified) — a `zedit .` session does not keep its startup buffer in
   `:ls`. `:bn`/`:bp` and `]b`/`[b` cycle the active window through buffers
   (`]b` takes a count: `2]b` skips one), `:bd` closes
-  one, `:ls` lists them. Split the view with `:split`/`:vsplit` (or `Ctrl-w s`/
+  one, `:ls` lists them. `:bd` on the *last* buffer replaces it with a fresh
+  empty `[No Name]` and the window stays (vim's rule, nvim-verified — and
+  that fresh buffer is adopted by the next `:e`, closing the cycle); a dirty
+  buffer refuses with "no write since last change" (nvim's E89) unless
+  forced with `:bd!`, which discards. `Space c` / `Space b c` route through
+  the same close. Split the view with `:split`/`:vsplit` (or `Ctrl-w s`/
   `Ctrl-w v`), move focus with `Ctrl-w w`/`h`/`j`/`k`/`l`, and `:close`/`Ctrl-w
   c` / `:only` manage them. Splits tile evenly in one orientation; each window
   shows any buffer (the same buffer can be open in two windows). Per-window
@@ -629,7 +653,11 @@ The renderer aims for an AstroNvim/Helix look: true-colour themes in
 Dark — set in the config, or live via `:theme` / the `Space f t` picker), a
 powerline title bar (EXPLORER segment + buffer tabs, see above) and statusline
 (coloured mode block, separators, the command as typed
-right-aligned beside the position — vim's 'showcmd', but the finished command
+right-aligned beside the position — vim's 'showcmd', capturing the *decoded*
+key, never raw bytes: characters and control keys read back as text (`^W`),
+while special keys (arrows, Esc, paging) execute at once and render nothing,
+nvim's rule pty-probed — an arrow used to smear `^[[B` across the indicator;
+the finished command
 stays readable until the next one starts, and yields its width to a status
 message — plus filetype/position/percent segments; the filename+dirty segment
 appears only when the title bar is off, since the active tab already shows it
@@ -812,8 +840,9 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   opening it stays fast; previewing a language whose grammar has not been
   compiled yet costs a one-off 3–14 ms on the following frame. The title bar
   lists buffers in open order with no reordering, and mouse support is still
-  wheel + tab clicks + explorer clicks only (no click-to-move-cursor or drag
-  selection — a plain click or drag in the text area stays unbound).
+  wheel + tab clicks + explorer clicks + picker result-row clicks only (no
+  click-to-move-cursor or drag selection — a plain click or drag in the text
+  area stays unbound).
 - The sidebar tree is flat-file only (no rename/create/delete operations from
   the tree), rebuilt on expand/toggle rather than watched (reveal-on-switch
   rebuilds only when it has to expand an ancestor). The side-by-side diff's
@@ -838,7 +867,8 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   `Ctrl-d/u/f/b` still
   count buffer lines, so a step across a woven block moves the view
   further than it looks. Mouse
-  support is wheel + tab clicks + explorer clicks (no click-to-move or drag
+  support is wheel + tab clicks + explorer clicks + picker result-row clicks
+  (no click-to-move or drag
   selection), and the wheel scrolls the focused window, not the one under the
   pointer.
 - Remote editing is whole-file over ssh: every read/write moves the entire file
