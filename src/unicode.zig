@@ -54,7 +54,7 @@ fn isContinuation(byte: u8) bool {
 /// zero-width marks render in 0 cells, East-Asian wide and most emoji in 2,
 /// everything else in 1. Control characters are the caller's concern.
 pub fn width(cp: u21) u8 {
-    if (cp == 0) return 0;
+    if (cp == 0) return 1; // NUL renders as '?' (one cell): every render path replaces control cps
     if (isZeroWidth(cp)) return 0;
     if (isWide(cp)) return 2;
     return 1;
@@ -151,4 +151,13 @@ test "display width" {
     try std.testing.expectEqual(@as(usize, 2), displayWidth("世")); // wide CJK
     try std.testing.expectEqual(@as(usize, 1), displayWidth("é"));
     try std.testing.expectEqual(@as(usize, 0), width(0x0301)); // combining acute
+}
+
+test "NUL is one cell: the render paths replace it with '?'" {
+    // width(0) = 0 would make the layout count fewer cells than the terminal
+    // shows, so a NUL-heavy binary line overflowed its row (found via .DS_Store).
+    try std.testing.expectEqual(@as(u8, 1), width(0));
+    const d = decode(&[_]u8{0x92}); // lone continuation byte: malformed
+    try std.testing.expectEqual(@as(u21, 0xFFFD), d.cp);
+    try std.testing.expectEqual(@as(usize, 1), d.len);
 }

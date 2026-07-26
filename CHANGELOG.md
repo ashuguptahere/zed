@@ -2,6 +2,17 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.10.0 - 2026-07-26
+
+### Fixed
+
+- Opening a file from the file picker parked the cursor on a seemingly random line ("line 29"): the picker row's `line` field holds the project-walk cache index for the files picker, and the open path mistook it for a line number (clamped to the file's last line). The preview pane was scrolled to the same wrong place. Files now open at the top, like `:e`; the grep/reference/diagnostic/symbol pickers keep their real line jumps.
+- Binary files (e.g. `.DS_Store`) rendered as rows overflowing the terminal and wrapping back around: a NUL byte was counted as zero cells but drawn as one `?`, so the width accounting never stopped the row at the window edge.
+
+### Security
+
+- Invalid UTF-8 bytes reached the terminal raw: the sanitizer checked the *decoded* codepoint (U+FFFD, not a control) rather than the malformed byte itself, so bytes 0x80–0xFF in file content, previews, tab labels or LSP text were emitted verbatim — and 0x80–0x9F are live 8-bit control codes (CSI!) on some terminals. Every sanitizer site now renders a malformed byte as one `?`. Pinned by a pty test that decodes the raw output stream and asserts no invalid byte escapes and no row exceeds the window.
+
 ## 0.9.0 - 2026-07-26
 
 ### Changed

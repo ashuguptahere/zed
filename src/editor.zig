@@ -3643,7 +3643,10 @@ pub const Editor = struct {
         }
         const path = self.gpa.dupe(u8, self.itemPath(it)) catch return;
         defer self.gpa.free(path);
-        const line = if (it.line > 0) it.line - 1 else 0;
+        // `.line` is 1-based only for the kinds that name a source line; the
+        // files picker stores its cache index there (for the prefilter), which
+        // must not be mistaken for a place to put the cursor.
+        const line: usize = if (self.picker_kind == .files) 0 else if (it.line > 0) it.line - 1 else 0;
         self.closePicker();
         self.openFile(path, line);
     }
@@ -3973,7 +3976,7 @@ pub const Editor = struct {
         if (self.picker_sel >= self.picker_filtered.items.len) return self.clearPreview();
         const it = self.picker_items.items[self.picker_filtered.items[self.picker_sel]];
         const ipath = self.itemPath(it);
-        self.preview_top = if (it.line > 0) it.line - 1 else 0;
+        self.preview_top = if (self.previewKind() == .line and it.line > 0) it.line - 1 else 0;
         if (self.preview_path) |p| {
             if (std.mem.eql(u8, p, ipath)) return; // already loaded
         }
@@ -4129,7 +4132,7 @@ pub const Editor = struct {
             if (d.cp == '\t') {
                 try self.emitSpaces(cw);
             } else {
-                try self.emit(if (isControlCp(d.cp)) "?" else line[i .. i + d.len]);
+                try self.emit(if (isControlCp(d.cp) or invalidDecode(d)) "?" else line[i .. i + d.len]);
             }
             used += cw;
             i += d.len;
@@ -7303,7 +7306,7 @@ pub const Editor = struct {
             if (used + w >= avail) break;
             const in_param = sig.active_start != sig.active_end and i >= sig.active_start and i < sig.active_end;
             try self.setFg(if (in_param) th.builtin else th.status_seg_fg);
-            try self.emit(if (isControlCp(d.cp)) "?" else label[i .. i + d.len]);
+            try self.emit(if (isControlCp(d.cp) or invalidDecode(d)) "?" else label[i .. i + d.len]);
             used += w;
             i += d.len;
         }
@@ -7546,7 +7549,7 @@ pub const Editor = struct {
             } else {
                 const stl = if (byte < self.style_buf.items.len) self.style_buf.items[byte] else .normal;
                 try self.setFg(if (is_extra) th.bg else if (in_match) th.fg else self.styleColor(stl));
-                try self.emit(if (isControlCp(d.cp)) "?" else bytes);
+                try self.emit(if (isControlCp(d.cp) or invalidDecode(d)) "?" else bytes);
             }
         }
         // Inlay hints anchored at end-of-line (e.g. return-type hints).
@@ -7616,7 +7619,7 @@ pub const Editor = struct {
             j += d.len;
             if (start + w <= left) continue;
             if (start >= right) break;
-            try self.emit(if (isControlCp(d.cp)) "?" else bytes);
+            try self.emit(if (isControlCp(d.cp) or invalidDecode(d)) "?" else bytes);
         }
     }
 
@@ -7873,7 +7876,7 @@ pub const Editor = struct {
             i += d.len;
             if (d.cp == '\t') {
                 try self.emit(" ");
-            } else if (isControlCp(d.cp)) {
+            } else if (isControlCp(d.cp) or invalidDecode(d)) {
                 try self.emit("?");
             } else {
                 try self.emit(bytes);
@@ -8261,6 +8264,14 @@ fn commentKinds(lang: syntax.Language) []const []const u8 {
 /// come back as synthetic keystrokes (the classic pager-injection class).
 fn isControlCp(cp: u21) bool {
     return cp < 0x20 or cp == 0x7f or (cp >= 0x80 and cp <= 0x9f);
+}
+
+/// A malformed byte: `decode` reports it as U+FFFD consuming one byte (a
+/// genuine U+FFFD in the text decodes with len 3). It must render as `?` —
+/// emitting the raw byte would leak 0x80-0x9F (8-bit CSI!) to the terminal
+/// and desynchronise the width accounting from what the terminal displays.
+fn invalidDecode(d: unicode.Decoded) bool {
+    return d.cp == 0xFFFD and d.len == 1;
 }
 
 fn textEditAfter(_: void, a: lsp.TextEdit, b: lsp.TextEdit) bool {

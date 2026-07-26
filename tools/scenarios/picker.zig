@@ -240,6 +240,69 @@ pub fn run(ctx: *h.Ctx) !void {
         s.drain(200);
     }
 
+    // Picking a file whose walk index exceeds its line count must open it at
+    // the top: PickItem.line holds the *cache index* for the files picker (the
+    // prefilter's key), and treating it as a line number parked the cursor on
+    // "line 29" of whatever the user opened (clamped to the file's last line).
+    {
+        const dir = try h.tempDir(ctx.gpa);
+        defer ctx.gpa.free(dir);
+        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        var i: usize = 0;
+        while (i < 40) : (i += 1) {
+            var nb: [64]u8 = undefined;
+            const pad = h.join(ctx, dir, std.fmt.bufPrint(&nb, "pad_{d:0>3}.txt", .{i}) catch unreachable);
+            defer ctx.gpa.free(pad);
+            h.writeFile(ctx.io, pad, "filler\n");
+        }
+        const hit = h.join(ctx, dir, "zz_target.txt");
+        defer ctx.gpa.free(hit);
+        h.writeFile(ctx.io, hit, "first\nsecond\nthird\nfourth\nfifth\n");
+
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "." }, .cwd = dir, .cols = 110 });
+        defer s.finish();
+        s.drain(700);
+        s.send("zztarget");
+        s.drain(500);
+        s.send("\r"); // open it
+        s.drain(400);
+        s.send("ix"); // an edit lands where the cursor actually is
+        s.drain(200);
+        s.send("\x1b:wq\r");
+        s.drain(400);
+        const got = h.readFile(ctx.gpa, ctx.io, hit);
+        defer ctx.gpa.free(got);
+        const ok = std.mem.startsWith(u8, got, "xfirst");
+        if (!ok) std.debug.print("       got  \"{f}\"\n", .{std.zig.fmtString(got)});
+        ctx.check("file picker opens at the top, not at the cache index", ok);
+    }
+
+    // ...while the grep picker must keep jumping to the matched line.
+    {
+        const dir = try h.tempDir(ctx.gpa);
+        defer ctx.gpa.free(dir);
+        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const f = h.join(ctx, dir, "one.txt");
+        defer ctx.gpa.free(f);
+        h.writeFile(ctx.io, f, "aaa\nbbb\nNEEDLE here\nddd\n");
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "one.txt" }, .cwd = dir, .cols = 110 });
+        defer s.finish();
+        s.drain(400);
+        s.send(" fwNEEDLE");
+        s.drain(600);
+        s.send("\r");
+        s.drain(400);
+        s.send("ix");
+        s.drain(200);
+        s.send("\x1b:wq\r");
+        s.drain(400);
+        const got = h.readFile(ctx.gpa, ctx.io, f);
+        defer ctx.gpa.free(got);
+        const ok = std.mem.indexOf(u8, got, "\nxNEEDLE here\n") != null;
+        if (!ok) std.debug.print("       got  \"{f}\"\n", .{std.zig.fmtString(got)});
+        ctx.check("grep picker still jumps to the matched line", ok);
+    }
+
     // A grep typed before the project walk has delivered anything must still
     // cover the files that arrive afterwards. (The picker opens on an empty
     // file cache by design — the walk streams in — so a grep that ran once and

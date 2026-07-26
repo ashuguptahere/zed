@@ -155,6 +155,10 @@ The shortlist is done; these are the next-highest gaps from
       headless-nvim ground truth: visual-mode `a` objects behaved like `i`
       ones, counted find-char (`3fa`, `d3fa`, `2;`) ignored the count, and the
       grep picker missed every file the project walk had not yet delivered.
+- [x] Fixed: file picker opened at the walk-cache index instead of line 1
+      (preview scrolled wrong too); NUL width accounting (binary rows
+      overflowed the terminal); malformed UTF-8 bytes leaked raw to the
+      terminal past the sanitizer (8-bit CSI class) — all pty-pinned.
 - [x] Repo-wide over-engineering audit applied: 81 verified findings, net
       −722 lines (init field-defaults, std.json serializers, shared
       xdgPath/nowMs/writeAll helpers, harness dedup, ~30 hand-rolled loops

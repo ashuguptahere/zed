@@ -18,9 +18,15 @@ work", they win.
 4. **Goal-driven** — turn vague instructions into verifiable success criteria
    before starting. "Make training faster" is not a goal; "AMP wired, cuDNN
    benchmark on, throughput ≥ 1.5× baseline on the v8n smoke" is.
-5. **YAGNI** — build features when they reach the roadmap, never
-   speculatively; prefer an algorithm or a closed-form computation over a
-   loop, and a `std` call over hand-rolled code (audits sweep for both).
+5. **YAGNI, thoroughly and heavily.** Build features when they reach the
+   roadmap, never speculatively. Concretely: no abstraction until it has two
+   real callers (a second *imagined* caller does not count); no config knob,
+   parameter, or field that nothing sets; no pub that only re-exports; no
+   wrapper that only delegates; delete dead code the moment it stops earning
+   its place rather than keeping it "in case". Prefer an algorithm or a
+   closed-form computation over a loop, and a `std` call over hand-rolled
+   code. The 2026-07 repo-wide audit removed 722 lines of exactly these —
+   treat its findings as precedent, and sweep again periodically.
 6. **No feature without a test. No exceptions.** A change to behaviour that
    lands without a test in the *same commit* is not finished, however obvious
    it looks. Concretely:
