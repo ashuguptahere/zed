@@ -132,6 +132,17 @@ pub fn run(ctx: *h.Ctx) !void {
     try diffViewsExclusive(ctx);
     try sidePhantomToggle(ctx);
     try inlinePhantomToggle(ctx);
+    try lineDiffWeave(ctx);
+    try lineDiffRefreshOnSave(ctx);
+    try lineDiffExclusive(ctx);
+    try lineDiffNoChanges(ctx);
+    try lineDiffTotalDeletion(ctx);
+    try lineDiffEdgeAnchors(ctx);
+    try lineDiffWrapGeometry(ctx);
+    try lineDiffTallBlock(ctx);
+    try lineDiffSanitized(ctx);
+    try lineDiffCleanSaveCloses(ctx);
+    try lineDiffSplit(ctx);
 }
 
 // === side-by-side diff view (Space g s) =====================================
@@ -741,6 +752,450 @@ fn inlinePhantomToggle(ctx: *h.Ctx) !void {
         ctx.check("and toggles closed again", screenCount(&scr, ctx.gpa, "@@") == 0 and
             screenCount(&scr, ctx.gpa, "[diff]") == 0);
     }
+    s.send(":qa\r");
+    s.drain(300);
+}
+
+// === line-diff view (Space g l) =============================================
+
+// Changed-line tint: mixColor(tokyonight bg, git_change, 25%).
+const TINT_CHANGE = h.rgb(75, 64, 54);
+
+/// Whether `needle` starts exactly at 1-based column `want` of `row`.
+fn colIs(scr: *h.Screen, gpa: std.mem.Allocator, row: usize, needle: []const u8, want: usize) bool {
+    const col = scr.colOf(gpa, row, needle) orelse return false;
+    return col == want;
+}
+
+/// The weave itself. Repo: committed one..six; worktree changes "two" to
+/// "TWO-C", deletes "four"/"five" and appends "added7". Expected rows (tab
+/// bar = 1, gutter 5 wide, text from col 6):
+///   2 one   3 -two(virtual)   4 TWO-C   5 three
+///   6 -four(virtual)   7 -five(virtual)   8 six   9 added7
+/// Deleted text renders red-tinted at those positions with a `-` gutter and
+/// no line number; added/changed real rows tint; `j` steps real line to real
+/// line (the cursor can never land on a woven row); the toggle closes the
+/// view; :qa stays unblocked (the weave is pure rendering).
+fn lineDiffWeave(ctx: *h.Ctx) !void {
+    const dir = try diffRepo(ctx, "one\ntwo\nthree\nfour\nfive\nsix\n", "one\nTWO-C\nthree\nsix\nadded7\n");
+    defer ctx.gpa.free(dir);
+    defer h.removeTree(ctx.gpa, ctx.io, dir);
+
+    var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "f.txt" }, .cwd = dir, .term = "xterm-256color" });
+    defer s.finish();
+    s.drain(500);
+    s.send(" gl");
+    s.drain(700);
+    {
+        var scr = try snapshot(ctx, &s);
+        defer scr.deinit();
+        ctx.check("line view: changed-from text weaves above its line", colIs(&scr, ctx.gpa, 3, "two", 6) and
+            colIs(&scr, ctx.gpa, 4, "TWO-C", 6));
+        ctx.check("line view: deleted lines weave in order above the survivor", colIs(&scr, ctx.gpa, 6, "four", 6) and
+            colIs(&scr, ctx.gpa, 7, "five", 6) and colIs(&scr, ctx.gpa, 8, "six", 6));
+        ctx.check("line view: woven rows are red-tinted", scr.at(3, 6).bg == TINT_DELETE and
+            scr.at(6, 6).bg == TINT_DELETE and scr.at(7, 6).bg == TINT_DELETE);
+        ctx.check("line view: woven rows have a - gutter, no line number", scr.at(3, 1).cp == '-' and
+            scr.at(3, 4).cp == ' ' and scr.at(6, 1).cp == '-' and scr.at(6, 4).cp == ' ');
+        ctx.check("line view: real rows keep their numbers", scr.at(2, 4).cp == '1' and
+            scr.at(4, 4).cp == '1'); // absolute on the cursor line, relative below
+        ctx.check("line view: changed and added rows tint", scr.at(4, 6).bg == TINT_CHANGE and
+            scr.at(9, 6).bg == TINT_ADD);
+        ctx.check("line view: cursor starts on the first real row", scr.cur_row == 2);
+    }
+    s.send("j"); // one -> TWO-C: must skip the woven "two"
+    s.drain(300);
+    {
+        var scr = try snapshot(ctx, &s);
+        defer scr.deinit();
+        ctx.check("line view: j skips a woven row", scr.cur_row == 4);
+    }
+    s.send("jj"); // three -> six: must skip the two woven deletions
+    s.drain(300);
+    {
+        var scr = try snapshot(ctx, &s);
+        defer scr.deinit();
+        ctx.check("line view: j skips a woven block", scr.cur_row == 8);
+    }
+    const m = s.mark();
+    s.send(" gl"); // toggle the weave off
+    s.drain(500);
+    {
+        var scr = try snapshot(ctx, &s);
+        defer scr.deinit();
+        ctx.check("line view: toggle closes the weave", s.containsPlainSince(ctx.gpa, m, "diff closed") and
+            screenCount(&scr, ctx.gpa, "four") == 0 and screenCount(&scr, ctx.gpa, "five") == 0);
+    }
+    s.send(":qa\r");
+    s.drain(500);
+    ctx.check("line view: :qa is not blocked", s.contains("\x1b[?1049l"));
+}
+
+/// The weave reflects the file as last saved (the gutter-sign contract):
+/// inserting a line above every hunk and writing re-anchors the woven rows
+/// one line down, and the new line gets its added tint.
+fn lineDiffRefreshOnSave(ctx: *h.Ctx) !void {
+    const dir = try diffRepo(ctx, "one\ntwo\nthree\nfour\nfive\nsix\n", "one\nTWO-C\nthree\nsix\nadded7\n");
+    defer ctx.gpa.free(dir);
+    defer h.removeTree(ctx.gpa, ctx.io, dir);
+
+    var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "f.txt" }, .cwd = dir, .term = "xterm-256color" });
+    defer s.finish();
+    s.drain(500);
+    s.send(" gl");
+    s.drain(700);
+    s.send("ggOzzz\x1b"); // a new first line, above every hunk
+    s.drain(400);
+    s.send(":w\r");
+    s.drain(700);
+    s.send("j"); // off the zzz row, so its tint is not hidden by the cursorline
+    s.drain(300);
+    var scr = try snapshot(ctx, &s);
+    defer scr.deinit();
+    // Rows now: 2 zzz  3 one  4 -two(virtual)  5 TWO-C  ...
+    ctx.check("saved edit re-anchors the weave", colIs(&scr, ctx.gpa, 5, "TWO-C", 6) and
+        colIs(&scr, ctx.gpa, 4, "two", 6) and scr.at(4, 6).bg == TINT_DELETE and scr.at(4, 1).cp == '-');
+    ctx.check("saved new line tints as added", scr.at(2, 6).bg == TINT_ADD);
+    s.send(":qa\r");
+    s.drain(300);
+}
+
+/// Three-way exclusivity: opening any diff view closes the line-diff weave,
+/// and Space g l closes whichever of the other two is open — both ways for
+/// both, with the weave's deleted text as the witness ("four"/"five" exist
+/// only in the weave, the diff scratch, or the index pane).
+fn lineDiffExclusive(ctx: *h.Ctx) !void {
+    const dir = try diffRepo(ctx, "one\ntwo\nthree\nfour\nfive\nsix\n", "one\nTWO-C\nthree\nsix\nadded7\n");
+    defer ctx.gpa.free(dir);
+    defer h.removeTree(ctx.gpa, ctx.io, dir);
+
+    var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "f.txt" }, .cwd = dir, .term = "xterm-256color" });
+    defer s.finish();
+    s.drain(500);
+    s.send(" gl"); // weave on
+    s.drain(700);
+    s.send(" gd"); // the unified-diff scratch must replace the weave
+    s.drain(700);
+    {
+        var scr = try snapshot(ctx, &s);
+        defer scr.deinit();
+        ctx.check("gd over gl: scratch opens", screenCount(&scr, ctx.gpa, "[diff]") > 0);
+    }
+    s.send(" gd"); // plain toggle: if gl's weave survived, "four" would still show
+    s.drain(500);
+    {
+        var scr = try snapshot(ctx, &s);
+        defer scr.deinit();
+        ctx.check("gd over gl: the weave was closed, not stacked", screenCount(&scr, ctx.gpa, "[diff]") == 0 and
+            screenCount(&scr, ctx.gpa, "four") == 0);
+    }
+    s.send(" gl"); // weave on again
+    s.drain(700);
+    s.send(" gs"); // the side pair must replace the weave
+    s.drain(700);
+    {
+        var scr = try snapshot(ctx, &s);
+        defer scr.deinit();
+        ctx.check("gs over gl: pair opens", screenCount(&scr, ctx.gpa, "(index)") > 0);
+        // The deleted lines now live in the index pane only — a leftover
+        // weave would put "four" in the left (worktree) half too.
+        var left_four = false;
+        var row: usize = 2;
+        while (row <= 23) : (row += 1) {
+            if (scr.colOf(ctx.gpa, row, "four")) |col| {
+                if (col < 41) left_four = true;
+            }
+        }
+        ctx.check("gs over gl: deleted text only in the index pane", !left_four);
+    }
+    s.send(" gs"); // toggle the pair closed
+    s.drain(500);
+    {
+        var scr = try snapshot(ctx, &s);
+        defer scr.deinit();
+        ctx.check("gs over gl: weave closed too", screenCount(&scr, ctx.gpa, "(index)") == 0 and
+            screenCount(&scr, ctx.gpa, "four") == 0);
+    }
+    // Reverse direction: gl closes an open scratch / pair.
+    s.send(" gd");
+    s.drain(700);
+    s.send("\x17w"); // back to the file window (the scratch has no path)
+    s.drain(300);
+    s.send(" gl");
+    s.drain(700);
+    {
+        var scr = try snapshot(ctx, &s);
+        defer scr.deinit();
+        ctx.check("gl over gd: scratch closed, weave on", screenCount(&scr, ctx.gpa, "[diff]") == 0 and
+            colIs(&scr, ctx.gpa, 6, "four", 6) and scr.at(6, 6).bg == TINT_DELETE);
+    }
+    s.send(" gl"); // weave off again
+    s.drain(400);
+    s.send(" gs");
+    s.drain(700);
+    s.send(" gl");
+    s.drain(700);
+    {
+        var scr = try snapshot(ctx, &s);
+        defer scr.deinit();
+        ctx.check("gl over gs: pair closed, weave on", screenCount(&scr, ctx.gpa, "(index)") == 0 and
+            colIs(&scr, ctx.gpa, 6, "four", 6) and scr.at(6, 6).bg == TINT_DELETE);
+    }
+    s.send(":qa\r");
+    s.drain(300);
+}
+
+/// A file with no changes reports so and never enters the view: the second
+/// press must say "no changes" again, not "diff closed".
+fn lineDiffNoChanges(ctx: *h.Ctx) !void {
+    const dir = try diffRepo(ctx, "same\nlines\n", "same\nlines\n");
+    defer ctx.gpa.free(dir);
+    defer h.removeTree(ctx.gpa, ctx.io, dir);
+
+    var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "f.txt" }, .cwd = dir, .term = "xterm-256color" });
+    defer s.finish();
+    s.drain(500);
+    s.send(" gl");
+    s.drain(500);
+    ctx.check("line view: no changes reports", s.containsPlain(ctx.gpa, "no changes"));
+    s.send("j"); // motion: clears the message so the next one re-renders
+    s.drain(200);
+    const m = s.mark();
+    s.send(" gl");
+    s.drain(500);
+    ctx.check("line view: no changes never entered the view", s.containsPlainSince(ctx.gpa, m, "no changes") and
+        !s.containsPlainSince(ctx.gpa, m, "diff closed"));
+    s.send(":qa\r");
+    s.drain(300);
+}
+
+/// A total deletion: every committed line weaves above the single empty
+/// line the worktree file still has, and the cursor sits below the block.
+fn lineDiffTotalDeletion(ctx: *h.Ctx) !void {
+    const dir = try diffRepo(ctx, "alpha\nbravo\ncharlie\ndelta\necho5\n", "");
+    defer ctx.gpa.free(dir);
+    defer h.removeTree(ctx.gpa, ctx.io, dir);
+
+    var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "f.txt" }, .cwd = dir, .term = "xterm-256color" });
+    defer s.finish();
+    s.drain(500);
+    s.send(" gl");
+    s.drain(700);
+    var scr = try snapshot(ctx, &s);
+    defer scr.deinit();
+    ctx.check("total deletion: all old lines weave above row 0", colIs(&scr, ctx.gpa, 2, "alpha", 6) and
+        colIs(&scr, ctx.gpa, 6, "echo5", 6) and scr.at(2, 6).bg == TINT_DELETE and scr.at(6, 6).bg == TINT_DELETE);
+    ctx.check("total deletion: the real (empty) line keeps its number", scr.at(7, 4).cp == '1');
+    ctx.check("total deletion: cursor sits on the real line below the block", scr.cur_row == 7);
+    s.send(":qa\r");
+    s.drain(500);
+    ctx.check("total deletion: :qa exits cleanly", s.contains("\x1b[?1049l"));
+}
+
+/// The weave's edge anchors: a change of line 1 puts its old line *above*
+/// row 0 (leading block, before the first real row), and a deletion at EOF
+/// weaves after the last real line, before the `~` rows.
+fn lineDiffEdgeAnchors(ctx: *h.Ctx) !void {
+    const dir = try diffRepo(ctx, "one\ntwo\nthree\nfour\n", "ONE\ntwo\n");
+    defer ctx.gpa.free(dir);
+    defer h.removeTree(ctx.gpa, ctx.io, dir);
+
+    var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "f.txt" }, .cwd = dir, .term = "xterm-256color" });
+    defer s.finish();
+    s.drain(500);
+    s.send(" gl");
+    s.drain(700);
+    {
+        var scr = try snapshot(ctx, &s);
+        defer scr.deinit();
+        ctx.check("edge anchors: line-1 old text weaves above the first row", colIs(&scr, ctx.gpa, 2, "one", 6) and
+            scr.at(2, 6).bg == TINT_DELETE and scr.at(2, 1).cp == '-' and colIs(&scr, ctx.gpa, 3, "ONE", 6));
+        ctx.check("edge anchors: EOF deletion weaves after the last line", colIs(&scr, ctx.gpa, 5, "three", 6) and
+            colIs(&scr, ctx.gpa, 6, "four", 6) and scr.at(5, 6).bg == TINT_DELETE and scr.at(7, 1).cp == '~');
+        ctx.check("edge anchors: cursor starts below the leading block", scr.cur_row == 3);
+    }
+    s.send("G"); // to the last real line: lands between the woven blocks
+    s.drain(300);
+    {
+        var scr = try snapshot(ctx, &s);
+        defer scr.deinit();
+        ctx.check("edge anchors: G lands on the last real line", scr.cur_row == 4 and
+            colIs(&scr, ctx.gpa, 4, "two", 6));
+    }
+    s.send(":qa\r");
+    s.drain(300);
+}
+
+/// Soft wrap stays on in the weave: a wrapped real line fills its rows and
+/// the cursor's screen row counts woven rows *and* wrap segments above it.
+fn lineDiffWrapGeometry(ctx: *h.Ctx) !void {
+    const long = "wrapme " ** 20; // 140 display columns: two rows in an 80-col window
+    const dir = try diffRepo(ctx, "one\ntwo\nthree\nfour\n", "one\n" ++ long ++ "\nTHREE\nfour\n");
+    defer ctx.gpa.free(dir);
+    defer h.removeTree(ctx.gpa, ctx.io, dir);
+
+    var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "f.txt" }, .cwd = dir, .term = "xterm-256color" });
+    defer s.finish();
+    s.drain(500);
+    s.send(" gl");
+    s.drain(700);
+    s.send("jjj"); // one -> wrapped line -> THREE -> four
+    s.drain(300);
+    var scr = try snapshot(ctx, &s);
+    defer scr.deinit();
+    // Rows: 2 one, 3 -two, 4 -three, 5+6 the wrapped line, 7 THREE, 8 four.
+    ctx.check("wrap geometry: woven rows then the wrapped line", colIs(&scr, ctx.gpa, 3, "two", 6) and
+        colIs(&scr, ctx.gpa, 4, "three", 6) and colIs(&scr, ctx.gpa, 5, "wrapme", 6) and
+        scr.at(6, 6).cp != '~' and colIs(&scr, ctx.gpa, 7, "THREE", 6));
+    ctx.check("wrap geometry: cursor row counts woven + wrap rows", scr.cur_row == 8 and
+        colIs(&scr, ctx.gpa, 8, "four", 6));
+    s.send(":qa\r");
+    s.drain(300);
+}
+
+/// A deleted block taller than the window: no crash, only the block's head
+/// shows (buffer-row top — the documented limit), and j/k across it land on
+/// the right lines with the view following.
+fn lineDiffTallBlock(ctx: *h.Ctx) !void {
+    var committed: std.ArrayList(u8) = .empty;
+    defer committed.deinit(ctx.gpa);
+    var worktree: std.ArrayList(u8) = .empty;
+    defer worktree.deinit(ctx.gpa);
+    var i: usize = 1;
+    while (i <= 205) : (i += 1) { // delete lines 3..202: a 200-line block
+        var lb: [16]u8 = undefined;
+        const line = std.fmt.bufPrint(&lb, "line{d}\n", .{i}) catch unreachable;
+        try committed.appendSlice(ctx.gpa, line);
+        if (i <= 2 or i >= 203) try worktree.appendSlice(ctx.gpa, line);
+    }
+    const dir = try diffRepo(ctx, committed.items, worktree.items);
+    defer ctx.gpa.free(dir);
+    defer h.removeTree(ctx.gpa, ctx.io, dir);
+
+    var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "f.txt" }, .cwd = dir, .term = "xterm-256color" });
+    defer s.finish();
+    s.drain(600);
+    s.send(" gl");
+    s.drain(700);
+    {
+        var scr = try snapshot(ctx, &s);
+        defer scr.deinit();
+        ctx.check("tall block: head fills the window below its anchor", colIs(&scr, ctx.gpa, 3, "line2", 6) and
+            colIs(&scr, ctx.gpa, 4, "line3", 6) and colIs(&scr, ctx.gpa, 23, "line22", 6) and
+            scr.at(4, 6).bg == TINT_DELETE and scr.at(23, 6).bg == TINT_DELETE);
+    }
+    s.send("jj"); // line1 -> line2 -> line203: crossing jumps the view
+    s.drain(300);
+    {
+        var scr = try snapshot(ctx, &s);
+        defer scr.deinit();
+        ctx.check("tall block: j across it lands past the block", scr.cur_row == 2 and
+            colIs(&scr, ctx.gpa, 2, "line203", 6));
+    }
+    s.send("k"); // back across: line2 on top, the block below again
+    s.drain(300);
+    {
+        var scr = try snapshot(ctx, &s);
+        defer scr.deinit();
+        ctx.check("tall block: k back across shows the head again", scr.cur_row == 2 and
+            colIs(&scr, ctx.gpa, 2, "line2", 6) and colIs(&scr, ctx.gpa, 3, "line3", 6));
+    }
+    s.send("G\x15\x04"); // G, Ctrl-u, Ctrl-d: stress the paging paths
+    s.drain(400);
+    s.send(":qa\r");
+    s.drain(500);
+    ctx.check("tall block: :qa exits cleanly", s.contains("\x1b[?1049l"));
+}
+
+/// Woven text is untrusted (git output): a committed line holding a raw
+/// ESC/CSI renders it as `?`, never as a live escape — the raw stream since
+/// the weave opened must not contain the committed sequence.
+fn lineDiffSanitized(ctx: *h.Ctx) !void {
+    const dir = try diffRepo(ctx, "one\n\x1b[31mred\ntwo\n", "one\ntwo\n");
+    defer ctx.gpa.free(dir);
+    defer h.removeTree(ctx.gpa, ctx.io, dir);
+
+    var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "f.txt" }, .cwd = dir, .term = "xterm-256color" });
+    defer s.finish();
+    s.drain(500);
+    const m = s.mark();
+    s.send(" gl");
+    s.drain(700);
+    ctx.check("sanitize: the committed ESC never reaches the terminal", std.mem.indexOf(u8, s.out.items[m..], "\x1b[31m") == null);
+    var scr = try snapshot(ctx, &s);
+    defer scr.deinit();
+    ctx.check("sanitize: the woven row shows ? for the ESC byte", colIs(&scr, ctx.gpa, 3, "?[31mred", 6) and
+        scr.at(3, 6).bg == TINT_DELETE);
+    s.send(":qa\r");
+    s.drain(300);
+}
+
+/// Saving a buffer edited back to the committed text closes the weave (no
+/// hunks left) and clears the gutter signs with it — the refresh derives
+/// the signs from the weave's own diff run.
+fn lineDiffCleanSaveCloses(ctx: *h.Ctx) !void {
+    const dir = try diffRepo(ctx, "one\ntwo\nthree\n", "one\nTWO\nthree\n");
+    defer ctx.gpa.free(dir);
+    defer h.removeTree(ctx.gpa, ctx.io, dir);
+
+    var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "f.txt" }, .cwd = dir, .term = "xterm-256color" });
+    defer s.finish();
+    s.drain(500);
+    s.send(" gl");
+    s.drain(700);
+    {
+        var scr = try snapshot(ctx, &s);
+        defer scr.deinit();
+        ctx.check("clean save: the weave is up first", colIs(&scr, ctx.gpa, 3, "two", 6) and
+            scr.at(3, 6).bg == TINT_DELETE);
+    }
+    s.send("jciwtwo\x1b"); // restore the committed text
+    s.drain(300);
+    s.send(":w\r");
+    s.drain(700);
+    s.send("gg"); // off the row: the cursorline bg must not mask a stale tint
+    s.drain(300);
+    var scr = try snapshot(ctx, &s);
+    defer scr.deinit();
+    ctx.check("clean save: the weave closes with nothing to show", screenCount(&scr, ctx.gpa, "two") == 1 and
+        colIs(&scr, ctx.gpa, 3, "two", 6) and scr.at(3, 6).bg != TINT_DELETE and scr.at(3, 1).cp != '-');
+    // The refresh derived the (empty) signs from the weave's diff run: a
+    // stale sign would leave its bar glyph in the gutter's sign column.
+    ctx.check("clean save: the gutter sign cleared with it", scr.at(3, 1).cp == ' ' and
+        scr.at(3, 6).bg != TINT_CHANGE);
+    s.send(":qa\r");
+    s.drain(300);
+}
+
+/// The weave is document state: a split shows it in both windows, and it
+/// stays put when the buffer cycles away and back.
+fn lineDiffSplit(ctx: *h.Ctx) !void {
+    const dir = try diffRepo(ctx, "one\ntwo\nthree\nfour\nfive\nsix\n", "one\nTWO-C\nthree\nsix\nadded7\n");
+    defer ctx.gpa.free(dir);
+    defer h.removeTree(ctx.gpa, ctx.io, dir);
+
+    var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "f.txt" }, .cwd = dir, .term = "xterm-256color" });
+    defer s.finish();
+    s.drain(500);
+    s.send(" gl");
+    s.drain(700);
+    s.send(":vsplit\r");
+    s.drain(500);
+    {
+        var scr = try snapshot(ctx, &s);
+        defer scr.deinit();
+        // Woven "four" shows once per pane, on the same screen row.
+        ctx.check("split: both panes weave", screenCount(&scr, ctx.gpa, "four") == 2 and
+            rowCount(&scr, ctx.gpa, 6, "four") == 2);
+    }
+    s.send(":close\r");
+    s.drain(400);
+    s.send(":bn\r"); // away (single buffer: stays put) and prove the weave is still on
+    s.drain(300);
+    var scr = try snapshot(ctx, &s);
+    defer scr.deinit();
+    ctx.check("split: the weave survives window churn", colIs(&scr, ctx.gpa, 6, "four", 6) and
+        scr.at(6, 6).bg == TINT_DELETE);
     s.send(":qa\r");
     s.drain(300);
 }

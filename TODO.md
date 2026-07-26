@@ -312,3 +312,34 @@ The shortlist is done; these are the next-highest gaps from
       fast double-clicks in one write, and operator preservation across a
       click (wheel parity). Fix checks proven fail-without; suites green
       (unit + 605 itest).
+- [x] Line-by-line diff view (owner request: "line by line view which
+      vscode/zed has"): `Space g l` / `:ldiff` weaves each hunk's old lines
+      into the file's own window as red virtual rows above their
+      replacements — no split, no scratch, the buffer stays editable.
+      `git.LineDiff` retains the `-` bodies from the same single
+      `git diff -U0` parse the signs use (`above(row)` anchors old text at
+      new-side rows); the renderer injects the rows before each anchored
+      line (dim `-` gutter, no number, sanitized, unwrapped/clipped, still
+      row-diffed), added/changed lines tint on their real rows (a pure
+      deletion's survivor is deliberately not tinted — the woven rows carry
+      it), and cursor/scroll geometry (`cursorScreenRow`, `lineAtScreenRow`,
+      a scroll nudge, `ldLeadingSkip` for a pre-line-1 deletion) skips the
+      virtual rows so the cursor can never land on one. Refreshes on `:w`
+      like the signs (closing when no changes remain); the three diff views
+      are exclusive per file, both ways. Unit tests for the `-U0` body
+      parse/anchors/padding; 20 pty checks (weave positions/tints/gutter,
+      j-skip, save re-anchor, three-way exclusivity, no-changes, total
+      deletion, :qa) — 18 proven fail-without, the rest trivially-true
+      guards. Review hardening: a `:w` refresh with the weave open now
+      derives the gutter signs from the weave's own hunks — one `git diff`
+      subprocess instead of two (strace-verified: open +1, `Space g l` +1,
+      `:w` +1), clearing the signs when the weave closes clean; 17 more pty
+      checks (leading line-1 / EOF anchors, soft-wrap cursor-row geometry,
+      a 200-line block taller than the window crossed both ways, woven-text
+      ESC sanitization raw-stream assert, clean-save closing weave + signs,
+      weave surviving splits/`:bn` — pinned as doc state, shown per
+      window); known gaps now name the tall-block limit (buffer-row top:
+      only the head shows, `j` across jumps the view) and that
+      `Ctrl-d/u/f/b` count buffer lines like the wheel. Row-diff deltas
+      (~1.1 KB per cursor move with the weave up) and zero idle CPU
+      measured. Suites green (unit + 648 itest).

@@ -188,6 +188,7 @@ const Doc = struct {
     name: ?[]u8 = null, // display name for scratch buffers (buf.path == null)
     diff_of: ?*Doc = null, // side-by-side index snapshot: the worktree doc it mirrors
     diff_hunks: []git.Hunk = &.{}, // set on the index snapshot: aligns the pair's panes
+    line_diff: ?git.LineDiff = null, // `Space g l`: the in-buffer weave of old lines
     lang: syntax.Language,
     history: undo.History,
     marks: [26]?Pos = [_]?Pos{null} ** 26,
@@ -506,6 +507,7 @@ pub const Editor = struct {
     fn freeDocState(doc: *Doc, gpa: Allocator) void {
         if (doc.name) |n| gpa.free(n);
         gpa.free(doc.diff_hunks);
+        if (doc.line_diff) |*ld| ld.deinit(gpa);
         doc.history.deinit();
         doc.git_signs.deinit();
         if (doc.ts) |*t| t.deinit();
@@ -1370,6 +1372,7 @@ pub const Editor = struct {
                 if (k == .char) switch (k.char) {
                     'd' => self.gitDiffInline(), // unified diff in a split
                     's' => self.gitDiffSide(), // HEAD/index version side by side
+                    'l' => self.gitDiffLine(), // old lines woven into the buffer's window
                     else => {},
                 };
             },
@@ -4759,10 +4762,10 @@ pub const Editor = struct {
     /// Every completable command, by its full name (all are also accepted
     /// spelled out by execEx; the short forms still work typed by hand).
     const command_names = [_][]const u8{
-        "bdelete", "bnext",  "bprevious", "buffers", "close",  "diff", "earlier",
-        "edit",    "format", "later",     "ls",      "only",   "quit", "quitall",
-        "split",   "theme",  "undolist",  "vdiff",   "vsplit", "wall", "wq",
-        "write",   "x",
+        "bdelete", "bnext",  "bprevious", "buffers",  "close", "diff",   "earlier",
+        "edit",    "format", "later",     "ldiff",    "ls",    "only",   "quit",
+        "quitall", "split",  "theme",     "undolist", "vdiff", "vsplit", "wall",
+        "wq",      "write",  "x",
     };
 
     fn wildCommands(self: *Editor, prefix: []const u8) void {
@@ -4900,6 +4903,8 @@ pub const Editor = struct {
             self.gitDiffInline();
         } else if (eql(cmd, "vdiff")) {
             self.gitDiffSide();
+        } else if (eql(cmd, "ldiff")) {
+            self.gitDiffLine();
         } else if (eql(cmd, "theme")) {
             if (arg.len == 0) {
                 self.openThemePicker();
@@ -5216,7 +5221,22 @@ pub const Editor = struct {
     fn refreshGit(self: *Editor) void {
         if (self.isLargeFile()) return;
         if (self.buf.path) |p| {
-            git.compute(self.gpa, self.io, p, &self.git_signs);
+            // The line-diff weave follows the same save-refresh contract, and
+            // its parse keeps the hunk headers, so one `git diff` run feeds
+            // the weave and the gutter signs both. A file with no remaining
+            // changes closes the view (nothing left to weave) and has no
+            // signs either way.
+            if (self.d.line_diff != null) {
+                self.clearLineDiff(self.d);
+                self.d.line_diff = git.computeLineDiff(self.gpa, self.io, p);
+                if (self.d.line_diff) |ld| {
+                    git.signsFromHunks(ld.hunks, true, &self.git_signs);
+                } else {
+                    self.git_signs.clearRetainingCapacity();
+                }
+            } else {
+                git.compute(self.gpa, self.io, p, &self.git_signs);
+            }
             // A saved worktree file re-aligns its open side-by-side view: the
             // snapshot's hunks and tint rows follow the same diff the gutter
             // signs just did.
@@ -6577,6 +6597,19 @@ pub const Editor = struct {
             const dtop = self.diffDisplayTop(p);
             return @min(git.rowAtOrAfter(p.hunks, new_side, dtop + n), last);
         }
+        if (self.d.line_diff) |*ld| { // a row in a woven block counts for the line below it
+            var used: usize = if (self.top == 0) ld.above(0).len - self.ldLeadingSkip(ld) else 0;
+            var row = self.top;
+            while (true) {
+                if (used > n) return row; // n landed in the block above `row`
+                const rows = self.lineRows(row);
+                if (used + rows > n) return row;
+                used += rows;
+                if (row >= last) return last;
+                row += 1;
+                used += ld.above(row).len;
+            }
+        }
         if (!self.wrapping()) return @min(self.top + n, last);
         var row = self.top;
         var used: usize = 0;
@@ -6595,11 +6628,35 @@ pub const Editor = struct {
             const new_side = self.cur == p.wt;
             return git.displayRow(p.hunks, new_side, self.cy) -| self.diffDisplayTop(p);
         }
-        if (!self.wrapping()) return self.cy -| self.top;
+        // The line-diff view weaves virtual rows above lines; every one
+        // between the top and the cursor pushes the cursor down a row.
+        var woven: usize = 0;
+        if (self.d.line_diff) |*ld| {
+            var r = self.top;
+            while (r < self.cy) : (r += 1) woven += ld.above(r + 1).len;
+            if (self.top == 0) woven += ld.above(0).len - self.ldLeadingSkip(ld);
+        }
+        if (!self.wrapping()) return self.cy -| self.top + woven;
         var used: usize = 0;
         var row = self.top;
         while (row < self.cy) : (row += 1) used += self.lineRows(row);
-        return used + self.cursorSeg();
+        return used + self.cursorSeg() + woven;
+    }
+
+    /// Rows of a leading woven block (old lines above buffer row 0) hidden
+    /// so the cursor stays on screen — the line-diff view's analogue of
+    /// `paneDisplayTop`'s clamp. Zero unless the top is row 0. Active
+    /// window only: an inactive window shows the block from its start.
+    fn ldLeadingSkip(self: *Editor, ld: *const git.LineDiff) usize {
+        if (self.top != 0) return 0;
+        const gap = ld.above(0).len;
+        if (gap == 0) return 0;
+        // The cursor's screen row with the whole block shown.
+        var csr: usize = gap;
+        var r: usize = 0;
+        while (r < self.cy) : (r += 1) csr += self.lineRows(r) + ld.above(r + 1).len;
+        csr += self.cursorSeg();
+        return @min(gap, csr -| (self.textRows() -| 1));
     }
 
     /// The cursor's column within the window's text area.
@@ -6616,7 +6673,19 @@ pub const Editor = struct {
     /// drag it along.
     fn scroll(self: *Editor) void {
         if (self.diffPairOf(self.cur)) |p| return self.scrollDiffPane(p);
-        if (self.wrapping()) return self.scrollWrapped();
+        if (self.wrapping()) self.scrollWrapped() else self.scrollFlat();
+        // The line-diff view's woven rows sit between the top and the
+        // cursor, so the flat/wrapped rules above can leave the cursor's
+        // *visual* row past the window: nudge the top down until it fits.
+        // (A block above row 0 clamps via ldLeadingSkip instead — there is
+        // no top above row 0 to give back.)
+        if (self.d.line_diff != null) {
+            const rows = self.textRows();
+            while (self.top < self.cy and self.cursorScreenRow() >= rows) self.top += 1;
+        }
+    }
+
+    fn scrollFlat(self: *Editor) void {
         const rows = self.textRows();
         const half = rows / 2;
         if (self.cy < self.top) {
@@ -6707,10 +6776,11 @@ pub const Editor = struct {
                 break;
             }
         }
-        // The two diff views are exclusive per file: opening one closes the
-        // other first, so they can never stack into a third window, and the
-        // split starts from the pre-diff layout with the orientation this
-        // view sets.
+        // The three diff views are exclusive per file: opening one closes
+        // the others first, so they can never stack into a third window,
+        // and the split starts from the pre-diff layout with the
+        // orientation this view sets.
+        self.clearLineDiff(self.d);
         for (self.docs.items) |doc| {
             if (doc.diff_of == self.d) {
                 self.closeDiffScratch(doc, self.d);
@@ -6756,9 +6826,10 @@ pub const Editor = struct {
             }
         }
         const path = self.buf.path orelse return self.setStatus("no file to diff", .{});
-        // The two diff views are exclusive per file (see gitDiffInline): an
-        // open inline diff closes before the pair opens, so the vertical
-        // split starts from the pre-diff layout.
+        // The three diff views are exclusive per file (see gitDiffInline):
+        // an open inline diff or line-diff weave closes before the pair
+        // opens, so the vertical split starts from the pre-diff layout.
+        self.clearLineDiff(self.d);
         var db: [300]u8 = undefined;
         const dlabel = std.fmt.bufPrint(&db, "[diff] {s}", .{std.fs.path.basename(path)}) catch "[diff]";
         for (self.docs.items) |doc| {
@@ -6808,6 +6879,51 @@ pub const Editor = struct {
         self.cy = wt_win.cy;
         self.cx = wt_win.cx;
         self.goal_col = wt_win.goal_col;
+    }
+
+    /// `Space g l` / `:ldiff`: the line-by-line diff VS Code and Zed show —
+    /// the old (deleted / changed-from) lines woven into the file's own
+    /// window as red-tinted virtual rows above the lines that replaced
+    /// them, while added/changed lines keep their tint on the real rows. No
+    /// split, no scratch, no second buffer: a rendering mode of the window,
+    /// and the file stays fully editable. Pressed again it toggles the
+    /// weave off. Like the gutter signs, the woven rows reflect the file as
+    /// last saved and refresh on `:w`.
+    fn gitDiffLine(self: *Editor) void {
+        if (self.d.line_diff != null) {
+            self.clearLineDiff(self.d);
+            return self.setStatus("diff closed", .{});
+        }
+        const path = self.buf.path orelse return self.setStatus("no file to diff", .{});
+        if (self.isLargeFile()) return self.setStatus("file too large to diff", .{});
+        // The three diff views are exclusive per file: opening this one
+        // closes the side-by-side pair and the unified-diff scratch first.
+        for (self.docs.items) |doc| {
+            if (doc.diff_of == self.d) {
+                self.closeDiffScratch(doc, self.d);
+                break;
+            }
+        }
+        var nb: [300]u8 = undefined;
+        const label = std.fmt.bufPrint(&nb, "[diff] {s}", .{std.fs.path.basename(path)}) catch "[diff]";
+        for (self.docs.items) |doc| {
+            if (doc.buf.path == null and doc.name != null and std.mem.eql(u8, doc.name.?, label)) {
+                self.closeDiffScratch(doc, self.d);
+                break;
+            }
+        }
+        self.setStatus("", .{}); // an exclusivity close above said "diff closed"
+        self.d.line_diff = git.computeLineDiff(self.gpa, self.io, path) orelse
+            return self.setStatus("no changes", .{});
+    }
+
+    /// Drop `doc`'s line-diff weave: the toggle's off half, the other diff
+    /// views' exclusivity, and the refresh-on-save recompute.
+    fn clearLineDiff(self: *Editor, doc: *Doc) void {
+        if (doc.line_diff) |*ld| {
+            ld.deinit(self.gpa);
+            doc.line_diff = null;
+        }
     }
 
     /// The toggle's close half: remove every window showing a diff scratch
@@ -7263,9 +7379,10 @@ pub const Editor = struct {
 
     /// Whether `w` takes part in a visible side-by-side diff pair — the index
     /// snapshot pane itself, or a worktree pane some visible index pane
-    /// mirrors. Paired panes get vimdiff-style change-line tinting.
+    /// mirrors — or shows the line-diff weave. All get vimdiff-style
+    /// change-line tinting.
     fn diffTinted(self: *Editor, w: *Win) bool {
-        if (w.doc.diff_of != null) return true;
+        if (w.doc.diff_of != null or w.doc.line_diff != null) return true;
         for (self.wins.items) |other| {
             if (other.doc.diff_of == w.doc) return true;
         }
@@ -7354,6 +7471,16 @@ pub const Editor = struct {
         const pair = self.diffPairOf(w);
         const new_side = if (pair) |p| w == p.wt else false;
         const dtop = if (pair) |p| self.diffDisplayTop(p) else 0;
+        // The line-diff view (`Space g l`): old lines woven in as virtual
+        // rows above the lines that replaced them (exclusive with a pair).
+        const ld: ?*const git.LineDiff = if (pair == null)
+            (if (w.doc.line_diff) |*x| x else null)
+        else
+            null;
+        const lskip = if (ld) |x| (if (view.active) self.ldLeadingSkip(x) else 0) else 0;
+        var vlines: []const []const u8 = &.{}; // the block above `file_row`
+        var vi: usize = 0; // next woven line to draw from it
+        var vrow: usize = std.math.maxInt(usize); // the row `vlines` was fetched for
         var r: usize = 0;
         var file_row = view.top;
         // With soft wrap one buffer line can fill several screen rows, so the
@@ -7371,6 +7498,21 @@ pub const Editor = struct {
                 },
                 .row => |br| file_row = br,
             };
+            if (ld) |x| {
+                if (seg == 0 and file_row != vrow and file_row <= view.buf.lineCount()) {
+                    vrow = file_row;
+                    vlines = x.above(file_row);
+                    // The block above the top row is above the viewport when
+                    // scrolled (like a pair's fillers); at row 0 the leading
+                    // clamp decides how much of it shows.
+                    vi = if (file_row != view.top) 0 else if (view.top == 0) @min(lskip, vlines.len) else vlines.len;
+                }
+                if (vi < vlines.len) {
+                    try self.emitDeletedRow(&view, vlines[vi]);
+                    vi += 1;
+                    continue;
+                }
+            }
             if (file_row >= view.buf.lineCount()) {
                 try self.setBg(th.bg);
                 try self.setFg(th.fg_dim);
@@ -7383,7 +7525,10 @@ pub const Editor = struct {
             var row_bg = if (is_cur) th.cursorline else th.bg;
             if (tinted and !is_cur) {
                 if (view.git.get(file_row)) |sign| {
-                    row_bg = mixColor(th.bg, switch (sign) {
+                    // In the line view a pure deletion is *shown* by its woven
+                    // rows; tinting the surviving neighbour too would mark
+                    // unchanged text as changed.
+                    if (ld == null or sign != .deleted) row_bg = mixColor(th.bg, switch (sign) {
                         .added => th.git_add,
                         .changed => th.git_change,
                         .deleted => th.git_delete,
@@ -7420,6 +7565,35 @@ pub const Editor = struct {
         const th = theme.current;
         try self.setBg(mixColor(th.bg, if (new_side) th.git_delete else th.git_add, 25));
         try self.emitSpaces(w.gw);
+    }
+
+    /// One woven old line in the line-diff view: a red-tinted virtual row
+    /// showing text the worktree no longer has. It lives in no buffer — a
+    /// dim `-` in the gutter, no line number, the cursor never lands on it —
+    /// and is drawn unwrapped, clipped at the window edge. The text comes
+    /// from `git diff` output: untrusted bytes, sanitized like buffer text.
+    fn emitDeletedRow(self: *Editor, view: *const View, text: []const u8) !void {
+        const th = theme.current;
+        try self.setBg(mixColor(th.bg, th.git_delete, 25));
+        try self.setFg(th.fg_dim);
+        try self.emit("-");
+        try self.emitSpaces(view.gutter - 1);
+        try self.setFg(th.fg);
+        var dc: usize = 0;
+        var i: usize = 0;
+        while (i < text.len and dc < view.cols) {
+            const d = unicode.decode(text[i..]);
+            const w = cellWidth(d.cp, dc);
+            if (dc + w > view.cols) break;
+            if (d.cp == '\t' or d.cp == ' ') {
+                try self.emitSpaces(w);
+            } else {
+                try self.emit(if (isControlCp(d.cp) or invalidDecode(d)) "?" else text[i .. i + d.len]);
+            }
+            dc += w;
+            i += d.len;
+        }
+        try self.emitSpaces(view.cols - dc);
     }
 
     /// A per-window status line (filename + position), drawn on the window's
@@ -7654,6 +7828,7 @@ pub const Editor = struct {
     const git_keys = [_]WhichKey{
         .{ .key = "d", .desc = "diff (inline)" },
         .{ .key = "s", .desc = "diff (side by side)" },
+        .{ .key = "l", .desc = "diff (line view)" },
     };
 
     // The startup screen: a title, the recently-opened list, and the keys that

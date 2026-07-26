@@ -127,7 +127,7 @@ Per `/home/origo/Desktop/zed/CLAUDE.md`:
 - Fuzzy pickers: files, project-wide content grep, buffers, themes — with a warm cached file list
 - Which-key leader popup with nested groups (≈ Helix space-mode hints)
 - File-tree sidebar (`Space e`) — Helix stable has only a directory *picker*, no tree
-- Git gutter signs plus inline and side-by-side diff views (the diff views exceed Helix)
+- Git gutter signs plus inline, side-by-side and woven line-by-line diff views (the diff views exceed Helix)
 - Multiple buffers + windows/splits with `Ctrl-w` focus/management
 - Surround (`ys`/`cs`/`ds`/visual `S` ≈ Helix `ms`/`mr`/`md`), comment toggling, auto-pairs
 - Multiple cursors (restricted one-per-line vs Helix's full selection model)
@@ -198,7 +198,7 @@ Ground truth: `/home/origo/Desktop/zed/CLAUDE.md` (note: the on-disk version is 
 - **Tree-sitter highlighting, incremental + viewport-scoped queries**, 10 languages, two-layer Markdown (an injections approximation)
 - **AstroNvim-style leader UX:** which-key popup with nested groups (`Space f/l/g/e/c/w/q`)
 - **Telescope-equivalents:** fuzzy file finder, project content grep (regex, per line), buffer picker, theme picker — with a warm cached file list
-- **gitsigns-equivalent** gutter signs, plus inline unified diff and side-by-side index diff views
+- **gitsigns-equivalent** gutter signs, plus inline unified diff, side-by-side index diff, and a VS Code-style in-buffer line-by-line diff (old lines woven in as virtual rows)
 - **neo-tree-equivalent** sidebar file explorer (navigation/open + reveal of the active file on buffer switch; no create/rename/delete, not watched)
 - **Vim core:** motions/operators/registers/marks/macros/dot-repeat, text objects (word + bracket/quote), visual char/line/block (block I/A works; block paste and short-line `A` padding are approximate), surround, incremental highlighted literal search (incsearch+hlsearch defaults)
 - **Multiple cursors** (one-per-line column editing — beyond stock Neovim)

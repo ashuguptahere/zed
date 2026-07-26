@@ -515,11 +515,13 @@ files they touch (unopened ones load into background buffers;
 .B :wa
 saves them).
 .TP
-.B Space g d\fR, \fPSpace g s
+.B Space g d\fR, \fPSpace g s\fR, \fPSpace g l
 Git: unified diff of the current file in a split (also
 .BR :diff ),
-and the index version side by side (also
-.BR :vdiff ).
+the index version side by side (also
+.BR :vdiff ),
+and the line\-by\-line view (also
+.BR :ldiff ).
 In the side\-by\-side view focus stays on the worktree pane (the file you
 edit), the cursor keeps its place, and the index pane is a read\-only
 snapshot. The panes are row\-aligned:
@@ -527,10 +529,18 @@ where one side has lines the other lacks, the shorter side shows tinted
 virtual filler rows (green for additions, red for deletions; changed lines
 are tinted in both panes), and the two panes scroll as one. Soft wrap is off
 inside the paired panes \(em a wrapped line would break the row alignment;
-horizontal scrolling still works there. Pressing either key again \(em from
-either pane \(em closes its view, and the two views are exclusive per file:
-opening one closes the other first. A file with no changes reports so instead
-of opening an empty split.
+horizontal scrolling still works there. The line\-by\-line view opens no
+split at all: each hunk's old lines render as red virtual rows woven into
+the file's own window above the lines that replaced them (a dim \- in the
+gutter, no line number, never under the cursor \(em motions step across
+real lines only), added and changed lines tint on their real rows, and the
+buffer stays fully editable; like the gutter signs, the woven rows reflect
+the file as last saved and refresh on
+.BR :w .
+Pressing the same key again \(em from
+either pane \(em closes its view, and the three views are exclusive per file:
+opening one closes the others first. A file with no changes reports so instead
+of opening an empty view.
 .TP
 .B Space e
 Toggle the file-tree explorer. Its header lives in the title bar; while the

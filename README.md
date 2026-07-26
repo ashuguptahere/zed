@@ -121,9 +121,12 @@
   tinted filler rows (VS Code-style, deletions before line 1 included),
   scrolled in lockstep, changed/added/
   removed lines tinted vimdiff-style, the index pane read-only, focus staying
-  on your file; either key pressed again closes its view, and the two views
-  swap for each other per file — plus the always-on
-  gutter change signs
+  on your file — and `Space g l` the VS Code/Zed line-by-line view: the old
+  lines woven into your own buffer's window as red virtual rows above the
+  lines that replaced them (no split, no second buffer, still fully
+  editable, cursor motion skips the woven rows); any key pressed again
+  closes its view, and the three views swap for each other per file — plus
+  the always-on gutter change signs
 - **Themes**: `tokyonight` (default), `gruvbox`, `catppuccin`, `nord`,
   `onedark` — set in the config, switch live with `:theme <name>` or `Space f t`
 - AstroNvim/Helix-style look: true-colour syntax highlighting (tree-sitter for

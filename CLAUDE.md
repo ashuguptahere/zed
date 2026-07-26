@@ -373,7 +373,7 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   references, `l s` document symbols, `l S` workspace symbols, `l d` line
   diagnostic, `l D` all diagnostics, `l f` format);
   `Space g` = Git (`g d` inline diff,
-  `g s` side-by-side); `Space e` file explorer, `Space c` close buffer,
+  `g s` side-by-side, `g l` line diff); `Space e` file explorer, `Space c` close buffer,
   `Space w` write, `Space q` quit. In a picker: type to filter, `Ctrl-n`/`Ctrl-p` or
   arrows to move, `Enter` to open, `Esc` to cancel, and `Ctrl-r` re-walks the
   project (the file list is cached per session — the Zed-style warm picker:
@@ -501,10 +501,26 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   toggles the inline diff the same way). Both toggles key on a *visible*
   window — a scratch left windowless by `:bn`/`:close` is destroyed and the
   view reopens, never a phantom "diff closed" — and a file with no changes
-  reports "no changes" instead of opening a split. The two views are **exclusive per
-  file**: opening one closes the other first, so they can never stack into a
-  third window, and each view re-tiles in its own orientation. The alignment
-  reflects the file as last saved, like the gutter signs; both refresh on `:w`.
+  reports "no changes" instead of opening a split. `Space g l` / `:ldiff` is
+  the third view — VS Code/Zed's **line-by-line diff**, woven into the
+  file's own window: no split, no scratch, no second buffer, just a
+  rendering mode. Each hunk's old (deleted/changed-from) lines render as
+  red-tinted virtual rows *above* the lines that replaced them (dim `-` in
+  the gutter, no line number, sanitized text, clipped rather than wrapped,
+  never under the cursor — `j`/`k`, `H`/`M`/`L` and scrolling step across
+  real lines only, sharing the pair view's leading-gap clamp for a deletion
+  before line 1), while added/changed lines keep their green/changed tint on
+  their real rows; the buffer stays fully editable throughout. The old text
+  comes from the same one `git diff -U0` the signs use (`git.LineDiff`
+  retains the `-` bodies, and a `:w` refresh derives the signs from the
+  weave's own hunks — one subprocess, not two). The weave is document
+  state, so it shows in every window of the file (`:split` included) and
+  survives `:bn`-and-back. Pressing the key again toggles the weave off.
+  The three views are **exclusive per
+  file**: opening one closes the others first, so they can never stack into a
+  third window, and each split view re-tiles in its own orientation. All of
+  them reflect the file as last saved, like the gutter signs; all refresh on
+  `:w` (a weave with no changes left simply closes).
 - **Startup screen:** launched with no file, zedit shows the recently-opened
   list (files and directories, newest first) with the leaf name first and the
   location dimmed and middle-elided. `j`/`k` or arrows select, `Enter` opens,
@@ -802,7 +818,19 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   read-only). A pane's stored top is a buffer row, so when a leading deletion
   gap (`@@ -1,N +0,0 @@`) is taller than the window only its tail shows
   (cursor-clamped) and the rows above cannot be scrolled into — the full fix
-  is a display-space pane top (a per-Win leading-filler offset). Mouse
+  is a display-space pane top (a per-Win leading-filler offset); the line
+  diff's leading block clamps the same way, and its woven rows above the
+  top row hide once scrolled past, like a pair's fillers. The same
+  buffer-row top means a woven block taller than the window shows only its
+  head: `j` across it jumps the view (the landing line becomes the top) and
+  its tail can never be scrolled into — the display-space top is the fix
+  here too. The weave's
+  anchors are buffer rows fixed at the last save (exactly the signs' model):
+  unsaved edits shift lines out from under them until `:w`, its virtual rows
+  render unwrapped (clipped, always from column 0), and the wheel and
+  `Ctrl-d/u/f/b` still
+  count buffer lines, so a step across a woven block moves the view
+  further than it looks. Mouse
   support is wheel + tab clicks + explorer clicks (no click-to-move or drag
   selection), and the wheel scrolls the focused window, not the one under the
   pointer.

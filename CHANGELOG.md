@@ -2,6 +2,28 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.18.0 - 2026-07-26
+
+### Added
+
+- A third git diff view, the line-by-line one VS Code and Zed show:
+  `Space g l` / `:ldiff` weaves each hunk's old (deleted / changed-from)
+  lines into the file's own window as red-tinted virtual rows above the
+  lines that replaced them, with added/changed lines tinted on their real
+  rows. No split, no scratch, no second buffer — a rendering mode of the
+  window, and the file stays fully editable. The woven rows carry a dim
+  `-` in the gutter and no line number, render unwrapped (clipped) and
+  sanitized, and the cursor can never land on one: `j`/`k`, `H`/`M`/`L`
+  and scrolling step across real lines only, and a deletion before line 1
+  (up to a total deletion) shows above row 0 with the side view's
+  cursor clamp. The old text comes from the same `git diff -U0` the
+  gutter signs use, and a `:w` refresh feeds the weave *and* the signs
+  from one run of it (one subprocess, not two); like the signs, the
+  weave reflects the file as last saved and refreshes on `:w` (closing
+  when no changes remain).
+  Pressing the key again toggles the weave off, and the three diff views
+  are exclusive per file — opening any one closes the others first.
+
 ## 0.17.0 - 2026-07-26
 
 ### Added

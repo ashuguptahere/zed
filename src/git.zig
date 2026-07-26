@@ -135,6 +135,96 @@ fn hunkSigns(h: Hunk, new_side: bool, signs: *Signs) void {
     }
 }
 
+// === the line-diff view's data ==============================================
+
+/// The in-buffer line-diff view's data: the hunk list plus the old
+/// (deleted / changed-from) line text, both from one `git diff -U0` run —
+/// the same subprocess the signs and the side-by-side alignment use.
+/// `lines` holds every hunk's `-` lines in hunk order, slicing into `text`
+/// (the retained diff output). The parser pads a body that runs short of
+/// its header's promise with empty lines, so `lines.len == Σ old.count`
+/// always holds and `above` can index without bounds checks.
+pub const LineDiff = struct {
+    hunks: []Hunk,
+    lines: [][]const u8,
+    text: []u8,
+
+    pub fn deinit(self: *LineDiff, gpa: std.mem.Allocator) void {
+        gpa.free(self.hunks);
+        gpa.free(self.lines);
+        gpa.free(self.text);
+    }
+
+    /// The old lines woven above buffer row `row` — anchored like the
+    /// alignment: a change's old text sits above the first line that
+    /// replaced it, a pure deletion's above the line the gap precedes
+    /// (`row == lineCount` for a deletion at EOF). Empty when no hunk
+    /// anchors there.
+    pub fn above(self: *const LineDiff, row: usize) []const []const u8 {
+        var off: usize = 0;
+        for (self.hunks) |h| {
+            const n = h.old.count;
+            if (n > 0 and sideStart(h, true) == row) return self.lines[off .. off + n];
+            off += n;
+        }
+        return &.{};
+    }
+};
+
+/// The line-diff view's data for `path`, or null when there is nothing to
+/// weave (no repo, no git, no changes).
+pub fn computeLineDiff(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ?LineDiff {
+    if (!inWorkTree(io, path)) return null;
+    const out = runDiff(gpa, io, path) orelse return null;
+    if (parseLineDiff(gpa, out)) |ld| return ld;
+    gpa.free(out);
+    return null;
+}
+
+/// Parse hunk headers *and* their `-` bodies: with `-U0` each header is
+/// followed by exactly `old.count` deleted lines (then the `+` lines, which
+/// the buffer itself shows). On success the returned LineDiff owns `text`;
+/// on null (no hunks, or OOM) it stays with the caller.
+fn parseLineDiff(gpa: std.mem.Allocator, text: []u8) ?LineDiff {
+    var hunks: std.ArrayList(Hunk) = .empty;
+    var lines: std.ArrayList([]const u8) = .empty;
+    ok: {
+        fillLineDiff(gpa, text, &hunks, &lines) catch break :ok;
+        if (hunks.items.len == 0) break :ok;
+        const hs = hunks.toOwnedSlice(gpa) catch break :ok;
+        const ls = lines.toOwnedSlice(gpa) catch {
+            gpa.free(hs);
+            break :ok;
+        };
+        return .{ .hunks = hs, .lines = ls, .text = text };
+    }
+    hunks.deinit(gpa);
+    lines.deinit(gpa);
+    return null;
+}
+
+fn fillLineDiff(gpa: std.mem.Allocator, text: []const u8, hunks: *std.ArrayList(Hunk), lines: *std.ArrayList([]const u8)) !void {
+    var expect: usize = 0; // `-` lines the last header still owes
+    var it = std.mem.splitScalar(u8, text, '\n');
+    while (it.next()) |line| {
+        if (parseHunkHeader(line)) |h| {
+            try lines.appendNTimes(gpa, "", expect); // short body: keep offsets honest
+            try hunks.append(gpa, h);
+            expect = h.old.count;
+        } else if (expect > 0) {
+            if (line.len > 0 and line[0] == '-') {
+                try lines.append(gpa, line[1..]);
+                expect -= 1;
+            } else {
+                // A `+` line or `\ No newline` marker ends the `-` run.
+                try lines.appendNTimes(gpa, "", expect);
+                expect = 0;
+            }
+        }
+    }
+    try lines.appendNTimes(gpa, "", expect);
+}
+
 // === side-by-side row alignment =============================================
 //
 // The aligned display space: each hunk occupies max(old.count, new.count)
@@ -365,6 +455,81 @@ test "rowAtOrAfter snaps a mid-filler top to the next real line" {
     try std.testing.expectEqual(@as(usize, 6), rowAtOrAfter(h, true, 6)); // filler → six
     try std.testing.expectEqual(@as(usize, 2), rowAtOrAfter(h, true, 2)); // a real row is itself
     try std.testing.expectEqual(@as(usize, 0), rowAtOrAfter(h, false, 0));
+}
+
+test "parseLineDiff keeps each hunk's old-line text at its anchor" {
+    const diff =
+        \\diff --git a/f b/f
+        \\--- a/f
+        \\+++ b/f
+        \\@@ -2,1 +2,1 @@
+        \\-two
+        \\+TWO
+        \\@@ -4,2 +3,0 @@
+        \\-four
+        \\-five
+        \\@@ -7,0 +5,1 @@
+        \\+added
+        \\
+    ;
+    const text = try std.testing.allocator.dupe(u8, diff);
+    var ld = parseLineDiff(std.testing.allocator, text) orelse {
+        std.testing.allocator.free(text);
+        return error.TestUnexpectedResult;
+    };
+    defer ld.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 3), ld.hunks.len);
+    // Change: the old text weaves above the line that replaced it (row 1).
+    const chg = ld.above(1);
+    try std.testing.expectEqual(@as(usize, 1), chg.len);
+    try std.testing.expectEqualStrings("two", chg[0]);
+    // Pure deletion `@@ -4,2 +3,0 @@`: the gap sits after new line 3, so the
+    // old lines weave above 0-based row 3.
+    const del = ld.above(3);
+    try std.testing.expectEqual(@as(usize, 2), del.len);
+    try std.testing.expectEqualStrings("four", del[0]);
+    try std.testing.expectEqualStrings("five", del[1]);
+    // A pure addition has no old lines; unrelated rows weave nothing.
+    try std.testing.expectEqual(@as(usize, 0), ld.above(4).len);
+    try std.testing.expectEqual(@as(usize, 0), ld.above(0).len);
+}
+
+test "parseLineDiff: a total deletion anchors every old line above row 0" {
+    const text = try std.testing.allocator.dupe(u8, "@@ -1,3 +0,0 @@\n-a\n-b\n-c\n");
+    var ld = parseLineDiff(std.testing.allocator, text) orelse {
+        std.testing.allocator.free(text);
+        return error.TestUnexpectedResult;
+    };
+    defer ld.deinit(std.testing.allocator);
+    const block = ld.above(0);
+    try std.testing.expectEqual(@as(usize, 3), block.len);
+    try std.testing.expectEqualStrings("a", block[0]);
+    try std.testing.expectEqualStrings("c", block[2]);
+}
+
+test "parseLineDiff pads a short body instead of slipping later hunks" {
+    // The first header promises two `-` lines but delivers one (truncated or
+    // hostile output): the missing line pads empty so the second hunk's text
+    // still lands at its own anchor.
+    const text = try std.testing.allocator.dupe(u8, "@@ -1,2 +1,1 @@\n-only\n@@ -5,1 +4,1 @@\n-real\n+REAL\n");
+    var ld = parseLineDiff(std.testing.allocator, text) orelse {
+        std.testing.allocator.free(text);
+        return error.TestUnexpectedResult;
+    };
+    defer ld.deinit(std.testing.allocator);
+    const first = ld.above(0);
+    try std.testing.expectEqual(@as(usize, 2), first.len);
+    try std.testing.expectEqualStrings("only", first[0]);
+    try std.testing.expectEqualStrings("", first[1]);
+    const second = ld.above(3);
+    try std.testing.expectEqual(@as(usize, 1), second.len);
+    try std.testing.expectEqualStrings("real", second[0]);
+}
+
+test "parseLineDiff returns null when there are no hunks" {
+    const text = try std.testing.allocator.dupe(u8, "diff --git a/f b/f\n");
+    defer std.testing.allocator.free(text);
+    try std.testing.expect(parseLineDiff(std.testing.allocator, text) == null);
 }
 
 test "parse hunk headers into signs" {
