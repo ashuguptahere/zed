@@ -57,6 +57,22 @@ fn freeResult(ctx: *h.Ctx, result: [][]u8) void {
     ctx.gpa.free(result);
 }
 
+/// True if `needle` appears anywhere on the *current* screen (replaying the
+/// whole captured stream through the terminal model — row-diffed frames mean
+/// "was printed at some point" is not "is still shown").
+fn onScreen(ctx: *h.Ctx, s: *h.Session, needle: []const u8) bool {
+    var scr = h.Screen.init(ctx.gpa, 24, 110) catch return false;
+    defer scr.deinit();
+    scr.apply(s.out.items);
+    var row: usize = 1;
+    while (row <= 24) : (row += 1) {
+        const txt = scr.rowText(ctx.gpa, row) catch return false;
+        defer ctx.gpa.free(txt);
+        if (std.mem.indexOf(u8, txt, needle) != null) return true;
+    }
+    return false;
+}
+
 pub fn run(ctx: *h.Ctx) !void {
     // File picker: open a.txt, picker-open b.txt, delete a char, save.
     {
@@ -380,6 +396,155 @@ pub fn run(ctx: *h.Ctx) !void {
         s.drain(500);
         ctx.check("shortening the query brings the other hits back", s.containsPlainSince(ctx.gpa, m, "one.txt:1") and
             s.containsPlainSince(ctx.gpa, m, "alphax_named.txt:1"));
+        s.send("\x1b:q!\r");
+        s.drain(200);
+    }
+
+    // Grep patterns are regexes (same modern syntax as `/`). A character
+    // class finds what no literal query could: \d\d0 keeps the line with
+    // three digits and drops the near-miss.
+    {
+        const dir = try h.tempDir(ctx.gpa);
+        defer ctx.gpa.free(dir);
+        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const f = h.join(ctx, dir, "r.txt");
+        defer ctx.gpa.free(f);
+        h.writeFile(ctx.io, f, "value_19x0 nope\nvalue_1990 yes\n");
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "r.txt" }, .cwd = dir, .cols = 110 });
+        defer s.finish();
+        s.drain(400);
+        const m = s.mark();
+        s.send(" fwvalue_1\\d\\d0");
+        s.drain(700); // covers the regex-rescan debounce
+        ctx.check("grep matches a \\d class no literal could", s.containsPlainSince(ctx.gpa, m, "r.txt:2"));
+        ctx.check("grep regex drops the near-miss line", !s.containsPlainSince(ctx.gpa, m, "r.txt:1"));
+        s.send("\x1b:q!\r");
+        s.drain(200);
+    }
+
+    // Alternation spans files: (cat|dog) lists a hit from each.
+    {
+        const dir = try h.tempDir(ctx.gpa);
+        defer ctx.gpa.free(dir);
+        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const files = [_][2][]const u8{
+            .{ "cat.txt", "the cat sat\n" },
+            .{ "dog.txt", "a dog ran\n" },
+            .{ "none.txt", "nothing here\n" },
+        };
+        for (files) |f| {
+            const p = h.join(ctx, dir, f[0]);
+            defer ctx.gpa.free(p);
+            h.writeFile(ctx.io, p, f[1]);
+        }
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "cat.txt" }, .cwd = dir, .cols = 110 });
+        defer s.finish();
+        s.drain(400);
+        const m = s.mark();
+        s.send(" fw(cat|dog)");
+        s.drain(700);
+        ctx.check("grep alternation matches both files", s.containsPlainSince(ctx.gpa, m, "cat.txt:1") and
+            s.containsPlainSince(ctx.gpa, m, "dog.txt:1"));
+        ctx.check("grep alternation skips the non-match", !s.containsPlainSince(ctx.gpa, m, "none.txt:1"));
+        s.send("\x1b:q!\r");
+        s.drain(200);
+    }
+
+    // ^ anchors to the line start: only the line that begins with the word.
+    {
+        const dir = try h.tempDir(ctx.gpa);
+        defer ctx.gpa.free(dir);
+        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const f = h.join(ctx, dir, "a.txt");
+        defer ctx.gpa.free(f);
+        h.writeFile(ctx.io, f, "root at start\nnot root here\n");
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "a.txt" }, .cwd = dir, .cols = 110 });
+        defer s.finish();
+        s.drain(400);
+        const m = s.mark();
+        s.send(" fw^root");
+        s.drain(700);
+        ctx.check("grep ^ matches only at line start", s.containsPlainSince(ctx.gpa, m, "a.txt:1"));
+        ctx.check("grep ^ drops the mid-line occurrence", !s.containsPlainSince(ctx.gpa, m, "a.txt:2"));
+        s.send("\x1b:q!\r");
+        s.drain(200);
+    }
+
+    // An invalid mid-typing pattern (a lone '(') must not crash or clear the
+    // picker: the last good results stay on screen with an "incomplete" tag,
+    // and completing the group brings the regex to life.
+    {
+        const dir = try h.tempDir(ctx.gpa);
+        defer ctx.gpa.free(dir);
+        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const f = h.join(ctx, dir, "one.txt");
+        defer ctx.gpa.free(f);
+        h.writeFile(ctx.io, f, "alpha beta\n");
+        const g = h.join(ctx, dir, "two.txt");
+        defer ctx.gpa.free(g);
+        h.writeFile(ctx.io, g, "gamma delta\n");
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "one.txt" }, .cwd = dir, .cols = 110 });
+        defer s.finish();
+        s.drain(400);
+        s.send(" fwalp");
+        s.drain(500);
+        ctx.check("grep finds the literal before the '('", onScreen(ctx, &s, "one.txt:1"));
+
+        s.send("(");
+        s.drain(500);
+        ctx.check("invalid pattern keeps the last good results", onScreen(ctx, &s, "one.txt:1"));
+        ctx.check("invalid pattern shows the incomplete tag", onScreen(ctx, &s, "incomplete"));
+
+        s.send("ha)"); // -> "alp(ha)": a valid group again
+        s.drain(700);
+        ctx.check("completing the group matches again", onScreen(ctx, &s, "one.txt:1"));
+        ctx.check("completing the group clears the tag", !onScreen(ctx, &s, "incomplete"));
+        ctx.check("the completed group only matches its line", !onScreen(ctx, &s, "two.txt:1"));
+
+        s.send("\r"); // the picker is alive: Enter opens the hit
+        s.drain(400);
+        s.send("x:wq\r");
+        s.drain(400);
+        const got = h.readFile(ctx.gpa, ctx.io, f);
+        defer ctx.gpa.free(got);
+        ctx.check("picker survives the invalid detour and opens the hit", std.mem.eql(u8, got, "lpha beta\n"));
+        s.send("\x1b:q!\r");
+        s.drain(200);
+    }
+
+    // Ctrl-r re-walks the project under the grep picker. With a regex or a
+    // mid-typing-invalid query the refilter cannot regrep synchronously, so
+    // the refresh itself must reset the hits and the scan cursor — rows from
+    // the old cache (here: a deleted file) must not survive the re-walk.
+    {
+        const dir = try h.tempDir(ctx.gpa);
+        defer ctx.gpa.free(dir);
+        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const keep = h.join(ctx, dir, "keep.txt");
+        defer ctx.gpa.free(keep);
+        h.writeFile(ctx.io, keep, "alpha keeps\n");
+        const gone = h.join(ctx, dir, "gone.txt");
+        defer ctx.gpa.free(gone);
+        h.writeFile(ctx.io, gone, "alpha goes\n");
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "keep.txt" }, .cwd = dir, .cols = 110 });
+        defer s.finish();
+        s.drain(400);
+        s.send(" fwalpha");
+        s.drain(500);
+        ctx.check("grep sees both files before the refresh", onScreen(ctx, &s, "keep.txt:1") and
+            onScreen(ctx, &s, "gone.txt:1"));
+        s.send("("); // mid-typing invalid: results held, rescan impossible
+        s.drain(300);
+        h.removeFile(ctx.io, gone); // the project changes under the picker
+        s.send("\x12"); // Ctrl-r
+        s.drain(700);
+        ctx.check("Ctrl-r with an invalid query drops the deleted file's rows", !onScreen(ctx, &s, "gone.txt:1"));
+        ctx.check("Ctrl-r with an invalid query re-greps the survivors", onScreen(ctx, &s, "keep.txt:1"));
+        ctx.check("the incomplete tag survives the refresh", onScreen(ctx, &s, "incomplete"));
+        s.send(")"); // "alpha()": valid again — the debounced rescan converges
+        s.drain(700);
+        ctx.check("completing the pattern after Ctrl-r rescans the new cache", onScreen(ctx, &s, "keep.txt:1") and
+            !onScreen(ctx, &s, "gone.txt:1") and !onScreen(ctx, &s, "incomplete"));
         s.send("\x1b:q!\r");
         s.drain(200);
     }

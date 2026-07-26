@@ -317,7 +317,7 @@ pub const Editor = struct {
     // the main loop waits until then instead of forever, fires it, and
     // disarms — so an idle editor still blocks indefinitely (zero CPU).
     comp_due_ms: ?i64 = null,
-    due_kind: enum { completion, wsymbol } = .completion,
+    due_kind: enum { completion, wsymbol, grep } = .completion,
 
     // Picker preview: the file shown beside the results, cached so moving the
     // selection re-reads only when the path actually changes.
@@ -405,6 +405,13 @@ pub const Editor = struct {
     /// walk streams files in while the picker is open, so the grep resumes
     /// from here instead of re-reading the project on every slice.
     grep_scanned: usize = 0,
+    /// The compiled grep query (grep patterns are the same modern regexes `/`
+    /// uses; a plain string keeps the indexOf fast path via `.lit`). Always
+    /// the last pattern that *compiled* — mid-typing an invalid one keeps the
+    /// previous regex and its results, and `grep_incomplete` tags the prompt.
+    grep_re: ?regex.Regex = null,
+    grep_re_pat: std.ArrayList(u8) = .empty, // the pattern `grep_re` came from
+    grep_incomplete: bool = false,
     picker_filtered: std.ArrayList(u32) = .empty,
     picker_query: std.ArrayList(u8) = .empty,
     picker_sel: usize = 0,
@@ -549,6 +556,8 @@ pub const Editor = struct {
         self.last_search.deinit(self.gpa);
         if (self.search_re) |*re| re.deinit(self.gpa);
         self.search_re_pat.deinit(self.gpa);
+        if (self.grep_re) |*re| re.deinit(self.gpa);
+        self.grep_re_pat.deinit(self.gpa);
         self.prev_search.deinit(self.gpa);
         for (self.ex_hist.items) |h| self.gpa.free(h);
         self.ex_hist.deinit(self.gpa);
@@ -668,18 +677,23 @@ pub const Editor = struct {
                     },
                     else => {},
                 };
+                // The hot walk loop skips the poll below, so check the
+                // debounce here too — otherwise a regex grep rescan armed
+                // mid-walk waits for the whole walk instead of one pause.
+                if (self.completionDue()) {
+                    self.fireDue();
+                    needs_render = true;
+                    continue;
+                }
                 if (grew or !self.walkInProgress()) {
-                    needs_render = self.mode == .picker;
+                    if (self.mode == .picker) needs_render = true;
                     continue;
                 }
             }
             const lsp_fd: ?std.posix.fd_t = if (self.lsp) |*c| (if (c.alive) c.out_fd else null) else null;
             const ready = try self.term.waitReady(lsp_fd, self.pollTimeout());
             if (self.completionDue()) {
-                switch (self.due_kind) {
-                    .completion => self.lspCompletion(),
-                    .wsymbol => self.sendWorkspaceSymbolQuery(),
-                }
+                self.fireDue();
                 needs_render = true;
             }
             if (self.term.takeResize()) {
@@ -3467,12 +3481,32 @@ pub const Editor = struct {
         var sp = log.Span.start();
         if (self.picker_kind == .grep) {
             const gq = self.picker_query.items;
-            // Extending a grep can only shrink its hit set — a line holding
-            // the longer query already held the shorter one — so filter the
-            // hits already on screen instead of re-reading the project. That
-            // is the same narrowing the file picker does, and the difference
-            // between re-reading every file on every keystroke and touching
-            // no file at all.
+            self.compileGrep(gq);
+            if (self.grep_incomplete) {
+                // Mid-typing an invalid pattern (a lone '(', a trailing '\'):
+                // keep the last good results on screen — the prompt carries a
+                // dim "(incomplete)" tag until the pattern compiles again.
+                sp.lap("refilter");
+                return;
+            }
+            if (self.grep_re != null and self.grep_re.?.lit == null) {
+                // A genuine regex is not a subset of its prefix, so every
+                // keystroke means a full rescan — ~35 ms on a zedit-sized
+                // tree (measured) — far too slow to run synchronously. Share
+                // the completion debounce and rescan once typing pauses; the
+                // previous results stay put until then.
+                self.due_kind = .grep;
+                self.comp_due_ms = log.nowMs() + @as(i64, @intCast(config.settings.completion_delay_ms));
+                sp.lap("refilter");
+                return;
+            }
+            if (self.due_kind == .grep) self.comp_due_ms = null; // stale regex rescan
+            // Extending a literal grep can only shrink its hit set — a line
+            // holding the longer query already held the shorter one — so
+            // filter the hits already on screen instead of re-reading the
+            // project. That is the same narrowing the file picker does, and
+            // the difference between re-reading every file on every keystroke
+            // and touching no file at all.
             const narrow = self.prev_query.items.len > 0 and gq.len > self.prev_query.items.len and
                 std.mem.startsWith(u8, gq, self.prev_query.items);
             if (narrow) self.narrowGrepHits(gq) else self.regrep();
@@ -3523,6 +3557,46 @@ pub const Editor = struct {
         sp.lap("refilter");
     }
 
+    /// Compile-and-cache the grep pattern (same modern regex syntax as `/`,
+    /// case-sensitive). A pattern that does not compile — the user is mid-way
+    /// through typing a group or an escape — keeps the previous regex *and*
+    /// the results it produced, and only raises `grep_incomplete`.
+    fn compileGrep(self: *Editor, pat: []const u8) void {
+        self.grep_incomplete = false;
+        if (pat.len == 0) {
+            if (self.grep_re) |*old| old.deinit(self.gpa);
+            self.grep_re = null;
+            self.grep_re_pat.clearRetainingCapacity();
+            return;
+        }
+        if (self.grep_re != null and std.mem.eql(u8, pat, self.grep_re_pat.items)) return;
+        const re = regex.Regex.compile(self.gpa, pat, false) catch {
+            self.grep_incomplete = true;
+            return;
+        };
+        if (self.grep_re) |*old| old.deinit(self.gpa);
+        self.grep_re = re;
+        self.grep_re_pat.clearRetainingCapacity();
+        self.grep_re_pat.appendSlice(self.gpa, pat) catch {};
+    }
+
+    /// The debounced regex rescan: once typing has paused, re-read the
+    /// project with the compiled pattern. A full pass costs ~35 ms on a
+    /// zedit-sized tree (measured with `log.Span`), which is why it must not
+    /// run per keystroke; literal queries never come through here.
+    fn grepRescan(self: *Editor) void {
+        self.comp_due_ms = null;
+        if (self.mode != .picker or self.picker_kind != .grep) return; // closed before the pause
+        var sp = log.Span.start();
+        self.regrep();
+        self.showAllGrepHits();
+        // The items answer the *compiled* pattern — the live query may
+        // already have grown an invalid suffix the tag is reporting.
+        self.prev_query.clearRetainingCapacity();
+        self.prev_query.appendSlice(self.gpa, self.grep_re_pat.items) catch {};
+        sp.lap("grep-rescan");
+    }
+
     fn regrep(self: *Editor) void {
         self.picker_items.clearRetainingCapacity();
         self.picker_text.clearRetainingCapacity();
@@ -3564,8 +3638,12 @@ pub const Editor = struct {
     /// slice the project walk delivers — without this a grep started before
     /// the walk finished would silently cover only the files found so far.
     fn grepMore(self: *Editor) void {
-        const q = self.picker_query.items;
-        if (q.len == 0) return;
+        // A regex rescan is pending: the items on screen still answer the
+        // previous pattern, so appending matches of the new one would mix
+        // result sets — the rescan covers these files when it fires.
+        if (self.comp_due_ms != null and self.due_kind == .grep) return;
+        const re = if (self.grep_re) |*r| r else return;
+        const lit = re.lit; // matching runs per line; multi-line patterns can't match
         for (self.fcache.items[self.grep_scanned..]) |fpath| {
             if (self.picker_items.items.len >= 500) break;
             self.grep_scanned += 1;
@@ -3575,7 +3653,9 @@ pub const Editor = struct {
             var it = std.mem.splitScalar(u8, data, '\n');
             while (it.next()) |ln| : (line_no += 1) {
                 if (self.picker_items.items.len >= 500) break;
-                if (std.mem.indexOf(u8, ln, q) == null) continue;
+                if (lit) |l| {
+                    if (std.mem.indexOf(u8, ln, l) == null) continue;
+                } else if (re.find(ln, 0) == null) continue;
                 var s = ln;
                 while (s.len > 0 and (s[0] == ' ' or s[0] == '\t')) s = s[1..];
                 const text = s[0..@min(s.len, 120)];
@@ -3643,6 +3723,16 @@ pub const Editor = struct {
                         self.picker_items.clearRetainingCapacity();
                         self.picker_text.clearRetainingCapacity();
                         self.fillFileItems();
+                    } else {
+                        // The hits and the scan cursor refer to the cache
+                        // just thrown away; a regex or mid-typing-invalid
+                        // query skips the immediate regrep below, so reset
+                        // here or the grep would resume mid-way through the
+                        // new walk and mix the two caches' results.
+                        self.picker_items.clearRetainingCapacity();
+                        self.picker_text.clearRetainingCapacity();
+                        self.picker_filtered.clearRetainingCapacity();
+                        self.grep_scanned = 0;
                     }
                     self.prev_query.clearRetainingCapacity(); // force a full rescore
                     self.onQueryChange();
@@ -3984,6 +4074,16 @@ pub const Editor = struct {
         try self.emit(" ");
         const qmax = list_w -| (klabel.len + 2);
         try self.emitSanitized(self.picker_query.items[0..@min(self.picker_query.items.len, qmax)]);
+        // Mid-typing an invalid regex: a dim tag beside the query says why
+        // the results are not moving (they are the last good pattern's).
+        if (self.picker_kind == .grep and self.grep_incomplete) {
+            const tag = " (incomplete)";
+            if (unicode.displayWidth(self.picker_query.items) + tag.len <= qmax) {
+                try self.setFg(th.fg_dim);
+                try self.emit(tag);
+                try self.setFg(th.fg);
+            }
+        }
 
         // Results.
         var shown: usize = 0;
@@ -5580,6 +5680,15 @@ pub const Editor = struct {
     fn completionDue(self: *Editor) bool {
         const due = self.comp_due_ms orelse return false;
         return log.nowMs() >= due;
+    }
+
+    /// Fire the action the shared debounce timer was armed for.
+    fn fireDue(self: *Editor) void {
+        switch (self.due_kind) {
+            .completion => self.lspCompletion(),
+            .wsymbol => self.sendWorkspaceSymbolQuery(),
+            .grep => self.grepRescan(),
+        }
     }
 
     /// Arm the auto-completion debounce after an identifier keystroke. Typing

@@ -267,7 +267,8 @@
   Ctrl-p (or the arrows), open with Enter, cancel with Esc.
 
      Space f f  fuzzy file finder (matches file NAMES)
-     Space f w  project-wide content search (greps file CONTENTS)
+     Space f w  project-wide content search (greps file CONTENTS;
+                regex, same syntax as /)
      Space f b  switch between the open buffers
      Space b    Buffers menu: picker, next/previous, close
      Space e    file explorer: a tree of this directory on the side

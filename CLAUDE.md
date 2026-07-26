@@ -387,6 +387,15 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   results take the full width.
   Note the three search scopes: `/` searches the current buffer, `Space f w`
   searches file *contents* across the project, `Space f f` matches file *names*.
+  The grep picker takes the same modern regexes as `/` (case-sensitive,
+  matched per line). A plain-string query keeps the literal fast path:
+  indexOf matching, and extending it narrows the hits already on screen. A
+  genuine regex is not a subset of its prefix, so each change means a full
+  rescan (~35 ms on a zedit-sized tree, measured) — it runs through the shared
+  typing-pause debounce (`due_kind = .grep`, the completion/wsymbol timer),
+  keeping keystrokes at microseconds and idle CPU at zero. While the pattern
+  is mid-typing invalid (a lone `(`, a trailing `\`), the last good results
+  stay put and a dim `(incomplete)` tag sits beside the query.
 - **Command line:** `:w` write, `:q` quit (closes the window if more than one;
   blocked if unsaved on the last), `:wq`/`:x`, `:q!`, `:qa` quit all (refuses
   while any buffer is dirty — nvim's E37, nvim-verified; `:qa!` discards),
@@ -672,11 +681,11 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   undo files, which is part of why the setting is off by default.
 - Multi-cursor is one-caret-per-line (column editing); it does not do
   per-caret line splits/joins or arbitrary selection-based multi-edit.
-- The project-wide grep picker is literal, not regex (in-buffer search is
-  regex), and its narrowing compares against the row text as stored, which is
-  capped at 120 bytes — a match hiding past that column on a very long line is
-  dropped where a rescan would have kept it (the row could not have shown it
-  either). Statusline separators assume a nerd font.
+- The grep picker's regex runs per line — a pattern cannot match across a
+  newline — and a literal query's narrowing compares against the row text as
+  stored, which is capped at 120 bytes: a match hiding past that column on a
+  very long line is dropped where a rescan would have kept it (the row could
+  not have shown it either). Statusline separators assume a nerd font.
 - Windows/splits use a flat even tiling in one orientation at a time (a split
   re-tiles all windows; no nested/mixed layouts or per-window resizing). Only
   the active window has live LSP polling and an editable selection/search/inlay

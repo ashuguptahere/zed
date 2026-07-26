@@ -11,8 +11,8 @@ batteries-included editor.
 ## The shortlist (both editors have it, zedit doesn't — highest leverage)
 
 1. ~~**Regex search + `:%s` substitution**~~ — **DONE** (regex.zig Pike VM;
-   `/ ? n N * #` are regex, `:[range]s/pat/rep/[gi]` with captures; grep
-   picker still literal).
+   `/ ? n N * #` are regex, `:[range]s/pat/rep/[gi]` with captures; the grep
+   picker takes the same regexes too, per line, with a debounced rescan).
 2. ~~**Jumplist** `Ctrl-o`/`Ctrl-i`~~ — **DONE** (cross-buffer, nvim-verified;
    records G/search/marks/%/buffer switches/gd).
 3. ~~**System clipboard**~~ — **DONE** (`"+`/`"*` via OSC 52 + bracketed
@@ -194,7 +194,7 @@ Ground truth: `/home/origo/Desktop/zed/CLAUDE.md` (note: the on-disk version is 
 - **LSP core:** diagnostics (gutter + statusline), hover `K`, `gd`, rename, code actions (incl. `executeCommand` and server-initiated `applyEdit`), completion popup, signature help with overload cycling, document symbols picker, **inlay hints as virtual text** (0.10 parity), incremental `didChange` sync — with documented single-file/single-line limits
 - **Tree-sitter highlighting, incremental + viewport-scoped queries**, 10 languages, two-layer Markdown (an injections approximation)
 - **AstroNvim-style leader UX:** which-key popup with nested groups (`Space f/l/g/e/c/w/q`)
-- **Telescope-equivalents:** fuzzy file finder, project content grep (literal), buffer picker, theme picker — with a warm cached file list
+- **Telescope-equivalents:** fuzzy file finder, project content grep (regex, per line), buffer picker, theme picker — with a warm cached file list
 - **gitsigns-equivalent** gutter signs, plus inline unified diff and side-by-side index diff views
 - **neo-tree-equivalent** sidebar file explorer (navigation/open + reveal of the active file on buffer switch; no create/rename/delete, not watched)
 - **Vim core:** motions/operators/registers/marks/macros/dot-repeat, text objects (word + bracket/quote), visual char/line/block (block I/A works; block paste and short-line `A` padding are approximate), surround, incremental highlighted literal search (incsearch+hlsearch defaults)

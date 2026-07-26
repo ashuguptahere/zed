@@ -70,7 +70,8 @@
     rename/code-action edits — other buffers are edited in place, unopened
     files load in the background, `:wa` writes them all
 - **Pickers** via the AstroNvim-style `Space` leader tree with nested
-  which-key menus: `Space f f` find files, `Space f w` find words (grep),
+  which-key menus: `Space f f` find files, `Space f w` find words (regex grep,
+  same syntax as `/`),
   `Space f b` buffers, `Space f t` themes; `Space b …` buffers (picker,
   next/previous, close); `Space l …` language tools — one
   consistent UI (`Ctrl-n/p` move, `Enter` opens, `Esc` cancels, `Ctrl-r`

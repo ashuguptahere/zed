@@ -491,7 +491,12 @@ Fuzzy file finder (file names). The file list is cached per session;
 inside the picker re\-walks the project.
 .TP
 .B Space f w
-Global search across file \fIcontents\fP (find words).
+Global search across file \fIcontents\fP (find words). The query is a regex
+with the same modern syntax as
+.BR / ,
+matched per line; a plain string stays on the literal fast path. While the
+pattern is incomplete (a lone parenthesis, a trailing backslash) the previous
+results stay and the prompt shows a dim tag.
 .TP
 .B Space f b
 Open-buffer picker.

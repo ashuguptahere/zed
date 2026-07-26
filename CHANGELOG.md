@@ -2,6 +2,29 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.14.0 - 2026-07-26
+
+### Added
+
+- The project-wide grep picker (`Space f w`) matches regexes, with the same
+  modern syntax the in-buffer `/` search uses (case-sensitive, matched per
+  line — a pattern cannot span a newline). A plain-string query is unchanged:
+  it keeps the literal indexOf fast path, extending it still narrows the hits
+  in place, and the walk-streaming/500-hit-cap resume behave exactly as
+  before. A genuine regex cannot narrow (a longer pattern is not a subset),
+  so it rescans the project — measured with `log.Span` at ~35 ms per rescan
+  on this repository (ReleaseFast), too slow per keystroke, so the rescan
+  runs through the existing shared typing-pause debounce (the completion/
+  workspace-symbol timer; a query change costs 1–4 µs and idle CPU stays
+  zero). While the pattern is mid-typing invalid (a lone `(`, a trailing
+  `\`), the picker keeps the last good results and shows a dim
+  `(incomplete)` tag beside the query instead of flashing empty. `Ctrl-r`
+  (re-walk) resets the hits and the scan cursor with the cache it discards,
+  so a regex or mid-typing-invalid query re-greps the new walk from the
+  start instead of resuming mid-way through it; and the debounce is checked
+  inside the walk loop too, so a rescan armed while the walk streams fires
+  after one typing pause rather than waiting for the whole walk.
+
 ## 0.13.0 - 2026-07-26
 
 ### Added

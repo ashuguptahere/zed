@@ -40,7 +40,6 @@ The shortlist is done; these are the next-highest gaps from
       Vim has the same gap, but an age or size cap would be better.
 
 - [ ] Windows console support (`term.zig` gate marks the spot).
-- [ ] Regex project-wide grep picker (in-buffer search is regex already).
 - [ ] Nested/mixed window layouts and per-window resizing.
 - [ ] True rectangular block paste; block `A` padding on short lines.
 - [ ] Tree-sitter injections (Markdown uses two layers; HTML JS/CSS plain),
@@ -229,3 +228,19 @@ The shortlist is done; these are the next-highest gaps from
       (incl. narrow-pty/CJK clip, accepted-search-ghost live jump); fixed the
       pre-existing "relative numbers by default" check that the 0.12.0
       version string had broken.
+- [x] Regex project-wide grep picker: `Space f w` takes the same modern
+      regexes as `/` (compiled once per query change, matched per line;
+      the pure-literal `.lit` fast path with in-place narrowing, walk
+      streaming and 500-hit-cap resume kept byte-for-byte). Regex changes
+      full-rescan through the shared typing-pause debounce (`due_kind =
+      .grep`) — measured ~35 ms per rescan on this repo in ReleaseFast vs
+      1–4 µs per keystroke — and a mid-typing invalid pattern keeps the last
+      good results with a dim `(incomplete)` prompt tag. `Ctrl-r` resets the
+      hits/scan cursor with the cache it discards (a regex or invalid query
+      cannot regrep synchronously and would otherwise resume mid-way through
+      the new walk), and the debounce fires inside the walk loop too, not
+      only from the post-walk poll. 17 pty checks, 9 proven fail-without
+      (\d class, alternation across files, `^` anchor, invalid-keeps-results
+      + tag + recompile, Ctrl-r-under-invalid-query reset); the three
+      literal-narrowing checks and the mid-walk streaming check pass
+      unchanged.
