@@ -34,8 +34,9 @@
   - Jumplist: `Ctrl-o` / `Ctrl-i` walk back and forward through jumps
     (searches, `G`, marks, `gd`, buffer switches — cross-buffer)
   - Text objects incl. paragraphs (`ip`/`ap`, `{`/`}`), also in visual mode
-  - Soft wrap (on by default, `soft_wrap = false` to scroll sideways instead),
-    with `gj`/`gk`/`g0`/`g$` for screen-row movement
+  - Soft wrap (on by default, `soft_wrap = false` to scroll sideways instead):
+    breaks at word boundaries, keeps the line's indent on continuation rows,
+    optional `wrap_column`, and `gj`/`gk`/`g0`/`g$` for screen-row movement
   - Undo *tree*: editing after an undo branches instead of discarding, and
     `g-`/`g+`, `:earlier`/`:later` (changes, time or file writes) and the
     `:undolist` picker reach every state; `persistent_undo` keeps it across
@@ -163,7 +164,8 @@ Format is `key = value` with `#` comments; unknown keys are ignored and a
 missing file just means defaults. Settings today: `theme`, `tab_width`,
 `nerd_font`, `sidebar`, `relative_numbers`, `large_file_mb`, `autoindent`,
 `buffer_tabs`, `auto_completion`, `completion_delay_ms`,
-`inline_diagnostics`, `soft_wrap`, `persistent_undo`, `format_on_save`.
+`inline_diagnostics`, `soft_wrap`, `wrap_indent`, `wrap_column`,
+`persistent_undo`, `format_on_save`.
 
 Every CLI option has a short and a long form (`-h/--help`, `-v/--version`,
 `-l/--log`, `-s/--lsp`, `-c/--config`, `-t/--tutor`, `-b/--benchmark`,

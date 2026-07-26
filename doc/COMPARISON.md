@@ -88,9 +88,9 @@ below and prioritised in `TODO.md`.
   `:earlier`/`:later` with counts, time spans and file writes, `:undolist`
   picker, and optional on-disk persistence, which Helix does not have) —
   **done**
-- ~~Soft-wrap~~ — **DONE** (`soft_wrap`, on by default, with a `↳` continuation
-  marker and `gj`/`gk`/`g0`/`g$`); indent retention and a `text-width` wrap
-  column are not there — **low**
+- ~~Soft-wrap (with wrap indicators, indent retention, `text-width`)~~ —
+  **DONE** (`soft_wrap` on by default, `↳` continuation marker, word breaks,
+  `wrap_indent`, `wrap_column`, and `gj`/`gk`/`g0`/`g$`)
 - Smart-case search + configurable wrap-around — **medium**
 - ~~Tree-sitter textobjects~~ — **DONE** for functions and types (`af`/`if`, `ac`/`ic`, `]f`/`[f`); parameter/comment objects remain — **low**
 - EditorConfig support (25.07) — **low**

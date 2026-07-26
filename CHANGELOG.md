@@ -2,6 +2,16 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.8.0 - 2026-07-26
+
+### Added
+
+- Soft wrap breaks at the last space that fits rather than mid-word (a word wider than the row is still broken), and continuation rows repeat the line's indent so a wrapped line hangs under its own first character — `wrap_indent`, on by default, capped at half the window, vim's `breakindent`. New `wrap_column` wraps at a column narrower than the window. `gj`/`gk`/`g0`/`g$` and the cursor's screen position follow the real break points rather than assuming fixed-width rows.
+
+### Fixed
+
+- A wrapped row was drawn to the window edge rather than to its break point, so the word at the break appeared on both rows.
+
 ## 0.7.1 - 2026-07-26
 
 ### Fixed

@@ -15,8 +15,6 @@ behind the roadmap items.
 The shortlist is done; these are the next-highest gaps from
 `doc/COMPARISON.md`, in rough priority order.
 
-- [ ] Soft wrap: indent retention on continuation rows, and a `text-width`
-      wrap column (it wraps at the window edge, mid-word).
 
 ## Recurring (every feature / significant change)
 
@@ -157,6 +155,9 @@ The shortlist is done; these are the next-highest gaps from
       headless-nvim ground truth: visual-mode `a` objects behaved like `i`
       ones, counted find-char (`3fa`, `d3fa`, `2;`) ignored the count, and the
       grep picker missed every file the project walk had not yet delivered.
+- [x] Soft wrap: word breaks, indent retention (`wrap_indent`) and a
+      `wrap_column`, with the screen-line motions following the real break
+      points. Found and fixed a row being drawn past its break point.
 - [x] Undo persistence (`persistent_undo`, off by default): the tree written
       to XDG state on save, restored on open, anchored to the file by length +
       hash so a stale history is refused. 1.5 KB for a 200-change session on an

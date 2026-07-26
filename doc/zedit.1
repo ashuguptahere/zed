@@ -146,6 +146,14 @@ only while typing, so an idle editor still blocks in
 .BR poll (2)
 and uses no CPU.
 .TP
+.B wrap_indent
+(default true). Repeat a wrapped line's indent in front of every continuation
+row, so it hangs under its own first character. Capped at half the window.
+.TP
+.B wrap_column
+(default 0). Wrap at this column instead of at the window edge; 0 means the
+window edge, and a value wider than the window is clamped to it.
+.TP
 .B persistent_undo
 (default false). Keep the undo tree on disk, under
 .IR $XDG_STATE_HOME/zedit/undo ,

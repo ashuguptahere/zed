@@ -1854,8 +1854,12 @@ pub const Editor = struct {
         const cols = self.textCols();
         if (!self.wrapping() or cols == 0) return self.vertical(up, n);
         var row = self.cy;
-        var seg = self.cursorDisplayCol() / cols;
-        const off = self.cursorDisplayCol() % cols;
+        var wl = self.lineLayout(row);
+        const here = wl.place(self.cursorDisplayCol());
+        var seg = here.seg;
+        // The column *on the row*, indent included: what vim keeps as you walk
+        // screen lines, so the caret stays under itself.
+        const screen_col = here.col;
         var i: usize = 0;
         while (i < n) : (i += 1) {
             if (up) {
@@ -1864,20 +1868,26 @@ pub const Editor = struct {
                 } else {
                     if (row == 0) break;
                     row -= 1;
-                    seg = rowsForLine(self.buf, cols, row, null, true, @max(1, self.textRows())) - 1;
+                    wl = self.lineLayout(row);
+                    seg = wl.n - 1;
                 }
             } else {
-                if (seg + 1 < rowsForLine(self.buf, cols, row, null, true, @max(1, self.textRows()))) {
+                if (seg + 1 < wl.n) {
                     seg += 1;
                 } else {
                     if (row + 1 >= self.buf.lineCount()) break;
                     row += 1;
+                    wl = self.lineLayout(row);
                     seg = 0;
                 }
             }
         }
-        const col = byteAtDisplayCol(self.buf.line(row), seg * cols + off);
-        return .{ .pos = .{ .row = row, .col = col }, .kind = .exclusive, .col_mode = .exact };
+        const target = wl.starts[seg] + (screen_col -| wl.pad(seg));
+        return .{
+            .pos = .{ .row = row, .col = byteAtDisplayCol(self.buf.line(row), target) },
+            .kind = .exclusive,
+            .col_mode = .exact,
+        };
     }
 
     /// `g0` / `g$`: the first or last character of the screen row.
@@ -1886,8 +1896,12 @@ pub const Editor = struct {
         const line = self.curLine();
         if (!self.wrapping() or cols == 0)
             return .{ .pos = .{ .row = self.cy, .col = if (end) line.len else 0 }, .kind = if (end) .inclusive else .exclusive, .col_mode = .exact };
-        const seg = self.cursorDisplayCol() / cols;
-        const target = if (end) (seg + 1) * cols - 1 else seg * cols;
+        const wl = self.lineLayout(self.cy);
+        const seg = wl.place(self.cursorDisplayCol()).seg;
+        const target = if (end)
+            (if (seg + 1 < wl.n) wl.starts[seg + 1] - 1 else displayCol(line, line.len))
+        else
+            wl.starts[seg];
         return .{
             .pos = .{ .row = self.cy, .col = @min(byteAtDisplayCol(line, target), line.len) },
             .kind = if (end) .inclusive else .exclusive,
@@ -6242,23 +6256,100 @@ pub const Editor = struct {
         return config.settings.soft_wrap;
     }
 
-    /// Screen rows buffer line `row` occupies. `cur_col` is the cursor's
-    /// display column when the cursor is on this line: at the wrap boundary
-    /// the caret needs a continuation row of its own to sit on, exactly as it
-    /// does in vim while you type past the edge.
-    /// `cap` bounds the answer: no caller can use more rows than the window
-    /// has, and stopping there keeps the width scan off the rest of a very
-    /// long line.
-    fn rowsForLine(buf: *const buffer.Buffer, cols: usize, row: usize, cur_col: ?usize, wrap: bool, cap: usize) usize {
-        if (!wrap or cols == 0 or row >= buf.lineCount()) return 1;
-        var w = displayWidthUpTo(buf.line(row), cap * cols);
-        if (cur_col) |cc| w = @max(w, cc + 1);
-        return @min(@max(1, (w + cols - 1) / cols), cap);
+    /// The most screen rows one buffer line may occupy. Bounds the layout scan
+    /// so a minified file costs O(screen), and bounds the stack array below.
+    const max_wrap_rows = 256;
+
+    /// How a line is spread over screen rows: the display column each row
+    /// starts at, and the indent drawn in front of every continuation row so a
+    /// wrapped line stays under its own first character (vim's `breakindent`).
+    /// A row is broken at the last space that fits rather than mid-word, unless
+    /// a single word is longer than the row.
+    const WrapLayout = struct {
+        starts: [max_wrap_rows]u32,
+        n: usize,
+        indent: usize,
+
+        /// The screen row of a display column, and the column within it.
+        fn place(self: WrapLayout, dcol: usize) struct { seg: usize, col: usize } {
+            var seg: usize = 0;
+            while (seg + 1 < self.n and self.starts[seg + 1] <= dcol) seg += 1;
+            return .{ .seg = seg, .col = dcol - self.starts[seg] + self.pad(seg) };
+        }
+
+        /// Cells of indent in front of row `seg` (never the first).
+        fn pad(self: WrapLayout, seg: usize) usize {
+            return if (seg == 0) 0 else self.indent;
+        }
+    };
+
+    /// Lay out `line` for a window `cols` wide. `cur_col` is the cursor's
+    /// display column when it is on this line: at a wrap boundary the caret
+    /// needs a continuation row of its own to sit on, as it does in vim while
+    /// you type past the edge.
+    fn layoutLine(line: []const u8, cols: usize, cur_col: ?usize, wrap: bool, cap_rows: usize) WrapLayout {
+        var out: WrapLayout = .{ .starts = undefined, .n = 1, .indent = 0 };
+        out.starts[0] = 0;
+        if (!wrap or cols < 4) return out;
+        const cap = @min(@max(cap_rows, 1), max_wrap_rows);
+
+        // Wrap at the configured column when it is narrower than the window.
+        const limit = if (config.settings.wrap_column > 0) @min(config.settings.wrap_column, cols) else cols;
+        var width = displayWidthUpTo(line, cap * limit);
+        if (cur_col) |cc| width = @max(width, cc + 1);
+        if (width <= limit) return out;
+
+        if (config.settings.wrap_indent) {
+            const first = motion.firstNonBlank(line);
+            // A line that is all indent has nothing to hang under, and an
+            // indent past half the window would leave no room for text.
+            if (first < line.len) out.indent = @min(displayCol(line, first), limit / 2);
+        }
+
+        var start: usize = 0;
+        while (out.n < cap) {
+            const avail = limit - out.pad(out.n); // rows after the first are narrower
+            const hard = start + avail;
+            if (hard >= width) break;
+            const brk = lastBreakBefore(line, start, hard);
+            out.starts[out.n] = @intCast(brk);
+            out.n += 1;
+            start = brk;
+        }
+        return out;
+    }
+
+    /// The display column to break at: just after the last space in
+    /// `(from, upto]`, or `upto` when a single word fills the row.
+    fn lastBreakBefore(line: []const u8, from: usize, upto: usize) usize {
+        const start_byte = byteAtDisplayCol(line, from);
+        var i = byteAtDisplayCol(line, upto);
+        while (i > start_byte) {
+            i -= 1;
+            if (line[i] != ' ' and line[i] != '\t') continue;
+            const after = displayCol(line, i + 1);
+            if (after > from and after <= upto) return after;
+            break; // the space is at or before this row's start: no usable one
+        }
+        return upto; // one word wider than the row: break it
+    }
+
+    /// The layout of buffer line `row` in the active window.
+    fn lineLayout(self: *Editor, row: usize) WrapLayout {
+        if (row >= self.buf.lineCount()) return .{ .starts = .{0} ** max_wrap_rows, .n = 1, .indent = 0 };
+        return layoutLine(
+            self.buf.line(row),
+            self.textCols(),
+            if (row == self.cy) self.cursorDisplayCol() else null,
+            self.wrapping(),
+            @max(1, self.textRows()),
+        );
     }
 
     /// Rows the active window spends on buffer line `row`.
     fn lineRows(self: *Editor, row: usize) usize {
-        return rowsForLine(self.buf, self.textCols(), row, if (row == self.cy) self.cursorDisplayCol() else null, self.wrapping(), @max(1, self.textRows()));
+        if (!self.wrapping()) return 1;
+        return self.lineLayout(row).n;
     }
 
     fn cursorDisplayCol(self: *Editor) usize {
@@ -6268,8 +6359,7 @@ pub const Editor = struct {
     /// Which wrapped segment of its own line the cursor sits on.
     fn cursorSeg(self: *Editor) usize {
         if (!self.wrapping()) return 0;
-        const cols = self.textCols();
-        return if (cols == 0) 0 else self.cursorDisplayCol() / cols;
+        return self.lineLayout(self.cy).place(self.cursorDisplayCol()).seg;
     }
 
     /// The highest viewport top that still shows segment `seg` of line `row`,
@@ -6317,8 +6407,7 @@ pub const Editor = struct {
     fn cursorScreenCol(self: *Editor) usize {
         const cur = self.cursorDisplayCol();
         if (!self.wrapping()) return cur -| self.left;
-        const cols = self.textCols();
-        return if (cols == 0) 0 else cur % cols;
+        return self.lineLayout(self.cy).place(cur).col;
     }
 
     /// Keep the cursor visible. Vim's rule (nvim-verified): a move that lands
@@ -6753,7 +6842,7 @@ pub const Editor = struct {
         // walk is over (line, segment) pairs; without it every line is one row
         // and `seg` never leaves 0.
         var seg: usize = 0;
-        var height: usize = 1; // recomputed as each new buffer line starts
+        var wl: WrapLayout = .{ .starts = .{0} ** max_wrap_rows, .n = 1, .indent = 0 };
         while (r < text_rows) : (r += 1) {
             self.beginSeg(w.gy + r, w.gx);
             try self.emit(try std.fmt.bufPrint(&b, "\x1b[{d};{d}H", .{ w.gy + r, w.gx }));
@@ -6777,11 +6866,20 @@ pub const Editor = struct {
                 }
             }
             try self.setBg(row_bg);
-            if (seg == 0) try self.emitGutter(&view, file_row) else try self.emitWrapGutter(&view);
-            try self.emitLine(&view, file_row, row_bg, seg);
-            if (seg == 0) height = rowsForLine(view.buf, view.cols, file_row, if (is_cur) self.cursorDisplayCol() else null, self.wrapping(), @max(1, text_rows));
+            if (seg == 0) {
+                // One layout per line, reused for each row it fills.
+                wl = layoutLine(
+                    view.buf.line(file_row),
+                    view.cols,
+                    if (is_cur) self.cursorDisplayCol() else null,
+                    self.wrapping(),
+                    @max(1, text_rows),
+                );
+                try self.emitGutter(&view, file_row);
+            } else try self.emitWrapGutter(&view);
+            try self.emitLine(&view, file_row, row_bg, seg, wl);
             seg += 1;
-            if (seg >= height) {
+            if (seg >= wl.n) {
                 seg = 0;
                 file_row += 1;
             }
@@ -7552,7 +7650,7 @@ pub const Editor = struct {
         try self.emit(" ");
     }
 
-    fn emitLine(self: *Editor, view: *const View, row: usize, row_bg: Color, seg: usize) !void {
+    fn emitLine(self: *Editor, view: *const View, row: usize, row_bg: Color, seg: usize, wl: WrapLayout) !void {
         const th = theme.current;
         const line = view.buf.line(row);
         const cols = view.cols;
@@ -7631,11 +7729,21 @@ pub const Editor = struct {
         }
         var mi: usize = 0;
 
-        // Wrapping renders the slice of the line belonging to this screen row;
-        // otherwise the window is the horizontal scroll position. Everything
-        // below already clips to [left, right), so this is the whole of it.
-        const left = if (self.wrapping()) seg * cols else view.left;
-        const right = left + cols;
+        // Wrapping renders the slice of the line belonging to this screen row,
+        // after the indent a continuation row hangs under; otherwise the window
+        // is the horizontal scroll position. Everything below clips to
+        // [left, right), so this is the whole of it.
+        const pad = if (self.wrapping()) wl.pad(seg) else 0;
+        const left = if (self.wrapping()) wl.starts[seg] else view.left;
+        const usable = cols - pad;
+        // A row ends where the next one begins — at the word break, not at the
+        // window edge — so a wrapped word is drawn once, and a `wrap_column`
+        // narrower than the window is honoured.
+        const right = if (self.wrapping() and seg + 1 < wl.n) wl.starts[seg + 1] else left + usable;
+        if (pad > 0) {
+            try self.setBg(row_bg);
+            try self.emitSpaces(pad);
+        }
         var dc: usize = 0;
         var i: usize = 0;
         while (i < line.len) {
@@ -7693,8 +7801,8 @@ pub const Editor = struct {
         // right. A secondary cursor sitting at end-of-line is drawn here.
         const eol_cursor = if (ecol) |ec| ec == line.len else false;
         const eol_col = if (eol_cursor) displayCol(line, line.len) else 0; // O(line): only when needed
-        var shown: usize = if (dc > left) @min(dc - left, cols) else 0;
-        while (shown < cols) : (shown += 1) {
+        var shown: usize = if (dc > left) @min(dc - left, usable) else 0;
+        while (shown < usable) : (shown += 1) {
             const at_cursor = eol_cursor and (left + shown == eol_col);
             try self.setBg(if (at_cursor) th.mode_normal else row_bg);
             try self.emit(" ");

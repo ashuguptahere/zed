@@ -103,6 +103,80 @@ pub fn run(ctx: *h.Ctx) !void {
         ctx.check(cs.name, ok);
     }
 
+    // --- word breaks, indent retention, wrap_column ------------------------
+    // A 4-space indent then words; the row must break at a space, the
+    // continuation must hang under the indent, and both must be switchable.
+    {
+        const prose = "    indented alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november\nplain\n";
+        h.writeFile(ctx.io, path, prose);
+
+        const Cfg = struct { name: []const u8, text: ?[]const u8, first: []const u8, cont: []const u8 };
+        const layouts = [_]Cfg{
+            .{
+                .name = "wraps at a space and hangs under the indent",
+                .text = null,
+                .first = "hotel india",
+                .cont = "\u{21B3}     juliet kilo", // marker, gutter space, 4 of indent
+            },
+            .{
+                .name = "wrap_indent = false starts the continuation at the edge",
+                .text = "wrap_indent = false\n",
+                .first = "hotel india",
+                .cont = "\u{21B3} juliet kilo",
+            },
+            .{
+                .name = "wrap_column narrows the rows",
+                .text = "wrap_column = 40\n",
+                .first = "alpha bravo charlie",
+                .cont = "\u{21B3}     delta echo",
+            },
+        };
+        for (layouts) |cs| {
+            var argv_buf: [5][]const u8 = undefined;
+            var argv: [][]const u8 = argv_buf[0..2];
+            argv_buf[0] = ctx.zedit;
+            if (cs.text) |t| {
+                h.writeFile(ctx.io, cfg, t);
+                argv_buf[1] = "--config";
+                argv_buf[2] = cfg;
+                argv_buf[3] = "long.txt";
+                argv = argv_buf[0..4];
+            } else argv_buf[1] = "long.txt";
+
+            var s = try h.Session.spawn(ctx.gpa, .{ .argv = argv, .cwd = dir });
+            defer s.finish();
+            s.drain(500);
+            const plain = try s.plain(ctx.gpa);
+            defer ctx.gpa.free(plain);
+            const ok = std.mem.indexOf(u8, plain, cs.first) != null and
+                std.mem.indexOf(u8, plain, cs.cont) != null and
+                // no word is drawn twice: the row ends at the break, not the edge
+                std.mem.indexOf(u8, plain, "india juliet") == null;
+            if (!ok) std.debug.print("       looked for \"{s}\" and \"{s}\"\n", .{ cs.first, cs.cont });
+            ctx.check(cs.name, ok);
+            s.send(":q!\r");
+            s.drain(200);
+        }
+
+        // The caret follows the indent: gj from the start of the line lands on
+        // the first character of the next row, which is a word start.
+        h.writeFile(ctx.io, path, prose);
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "long.txt" }, .cwd = dir });
+        defer s.finish();
+        s.drain(400);
+        s.sendKeys(&.{ "0", "gj", "x" }); // delete whatever the caret lands on
+        s.drain(300);
+        s.send(":wq\r");
+        s.drain(400);
+        const got = h.readFile(ctx.gpa, ctx.io, path);
+        defer ctx.gpa.free(got);
+        // Column 0 of row 1 is the indent; one row down, that same screen
+        // column is the first letter of "juliet".
+        const ok = std.mem.indexOf(u8, got, " uliet kilo") != null;
+        if (!ok) std.debug.print("       got  \"{f}\"\n", .{std.zig.fmtString(got)});
+        ctx.check("gj keeps the screen column across an indented wrap", ok);
+    }
+
     // --- L counts screen rows, so a wrapped line shortens its reach --------
     // 30 short lines after one that wraps twice: `L` must land on the last
     // line actually on screen, not on `top + rows - 1`.

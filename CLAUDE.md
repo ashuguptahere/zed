@@ -520,8 +520,8 @@ decoding.
 Runtime configuration is one documented file (see `config.zig`): theme,
 `tab_width`, `nerd_font`, `sidebar` (left/right), `relative_numbers`,
 `large_file_mb`, `autoindent`, `buffer_tabs`, `auto_completion`,
-`completion_delay_ms`, `inline_diagnostics`, `soft_wrap`, `persistent_undo`,
-`format_on_save`; `zedit --init-config` writes
+`completion_delay_ms`, `inline_diagnostics`, `soft_wrap`, `wrap_indent`,
+`wrap_column`, `persistent_undo`, `format_on_save`; `zedit --init-config` writes
 the annotated default.
 `zedit --tutor` opens the embedded interactive tutorial (`doc/tutor.txt`,
 embedded via `build.zig`).
@@ -532,7 +532,12 @@ Tabs are stored verbatim and rendered at `tab_width` (currently 4) in
 **Soft wrap** (`soft_wrap`, on by default as in vim) draws a line too long for
 the window on further screen rows, each marked with a dim `↳` in the gutter,
 instead of scrolling the view sideways; `soft_wrap = false` restores the
-horizontal scrolling. The top of a window is always the start of a buffer
+horizontal scrolling. A row breaks at the last space that fits rather than
+mid-word (a word wider than the row is still broken), continuation rows repeat
+the line's indent so a wrapped line hangs under its own first character
+(`wrap_indent`, on, capped at half the window — vim's `breakindent`), and
+`wrap_column` wraps at a column narrower than the window. One layout is
+computed per line per frame and every row of that line is drawn from it. The top of a window is always the start of a buffer
 line — nvim's default too, its `smoothscroll` being the exception — which
 keeps the viewport a single `top` index. Two costs had to be contained,
 because a wrapped line is drawn once per row it fills: the per-line syntax
@@ -587,10 +592,10 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   modern ("very magic"-like), not vim's magic mode — `\(` groups etc. differ.
 - Highlighting is a per-line lexer (no cross-line block comments; a handful of
   languages). Tree-sitter is the upgrade path now that deps are allowed.
-- Soft wrap has no indent retention (a continuation row starts at column 0,
-  not at the line's indent) and no `text-width`/wrap column: it wraps at the
-  window edge, mid-word. `gj`/`gk` are cursor motions; as operator targets
-  (`dgj`) they act charwise rather than vim's screen-linewise.
+- Soft wrap has no per-language wrap column and no hard wrapping (vim's
+  `textwidth` reflowing as you type) — `wrap_column` is display-only.
+  `gj`/`gk` are cursor motions; as operator targets (`dgj`) they act charwise
+  rather than vim's screen-linewise. A line is capped at 256 screen rows.
 - The undo tree stores each state as the diff from its parent (prefix/suffix
   trimmed), with the current text materialised beside it, so memory is O(sum of
   edits) and a step costs one small edit. The root still holds the whole text,

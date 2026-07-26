@@ -48,6 +48,13 @@ pub const Settings = struct {
     /// of scrolling sideways (vim's `wrap`, on by default there too). `j`/`k`
     /// still move by buffer line, as in vim; `gj`/`gk` move by screen row.
     soft_wrap: bool = true,
+    /// Repeat a wrapped line's indent in front of every continuation row, so
+    /// it stays under its own first character (vim's `breakindent`). Capped at
+    /// half the window so there is always room for text.
+    wrap_indent: bool = true,
+    /// Wrap at this column rather than at the window edge. 0 = the window
+    /// edge; a value wider than the window is clamped to it.
+    wrap_column: usize = 0,
     /// Keep the undo history on disk (vim's `undofile`), under
     /// `$XDG_STATE_HOME/zedit/undo`, so undo still works after reopening a
     /// file. Off by default, as in vim: the files hold your text and nothing
@@ -128,6 +135,13 @@ pub const default_text =
     \\# screen rows. Set false to scroll horizontally instead.
     \\soft_wrap = true
     \\
+    \\# Repeat a wrapped line's indent on its continuation rows, so a wrapped
+    \\# line stays under its own first character.
+    \\wrap_indent = true
+    \\
+    \\# Wrap at this column instead of at the window edge (0 = window edge).
+    \\wrap_column = 0
+    \\
     \\# Keep undo history on disk (vim's 'undofile'), under
     \\# $XDG_STATE_HOME/zedit/undo, so u still works after reopening a file.
     \\# Off by default: those files hold copies of your text, and nothing
@@ -182,6 +196,13 @@ pub fn apply(text: []const u8) void {
         } else if (std.mem.eql(u8, key, "completion_delay_ms")) {
             const n = std.fmt.parseInt(usize, value, 10) catch continue;
             if (n <= 10_000) settings.completion_delay_ms = n;
+        } else if (std.mem.eql(u8, key, "wrap_indent")) {
+            if (std.mem.eql(u8, value, "true")) settings.wrap_indent = true;
+            if (std.mem.eql(u8, value, "false")) settings.wrap_indent = false;
+        } else if (std.mem.eql(u8, key, "wrap_column")) {
+            if (std.fmt.parseInt(usize, value, 10)) |n| {
+                if (n <= 4096) settings.wrap_column = n;
+            } else |_| {}
         } else if (std.mem.eql(u8, key, "persistent_undo")) {
             if (std.mem.eql(u8, value, "true")) settings.persistent_undo = true;
             if (std.mem.eql(u8, value, "false")) settings.persistent_undo = false;

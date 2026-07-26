@@ -379,8 +379,9 @@
      last save, and  :undolist  shows them all in a picker so you can
      jump straight to one.  Put  persistent_undo = true  in your config
      and the history is still there tomorrow.
-   - Long lines wrap onto the next screen row, marked with a small arrow
-     in the gutter.  j and k still step whole lines, as in vim;  gj  and
+   - Long lines wrap onto the next screen row at a space, not mid-word,
+     marked with a small arrow in the gutter, and keep their indent so
+     the wrapped part hangs under the line it belongs to.  j and k still step whole lines, as in vim;  gj  and
      gk  step one screen row, and  g0 / g$  reach the ends of one.  Put
      soft_wrap = false  in your config to scroll sideways instead.
    - Themes:  :theme  or  Space f t  switches between the five built-in
