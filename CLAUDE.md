@@ -357,6 +357,8 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   caret; `Esc` collapses back to one.
 - **Pickers (AstroNvim-style leader tree, leader = `Space`):** pressing `Space`
   shows a which-key popup with nested groups (submenus get their own popup):
+  `Space b` = Buffers (`b b` the buffer picker — same as `f b` — `b n`/`b p`
+  next/previous, `b c` close — same as `Space c`);
   `Space f` = Find (`f f` files, `f w` words/grep, `f b` buffers, `f t`
   themes); `Space l` = Language tools (`l a` code action, `l r` rename, `l R`
   references, `l s` document symbols, `l S` workspace symbols, `l d` line
@@ -371,8 +373,10 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   previous result set instead of rescoring everything — the grep picker narrows
   the same way, filtering the hits it already has rather than re-reading every
   file, so a keystroke costs 4 µs once the scan has covered the project).
-  Every picker uses one layout: the file tree on its side (when open), the
-  results next to it, and — for pickers that name a file (`f f`, `f b`,
+  Every picker uses one layout: the title bar on row 1 (when enabled), the
+  file tree on its side (when open), the prompt and
+  results next to it (selected row on the theme's `ui_sel` background), and —
+  for pickers that name a file (`f f`, `f b`,
   `f w`, references) — a **live preview** of the selection on the right,
   tree-sitter highlighted and scrolled to the matching line. `Ctrl-d` /
   `Ctrl-u` and the mouse wheel scroll the preview itself (it stops at the end
@@ -402,7 +406,15 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   Esc-abandoned line is remembered too (vim's rule).
 - **Sidebar (`Space e`):** a file-tree of the cwd on the configured side
   (config `sidebar = left|right`), which carves its width off the window
-  tiling. Focused keys: `j`/`k` move, `Enter`/`l` expand a directory or open a
+  tiling. Its "EXPLORER" header lives in the title bar when that row is shown
+  (drawn by the sidebar itself only when `buffer_tabs = false`); the selected
+  row uses the theme's `ui_sel` background while focused and
+  `mixColor(bg_dark, ui_sel, 50)` unfocused — never `cursorline`, which
+  equals `bg_dark` in Nord and made the selection invisible. While the tree
+  is open, every buffer switch **reveals** the active file: ancestor
+  directories expand (relative to the cwd), the row is selected and scrolled
+  into view; files outside the cwd (or remote/scratch) leave the tree alone.
+  Focused keys: `j`/`k` move, `Enter`/`l` expand a directory or open a
   file (focus returns to the buffer), `h` collapse/parent, `g`/`G` top/bottom,
   `R` refresh, `Space` opens the leader menu (it works the same with the tree
   focused), `Esc` unfocus (stays open), `q` or `Space e` close. Hidden and
@@ -436,15 +448,26 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 - **Update check:** `:update` (or `--check-update`) compares this build with
   the newest `v*` release tag via one `git ls-remote`. On demand only — zedit
   never contacts the network by itself.
-- **Buffer tabs:** open files appear as tabs across the top (active
-  highlighted, unsaved marked with `●`), shown only when more than one is open
-  so a single-file session keeps every row. **Clicking a tab** switches to that
-  buffer; clicks anywhere else are ignored so the terminal's own text selection
-  keeps working. Config `buffer_tabs = false` turns them off.
+- **Title bar:** one powerline row across the top (config `buffer_tabs`,
+  default on — always shown while enabled, VS Code-style, even for a single
+  file): an "EXPLORER" segment spanning the sidebar's columns when it is open
+  (accent bg while the tree has focus, else the statusline segment colours,
+  ending in a powerline separator), then one tab per open buffer over the
+  text area — the active tab an accent segment (`mode_normal` bg), inactive
+  ones dim on `status_bg` with thin separators between them, unsaved marked
+  with `●`. `nerd_font = false` degrades to the flat look (no separator
+  glyphs, zero width budgeted for them). While the bar is up the filename
+  leaves the statusline (see below). **Clicking a tab** switches to that
+  buffer — the renderer and `tabAt` share one geometry helper (`tabArea` +
+  `tabCells`), so a tab can never be drawn at one place and clicked at
+  another; clicks on the EXPLORER segment and anywhere else are ignored so
+  the terminal's own text selection keeps working. `buffer_tabs = false`
+  removes the row entirely and restores the statusline filename.
 - **Buffers & windows:** several files can be open at once, each with its own
   cursor, undo, tree-sitter and LSP. `:e <file>` opens (or, in the picker,
   `Enter`) a file in the active window — already-open files are reused, not
-  reloaded. `:bn`/`:bp` cycle the active window through buffers, `:bd` closes
+  reloaded. `:bn`/`:bp` and `]b`/`[b` cycle the active window through buffers
+  (`]b` takes a count: `2]b` skips one), `:bd` closes
   one, `:ls` lists them. Split the view with `:split`/`:vsplit` (or `Ctrl-w s`/
   `Ctrl-w v`), move focus with `Ctrl-w w`/`h`/`j`/`k`/`l`, and `:close`/`Ctrl-w
   c` / `:only` manage them. Splits tile evenly in one orientation; each window
@@ -503,12 +526,16 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 The renderer aims for an AstroNvim/Helix look: true-colour themes in
 `theme.zig` (Tokyo Night default, plus Gruvbox, Catppuccin Mocha, Nord and One
 Dark — set in the config, or live via `:theme` / the `Space f t` picker), a
-powerline statusline (coloured mode block, separators, the command as typed
+powerline title bar (EXPLORER segment + buffer tabs, see above) and statusline
+(coloured mode block, separators, the command as typed
 right-aligned beside the position — vim's 'showcmd', but the finished command
 stays readable until the next one starts, and yields its width to a status
-message — plus file/filetype/position/percent segments — a nerd font is recommended for the
-glyphs, and the config's `nerd_font = false` swaps in a flat statusline for
-any font), syntax highlighting (tree-sitter for 10 languages (Zig/C/Python/JSON/JS/TS/Rust/Go/HTML/Markdown) via
+message — plus filetype/position/percent segments; the filename+dirty segment
+appears only when the title bar is off, since the active tab already shows it
+— a nerd font is recommended for the
+glyphs, and the config's `nerd_font = false` swaps in a flat statusline whose
+width budgets drop the separator cells, painting edge to edge in any font),
+syntax highlighting (tree-sitter for 10 languages (Zig/C/Python/JSON/JS/TS/Rust/Go/HTML/Markdown) via
 `treesitter.zig`, the `syntax.zig` lexer otherwise), relative+absolute line numbers, a
 cursorline, indent guides, and a git change gutter (add/change/delete signs
 from `git diff`, recomputed on load and save). All colour is emitted as 24-bit
@@ -678,11 +705,12 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   tree-sitter only up to 64 KB (the lexer covers bigger files), and skipped for
   remote entries. The parse happens *after* the picker's first frame, so
   opening it stays fast; previewing a language whose grammar has not been
-  compiled yet costs a one-off 3–14 ms on the following frame. The tabline
+  compiled yet costs a one-off 3–14 ms on the following frame. The title bar
   lists buffers in open order with no reordering, and mouse support is still
-  wheel + tabline clicks only (no click-to-move-cursor or drag selection).
+  wheel + tab clicks only (no click-to-move-cursor or drag selection).
 - The sidebar tree is flat-file only (no rename/create/delete operations from
-  the tree), rebuilt on expand/toggle rather than watched; the side-by-side
+  the tree), rebuilt on expand/toggle rather than watched (reveal-on-switch
+  rebuilds only when it has to expand an ancestor); the side-by-side
   diff tints changed lines in both panes but has no aligned filler lines or
   synced scrolling like vimdiff. The inline diff buffer is a static snapshot.
   Mouse support is wheel-scrolling only (no click-to-move or drag selection),

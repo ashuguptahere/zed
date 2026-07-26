@@ -69,7 +69,9 @@ pub fn run(ctx: *h.Ctx) !void {
         defer s.finish();
         s.drain(900);
         ctx.check("remote file content is shown", s.containsPlain(ctx.gpa, "remote alpha"));
-        ctx.check("statusline names the remote file", s.containsPlain(ctx.gpa, "ssh://testhost"));
+        // The filename moved from the statusline into the title bar's tab,
+        // which shows the basename (as it does for local files).
+        ctx.check("title bar names the remote file", s.containsPlain(ctx.gpa, "hello.txt"));
         s.send("x:w\r"); // delete a char, write back through ssh
         s.drain(800);
         const after = h.readFile(ctx.gpa, ctx.io, rfile);

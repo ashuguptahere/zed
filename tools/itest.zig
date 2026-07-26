@@ -17,6 +17,7 @@ const scenarios = .{
     .{ "git", @import("scenarios/git.zig") },
     .{ "windows", @import("scenarios/windows.zig") },
     .{ "sidebar", @import("scenarios/sidebar.zig") },
+    .{ "titlebar", @import("scenarios/titlebar.zig") },
     .{ "config", @import("scenarios/configtheme.zig") },
     .{ "cmdline", @import("scenarios/cmdline.zig") },
     .{ "robust", @import("scenarios/robust.zig") },

@@ -38,6 +38,11 @@ pub const Theme = struct {
     gutter_active: Color,
     selection: Color,
     match: Color, // search match highlight (background)
+    // Selected row in UI lists (picker results, sidebar tree). Deliberately
+    // more visible than `cursorline`, and never equal to it or to `bg_dark`
+    // in any palette (a test enforces this): Nord's cursorline == bg_dark
+    // made a cursorline-coloured selection literally invisible there.
+    ui_sel: Color,
 
     // syntax
     comment: Color,
@@ -78,6 +83,7 @@ pub const tokyonight: Theme = .{
     .gutter_active = rgb(0x73, 0x7a, 0xa2),
     .selection = rgb(0x28, 0x34, 0x57),
     .match = rgb(0x3d, 0x59, 0xa1),
+    .ui_sel = rgb(0x33, 0x46, 0x7c),
 
     .comment = rgb(0x56, 0x5f, 0x89),
     .keyword = rgb(0xbb, 0x9a, 0xf7),
@@ -115,6 +121,7 @@ pub const gruvbox: Theme = .{
     .gutter_active = rgb(0xa8, 0x99, 0x84), // fg4
     .selection = rgb(0x50, 0x49, 0x45), // bg2
     .match = rgb(0x45, 0x85, 0x88), // neutral blue
+    .ui_sel = rgb(0x50, 0x49, 0x45), // bg2
 
     .comment = rgb(0x92, 0x83, 0x74),
     .keyword = rgb(0xfb, 0x49, 0x34), // red (gruvbox keywords are red)
@@ -152,6 +159,7 @@ pub const catppuccin: Theme = .{
     .gutter_active = rgb(0xb4, 0xbe, 0xfe), // lavender (cursor line nr)
     .selection = rgb(0x45, 0x47, 0x5a), // surface1
     .match = rgb(0x89, 0xb4, 0xfa), // blue
+    .ui_sel = rgb(0x45, 0x47, 0x5a), // surface1
 
     .comment = rgb(0x6c, 0x70, 0x86),
     .keyword = rgb(0xcb, 0xa6, 0xf7), // mauve
@@ -189,6 +197,7 @@ pub const nord: Theme = .{
     .gutter_active = rgb(0xd8, 0xde, 0xe9), // nord4
     .selection = rgb(0x43, 0x4c, 0x5e), // nord2
     .match = rgb(0x5e, 0x81, 0xac), // nord10
+    .ui_sel = rgb(0x43, 0x4c, 0x5e), // nord2 (cursorline == bg_dark here; this stays apart)
 
     .comment = rgb(0x4c, 0x56, 0x6a),
     .keyword = rgb(0x81, 0xa1, 0xc1), // nord9 (Nord spec: keywords)
@@ -226,6 +235,7 @@ pub const onedark: Theme = .{
     .gutter_active = rgb(0xab, 0xb2, 0xbf),
     .selection = rgb(0x3e, 0x44, 0x51),
     .match = rgb(0x52, 0x8b, 0xff), // Atom accent blue
+    .ui_sel = rgb(0x3e, 0x44, 0x51),
 
     .comment = rgb(0x5c, 0x63, 0x70),
     .keyword = rgb(0xc6, 0x78, 0xdd), // purple
@@ -280,4 +290,21 @@ pub fn set(name: []const u8) bool {
 test "set switches and rejects unknown" {
     try std.testing.expect(!set("no-such-theme"));
     try std.testing.expect(set("tokyonight"));
+}
+
+test "ui_sel is distinct from cursorline and bg_dark in every palette" {
+    // A selected list row must never render as the cursorline or as the
+    // ordinary row background — Nord's cursorline == bg_dark once made the
+    // sidebar's selection invisible. This pins every current and future
+    // palette against reintroducing the collision.
+    for (themes) |t| {
+        const p = t.palette;
+        const eq = struct {
+            fn eq(a: Color, b: Color) bool {
+                return a.r == b.r and a.g == b.g and a.b == b.b;
+            }
+        }.eq;
+        try std.testing.expect(!eq(p.ui_sel, p.cursorline));
+        try std.testing.expect(!eq(p.ui_sel, p.bg_dark));
+    }
 }

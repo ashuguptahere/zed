@@ -127,8 +127,12 @@ stripped, like vim.
 .TP
 .B buffer_tabs
 .BR true / false
-(default true). List open buffers as tabs across the top, shown only when more
-than one file is open.
+(default true). Show the title bar across the top: one powerline tab per open
+buffer (the active one accent\-coloured, unsaved ones dotted) beside the
+explorer's header when the sidebar is open. Always on screen while enabled,
+even for a single file;
+.B false
+removes the row and puts the filename back in the statusline.
 .TP
 .B auto_completion
 .BR true / false
@@ -309,7 +313,8 @@ structural objects.
 The wheel scrolls the focused window three lines per notch and moves the
 cursor with it, so the cursor keeps its position on screen. At the very top or
 bottom of the file nothing moves. In a picker the wheel scrolls the preview
-pane. Clicking a buffer tab switches to it; clicks elsewhere are ignored, so
+pane. Clicking a buffer tab in the title bar switches to it; clicks elsewhere
+(including the EXPLORER segment) are ignored, so
 your terminal's own selection still works. A jump further
 than half a window \(em
 .BR G ,
@@ -461,7 +466,9 @@ the preview and give the results the full width.
 Pressing
 .B Space
 shows a which\-key popup; the
-.B f
+.BR b ,
+.BR f ,
+.B g
 and
 .B l
 groups open a nested popup of their own.
@@ -495,7 +502,9 @@ and the index version side by side (changed lines tinted in both panes) (also
 .BR :vdiff ).
 .TP
 .B Space e
-Toggle the file-tree explorer. Inside it:
+Toggle the file-tree explorer. Its header lives in the title bar; while the
+tree is open, switching buffers reveals the active file in it (ancestor
+directories expand and its row is selected). Inside it:
 .B j k
 move,
 .B Enter\fR/\fPl
@@ -508,6 +517,12 @@ refresh,
 return focus to the buffer,
 .B q
 close.
+.TP
+.B Space b b\fR, \fPSpace b n\fR, \fPSpace b p\fR, \fPSpace b c
+Buffers: the open\-buffer picker (same as
+.BR "Space f b" ),
+next buffer, previous buffer, close buffer (same as
+.BR "Space c" ).
 .TP
 .B Space c\fR, \fPSpace w\fR, \fPSpace q
 Close buffer, write, quit.
@@ -584,6 +599,10 @@ Open \fIfile\fP in the active window (reusing it if already open).
 .B :bn :bp :bd :ls
 Next / previous buffer in the active window, close the current buffer, list
 open buffers.
+.TP
+.B ]b [b
+Cycle to the next / previous buffer; a count skips
+.RB ( 2]b ).
 .TP
 .B :split :vsplit :close :only
 Split the view horizontally / vertically, close the active window, close all

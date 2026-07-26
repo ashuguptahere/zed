@@ -192,6 +192,155 @@ pub fn clockTicksPerSec() i64 {
     return c.sysconf(c._SC_CLK_TCK);
 }
 
+/// A tiny terminal model: applies captured output (cursor moves, SGR colours,
+/// text) to a rows×cols grid, so scenarios can assert what ended up *where* —
+/// e.g. that row 1 really shows the tabs beside the EXPLORER segment rather
+/// than merely that both strings occurred somewhere in the byte stream.
+/// Every codepoint is treated as one cell (fine for the ASCII + powerline
+/// glyphs these tests look at); colours are the last-set 24-bit SGR values.
+pub const Screen = struct {
+    pub const default_color: u32 = 0xff000000; // sentinel: no explicit SGR
+    pub const Cell = struct { cp: u21 = ' ', fg: u32 = default_color, bg: u32 = default_color };
+
+    gpa: std.mem.Allocator,
+    rows: usize,
+    cols: usize,
+    cells: []Cell,
+
+    pub fn init(gpa: std.mem.Allocator, rows: usize, cols: usize) !Screen {
+        const cells = try gpa.alloc(Cell, rows * cols);
+        @memset(cells, .{});
+        return .{ .gpa = gpa, .rows = rows, .cols = cols, .cells = cells };
+    }
+
+    pub fn deinit(self: *Screen) void {
+        self.gpa.free(self.cells);
+    }
+
+    /// The cell at 1-based (row, col).
+    pub fn at(self: *Screen, row: usize, col: usize) Cell {
+        return self.cells[(row - 1) * self.cols + (col - 1)];
+    }
+
+    /// Row `row` decoded to UTF-8, trailing blanks trimmed (caller frees).
+    pub fn rowText(self: *Screen, gpa: std.mem.Allocator, row: usize) ![]u8 {
+        var o: std.ArrayList(u8) = .empty;
+        errdefer o.deinit(gpa);
+        var col: usize = 1;
+        while (col <= self.cols) : (col += 1) {
+            var b: [4]u8 = undefined;
+            const n = std.unicode.utf8Encode(self.at(row, col).cp, &b) catch continue;
+            try o.appendSlice(gpa, b[0..n]);
+        }
+        while (o.items.len > 0 and o.items[o.items.len - 1] == ' ') o.items.len -= 1;
+        return o.toOwnedSlice(gpa);
+    }
+
+    /// 1-based column where `needle` starts in `row`, or null.
+    pub fn colOf(self: *Screen, gpa: std.mem.Allocator, row: usize, needle: []const u8) ?usize {
+        const text = self.rowText(gpa, row) catch return null;
+        defer gpa.free(text);
+        const byte = std.mem.indexOf(u8, text, needle) orelse return null;
+        // Bytes → cells: count the codepoints before the hit (1-based).
+        return (std.unicode.utf8CountCodepoints(text[0..byte]) catch return null) + 1;
+    }
+
+    /// Feed captured pty output through the model.
+    pub fn apply(self: *Screen, bytes: []const u8) void {
+        var row: usize = 1;
+        var col: usize = 1;
+        var fg: u32 = default_color;
+        var bg: u32 = default_color;
+        var i: usize = 0;
+        while (i < bytes.len) {
+            const ch = bytes[i];
+            if (ch == 0x1b and i + 1 < bytes.len and bytes[i + 1] == '[') {
+                const start = i + 2;
+                var end = start;
+                while (end < bytes.len and !std.ascii.isAlphabetic(bytes[end])) end += 1;
+                if (end >= bytes.len) break;
+                const params = bytes[start..end];
+                switch (bytes[end]) {
+                    'H', 'f' => {
+                        var it = std.mem.splitScalar(u8, params, ';');
+                        row = std.fmt.parseInt(usize, it.next() orelse "1", 10) catch 1;
+                        col = std.fmt.parseInt(usize, it.next() orelse "1", 10) catch 1;
+                        if (row < 1) row = 1;
+                        if (col < 1) col = 1;
+                    },
+                    'm' => self.applySgr(params, &fg, &bg),
+                    'J' => @memset(self.cells, .{}), // zedit only clears whole-screen
+                    'K' => { // clear to end of line, in the current bg
+                        var cc = col;
+                        while (cc <= self.cols and row <= self.rows) : (cc += 1)
+                            self.cells[(row - 1) * self.cols + (cc - 1)] = .{ .bg = bg };
+                    },
+                    else => {},
+                }
+                i = end + 1;
+                continue;
+            }
+            if (ch == 0x1b) { // non-CSI escape: skip introducer + one byte
+                i += 2;
+                continue;
+            }
+            switch (ch) {
+                '\r' => col = 1,
+                '\n' => row += 1,
+                8 => col -|= 1, // backspace
+                else => {
+                    if (ch < 0x20) {
+                        i += 1;
+                        continue;
+                    }
+                    const len = std.unicode.utf8ByteSequenceLength(ch) catch 1;
+                    const end = @min(i + len, bytes.len);
+                    const cp = std.unicode.utf8Decode(bytes[i..end]) catch '?';
+                    if (row <= self.rows and col <= self.cols)
+                        self.cells[(row - 1) * self.cols + (col - 1)] = .{ .cp = cp, .fg = fg, .bg = bg };
+                    col += 1;
+                    i = end;
+                    continue;
+                },
+            }
+            i += 1;
+        }
+    }
+
+    fn applySgr(self: *Screen, params: []const u8, fg: *u32, bg: *u32) void {
+        _ = self;
+        var it = std.mem.splitScalar(u8, params, ';');
+        while (it.next()) |tok| {
+            // An empty parameter (e.g. the bare reset "\x1b[m") means 0.
+            const n = if (tok.len == 0) 0 else std.fmt.parseInt(u32, tok, 10) catch continue;
+            switch (n) {
+                0 => {
+                    fg.* = default_color;
+                    bg.* = default_color;
+                },
+                38, 48 => {
+                    // 38;2;r;g;b / 48;2;r;g;b
+                    const two = it.next() orelse return;
+                    if (!std.mem.eql(u8, two, "2")) return;
+                    const r = std.fmt.parseInt(u32, it.next() orelse return, 10) catch return;
+                    const g = std.fmt.parseInt(u32, it.next() orelse return, 10) catch return;
+                    const b = std.fmt.parseInt(u32, it.next() orelse return, 10) catch return;
+                    const packed_rgb = (r << 16) | (g << 8) | b;
+                    if (n == 38) fg.* = packed_rgb else bg.* = packed_rgb;
+                },
+                39 => fg.* = default_color,
+                49 => bg.* = default_color,
+                else => {},
+            }
+        }
+    }
+};
+
+/// 0xRRGGBB for Screen colour assertions.
+pub fn rgb(r: u8, g: u8, b: u8) u32 {
+    return (@as(u32, r) << 16) | (@as(u32, g) << 8) | b;
+}
+
 // --- filesystem helpers (thin wrappers over std.Io) ------------------------
 
 pub fn writeFile(io: std.Io, path: []const u8, data: []const u8) void {

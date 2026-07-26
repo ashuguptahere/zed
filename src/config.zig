@@ -30,8 +30,10 @@ pub const Settings = struct {
     /// Inherit the current line's indentation on `o`, `O`, Enter and `cc`
     /// (vim 'autoindent'; an auto-indent left blank is stripped on leaving).
     autoindent: bool = true,
-    /// Show open buffers as tabs across the top (only when more than one is
-    /// open, like nvim's tabline).
+    /// Show the title bar: open buffers as powerline tabs across the top,
+    /// plus the explorer's header when the sidebar is open. Always on screen
+    /// while enabled (VS Code-style, even for a single file); false removes
+    /// the row and puts the filename back in the statusline.
     buffer_tabs: bool = true,
     /// Pop up completions on their own while typing, after a short pause,
     /// instead of only on `Ctrl-n` (Helix and recent Neovim both do this).
@@ -112,8 +114,9 @@ pub const default_text =
     \\# (vim's 'autoindent'). An auto-indent left blank is stripped.
     \\autoindent = true
     \\
-    \\# Show open buffers as tabs along the top (only when more than one file
-    \\# is open, so a single-file session keeps the whole screen).
+    \\# Show the title bar along the top: open buffers as tabs (the active one
+    \\# highlighted) beside the explorer's header, VS Code-style. Set false to
+    \\# remove the row; the filename then returns to the statusline.
     \\buffer_tabs = true
     \\
     \\# Pop up completions while typing (after completion_delay_ms of pause),

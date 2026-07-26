@@ -46,6 +46,17 @@ fn sepRight() []const u8 {
 fn sepLeft() []const u8 {
     return if (config.settings.nerd_font) "\u{E0B2}" else "";
 }
+/// The thin variant, for a transition between two same-coloured segments
+/// (adjacent inactive tabs in the title bar).
+fn sepRightThin() []const u8 {
+    return if (config.settings.nerd_font) "\u{E0B1}" else "";
+}
+/// Cells one powerline separator occupies — 0 in flat (`nerd_font = false`)
+/// mode, where the glyphs are empty strings. Width budgets must use this
+/// rather than a hardcoded 1 or the row is painted short of its edge.
+fn sepCells() usize {
+    return if (config.settings.nerd_font) 1 else 0;
+}
 const indent_glyph = "\u{2502}";
 
 /// Cells a tab advances to (config `tab_width`). Tabs are stored verbatim and
@@ -140,6 +151,7 @@ const Await = enum {
     space_find, // <space>f — the AstroNvim Find group
     space_lang, // <space>l — the AstroNvim Language-tools group
     space_git, // <space>g — the Git group (diff views)
+    space_buffer, // <space>b — the Buffers group (picker, next/prev, close)
     surround_add_char, // ys{motion}{char} / visual S{char}
     surround_delete, // ds{char}
     surround_change_from, // cs{old}...
@@ -918,7 +930,7 @@ pub const Editor = struct {
     /// elsewhere are ignored, so terminal text selection keeps working.
     fn mouseClick(self: *Editor, m: key.Mouse) void {
         if (self.mode != .normal and self.mode != .insert) return;
-        if (!self.tabsVisible() or m.row != 1) return;
+        if (!tabsVisible() or m.row != 1) return;
         const doc = self.tabAt(m.col) orelse return;
         if (doc == self.d) return;
         self.addJump();
@@ -1219,7 +1231,7 @@ pub const Editor = struct {
             },
             .bracket_next, .bracket_prev => {
                 if (k == .char and k.char == 'd') self.gotoDiagnostic(a == .bracket_next);
-                if (k == .char and k.char == 'b') self.cycleDoc(a == .bracket_next); // ]b / [b buffers
+                if (k == .char and k.char == 'b') self.cycleDoc(a == .bracket_next, self.eff()); // ]b / [b buffers
                 if (k == .char and k.char == 'f') self.gotoFunction(a == .bracket_next); // ]f / [f functions
                 self.resetPending();
             },
@@ -1258,11 +1270,12 @@ pub const Editor = struct {
                 self.resetPending();
                 try self.playMacro(reg, n);
             },
-            // AstroNvim-style leader tree: <space>f Find…, <space>l Language…,
-            // plus the flat <space>w/q/c leaves.
+            // AstroNvim-style leader tree: <space>b Buffers…, <space>f Find…,
+            // <space>l Language…, plus the flat <space>w/q/c leaves.
             .space_leader => {
                 self.resetPending();
                 if (k == .char) switch (k.char) {
+                    'b' => self.await_arg = .space_buffer,
                     'f' => self.await_arg = .space_find,
                     'l' => self.await_arg = .space_lang,
                     'g' => self.await_arg = .space_git,
@@ -1270,6 +1283,16 @@ pub const Editor = struct {
                     'w' => _ = try self.write(""),
                     'q' => self.doQuit(),
                     'c' => self.closeDoc(), // close buffer (AstroNvim <leader>c)
+                    else => {},
+                };
+            },
+            .space_buffer => {
+                self.resetPending();
+                if (k == .char) switch (k.char) {
+                    'b' => self.openBufferPicker(), // same picker as <space>f b
+                    'n' => self.cycleDoc(true, 1), // next buffer (]b)
+                    'p' => self.cycleDoc(false, 1), // previous buffer ([b)
+                    'c' => self.closeDoc(), // same as <space>c
                     else => {},
                 };
             },
@@ -3691,6 +3714,7 @@ pub const Editor = struct {
         self.cur.doc = doc;
         self.comp_open = false;
         self.sig_open = false;
+        self.sbReveal(); // keep the explorer pointing at the active file
     }
 
     fn winIndex(self: *Editor, w: *Win) usize {
@@ -3766,13 +3790,15 @@ pub const Editor = struct {
         }
     }
 
-    /// Cycle the active window through the open documents (`:bn` / `:bp`).
-    fn cycleDoc(self: *Editor, forward: bool) void {
+    /// Cycle the active window `count` documents forward or back
+    /// (`:bn` / `:bp`, `]b` / `[b` — where `2]b` skips one).
+    fn cycleDoc(self: *Editor, forward: bool, count: usize) void {
         const n = self.docs.items.len;
         if (n <= 1) return;
         self.addJump();
         const idx = self.docIndex(self.d);
-        const ni = if (forward) (idx + 1) % n else (idx + n - 1) % n;
+        const step = count % n;
+        const ni = if (forward) (idx + step) % n else (idx + n - step) % n;
         self.focusDoc(self.docs.items[ni]);
         self.placeAt(self.cy);
         self.setStatus("{s}", .{docLabel(self.d)});
@@ -3789,7 +3815,9 @@ pub const Editor = struct {
             if (std.mem.eql(u8, p, path)) {
                 self.focusDoc(doc);
                 self.placeAt(line);
-                self.setStatus("switched to {s}", .{path});
+                // The doc's own copy, not `path`: focusDoc's reveal may
+                // rebuild the sidebar entries that own the argument.
+                self.setStatus("switched to {s}", .{doc.buf.path orelse ""});
                 return;
             }
         }
@@ -3854,7 +3882,11 @@ pub const Editor = struct {
         const th = theme.current;
         const cols: usize = self.win.cols;
         const rows: usize = self.win.rows;
-        const visible = if (rows > 1) rows - 1 else 1;
+        // The title bar keeps row 1 in the picker view too; the prompt and
+        // results shift below it.
+        const tab_h: usize = if (tabsVisible()) 1 else 0;
+        const top = 1 + tab_h; // the prompt's row
+        const visible = if (rows > top) rows - top else 1;
 
         // Columns: [sidebar] [list] [preview]
         const side_w = if (self.sb_open) self.sbWidth() else 0;
@@ -3878,6 +3910,7 @@ pub const Editor = struct {
             try self.emit(ansi.clear_line_right);
         }
         if (self.sb_open) try self.renderSidebar();
+        if (tab_h > 0) try self.renderTitleBar();
 
         const klabel = switch (self.picker_kind) {
             .files => " FILES ",
@@ -3893,7 +3926,7 @@ pub const Editor = struct {
         };
 
         // Prompt.
-        try self.emitFmt("\x1b[1;{d}H", .{body_x});
+        try self.emitFmt("\x1b[{d};{d}H", .{ top, body_x });
         try self.setBg(th.mode_command);
         try self.setFg(th.bg);
         try self.emit(klabel);
@@ -3908,8 +3941,8 @@ pub const Editor = struct {
         while (shown < visible) : (shown += 1) {
             const fi = self.picker_scroll + shown;
             const selected = fi == self.picker_sel and fi < self.picker_filtered.items.len;
-            try self.emitFmt("\x1b[{d};{d}H", .{ shown + 2, body_x });
-            try self.setBg(if (selected) th.cursorline else th.bg);
+            try self.emitFmt("\x1b[{d};{d}H", .{ shown + top + 1, body_x });
+            try self.setBg(if (selected) th.ui_sel else th.bg);
             var used: usize = 0;
             if (fi < self.picker_filtered.items.len) {
                 const it = self.picker_items.items[self.picker_filtered.items[fi]];
@@ -3925,10 +3958,10 @@ pub const Editor = struct {
             if (used < list_w) try self.emitSpaces(list_w - used);
         }
 
-        if (wants_preview) try self.renderPreview(prev_x, prev_w, rows);
+        if (wants_preview) try self.renderPreview(prev_x, prev_w, top, rows);
 
         const promptw = klabel.len + 1;
-        try self.emitFmt("\x1b[{d};{d}H", .{ 1, body_x + promptw + unicode.displayWidth(self.picker_query.items) });
+        try self.emitFmt("\x1b[{d};{d}H", .{ top, body_x + promptw + unicode.displayWidth(self.picker_query.items) });
         try self.emit(ansi.show_cursor);
     }
 
@@ -4028,11 +4061,11 @@ pub const Editor = struct {
 
     /// Draw the preview pane: the selected file, syntax-highlighted, scrolled
     /// so a matched line (grep, references) sits in view and marked.
-    fn renderPreview(self: *Editor, x: usize, w: usize, rows: usize) !void {
+    fn renderPreview(self: *Editor, x: usize, w: usize, top: usize, rows: usize) !void {
         const th = theme.current;
         self.ensurePreview();
 
-        try self.emitFmt("\x1b[1;{d}H", .{x});
+        try self.emitFmt("\x1b[{d};{d}H", .{ top, x });
         try self.setBg(th.status_seg_bg);
         try self.setFg(th.status_seg_fg);
         const name: []const u8 = if (self.preview_path) |p| std.fs.path.basename(p) else "";
@@ -4041,7 +4074,7 @@ pub const Editor = struct {
         if (unicode.displayWidth(name) + 1 < w) try self.emitSpaces(w - unicode.displayWidth(name) - 1);
 
         const text = self.preview_text orelse return;
-        const body_rows = rows -| 1;
+        const body_rows = rows -| top;
         // Centre the target line when the entry named one, then apply whatever
         // the reader scrolled on top of that.
         const centred = if (self.preview_top > body_rows / 2) self.preview_top - body_rows / 2 else 0;
@@ -4060,7 +4093,7 @@ pub const Editor = struct {
 
         var line_no: usize = 0;
         var offset: usize = 0; // byte offset of the line, for the style lookup
-        var row: usize = 2;
+        var row: usize = top + 1;
         var it = std.mem.splitScalar(u8, text, '\n');
         while (it.next()) |line| : (line_no += 1) {
             defer offset += line.len + 1;
@@ -4531,9 +4564,9 @@ pub const Editor = struct {
         } else if (eql(cmd, "on") or eql(cmd, "only")) {
             self.onlyWindow();
         } else if (eql(cmd, "bn") or eql(cmd, "bnext")) {
-            self.cycleDoc(true);
+            self.cycleDoc(true, 1);
         } else if (eql(cmd, "bp") or eql(cmd, "bprev") or eql(cmd, "bprevious")) {
-            self.cycleDoc(false);
+            self.cycleDoc(false, 1);
         } else if (eql(cmd, "bd") or eql(cmd, "bdelete")) {
             self.closeDoc();
         } else if (eql(cmd, "ls") or eql(cmd, "buffers")) {
@@ -6450,6 +6483,61 @@ pub const Editor = struct {
         }
     }
 
+    /// Reveal the active document in the explorer: expand its ancestor
+    /// directories, select its row, and let the next render scroll to it.
+    /// Files outside the cwd (absolute elsewhere, remote, scratch) leave the
+    /// tree alone. Runs on every buffer switch (`focusDoc`), so it only
+    /// rebuilds the tree when a directory actually needs expanding.
+    fn sbReveal(self: *Editor) void {
+        if (!self.sb_open) return;
+        const path = self.d.buf.path orelse return;
+        const rel = self.cwdRelative(path) orelse return;
+        if (self.sbSelect(rel)) return; // already in the tree: just select it
+        var changed = false;
+        var i: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, rel, i, '/')) |slash| : (i = slash + 1) {
+            const dir = rel[0..slash];
+            if (self.sb_expanded.contains(dir)) continue;
+            const owned = self.gpa.dupe(u8, dir) catch return;
+            self.sb_expanded.put(owned, {}) catch {
+                self.gpa.free(owned);
+                return;
+            };
+            changed = true;
+        }
+        if (!changed) return; // nothing to expand and no row: e.g. an ignored dir
+        self.sbRebuild();
+        _ = self.sbSelect(rel);
+    }
+
+    /// Select the tree row for cwd-relative file path `rel`, if present.
+    fn sbSelect(self: *Editor, rel: []const u8) bool {
+        for (self.sb_entries.items, 0..) |e, i| {
+            if (!e.is_dir and std.mem.eql(u8, e.path, rel)) {
+                self.sb_sel = i;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// `path` as the cwd-relative form the sidebar tree uses (a slice of the
+    /// argument), or null when it points outside the cwd (remote, `..`, or an
+    /// absolute path elsewhere).
+    fn cwdRelative(self: *Editor, path: []const u8) ?[]const u8 {
+        var p = path;
+        if (remote.isRemote(p)) return null;
+        if (std.mem.startsWith(u8, p, "./")) p = p[2..];
+        if (p.len > 0 and p[0] == '/') {
+            const cwd = std.process.currentPathAlloc(self.io, self.gpa) catch return null;
+            defer self.gpa.free(cwd);
+            if (p.len <= cwd.len + 1 or !std.mem.startsWith(u8, p, cwd) or p[cwd.len] != '/') return null;
+            return p[cwd.len + 1 ..];
+        }
+        if (std.mem.startsWith(u8, p, "../") or std.mem.eql(u8, p, "..")) return null;
+        return p;
+    }
+
     fn sbToggleDir(self: *Editor, path: []const u8) void {
         if (self.sb_expanded.fetchRemove(path)) |kv| {
             self.gpa.free(kv.key);
@@ -6474,22 +6562,28 @@ pub const Editor = struct {
         return @min(sidebar_width, cols / 2);
     }
 
-    /// Draw the sidebar: a header row, then the flattened tree with the
-    /// selection highlighted (brighter while the sidebar has focus).
+    /// Draw the sidebar: the flattened tree with the selection highlighted
+    /// (`ui_sel`, dimmed while the sidebar lacks focus). Its "EXPLORER"
+    /// header lives in the title bar when that row is shown; otherwise this
+    /// draws it, as before the title bar existed.
     fn renderSidebar(self: *Editor) !void {
         const th = theme.current;
         const x = self.sbX();
         const w = self.sbWidth();
-        const rows: usize = if (self.win.rows > 2) self.win.rows - 2 else 1; // header + command line
+        const rows: usize = if (self.win.rows > 2) self.win.rows - 2 else 1; // header/title + command line
         if (self.sb_sel < self.sb_scroll) self.sb_scroll = self.sb_sel;
         if (self.sb_sel >= self.sb_scroll + rows) self.sb_scroll = self.sb_sel - rows + 1;
 
-        self.beginSeg(1, x);
-        try self.emitFmt("\x1b[1;{d}H", .{x});
-        try self.setBg(if (self.sb_focus) th.mode_command else th.status_seg_bg);
-        try self.setFg(if (self.sb_focus) th.bg else th.status_seg_fg);
-        try self.emit(" EXPLORER");
-        try self.emitSpaces(w - 9);
+        if (!tabsVisible()) {
+            self.beginSeg(1, x);
+            try self.emitFmt("\x1b[1;{d}H", .{x});
+            try self.setBg(if (self.sb_focus) th.mode_command else th.status_seg_bg);
+            try self.setFg(if (self.sb_focus) th.bg else th.status_seg_fg);
+            const hdr = " EXPLORER";
+            const shown = @min(hdr.len, w); // a <9-col sidebar clips the label
+            try self.emit(hdr[0..shown]);
+            try self.emitSpaces(w - shown);
+        }
 
         var r: usize = 0;
         while (r < rows) : (r += 1) {
@@ -6497,7 +6591,9 @@ pub const Editor = struct {
             self.beginSeg(r + 2, x);
             try self.emitFmt("\x1b[{d};{d}H", .{ r + 2, x });
             const selected = idx == self.sb_sel and idx < self.sb_entries.items.len;
-            try self.setBg(if (selected and self.sb_focus) th.selection else if (selected) th.cursorline else th.bg_dark);
+            // The selected row must stay visible without focus too: Nord's
+            // cursorline == bg_dark once made it vanish there (hence ui_sel).
+            try self.setBg(if (selected and self.sb_focus) th.ui_sel else if (selected) mixColor(th.bg_dark, th.ui_sel, 50) else th.bg_dark);
             if (idx < self.sb_entries.items.len) {
                 const e = self.sb_entries.items[idx];
                 const name = std.fs.path.basename(e.path);
@@ -6522,14 +6618,17 @@ pub const Editor = struct {
     /// Tile the windows over the text area (all but the bottom command line).
     /// One orientation at a time (even split); the last window takes the
     /// remainder so the screen is fully covered.
-    /// Whether the buffer tabline is on screen: more than one file open and
-    /// the config allows it (nvim shows its tabline the same way).
-    fn tabsVisible(self: *Editor) bool {
-        return config.settings.buffer_tabs and self.docs.items.len > 1;
+    /// Whether the title bar (EXPLORER segment + buffer tabs) is on screen:
+    /// whenever the config allows it, even for a single buffer — VS Code's
+    /// rule, so the bar never pops in and out as files open and close.
+    /// `buffer_tabs = false` removes the row and puts the filename back in
+    /// the statusline.
+    fn tabsVisible() bool {
+        return config.settings.buffer_tabs;
     }
 
     fn layout(self: *Editor) void {
-        const tab_h: usize = if (self.tabsVisible()) 1 else 0;
+        const tab_h: usize = if (tabsVisible()) 1 else 0;
         const total_rows = if (self.win.rows > 1 + tab_h) self.win.rows - 1 - tab_h else 1; // command line + tabs
         const cols: usize = self.win.cols;
         // The sidebar carves its width off the chosen side; windows tile the rest.
@@ -6834,7 +6933,7 @@ pub const Editor = struct {
         self.tsUpdate(); // query the active doc's visible range (needs scrolled top)
         self.saveViewport(); // mirror back into the active Win for rendering
 
-        if (self.tabsVisible()) try self.renderTabs();
+        if (tabsVisible()) try self.renderTitleBar();
         for (self.wins.items) |w| try self.renderWindow(w);
         if (self.sb_open) try self.renderSidebar();
 
@@ -6852,7 +6951,7 @@ pub const Editor = struct {
             overlay = true;
         }
         switch (self.await_arg) {
-            .space_leader, .space_find, .space_lang, .space_git => {
+            .space_leader, .space_find, .space_lang, .space_git, .space_buffer => {
                 try self.renderWhichKey();
                 overlay = true;
             },
@@ -6870,6 +6969,7 @@ pub const Editor = struct {
     // The AstroNvim-style leader tree, shown by the which-key popup.
     const WhichKey = struct { key: []const u8, desc: []const u8 };
     const leader_keys = [_]WhichKey{
+        .{ .key = "b", .desc = "Buffers \u{2026}" },
         .{ .key = "f", .desc = "Find \u{2026}" },
         .{ .key = "l", .desc = "Language tools \u{2026}" },
         .{ .key = "g", .desc = "Git \u{2026}" },
@@ -6877,6 +6977,12 @@ pub const Editor = struct {
         .{ .key = "c", .desc = "close buffer" },
         .{ .key = "w", .desc = "write (save)" },
         .{ .key = "q", .desc = "quit" },
+    };
+    const buffer_keys = [_]WhichKey{
+        .{ .key = "b", .desc = "find buffers" },
+        .{ .key = "n", .desc = "next buffer" },
+        .{ .key = "p", .desc = "previous buffer" },
+        .{ .key = "c", .desc = "close buffer" },
     };
     const find_keys = [_]WhichKey{
         .{ .key = "f", .desc = "find files" },
@@ -7144,51 +7250,128 @@ pub const Editor = struct {
         self.refreshFileCache();
     }
 
-    /// The buffer tabline across the top: one tab per open file, the active
-    /// one highlighted, dirty ones marked. Shown only when more than one file
-    /// is open, so a single-file session loses no room.
-    /// The screen width one tab occupies. The renderer and the click
-    /// hit-test both use this, so a tab can never be drawn at one place and
-    /// clicked at another.
+    /// The powerline title bar across screen row 1: an "EXPLORER" segment
+    /// spanning the sidebar's columns (when it is open) and one tab per open
+    /// buffer over the text area — the active one an accent-coloured segment,
+    /// inactive ones dim on `status_bg`, dirty ones marked with a dot.
+    /// The screen width one tab occupies, including its trailing powerline
+    /// separator. The renderer and the click hit-test both use this, so a tab
+    /// can never be drawn at one place and clicked at another.
     fn tabCells(doc: *Doc) usize {
         const name = std.fs.path.basename(docLabel(doc));
-        return 3 + unicode.displayWidth(name) + @as(usize, if (doc.buf.dirty) 2 else 0);
+        return 2 + unicode.displayWidth(name) + @as(usize, if (doc.buf.dirty) 2 else 0) + sepCells();
+    }
+
+    /// Where the tabs live on row 1: their first column and the width they
+    /// may use — the text area, beside the sidebar's columns. Shared by the
+    /// renderer and `tabAt` (the invariant above).
+    const TabArea = struct { x0: usize, w: usize };
+    fn tabArea(self: *Editor) TabArea {
+        const sb_w: usize = if (self.sb_open) self.sbWidth() else 0;
+        const x0: usize = if (self.sb_open and config.settings.sidebar == .left) sb_w + 1 else 1;
+        return .{ .x0 = x0, .w = self.win.cols - sb_w };
     }
 
     /// The document whose tab covers 1-based screen column `col`, if any.
+    /// Clicks on the EXPLORER segment or the filler resolve to null.
     fn tabAt(self: *Editor, col: usize) ?*Doc {
-        var x: usize = 1;
+        const area = self.tabArea();
+        var x = area.x0;
         for (self.docs.items) |doc| {
             const w = tabCells(doc);
-            if (x + w > self.win.cols + 1) break;
+            if (x + w > area.x0 + area.w) break;
             if (col >= x and col < x + w) return doc;
             x += w;
         }
         return null;
     }
 
-    fn renderTabs(self: *Editor) !void {
+    /// A tab's segment colour: the accent for the active buffer (the mode
+    /// block's aesthetic — unmistakable), the statusline base for the rest.
+    fn tabBg(self: *Editor, doc: *Doc) Color {
         const th = theme.current;
-        const cols = self.win.cols;
+        return if (doc == self.d) th.mode_normal else th.status_bg;
+    }
+
+    fn renderTitleBar(self: *Editor) !void {
+        const th = theme.current;
+        const area = self.tabArea();
+        const sb_w: usize = if (self.sb_open) self.sbWidth() else 0;
+        const hdr_bg = if (self.sb_focus) th.mode_command else th.status_seg_bg;
+        const hdr_fg = if (self.sb_focus) th.bg else th.status_seg_fg;
+        const hdr = " EXPLORER";
+
         self.beginSeg(1, 1);
         try self.emitFmt("\x1b[1;1H", .{});
-        var used: usize = 0;
-        for (self.docs.items) |doc| {
-            const name = std.fs.path.basename(docLabel(doc));
-            const active = doc == self.d;
-            const dirty = doc.buf.dirty;
-            const w = tabCells(doc);
-            if (used + w > cols) break;
-            try self.setBg(if (active) th.bg else th.status_seg_bg);
-            try self.setFg(if (active) th.mode_normal else th.fg_dim);
-            try self.emit(" ");
-            try self.emitSanitized(name);
-            if (dirty) try self.emit(" \u{25CF}");
-            try self.emit("  ");
-            used += w;
+
+        if (self.sb_open and config.settings.sidebar == .left) {
+            // The EXPLORER segment spans the sidebar width, ending in a
+            // separator that transitions into the first tab's colour.
+            const shown = @min(hdr.len, sb_w -| sepCells());
+            try self.setBg(hdr_bg);
+            try self.setFg(hdr_fg);
+            try self.emit(hdr[0..shown]);
+            try self.emitSpaces(sb_w -| sepCells() -| shown);
+            if (sepCells() > 0) {
+                const first_bg = if (self.docs.items.len > 0 and tabCells(self.docs.items[0]) <= area.w)
+                    self.tabBg(self.docs.items[0])
+                else
+                    th.status_bg;
+                try self.setBg(first_bg);
+                try self.setFg(hdr_bg);
+                try self.emit(sepRight());
+            }
         }
-        try self.setBg(th.status_seg_bg);
-        if (used < cols) try self.emitSpaces(cols - used);
+
+        var used: usize = 0;
+        for (self.docs.items, 0..) |doc, i| {
+            const w = tabCells(doc);
+            if (used + w > area.w) break;
+            const bg = self.tabBg(doc);
+            try self.setBg(bg);
+            try self.setFg(if (doc == self.d) th.bg else th.fg_dim);
+            try self.emit(" ");
+            try self.emitSanitized(std.fs.path.basename(docLabel(doc)));
+            if (doc.buf.dirty) try self.emit(" \u{25CF}");
+            try self.emit(" ");
+            used += w;
+            if (sepCells() > 0) {
+                // The transition cell: a solid arrow between different
+                // colours, a thin chevron between same-coloured tabs.
+                const next_bg = if (i + 1 < self.docs.items.len and used + tabCells(self.docs.items[i + 1]) <= area.w)
+                    self.tabBg(self.docs.items[i + 1])
+                else
+                    th.status_bg; // the filler
+                if (bg.r == next_bg.r and bg.g == next_bg.g and bg.b == next_bg.b) {
+                    try self.setFg(th.fg_dim);
+                    try self.emit(sepRightThin());
+                } else {
+                    try self.setBg(next_bg);
+                    try self.setFg(bg);
+                    try self.emit(sepRight());
+                }
+            }
+        }
+
+        try self.setBg(th.status_bg);
+        const fill = area.w - used;
+        if (self.sb_open and config.settings.sidebar == .right) {
+            // Mirrored: filler, a left-pointing separator, then the segment.
+            if (sepCells() > 0 and fill > 0) {
+                try self.emitSpaces(fill - 1);
+                try self.setFg(hdr_bg);
+                try self.emit(sepLeft());
+            } else {
+                try self.emitSpaces(fill);
+            }
+            try self.setBg(hdr_bg);
+            try self.setFg(hdr_fg);
+            const shown = @min(hdr.len, sb_w);
+            try self.emit(hdr[0..shown]);
+            try self.emitSpaces(sb_w - shown);
+        } else {
+            try self.emitSpaces(fill);
+        }
         self.closeSegs();
     }
 
@@ -7240,6 +7423,7 @@ pub const Editor = struct {
             .space_find => &find_keys,
             .space_lang => &lang_keys,
             .space_git => &git_keys,
+            .space_buffer => &buffer_keys,
             else => return,
         };
         const title: []const u8 = switch (self.await_arg) {
@@ -7247,6 +7431,7 @@ pub const Editor = struct {
             .space_find => " SPACE f",
             .space_lang => " SPACE l",
             .space_git => " SPACE g",
+            .space_buffer => " SPACE b",
             else => unreachable,
         };
         const width: usize = 26;
@@ -7713,26 +7898,36 @@ pub const Editor = struct {
         const accent = self.modeColor();
         const label = self.mode.label();
 
-        // Left: [ MODE ] file
+        // Left: [ MODE ] file — but the file (and its dirty dot) lives in the
+        // title bar's tab when that row is shown, so it leaves the statusline.
         try self.setBg(accent);
         try self.setFg(th.bg);
         try self.emitFmt(" {s} ", .{label});
-        try self.setBg(th.status_seg_bg);
-        try self.setFg(accent);
-        try self.emit(sepRight());
-
         var fb: [320]u8 = undefined;
-        const fname = docLabel(self.d);
-        const dirty = if (self.buf.dirty) " \u{25CF}" else "";
-        const fileseg = std.fmt.bufPrint(&fb, " {s}{s} ", .{ fname, dirty }) catch " ";
-        try self.setBg(th.status_seg_bg);
-        try self.setFg(th.status_seg_fg);
-        try self.emitSanitized(fileseg);
-        try self.setBg(th.status_bg);
-        try self.setFg(th.status_seg_bg);
-        try self.emit(sepRight());
+        var fileseg: []const u8 = "";
+        if (tabsVisible()) {
+            try self.setBg(th.status_bg);
+            try self.setFg(accent);
+            try self.emit(sepRight());
+        } else {
+            try self.setBg(th.status_seg_bg);
+            try self.setFg(accent);
+            try self.emit(sepRight());
+            const fname = docLabel(self.d);
+            const dirty = if (self.buf.dirty) " \u{25CF}" else "";
+            fileseg = std.fmt.bufPrint(&fb, " {s}{s} ", .{ fname, dirty }) catch " ";
+            try self.setBg(th.status_seg_bg);
+            try self.setFg(th.status_seg_fg);
+            try self.emitSanitized(fileseg);
+            try self.setBg(th.status_bg);
+            try self.setFg(th.status_seg_bg);
+            try self.emit(sepRight());
+        }
 
-        const left_w = (label.len + 2) + 1 + unicode.displayWidth(fileseg) + 1;
+        // Separators are 0 cells wide in flat (nerd_font = false) mode; the
+        // widths must say so or the bar is painted short of the right edge.
+        const file_w = if (tabsVisible()) 0 else unicode.displayWidth(fileseg) + sepCells();
+        const left_w = (label.len + 2) + sepCells() + file_w;
 
         // Right: filetype + position | percentage
         var rb: [96]u8 = undefined;
@@ -7743,7 +7938,7 @@ pub const Editor = struct {
         const lines = self.buf.lineCount();
         const pct: usize = if (lines <= 1) 100 else (self.cy * 100) / (lines - 1);
         const pctseg = std.fmt.bufPrint(&pb, " {d}% ", .{pct}) catch " ";
-        const right_w = 1 + rseg.len + 1 + pctseg.len;
+        const right_w = sepCells() + rseg.len + sepCells() + pctseg.len;
 
         // Middle: status message on the left, the partial command (showcmd)
         // right-aligned against the position segment, as vim places it.
@@ -7769,9 +7964,20 @@ pub const Editor = struct {
         // Reserve nothing when no command is pending, so status messages keep
         // the full width they had before the indicator existed.
         const pend_w = if (pending.len == 0) 0 else @min(pending.len + 1, mid_w);
-        const mshow = @min(middle.len, mid_w - pend_w);
+        // Clip the message by display cells on a codepoint boundary — slicing
+        // by bytes painted the bar short whenever a message held a multi-byte
+        // character (an em dash cost two cells of the right edge).
+        var mshow: usize = 0; // bytes taken
+        var mcells: usize = 0; // cells they cover
+        while (mshow < middle.len) {
+            const d = unicode.decode(middle[mshow..]);
+            const w = unicode.width(d.cp);
+            if (mcells + w > mid_w - pend_w) break;
+            mshow += d.len;
+            mcells += w;
+        }
         try self.emitSanitized(middle[0..mshow]);
-        try self.emitSpaces(mid_w - mshow - pend_w);
+        try self.emitSpaces(mid_w - mcells - pend_w);
         if (pend_w > 0) {
             try self.setFg(th.builtin); // the indicator stands out from messages
             try self.emitSanitized(pending[0 .. pend_w - 1]);

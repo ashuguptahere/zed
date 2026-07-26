@@ -174,7 +174,13 @@ pub fn run(ctx: *h.Ctx) !void {
         var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "one.txt" }, .cwd = dir });
         defer s.finish();
         s.drain(500);
-        ctx.check("no tabline for a single buffer", !s.containsPlain(ctx.gpa, "one.txt  "));
+        {
+            // The title bar shows even a lone buffer's tab (VS Code-style).
+            var scr = try h.Screen.init(ctx.gpa, 24, 80);
+            defer scr.deinit();
+            scr.apply(s.out.items);
+            ctx.check("a single buffer already has its tab", scr.colOf(ctx.gpa, 1, "one.txt") != null);
+        }
         const m = s.mark();
         s.send(":e two.txt\r");
         s.drain(600);

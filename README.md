@@ -71,7 +71,8 @@
     files load in the background, `:wa` writes them all
 - **Pickers** via the AstroNvim-style `Space` leader tree with nested
   which-key menus: `Space f f` find files, `Space f w` find words (grep),
-  `Space f b` buffers, `Space f t` themes; `Space l …` language tools — one
+  `Space f b` buffers, `Space f t` themes; `Space b …` buffers (picker,
+  next/previous, close); `Space l …` language tools — one
   consistent UI (`Ctrl-n/p` move, `Enter` opens, `Esc` cancels, `Ctrl-r`
   refreshes). The file list is cached per session with per-path char-bitmask
   prefiltering and incremental query narrowing — the same tricks that make
@@ -89,16 +90,22 @@
 - **Command line** with Tab completion (command names, `:e`/`:w` paths,
   `:theme` names — nvim wildmenu semantics, popup included) and per-kind
   history on Up/Down with vim's prefix filtering
-- **Multiple buffers and windows**: `:e`, `:bn`/`:bp`/`:bd`/`:ls`;
+- **Multiple buffers and windows**: `:e`, `:bn`/`:bp`/`:bd`/`:ls`, `]b`/`[b`
+  to cycle (counts work: `2]b`), a `Space b` Buffers menu;
   `:split`/`:vsplit` and `Ctrl-w` navigation; every buffer keeps its own
   cursor, undo history, highlighting and language server
 - **File-tree sidebar** (`Space e`): browse and open files, expand
-  directories; lives on the left or right (config `sidebar = left|right`)
+  directories; lives on the left or right (config `sidebar = left|right`),
+  and follows you — switching buffers reveals and selects the active file
+  in the tree
 - **One search layout everywhere**: tree on the left, results in the middle,
   and a live tree-sitter-highlighted **preview** of the selection on the right
   (`Ctrl-d`/`Ctrl-u` or the wheel scroll it) — `zedit <dir>` opens into it
-- **Buffer tabs** along the top when more than one file is open; click one to
-  switch
+- **A powerline title bar** along the top (VS Code-style, even for one file):
+  the explorer's header over the sidebar, one tab per open buffer beside it —
+  the active tab accent-coloured, unsaved ones dotted; click a tab to switch
+  (config `buffer_tabs = false` removes the row and puts the filename back in
+  the statusline)
 - **Git diff views**: `Space g d` inline unified diff (coloured +/- lines) in
   a split, `Space g s` the index version side by side with changed/added/
   removed lines tinted vimdiff-style in both panes — plus the always-on

@@ -192,3 +192,13 @@ The shortlist is done; these are the next-highest gaps from
       picker, the explorer, both diff views, `:e` and search.
 - [x] Confirmed the toolchain is current: Zig 0.16.0 is the latest stable
       (master is 0.17.0-dev), so no upgrade was needed.
+- [x] One powerline title bar on row 1 (EXPLORER segment + buffer tabs,
+      shared geometry for drawing and clicks; VS Code-style always-on under
+      `buffer_tabs`), the filename leaving the statusline while it shows,
+      reveal-in-explorer on every buffer switch, `]b`/`[b` + the `Space b`
+      Buffers group, and a `ui_sel` theme colour so selected picker/sidebar
+      rows stay visible in every palette (Nord's selection was invisible).
+      Fixed the flat-mode statusline painting 4 cells short, a byte-vs-
+      width clip that shifted the bar when a message held an em dash, and a
+      crash opening the sidebar under 18 columns with `buffer_tabs = false`
+      (the "EXPLORER" header assumed 9 columns; it now clips).

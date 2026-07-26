@@ -2,6 +2,25 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.11.0 - 2026-07-26
+
+### Added
+
+- One powerline **title bar** on the top row, replacing the separate tabline and sidebar header that fought over it (with the tree open, the header physically overdrew the tabs, and clicking the header switched to the invisible tab under it). The bar shows an EXPLORER segment spanning the sidebar's columns (accent-coloured while the tree has focus) and one powerline tab per open buffer — the active tab an accent segment, inactive ones dim, unsaved ones dotted. Shown whenever `buffer_tabs = true` (the default), including single-file sessions, VS Code-style; `false` removes the row and returns the filename to the statusline. The renderer and the click hit-test share one geometry helper, so tabs are clicked exactly where they are drawn — with the sidebar on either side or closed — and clicks on the EXPLORER segment do nothing. The bar renders in the picker view too, with the prompt and results below it.
+- **Reveal in explorer**: while the sidebar is open, switching buffers (`:e`, pickers, `:bn`/`:bp`, `]b`/`[b`, tab clicks, jumplist) expands the active file's ancestor directories, selects its row and scrolls it into view. Files outside the cwd (or remote/scratch buffers) leave the tree alone.
+- `]b` / `[b` cycle to the next/previous buffer (AstroNvim's keys; counts work: `2]b`), and a new `Space b` Buffers which-key group: `b` the buffer picker, `n` next, `p` previous, `c` close.
+- A `ui_sel` colour in every theme for selected UI rows (picker results, sidebar tree): the palette's visual-selection tone, guaranteed distinct from `cursorline` and `bg_dark` by a test. In Nord, `cursorline == bg_dark` had made the sidebar's unfocused selection literally invisible; the unfocused tree selection now uses a `mixColor(bg_dark, ui_sel, 50)` dim that stays visible everywhere.
+
+### Changed
+
+- While the title bar is visible the statusline drops its filename+dirty segment (the active tab already shows both); `buffer_tabs = false` keeps the old statusline exactly.
+
+### Fixed
+
+- Flat-mode (`nerd_font = false`) statusline was painted 4 cells short of the right edge: the width budget charged one cell per powerline separator even when the separators were empty strings.
+- A status message containing a multi-byte character (the startup hint's em dash) shifted the statusline's right half by the byte/width difference; the middle segment is now clipped by display cells on a codepoint boundary.
+- With `buffer_tabs = false`, opening the sidebar in a terminal narrower than 18 columns crashed: the sidebar's own "EXPLORER" header assumed at least 9 columns of width. The label now clips to the sidebar.
+
 ## 0.10.0 - 2026-07-26
 
 ### Fixed

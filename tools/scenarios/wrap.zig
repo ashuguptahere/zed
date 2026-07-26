@@ -200,10 +200,10 @@ pub fn run(ctx: *h.Ctx) !void {
         s.drain(400);
         const got = h.readFile(ctx.gpa, ctx.io, path);
         defer ctx.gpa.free(got);
-        // The window has 23 text rows. Three go to the wrapped line, so the
-        // bottom row shows line20 — where counting buffer lines would have put
-        // `L` on line22, two lines below the last one visible.
-        ctx.check("L lands on the last line on screen, counting wrapped rows", std.mem.indexOf(u8, got, "\nine20\n") != null);
+        // The window has 22 text rows (the title bar takes one). Three go to
+        // the wrapped line, so the bottom row shows line19 — where counting
+        // buffer lines would have put `L` on line21, below the last visible.
+        ctx.check("L lands on the last line on screen, counting wrapped rows", std.mem.indexOf(u8, got, "\nine19\n") != null);
         ctx.check("L did not overshoot past the bottom of the screen", std.mem.indexOf(u8, got, "\nine22\n") == null);
     }
 }

@@ -242,6 +242,7 @@
 
      :ls         list the open buffers
      :bn / :bp   switch to the next / previous buffer
+     ]b / [b     the same, as normal-mode keys (2]b skips one)
      :bd         close the current buffer
 
   Windows split the screen so two buffers (or two views of one) are
@@ -268,6 +269,7 @@
      Space f f  fuzzy file finder (matches file NAMES)
      Space f w  project-wide content search (greps file CONTENTS)
      Space f b  switch between the open buffers
+     Space b    Buffers menu: picker, next/previous, close
      Space e    file explorer: a tree of this directory on the side
 
   Every picker looks the same: the explorer on one side (when open), the
@@ -284,9 +286,12 @@
 
   3. Press  Space e  for the file tree: j/k move, Enter opens, h
      collapses, q closes.  Space still opens the leader menu in there.
+     While the tree is open it follows you: switching buffers expands
+     and selects the active file's row.
 
-  With more than one file open, the buffers appear as tabs across the
-  top; a dot marks unsaved ones, and clicking a tab switches to it.
+  The title bar across the top shows one tab per open buffer (the
+  active one highlighted, a dot marking unsaved ones) next to the
+  explorer's header; clicking a tab switches to it.
 
   When a language server is installed for the file type (zls, clangd,
   pylsp, typescript-language-server), zedit starts it automatically:

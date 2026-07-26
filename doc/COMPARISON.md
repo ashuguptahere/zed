@@ -177,7 +177,7 @@ Ground truth: `/home/origo/Desktop/zed/CLAUDE.md` (note: the on-disk version is 
 7. **Fuzzy completion filtering (`completeopt=fuzzy`, 0.11)** — zedit already ships `fuzzy.zig` for pickers; apply it to the completion popup.
 8. **LSP/inlay-hint request de-duplication — new requests cancel in-flight ones (0.11 perf)** — zedit's own docs flag "re-requested per edit, not debounced"; this is Neovim's exact fix.
 9. **Default LSP keymap cluster `grr grn gra gri gO` + `Ctrl-s` signature help (0.11), `grt grx` (0.12)** — zedit's `gr` = rename conflicts with Neovim's `gr` prefix; aligning now is cheap, later is breaking.
-10. **unimpaired-style bracket maps `[b ]b [q ]q [<Space> ]<Space>` (0.11)** — zedit already has `]d [d`; `[b ]b` for buffer cycling is a natural next step.
+10. **unimpaired-style bracket maps `[b ]b [q ]q [<Space> ]<Space>` (0.11)** — zedit has `]d [d` and (done) `]b [b` for buffer cycling; the quickfix/blank-line maps remain.
 11. **Tree-sitter incremental selection `v_an`/`v_in` + sibling expansion `]N [N` (0.12)** — helix-style expand-selection built on the tree zedit already maintains.
 12. **Viewport-only `semanticTokens/range` (0.12)** — LSP semantic highlighting requested for the visible screen only; matches zedit's O(screen) highlight philosophy exactly.
 13. **Extended grapheme clusters per UAX#29 (0.11)** — proper ZWJ emoji width handling; a direct upgrade for zedit's "Unicode-correct" contract in `unicode.zig`.
@@ -195,13 +195,13 @@ Ground truth: `/home/origo/Desktop/zed/CLAUDE.md` (note: the on-disk version is 
 - **AstroNvim-style leader UX:** which-key popup with nested groups (`Space f/l/g/e/c/w/q`)
 - **Telescope-equivalents:** fuzzy file finder, project content grep (literal), buffer picker, theme picker — with a warm cached file list
 - **gitsigns-equivalent** gutter signs, plus inline unified diff and side-by-side index diff views
-- **neo-tree-equivalent** sidebar file explorer (navigation/open only; no create/rename/delete, not watched)
+- **neo-tree-equivalent** sidebar file explorer (navigation/open + reveal of the active file on buffer switch; no create/rename/delete, not watched)
 - **Vim core:** motions/operators/registers/marks/macros/dot-repeat, text objects (word + bracket/quote), visual char/line/block (block I/A works; block paste and short-line `A` padding are approximate), surround, incremental highlighted literal search (incsearch+hlsearch defaults)
 - **Multiple cursors** (one-per-line column editing — beyond stock Neovim)
 - **Buffers + splits:** `:e :bn :bp :bd :ls`, `:split`/`:vsplit`, `Ctrl-w` focus/close/only (flat tiling, no resize)
 - **Appearance:** true-colour themes (Tokyo Night + 4 more, live-switchable), powerline statusline, relative+absolute numbers, cursorline, indent guides
 - **Config file** (`~/.config/zedit/config`) and an embedded **`--tutor`** (vimtutor equivalent)
-- **Bufferline-equivalent** buffer tabs across the top (click to switch, unsaved marker), on by default with more than one file open
+- **Bufferline-equivalent** powerline title bar across the top (buffer tabs — click to switch, unsaved marker — plus the explorer header), always on by default, VS Code-style
 - **Telescope-preview-equivalent** live file preview beside every picker that names a file, tree-sitter highlighted and scrollable with `Ctrl-d`/`Ctrl-u` or the wheel
 - **Alpha/dashboard-equivalent** startup screen listing recently opened files and directories
 - **Mouse wheel scrolling** (3-line step) and tab clicks; **`:update`** checks the release tags on demand
