@@ -287,8 +287,9 @@
 
   3. Press  Space e  for the file tree: j/k move, Enter opens, h
      collapses, q closes.  Space still opens the leader menu in there.
-     While the tree is open it follows you: switching buffers expands
-     and selects the active file's row.
+     The mouse works too: a single click expands or collapses a
+     directory, or opens a file.  While the tree is open it follows
+     you: switching buffers expands and selects the active file's row.
 
   The title bar across the top shows one tab per open buffer (the
   active one highlighted, a dot marking unsaved ones) next to the

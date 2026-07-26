@@ -106,7 +106,8 @@ pub fn run(ctx: *h.Ctx) !void {
             ctx.check("focused EXPLORER segment uses the accent", scr.at(1, 2).bg == MODE_COMMAND);
         }
 
-        // A click on the EXPLORER segment is not a tab.
+        // A click on the EXPLORER segment is not a tab (it focuses the tree —
+        // the sidebar scenario pins that; here: the buffer must not switch).
         s.send("\x1b[<0;2;1M");
         s.drain(400);
         {
@@ -196,12 +197,12 @@ pub fn run(ctx: *h.Ctx) !void {
             const ca = scr.colOf(ctx.gpa, 1, "a.txt") orelse 0;
             ctx.check("sidebar right: tabs at column 1, EXPLORER at the edge", ca > 0 and ca < 10 and ce > 52);
         }
-        s.send("\x1b[<0;60;1M"); // inside the EXPLORER segment: ignored
+        s.send("\x1b[<0;60;1M"); // inside the EXPLORER segment: not a tab
         s.drain(400);
         {
             var scr = try screen(ctx, &s);
             defer scr.deinit();
-            ctx.check("sidebar right: EXPLORER click is ignored", rowHas(ctx, &scr, 2, "bravo one"));
+            ctx.check("sidebar right: EXPLORER click switches no buffer", rowHas(ctx, &scr, 2, "bravo one"));
         }
         s.send("\x1b[<0;3;1M"); // first tab
         s.drain(400);

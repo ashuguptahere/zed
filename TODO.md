@@ -290,3 +290,25 @@ The shortlist is done; these are the next-highest gaps from
       comptime build check that fails on any future mismatch (proven by
       planting one). 2 new unit tests + 20 pty checks failing before /
       passing after; full suites green (152 unit, 571 itest).
+- [x] Explorer mouse clicks (owner request): a single click on a tree row
+      selects it and acts as Enter — a directory toggles, a file opens with
+      focus back in the buffer (VS Code's rule) — and a click on the
+      EXPLORER header/title-bar segment or the space below the tree focuses
+      it, no prior focus needed. Hit-test and renderer share one geometry
+      source (`sb_tree_top` + `sbRows` + `sb_scroll`, the tabline
+      invariant); left/right sidebar, scrolled trees and the title-bar row
+      all resolve through it. Text-area clicks stay unbound (pinned with a
+      Screen-model cursor assertion) and Shift+drag terminal selection is
+      untouched. 17 new pty checks, behavioural ones proven fail-without.
+- [x] Review fix for the above: a click's *release* half decoded as
+      `unknown`, smearing its raw bytes (`^[[<…m`) into showcmd and
+      resetting pending operators/counts the wheel preserves. Non-acting
+      mouse reports (release, drag, right/middle buttons) now decode to an
+      inert `mouse_other` swallowed in `feedKey` before capture/dispatch.
+      Unit-pinned in key.zig; scenarios now send press+release pairs the
+      way real terminals do, plus new pins: boundary rows/columns on both
+      sidebar sides at 80 and 16 columns, clicks swallowed in visual mode
+      and under an open picker, deleted-file click (`:e` new-file rule),
+      fast double-clicks in one write, and operator preservation across a
+      click (wheel parity). Fix checks proven fail-without; suites green
+      (unit + 605 itest).

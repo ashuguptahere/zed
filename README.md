@@ -83,9 +83,10 @@
 - **Remote editing over SSH**: `zedit ssh://host/path/file`, `:e ssh://…` or
   `:ssh host` — no agent installed on the remote, no extra dependencies; a
   remote directory opens the fuzzy picker over it and `:w` writes back
-- **Mouse wheel scrolling** (SGR mouse; Shift+drag still selects text in
-  your terminal), with vim's centring on long jumps so scrolling doesn't drag
-  the cursor around
+- **Mouse support** (SGR): wheel scrolling, tab clicks and explorer clicks
+  (Shift+drag still selects text in your terminal; plain clicks in the text
+  area are unbound), with vim's centring on long jumps so scrolling doesn't
+  drag the cursor around
 - **Partial commands shown as you type them** (`d`, `di`, `2d`, `"ay`, `^W`) in
   the statusline, vim's `showcmd`
 - **Command line** with fish-style inline suggestions (the rest of the best
@@ -103,9 +104,10 @@
   `:split`/`:vsplit` and `Ctrl-w` navigation; every buffer keeps its own
   cursor, undo history, highlighting and language server
 - **File-tree sidebar** (`Space e`): browse and open files, expand
-  directories; lives on the left or right (config `sidebar = left|right`),
-  and follows you — switching buffers reveals and selects the active file
-  in the tree
+  directories — by key or by mouse (a single click toggles a directory or
+  opens a file, VS Code-style); lives on the left or right (config
+  `sidebar = left|right`), and follows you — switching buffers reveals and
+  selects the active file in the tree
 - **One search layout everywhere**: tree on the left, results in the middle,
   and a live tree-sitter-highlighted **preview** of the selection on the right
   (`Ctrl-d`/`Ctrl-u` or the wheel scroll it) — `zedit <dir>` opens into it

@@ -285,8 +285,13 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   scrolls the viewport 3 lines and carries the cursor with it, keeping its
   screen row (owner's choice over nvim's drag-at-the-edge rule, which stranded
   the cursor at the bottom of the page; at the top or bottom of the file
-  nothing moves at all). SGR mouse reporting, wheel only — clicks are ignored,
-  and text selection still works with the terminal's Shift+drag.
+  nothing moves at all). SGR mouse reporting: the wheel, tab clicks and
+  explorer clicks act; every other mouse report — releases, right/middle
+  buttons, drags — decodes to an inert key swallowed before command
+  dispatch, so it can never reach showcmd or reset a pending operator or
+  count the wheel would keep. A plain click or drag in the text area stays
+  unbound, and text selection still works with the terminal's Shift+drag
+  (which bypasses mouse reporting entirely).
 - **Operators:** `d` `c` `y`, `> <` (indent), doubled `dd cc yy >> <<`; `D C Y`,
   `x X s S`, `r` `~` `J`. `cw`/`cW` act like `ce`/`cE`.
 - **Structural objects (tree-sitter):** `af`/`if` select a function (whole, or
@@ -453,7 +458,14 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   Focused keys: `j`/`k` move, `Enter`/`l` expand a directory or open a
   file (focus returns to the buffer), `h` collapse/parent, `g`/`G` top/bottom,
   `R` refresh, `Space` opens the leader menu (it works the same with the tree
-  focused), `Esc` unfocus (stays open), `q` or `Space e` close. Hidden and
+  focused), `Esc` unfocus (stays open), `q` or `Space e` close. The tree is
+  also **mouse-clickable** (no prior focus needed): a single click on a row
+  selects it and acts exactly as Enter — a directory toggles, a file opens
+  with focus back in the buffer (VS Code's rule) — while a click on the
+  EXPLORER header or the empty space below the tree just focuses it; the
+  hit-test and `renderSidebar` share one geometry source (`sb_tree_top` +
+  `sbRows` + `sb_scroll`, the tabline invariant), so a row can never be
+  drawn at one place and clicked at another. Hidden and
   ignored directories (`.git`, `zig-out`, …) are skipped, like the picker.
 - **Git diff views:** `Space g d` / `:diff` opens the file's unified diff
   (worktree vs index) in a horizontal split, coloured by the `.diff` lexer
@@ -524,8 +536,9 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   leaves the statusline (see below). **Clicking a tab** switches to that
   buffer — the renderer and `tabAt` share one geometry helper (`tabArea` +
   `tabCells`), so a tab can never be drawn at one place and clicked at
-  another; clicks on the EXPLORER segment and anywhere else are ignored so
-  the terminal's own text selection keeps working. `buffer_tabs = false`
+  another; a click on the EXPLORER segment focuses the tree (see the
+  sidebar bullet), and clicks anywhere else are ignored so the terminal's
+  own text selection keeps working. `buffer_tabs = false`
   removes the row entirely and restores the statusline filename.
 - **Buffers & windows:** several files can be open at once, each with its own
   cursor, undo, tree-sitter and LSP. `:e <file>` opens (or, in the picker,
@@ -776,7 +789,8 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   opening it stays fast; previewing a language whose grammar has not been
   compiled yet costs a one-off 3–14 ms on the following frame. The title bar
   lists buffers in open order with no reordering, and mouse support is still
-  wheel + tab clicks only (no click-to-move-cursor or drag selection).
+  wheel + tab clicks + explorer clicks only (no click-to-move-cursor or drag
+  selection — a plain click or drag in the text area stays unbound).
 - The sidebar tree is flat-file only (no rename/create/delete operations from
   the tree), rebuilt on expand/toggle rather than watched (reveal-on-switch
   rebuilds only when it has to expand an ancestor). The side-by-side diff's
@@ -788,7 +802,8 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   read-only). A pane's stored top is a buffer row, so when a leading deletion
   gap (`@@ -1,N +0,0 @@`) is taller than the window only its tail shows
   (cursor-clamped) and the rows above cannot be scrolled into — the full fix
-  is a display-space pane top (a per-Win leading-filler offset). Mouse support is wheel-scrolling only (no click-to-move or drag
+  is a display-space pane top (a per-Win leading-filler offset). Mouse
+  support is wheel + tab clicks + explorer clicks (no click-to-move or drag
   selection), and the wheel scrolls the focused window, not the one under the
   pointer.
 - Remote editing is whole-file over ssh: every read/write moves the entire file

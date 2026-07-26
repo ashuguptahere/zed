@@ -889,9 +889,13 @@ pub const Editor = struct {
         // a command, so it bypasses dot-repeat/macro capture entirely.
         switch (k) {
             .mouse_press => |m| {
-                self.mouseClick(m);
+                try self.mouseClick(m);
                 return;
             },
+            // Releases, drags and other buttons: inert, like the press that
+            // preceded them — never into showcmd, dot-repeat or pending state
+            // (a release must not cancel an operator the wheel would keep).
+            .mouse_other => return,
             .scroll_up, .scroll_down => {
                 switch (self.mode) {
                     .normal, .insert, .visual, .visual_line, .visual_block => self.mouseScroll(k == .scroll_up),
@@ -957,18 +961,27 @@ pub const Editor = struct {
         }
     }
 
-    /// A left-click. Only the tabline acts on it today: clicking a tab makes
-    /// that buffer current, the way every tabbed editor behaves. Clicks
-    /// elsewhere are ignored, so terminal text selection keeps working.
-    fn mouseClick(self: *Editor, m: key.Mouse) void {
+    /// A left-click. The tabline switches buffers, the way every tabbed
+    /// editor behaves, and the explorer acts on its rows: a single click
+    /// toggles a directory or opens a file (VS Code's rule), while its
+    /// header or the empty space below the tree just focuses it. Clicks
+    /// anywhere else — the text area included — are ignored, so terminal
+    /// text selection keeps working.
+    fn mouseClick(self: *Editor, m: key.Mouse) !void {
         if (self.mode != .normal and self.mode != .insert) return;
-        if (!tabsVisible() or m.row != 1) return;
-        const doc = self.tabAt(m.col) orelse return;
-        if (doc == self.d) return;
-        self.addJump();
-        self.focusDoc(doc);
-        self.clampCursor();
-        self.setStatus("{s}", .{docLabel(doc)});
+        if (tabsVisible() and m.row == 1) {
+            if (self.tabAt(m.col)) |doc| {
+                if (doc == self.d) return;
+                self.addJump();
+                self.focusDoc(doc);
+                self.clampCursor();
+                self.setStatus("{s}", .{docLabel(doc)});
+                return;
+            }
+            // Not a tab: the EXPLORER segment (or the filler) — fall through
+            // to the sidebar hit-test, which owns those columns.
+        }
+        try self.sbClick(m.row, m.col);
     }
 
     /// Wheel scrolling: move the viewport three lines (nvim's step) and carry
@@ -7061,6 +7074,42 @@ pub const Editor = struct {
         return self.win.cols - self.sbWidth() + 1;
     }
 
+    /// Tree-row geometry, shared by `renderSidebar` and the click hit-test
+    /// (`sbClick`) so a row can never be drawn at one place and clicked at
+    /// another — the tabline's invariant, applied here. Tree rows start on
+    /// screen row `sb_tree_top` (row 1 is the title bar, or the sidebar's
+    /// own header when `buffer_tabs = false` — either way the tree starts
+    /// one row down) and there are `sbRows` of them (the command line keeps
+    /// the last screen row).
+    const sb_tree_top: usize = 2;
+    fn sbRows(self: *Editor) usize {
+        return if (self.win.rows > 2) self.win.rows - 2 else 1;
+    }
+
+    /// A left-click inside the sidebar's columns. A tree row selects its
+    /// entry and activates it exactly as Enter does (`sbActivate`: a
+    /// directory toggles, a file opens and hands focus back — VS Code's
+    /// single-click rule); the header row (the EXPLORER title-bar segment)
+    /// and the empty space below the last entry just focus the tree. The
+    /// focus grab is normal-mode only, because sidebar keys route only
+    /// there — lighting the header in insert mode would lie. Clicks outside
+    /// the sidebar (or with it closed) do nothing.
+    fn sbClick(self: *Editor, row: usize, col: usize) !void {
+        if (!self.sb_open) return;
+        const x = self.sbX();
+        if (col < x or col >= x + self.sbWidth()) return;
+        if (row >= sb_tree_top and row < sb_tree_top + self.sbRows()) {
+            const idx = self.sb_scroll + (row - sb_tree_top);
+            if (idx < self.sb_entries.items.len) {
+                self.sb_sel = idx;
+                if (self.mode == .normal) self.sb_focus = true;
+                return self.sbActivate();
+            }
+            // Below the last entry: just the focus grab.
+        } else if (row != 1) return; // the command-line row
+        if (self.mode == .normal) self.sb_focus = true;
+    }
+
     fn sbWidth(self: *Editor) usize {
         const cols: usize = self.win.cols;
         return @min(sidebar_width, cols / 2);
@@ -7074,7 +7123,7 @@ pub const Editor = struct {
         const th = theme.current;
         const x = self.sbX();
         const w = self.sbWidth();
-        const rows: usize = if (self.win.rows > 2) self.win.rows - 2 else 1; // header/title + command line
+        const rows = self.sbRows();
         if (self.sb_sel < self.sb_scroll) self.sb_scroll = self.sb_sel;
         if (self.sb_sel >= self.sb_scroll + rows) self.sb_scroll = self.sb_sel - rows + 1;
 
@@ -7092,8 +7141,8 @@ pub const Editor = struct {
         var r: usize = 0;
         while (r < rows) : (r += 1) {
             const idx = self.sb_scroll + r;
-            self.beginSeg(r + 2, x);
-            try self.emitFmt("\x1b[{d};{d}H", .{ r + 2, x });
+            self.beginSeg(sb_tree_top + r, x);
+            try self.emitFmt("\x1b[{d};{d}H", .{ sb_tree_top + r, x });
             const selected = idx == self.sb_sel and idx < self.sb_entries.items.len;
             // The selected row must stay visible without focus too: Nord's
             // cursorline == bg_dark once made it vanish there (hence ui_sel).
@@ -8668,7 +8717,7 @@ pub const Editor = struct {
             col = @min(self.cmdPrompt().len + 1 + unicode.displayWidth(self.cmd.items[0..self.cmd_cur]), self.win.cols);
         } else if (self.sb_focus) {
             // On the sidebar's selected row.
-            row = 2 + (self.sb_sel -| self.sb_scroll);
+            row = sb_tree_top + (self.sb_sel -| self.sb_scroll);
             col = self.sbX() + 1;
         } else {
             // Relative to the active window's screen region.

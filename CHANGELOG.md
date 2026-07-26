@@ -2,6 +2,31 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.17.0 - 2026-07-26
+
+### Added
+
+- The file-tree explorer is mouse-clickable: a single click on a row selects
+  it and acts exactly as Enter does — a directory expands or collapses, a
+  file opens with focus returning to the buffer (VS Code's single-click
+  rule) — with no need to focus the tree first. Clicking the EXPLORER
+  header (or its title-bar segment) or the empty space below the tree
+  focuses the tree without changing the selection. Clicks resolve through
+  the same geometry the renderer draws from (title-bar row, sidebar side,
+  scroll offset), clicks in the text area remain unbound, and the
+  terminal's own Shift+drag text selection is unaffected.
+
+### Fixed
+
+- The release half of every mouse click was decoded as an unrecognized
+  key: its raw bytes smeared `^[[<…m` into the statusline's showcmd
+  indicator, and — like any unrecognized key — it reset a pending operator
+  or count that the wheel (and the press itself) deliberately preserves,
+  so `d`, click, `w` no longer deleted a word. Non-acting mouse reports
+  (releases, drags, right/middle buttons) now decode to a dedicated inert
+  key the editor swallows whole, before showcmd, dot-repeat and command
+  dispatch.
+
 ## 0.16.0 - 2026-07-26
 
 ### Fixed

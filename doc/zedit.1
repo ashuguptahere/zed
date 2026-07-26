@@ -325,13 +325,16 @@ structural objects.
 The wheel scrolls the focused window three lines per notch and moves the
 cursor with it, so the cursor keeps its position on screen. At the very top or
 bottom of the file nothing moves. In a picker the wheel scrolls the preview
-pane. Clicking a buffer tab in the title bar switches to it; clicks elsewhere
-(including the EXPLORER segment) are ignored, so
+pane. Clicking a buffer tab in the title bar switches to it. In the file-tree
+sidebar a single click on a row selects it and acts as Enter does: a
+directory expands or collapses, a file opens with focus back in the buffer;
+clicking the EXPLORER header or the space below the tree focuses the tree.
+Clicks anywhere else \(em the text area included \(em are ignored, so
 your terminal's own selection still works. A jump further
 than half a window \(em
 .BR G ,
 .BR 100G ,
-a search hit \(em redraws with the cursor centred, as vim does. Clicks are ignored; select text with
+a search hit \(em redraws with the cursor centred, as vim does. Select text with
 your terminal's usual
 .B Shift
 +drag.
