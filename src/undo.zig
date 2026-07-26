@@ -78,6 +78,43 @@ pub fn filePath(buf: []u8, abs_path: []const u8) ?[]const u8 {
     return std.fmt.bufPrint(buf, "{s}/{x:0>16}.undo", .{ dir, std.hash.Wyhash.hash(0, abs_path) }) catch null;
 }
 
+/// Undo files not written to for this long are removed when a sibling is
+/// written — the one moment zedit touches the directory, so the state dir
+/// cannot grow forever while an idle editor never scans anything. 90 days
+/// comfortably outlives "I'll come back to that branch"; deliberately a
+/// constant, not a config knob (nothing would set it).
+const prune_age_days = 90;
+
+/// Whether directory entry `name` with modification time `mtime_ns` is a
+/// stale undo file at wall-clock `now_ns`. Pure, so the policy is testable:
+/// only names `filePath` itself generates — exactly 16 hex digits + `.undo`
+/// — are ever candidates; anything else in the directory is not ours to
+/// delete, whatever its extension.
+fn isStaleUndoFile(name: []const u8, mtime_ns: i96, now_ns: i96) bool {
+    if (name.len != 21 or !std.mem.endsWith(u8, name, ".undo")) return false;
+    for (name[0..16]) |c| switch (c) {
+        '0'...'9', 'a'...'f' => {},
+        else => return false,
+    };
+    return now_ns - mtime_ns > @as(i96, prune_age_days) * std.time.ns_per_day;
+}
+
+/// One pass over the state directory, deleting stale undo files. A pruned
+/// file is somebody's history, so every removal is logged.
+fn pruneStale(io: std.Io, dir_path: []const u8) void {
+    const now = std.Io.Timestamp.now(io, .real);
+    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch return;
+    defer dir.close(io);
+    var it = dir.iterate();
+    while (it.next(io) catch null) |entry| {
+        if (entry.kind != .file) continue;
+        const st = dir.statFile(io, entry.name, .{}) catch continue;
+        if (!isStaleUndoFile(entry.name, st.mtime.nanoseconds, now.nanoseconds)) continue;
+        dir.deleteFile(io, entry.name) catch continue;
+        std.log.scoped(.undo).info("pruned {s}/{s}: untouched for over {d} days", .{ dir_path, entry.name, prune_age_days });
+    }
+}
+
 pub const History = struct {
     gpa: Allocator,
     nodes: std.ArrayList(Node),
@@ -625,7 +662,11 @@ pub const History = struct {
             .flags = .{ .permissions = @enumFromInt(0o600) },
         }) catch |err| {
             std.log.scoped(.undo).debug("cannot write {s}: {s}", .{ path, @errorName(err) });
+            return;
         };
+        // Writing is the only moment zedit touches the directory, so it is
+        // also when abandoned histories are cleaned up.
+        if (std.mem.lastIndexOfScalar(u8, path, '/')) |cut| pruneStale(io, path[0..cut]);
     }
 
     /// Read a tree written by `writeTo`. `content` is the text the file holds
@@ -1010,4 +1051,24 @@ test "jumping across branches rebuilds the exact text" {
     try std.testing.expectEqualStrings("Astart", buf.line(0));
     try std.testing.expect(h.goToSeq(&buf, &cy, &cx, 0));
     try std.testing.expectEqualStrings("start", buf.line(0));
+}
+
+test "prune policy: only old zedit-shaped .undo files are candidates" {
+    const day: i96 = std.time.ns_per_day;
+    const now: i96 = 400 * day;
+    const ours = "00000000cafebabe.undo"; // 16 hex + .undo, as filePath writes
+    // Older than the cutoff: pruned.
+    try std.testing.expect(isStaleUndoFile(ours, now - 91 * day, now));
+    // Younger, or exactly at the cutoff: kept.
+    try std.testing.expect(!isStaleUndoFile(ours, now - 89 * day, now));
+    try std.testing.expect(!isStaleUndoFile(ours, now - 90 * day, now));
+    try std.testing.expect(!isStaleUndoFile(ours, now, now));
+    // A future mtime (clock skew) is never stale.
+    try std.testing.expect(!isStaleUndoFile(ours, now + day, now));
+    // Not a zedit undo file: never touched, however old.
+    try std.testing.expect(!isStaleUndoFile("notes.txt", 0, now));
+    try std.testing.expect(!isStaleUndoFile("undo", 0, now));
+    try std.testing.expect(!isStaleUndoFile("backup.undo", 0, now)); // wrong length
+    try std.testing.expect(!isStaleUndoFile("gggggggggggggggg.undo", 0, now)); // not hex
+    try std.testing.expect(!isStaleUndoFile("00000000CAFEBABE.undo", 0, now)); // filePath emits lowercase
 }

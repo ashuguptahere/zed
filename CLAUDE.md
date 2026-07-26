@@ -334,7 +334,9 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   Enter jumps to the chosen one. With `persistent_undo` (config, off by
   default, vim's `undofile`) the tree is written to
   `$XDG_STATE_HOME/zedit/undo` on every save and picked up when the file is
-  next opened, so `u` still reaches yesterday's changes. All nvim-verified in
+  next opened, so `u` still reaches yesterday's changes; each write also
+  prunes sibling undo files untouched for 90 days (logged), so the state
+  directory cannot grow forever. All nvim-verified in
   `vim_compat`.
   **Repeat:** `.` repeats the last change.
 - **Visual:** `v` (char), `V` (line), `Ctrl-v` (block); move to extend, `o`
@@ -469,13 +471,14 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   ignored directories (`.git`, `zig-out`, …) are skipped, like the picker.
 - **Git diff views:** `Space g d` / `:diff` opens the file's unified diff
   (worktree vs index) in a horizontal split, coloured by the `.diff` lexer
-  (`+` green, `-` red, `@@` hunk headers); `Space g s` / `:vdiff` opens the
+  (`+` green, `-` red, `@@` hunk headers) — a **read-only** scratch ("diff
+  view is read-only"); `Space g s` / `:vdiff` opens the
   index version side by side in a vertical split with normal syntax
   highlighting — the same base the gutter signs compare against. Focus stays
   on the **worktree pane** (the file you edit); the index pane is a
   **read-only snapshot** (any mutating command answers "index snapshot is
-  read-only", so it can never go dirty, block `:q`/`:qa`, or be written out
-  with `:w <name>`). The panes are **row-aligned** through the diff's hunk
+  read-only" — so, like the diff scratch, it can never go dirty, block
+  `:q`/`:qa`, or be written out with `:w <name>`). The panes are **row-aligned** through the diff's hunk
   pairs (`git.computeHunks`; one `git diff` feeds alignment and both panes'
   tint rows via `git.signsFromHunks`): where one side has lines the other
   lacks, the shorter side renders virtual **filler rows** — tinted git-add in
@@ -531,8 +534,10 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 - **Remote editing (SSH):** `zedit ssh://[user@]host[:port]/path` — or `:e
   ssh://…`, or `:ssh [user@]host[/dir]` from inside the editor — edits files on
   another machine with no agent installed there (unlike VS Code Remote-SSH):
-  each operation is one `ssh` invocation (`cat` to read, `cat >` to write,
-  `find` to list a directory for the picker). Remote paths are single-quoted
+  each operation is one `ssh` invocation (`cat` to read, `cat` into a temp
+  file renamed over the target to write — atomic, so a dropped connection
+  can never leave a half-written file — and `find` to list a directory for
+  the picker). Remote paths are single-quoted
   for the remote shell (`remote.shellQuote`), `BatchMode=yes` means a missing
   key fails fast instead of hanging on a prompt, and `ControlMaster` reuses one
   connection per session. A remote directory opens the file picker over it;
@@ -737,8 +742,10 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   file itself, and the diffs run both ways, so a 200-change session on an
   8.6 MB file is a 1.5 KB undo file rather than a second copy of the file. The
   anchor's length and hash are stored and checked, so a file edited by another
-  program gets no history rather than someone else's past; nothing prunes old
-  undo files, which is part of why the setting is off by default.
+  program gets no history rather than someone else's past. Undo files whose
+  mtime is over 90 days old are pruned (each removal logged) whenever a
+  sibling is written — the only moment zedit touches the directory, so an
+  editor with `persistent_undo` off never scans it.
 - Multi-cursor is one-caret-per-line (column editing); it does not do
   per-caret line splits/joins or arbitrary selection-based multi-edit.
 - The grep picker's regex runs per line — a pattern cannot match across a
@@ -814,8 +821,8 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   like the gutter signs — unsaved edits shift rows until then), the index
   pane's tree-sitter highlighting covers only the viewport it last had focus
   in (lockstep-scrolled rows beyond it render plain until refocused), and the
-  inline diff buffer is a static, editable snapshot (only the index pane is
-  read-only). A pane's stored top is a buffer row, so when a leading deletion
+  inline diff buffer is a static snapshot (read-only, like the index pane —
+  "diff view is read-only"). A pane's stored top is a buffer row, so when a leading deletion
   gap (`@@ -1,N +0,0 @@`) is taller than the window only its tail shows
   (cursor-clamped) and the rows above cannot be scrolled into — the full fix
   is a display-space pane top (a per-Win leading-filler offset); the line
@@ -837,9 +844,15 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
 - Remote editing is whole-file over ssh: every read/write moves the entire file
   (no partial or incremental transfer), there is no remote LSP/tree-sitter
   beyond what the local process computes on the fetched text, no remote git
-  signs, and no remote sidebar. Writes are `cat >` (not atomic — a failed
-  transfer can truncate; a temp-file-plus-rename upgrade is the fix if it
-  matters). `BatchMode=yes` means password-only hosts fail instead of
+  signs, and no remote sidebar. Writes stream into a `.zedit.tmp.*` file
+  beside the target and rename it into place in the same ssh invocation, so
+  a failed transfer never truncates the target (at worst the temp file is
+  left behind when the connection dies before the cleanup can run). A
+  directory target is refused up front (`mv` would move the temp into it),
+  and rename semantics mean a symlinked target is replaced by a regular
+  file — the standard atomic-save tradeoff (vim's `backupcopy=yes` is the
+  model that preserves symlinks; adopt it only if it matters).
+  `BatchMode=yes` means password-only hosts fail instead of
   prompting: use keys or an agent. The update check reads tags from a
   hard-coded release URL.
 - Roadmap (agreed with the owner): port further tranches of Neovim behavioural

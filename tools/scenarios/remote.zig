@@ -11,6 +11,8 @@ const h = @import("../harness.zig");
 
 /// A stand-in for `ssh`: skips ssh options and the destination, rewrites the
 /// sentinel remote root into `$MOCK_REMOTE_ROOT`, and runs the rest locally.
+/// With `$MOCK_SSH_LOG` set, every remote command is appended there — one
+/// line per ssh invocation, so a scenario can count spawns.
 const mock_ssh =
     \\#!/bin/bash
     \\while [[ $# -gt 0 ]]; do
@@ -21,9 +23,35 @@ const mock_ssh =
     \\  esac
     \\done
     \\cmd="$*"
+    \\if [[ -n $MOCK_SSH_LOG ]]; then printf '%s\n' "$cmd" >> "$MOCK_SSH_LOG"; fi
     \\bash -c "${cmd//\/remotefs/$MOCK_REMOTE_ROOT}"
     \\
 ;
+
+/// Lines in the mock-ssh invocation log that contain `needle` — e.g. the
+/// number of ssh spawns that carried a write command.
+fn sshLogCount(ctx: *h.Ctx, log_path: []const u8, needle: []const u8) usize {
+    const text = h.readFile(ctx.gpa, ctx.io, log_path);
+    defer ctx.gpa.free(text);
+    var n: usize = 0;
+    var it = std.mem.splitScalar(u8, text, '\n');
+    while (it.next()) |line| {
+        if (std.mem.indexOf(u8, line, needle) != null) n += 1;
+    }
+    return n;
+}
+
+/// Whether any `.zedit.tmp.*` write-temp file is left under `dir_path`: a
+/// completed write must rename its temp away, success or failure.
+fn tmpLeftover(ctx: *h.Ctx, dir_path: []const u8) bool {
+    var dir = std.Io.Dir.cwd().openDir(ctx.io, dir_path, .{ .iterate = true }) catch return false;
+    defer dir.close(ctx.io);
+    var it = dir.iterate();
+    while (it.next(ctx.io) catch null) |entry| {
+        if (std.mem.indexOf(u8, entry.name, ".zedit.tmp.") != null) return true;
+    }
+    return false;
+}
 
 pub fn run(ctx: *h.Ctx) !void {
     const dir = try h.tempDir(ctx.gpa);
@@ -62,8 +90,12 @@ pub fn run(ctx: *h.Ctx) !void {
 
     // Open a remote file, edit it, write it back over ssh.
     {
+        const ssh_log = h.join(ctx, dir, "ssh.log");
+        defer ctx.gpa.free(ssh_log);
+        const log_env = try std.fmt.allocPrint(ctx.gpa, "MOCK_SSH_LOG={s}", .{ssh_log});
+        defer ctx.gpa.free(log_env);
         var s = try h.Session.spawn(ctx.gpa, .{
-            .argv = &.{ "env", path_env, root_env, ctx.zedit, "ssh://testhost/remotefs/hello.txt" },
+            .argv = &.{ "env", path_env, root_env, log_env, ctx.zedit, "ssh://testhost/remotefs/hello.txt" },
             .cwd = dir,
         });
         defer s.finish();
@@ -77,6 +109,12 @@ pub fn run(ctx: *h.Ctx) !void {
         const after = h.readFile(ctx.gpa, ctx.io, rfile);
         defer ctx.gpa.free(after);
         ctx.check("write goes back over ssh", std.mem.eql(u8, after, "emote alpha\nremote beta\n"));
+        // The write went through a temp file renamed into place; a clean
+        // write must not leave the temp behind.
+        ctx.check("write leaves no temp file behind", !tmpLeftover(ctx, rroot));
+        // The temp+rename pipeline is one composed command: exactly one ssh
+        // spawn carried the whole write.
+        ctx.check("a write is exactly one ssh spawn", sshLogCount(ctx, ssh_log, ".zedit.tmp.") == 1);
         s.send(":q!\r");
         s.drain(200);
     }
@@ -96,6 +134,52 @@ pub fn run(ctx: *h.Ctx) !void {
         const after = h.readFile(ctx.gpa, ctx.io, rodd);
         defer ctx.gpa.free(after);
         ctx.check("odd remote path writes back", std.mem.eql(u8, after, "xodd\n"));
+        ctx.check("odd path leaves no temp file behind", !tmpLeftover(ctx, rroot));
+        s.send(":q!\r");
+        s.drain(200);
+    }
+
+    // Atomicity: a write whose transfer fails must leave the target exactly
+    // as it was — the temp file takes the failure, the rename never runs and
+    // a non-zero exit reports the write as failed. A directory the temp
+    // cannot be created in stands in for the failed transfer (the target
+    // itself stays writable, so the old `cat > target` would have clobbered
+    // it here).
+    {
+        h.writeFile(ctx.io, rfile, "keep me\n");
+        h.runQuiet(ctx.gpa, ctx.io, &.{ "chmod", "555", rroot });
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ "env", path_env, root_env, ctx.zedit, "ssh://testhost/remotefs/hello.txt" },
+            .cwd = dir,
+        });
+        defer s.finish();
+        s.drain(900);
+        ctx.check("read-only remote dir still opens", s.containsPlain(ctx.gpa, "keep me"));
+        s.send("x:w\r");
+        s.drain(800);
+        h.runQuiet(ctx.gpa, ctx.io, &.{ "chmod", "755", rroot });
+        ctx.check("failed remote write is reported", s.containsPlain(ctx.gpa, "write failed"));
+        const after = h.readFile(ctx.gpa, ctx.io, rfile);
+        defer ctx.gpa.free(after);
+        ctx.check("failed remote write never touches the target", std.mem.eql(u8, after, "keep me\n"));
+        s.send(":q!\r");
+        s.drain(200);
+    }
+
+    // A target that is an existing directory is refused up front: without
+    // the guard, `mv` would move the temp *into* the directory and exit 0 —
+    // a "successful" write that created nothing at the asked-for path.
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ "env", path_env, root_env, ctx.zedit, "ssh://testhost/remotefs/hello.txt" },
+            .cwd = dir,
+        });
+        defer s.finish();
+        s.drain(900);
+        s.send(":w ssh://testhost/remotefs/sub\r"); // sub/ is a directory
+        s.drain(800);
+        ctx.check("writing onto a remote directory is refused", s.containsPlain(ctx.gpa, "write failed"));
+        ctx.check("no temp file dropped into the directory", !tmpLeftover(ctx, rsub) and !tmpLeftover(ctx, rroot));
         s.send(":q!\r");
         s.drain(200);
     }

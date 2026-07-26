@@ -126,6 +126,7 @@ pub fn run(ctx: *h.Ctx) !void {
     try sideThirdWindowFocus(ctx);
     try sideNoChanges(ctx);
     try inlineToggle(ctx);
+    try inlineReadOnly(ctx);
     try sideLeadingDeletion(ctx);
     try sideTallGap(ctx);
     try sideDirtyNoChanges(ctx);
@@ -1230,4 +1231,69 @@ fn inlineToggle(ctx: *h.Ctx) !void {
     }
     s.send(":qa\r");
     s.drain(300);
+}
+
+/// The unified-diff scratch is read-only, like the index pane: edits, pastes
+/// and `:w <name>` are refused with "diff view is read-only", so a viewed
+/// diff can never turn into a dirty buffer that blocks `:qa`.
+fn inlineReadOnly(ctx: *h.Ctx) !void {
+    const dir = try diffRepo(ctx, "alpha\nbeta\n", "alpha\nBETA\n");
+    defer ctx.gpa.free(dir);
+    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const leak = h.join(ctx, dir, "leak.txt");
+    defer ctx.gpa.free(leak);
+
+    var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "f.txt" }, .cwd = dir, .term = "xterm-256color" });
+    defer s.finish();
+    s.drain(500);
+    s.send(" gd"); // focus lands in the scratch
+    s.drain(600);
+
+    // Insert and delete are both refused with the message (never leaves
+    // normal mode: the following x would otherwise become text).
+    const m1 = s.mark();
+    s.send("ix");
+    s.drain(300);
+    ctx.check("diff scratch rejects edits", s.containsPlainSince(ctx.gpa, m1, "diff view is read-only"));
+    s.send("dd");
+    s.drain(300);
+    {
+        var scr = try snapshot(ctx, &s);
+        defer scr.deinit();
+        ctx.check("diff scratch text is untouched", screenCount(&scr, ctx.gpa, "@@") > 0 and
+            screenCount(&scr, ctx.gpa, "BETA") > 0);
+    }
+
+    // A bracketed paste into the scratch inserts nothing.
+    s.send("\x1b[200~ZZZ\x1b[201~");
+    s.drain(300);
+    {
+        var scr = try snapshot(ctx, &s);
+        defer scr.deinit();
+        ctx.check("diff scratch rejects pastes", screenCount(&scr, ctx.gpa, "ZZZ") == 0);
+    }
+
+    // `:w <name>` must not write the scratch out.
+    s.send("j"); // motion: clears the previous message so the next one re-renders
+    s.drain(200);
+    const m2 = s.mark();
+    s.send(":w leak.txt\r");
+    s.drain(400);
+    const leaked = h.readFile(ctx.gpa, ctx.io, leak);
+    defer ctx.gpa.free(leaked);
+    ctx.check("diff scratch refuses :w <name>", s.containsPlainSince(ctx.gpa, m2, "diff view is read-only") and leaked.len == 0);
+
+    // The toggle still works from the scratch, and :qa was never blocked.
+    s.send(" gd");
+    s.drain(500);
+    {
+        var scr = try snapshot(ctx, &s);
+        defer scr.deinit();
+        ctx.check("read-only scratch still toggles closed", screenCount(&scr, ctx.gpa, "[diff]") == 0);
+    }
+    s.send(" gd");
+    s.drain(600);
+    s.send(":qa\r");
+    s.drain(500);
+    ctx.check(":qa is not blocked after viewing the diff", s.contains("\x1b[?1049l"));
 }

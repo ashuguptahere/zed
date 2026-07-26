@@ -2,6 +2,32 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.19.0 - 2026-07-26
+
+### Changed
+
+- The unified-diff scratch (`Space g d` / `:diff`) is read-only, like the
+  side-by-side view's index pane: edits, pastes and `:w <name>` are refused
+  with "diff view is read-only", so a viewed diff can never turn into a
+  dirty buffer that blocks `:qa`. The toggle and motions are unchanged.
+- With `persistent_undo` on, writing an undo file now also prunes sibling
+  undo files in `$XDG_STATE_HOME/zedit/undo` untouched for 90 days (each
+  removal is logged), so the state directory no longer grows forever.
+  Only files named exactly as zedit names them (16 hex digits + `.undo`)
+  are ever candidates, and nothing is scanned unless an undo file is being
+  written.
+
+### Fixed
+
+- Remote writes (`:w` over ssh) stream into a temp file beside the target
+  and rename it into place in the same single ssh invocation — a transfer
+  that fails partway can no longer truncate the remote file (at worst a
+  `.zedit.tmp.*` file is left beside it; on a clean failure it is removed).
+  A remote target that is an existing directory is refused ("write failed")
+  rather than the rename dropping the temp file inside it and claiming
+  success. A failed remote write now reports "ssh transfer failed" instead
+  of a raw error name.
+
 ## 0.18.0 - 2026-07-26
 
 ### Added

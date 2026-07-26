@@ -36,9 +36,6 @@ The shortlist is done; these are the next-highest gaps from
 
 ## Later / known gaps (tracked in CLAUDE.md + COMPARISON.md)
 
-- [ ] Undo files are never pruned; a long-lived state directory only grows.
-      Vim has the same gap, but an age or size cap would be better.
-
 - [ ] Windows console support (`term.zig` gate marks the spot).
 - [ ] Nested/mixed window layouts and per-window resizing.
 - [ ] Side-by-side diff: a leading deletion gap taller than the window shows
@@ -51,8 +48,8 @@ The shortlist is done; these are the next-highest gaps from
       `c_CTRL-R` register insertion, Tab completing only the text before the
       cursor (nvim keeps the tail — probed), horizontal scroll for lines
       longer than the row (they clip; the cursor pins to the last cell).
-- [ ] Remote: atomic remote writes (temp file + rename instead of `cat >`),
-      remote git signs/sidebar, partial transfers for huge remote files.
+- [ ] Remote: remote git signs/sidebar, partial transfers for huge remote
+      files.
 - [ ] More nvim ground-truth test tranches (dot-repeat/macro edge cases).
 
 ## Done (chronological)
@@ -343,3 +340,33 @@ The shortlist is done; these are the next-highest gaps from
       `Ctrl-d/u/f/b` count buffer lines like the wheel. Row-diff deltas
       (~1.1 KB per cursor move with the weave up) and zero idle CPU
       measured. Suites green (unit + 648 itest).
+- [x] Three safety items in one sweep. (1) Atomic remote writes: `:w` over
+      ssh streams into a `.zedit.tmp.<random>` file beside the target and
+      renames it into place in the same single ssh invocation
+      (`[ ! -d target ] && cat > tmp && mv -f -- tmp target || { rm -f --
+      tmp; exit 1; }`, both paths shell-quoted), so a transfer that dies
+      partway can never truncate the remote file; a failed write reports
+      "ssh transfer failed", and a target that is an existing directory is
+      refused up front (the review caught `mv` moving the temp *into* it
+      and exiting 0 — a "successful" write that created nothing at the
+      asked-for path). (2) Undo-file pruning: writing an undo file (the
+      only moment zedit touches the state dir) prunes siblings whose mtime
+      is over 90 days old — a named constant, not a knob — logging each
+      removal; only names `filePath` itself generates (exactly 16 hex
+      digits + `.undo`) are ever candidates, so foreign files are never
+      touched, and nothing is scanned unless persistent_undo writes
+      (measured: a 1000-entry dir scans in ~1.8 ms ReleaseFast, per undo
+      write). (3) The `Space g d` unified-diff scratch is read-only via a
+      `Doc.read_only` flag set by `openScratch` (the index snapshot's
+      `diff_of` check keeps its own message): edits, pastes and `:w <name>`
+      answer "diff view is read-only", so a viewed diff can never dirty
+      into a `:qa` blocker; an orphaned index snapshot now stays read-only
+      too; the `Space g l` weave stays editable by design. Unit test for
+      the prune policy (shape gate, boundary, future mtime); pty checks for
+      the odd-path tmp+rename round trip, no-temp-leftover, one-ssh-spawn-
+      per-write (counted via the mock ssh's invocation log), a failed
+      remote write leaving the target untouched, the directory-target
+      refusal, 90-day prune vs fresh, foreign and symlinked siblings (an
+      undo-named symlink is neither followed nor deleted), and the scratch
+      rejecting edits/pastes/`:w` while still toggling and never blocking
+      `:qa` — all proven fail-without. Suites green (unit + 666 itest).

@@ -83,6 +83,8 @@
 - **Remote editing over SSH**: `zedit ssh://host/path/file`, `:e ssh://…` or
   `:ssh host` — no agent installed on the remote, no extra dependencies; a
   remote directory opens the fuzzy picker over it and `:w` writes back
+  atomically (temp file + rename, so a dropped connection never leaves a
+  half-written file)
 - **Mouse support** (SGR): wheel scrolling, tab clicks and explorer clicks
   (Shift+drag still selects text in your terminal; plain clicks in the text
   area are unbound), with vim's centring on long jumps so scrolling doesn't
@@ -120,7 +122,8 @@
   a split, `Space g s` the index version side by side — panes row-aligned with
   tinted filler rows (VS Code-style, deletions before line 1 included),
   scrolled in lockstep, changed/added/
-  removed lines tinted vimdiff-style, the index pane read-only, focus staying
+  removed lines tinted vimdiff-style, both the diff buffer and the index
+  pane read-only, focus staying
   on your file — and `Space g l` the VS Code/Zed line-by-line view: the old
   lines woven into your own buffer's window as red virtual rows above the
   lines that replaced them (no split, no second buffer, still fully

@@ -1,4 +1,4 @@
-.TH ZEDIT 1 "2026-06-15" "zedit 0.1.0" "User Commands"
+.TH ZEDIT 1 "2026-07-26" "zedit" "User Commands"
 .SH NAME
 zedit \- a fast, terminal-based, modal code editor written in Zig
 .SH SYNOPSIS
@@ -163,8 +163,9 @@ window edge, and a value wider than the window is clamped to it.
 .IR $XDG_STATE_HOME/zedit/undo ,
 so undo still works after reopening a file. It holds the edits, not a copy of
 the text, and is created readable only by you; it is ignored if the file has
-been changed by something else since. Nothing removes these files again, which
-is why this is off by default.
+been changed by something else since. Whenever an undo file is written,
+sibling undo files untouched for 90 days are removed (each removal is
+logged), so the state directory does not grow forever.
 .TP
 .B soft_wrap
 (default true). Continue a line too long for the window on the next screen
@@ -269,8 +270,10 @@ invocation, so any host you can already ssh into works, including aliases from
 .IR ~/.ssh/config .
 A remote directory opens the fuzzy picker over its files, and
 .B :w
-writes back to the same URL. Remote paths are quoted for the remote shell, so
-spaces and quotes are safe.
+writes back to the same URL \(em into a temporary file beside the target,
+renamed into place in the same invocation, so a transfer that fails partway
+never leaves the file half\-written. Remote paths are quoted for the remote
+shell, so spaces and quotes are safe.
 .B BatchMode=yes
 is set, so a host that would prompt for a password fails fast instead of
 hanging the editor \(em use keys or an agent.
@@ -516,7 +519,7 @@ files they touch (unopened ones load into background buffers;
 saves them).
 .TP
 .B Space g d\fR, \fPSpace g s\fR, \fPSpace g l
-Git: unified diff of the current file in a split (also
+Git: unified diff of the current file in a read\-only split (also
 .BR :diff ),
 the index version side by side (also
 .BR :vdiff ),

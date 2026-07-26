@@ -7,10 +7,13 @@
 //! `ssh` invocation reading or writing a stream, so anything you can already
 //! ssh into works, including hosts configured in `~/.ssh/config`.
 //!
-//! Reads run `ssh host cat -- <path>`; writes pipe the buffer into
-//! `ssh host cat > <path>`. Both go through the *remote* shell, so paths are
-//! wrapped in single quotes with embedded quotes escaped (`shellQuote`) — the
-//! only injection-safe way to pass an arbitrary path through a shell.
+//! Reads run `ssh host cat -- <path>`; writes pipe the buffer into a temp
+//! file beside the target and rename it into place in the same invocation
+//! (`cat > tmp && mv -f tmp path`), so a transfer that dies partway can never
+//! leave the target half-written. Both go through the *remote* shell, so
+//! paths are wrapped in single quotes with embedded quotes escaped
+//! (`shellQuote`) — the only injection-safe way to pass an arbitrary path
+//! through a shell.
 //! `BatchMode=yes` keeps a missing key or unknown host from hanging the editor
 //! on a password/confirmation prompt, and a multiplexed connection
 //! (`ControlMaster`) makes the repeated calls of a picker session cheap.
@@ -131,11 +134,31 @@ pub fn read(gpa: std.mem.Allocator, io: std.Io, t: Target, limit: usize) Error![
     }
 }
 
-/// Write `data` to the remote path, creating it if needed.
+/// Write `data` to the remote path, creating it if needed. The stream lands
+/// in a sibling temp file that one `mv -f` renames over the target — POSIX
+/// rename is atomic, so the target always holds either its old or its new
+/// content, never a truncated mix (the failure mode of a plain `cat >` when
+/// the connection dies mid-transfer). On failure the temp file is removed
+/// and the remote command exits non-zero, so the write is reported failed.
+/// A target that is a directory is refused up front: `mv` would otherwise
+/// move the temp *into* it and report success (`mv -T` closes that hole but
+/// is GNU-only; the `[ ! -d ]` guard is POSIX).
 pub fn write(gpa: std.mem.Allocator, io: std.Io, t: Target, data: []const u8) Error!void {
+    // A locally-generated random suffix keeps two writers (or a leftover
+    // from a killed session) from colliding on the temp name.
+    var rnd: [8]u8 = undefined;
+    io.random(&rnd);
+    const tmp = std.fmt.allocPrint(gpa, "{s}.zedit.tmp.{x:0>16}", .{ t.path, std.mem.readInt(u64, &rnd, .little) }) catch return error.OutOfMemory;
+    defer gpa.free(tmp);
+    const qtmp = shellQuote(gpa, tmp) catch return error.OutOfMemory;
+    defer gpa.free(qtmp);
     const quoted = shellQuote(gpa, t.path) catch return error.OutOfMemory;
     defer gpa.free(quoted);
-    const cmd = std.fmt.allocPrint(gpa, "cat > {s}", .{quoted}) catch return error.OutOfMemory;
+    const cmd = std.fmt.allocPrint(
+        gpa,
+        "[ ! -d {s} ] && cat > {s} && mv -f -- {s} {s} || {{ rm -f -- {s}; exit 1; }}",
+        .{ quoted, qtmp, qtmp, quoted, qtmp },
+    ) catch return error.OutOfMemory;
     defer gpa.free(cmd);
     const argv = buildArgv(gpa, t, cmd) catch return error.OutOfMemory;
     defer gpa.free(argv);

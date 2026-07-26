@@ -186,6 +186,7 @@ const Span = struct {
 const Doc = struct {
     buf: buffer.Buffer,
     name: ?[]u8 = null, // display name for scratch buffers (buf.path == null)
+    read_only: bool = false, // rejectReadOnly refuses every mutation (diff views)
     diff_of: ?*Doc = null, // side-by-side index snapshot: the worktree doc it mirrors
     diff_hunks: []git.Hunk = &.{}, // set on the index snapshot: aligns the pair's panes
     line_diff: ?git.LineDiff = null, // `Space g l`: the in-buffer weave of old lines
@@ -768,7 +769,7 @@ pub const Editor = struct {
         self.paste_carry_len = 0;
         self.comp_open = false;
         self.sig_open = false;
-        if (self.d.diff_of != null) return; // read-only: pasteInsert refuses too
+        if (self.d.diff_of != null or self.d.read_only) return; // read-only: pasteInsert refuses too
         switch (self.mode) {
             .normal, .insert, .visual, .visual_line, .visual_block => self.pushUndo(),
             else => {},
@@ -5063,15 +5064,14 @@ pub const Editor = struct {
             error.IsDir => "that is a directory",
             error.ReadOnlyFileSystem => "read-only file system",
             error.FileTooBig => "file too large",
+            error.SshFailed => "ssh transfer failed",
             else => @errorName(err),
         };
     }
 
     fn write(self: *Editor, arg: []const u8) !bool {
-        if (self.d.diff_of != null) { // includes `:w <name>`: never write the snapshot out
-            self.setStatus("index snapshot is read-only", .{});
-            return false;
-        }
+        // Includes `:w <name>`: a read-only diff view is never written out.
+        if (self.rejectReadOnly()) return false;
         self.formatBeforeSave();
         const was_unnamed = self.buf.path == null;
         if (arg.len > 0) try self.buf.setPath(arg);
@@ -5206,13 +5206,17 @@ pub const Editor = struct {
         self.change_started = true;
     }
 
-    /// The side-by-side index snapshot is read-only: it mirrors repository
-    /// state, and edits would desync the pair's alignment (and leave a dirty
-    /// scratch blocking `:q`). Every buffer-mutating command calls this first;
-    /// true means the command was refused and reported.
+    /// The diff views' documents are read-only: the index snapshot mirrors
+    /// repository state (edits would desync the pair's alignment), and the
+    /// unified-diff scratch is a static report — editing either could only
+    /// produce a dirty scratch blocking `:q`. Every buffer-mutating command
+    /// calls this first; true means the command was refused and reported.
     fn rejectReadOnly(self: *Editor) bool {
-        if (self.d.diff_of == null) return false;
-        self.setStatus("index snapshot is read-only", .{});
+        if (self.d.diff_of != null) {
+            self.setStatus("index snapshot is read-only", .{});
+        } else if (self.d.read_only) {
+            self.setStatus("diff view is read-only", .{});
+        } else return false;
         self.resetPending();
         return true;
     }
@@ -6960,7 +6964,10 @@ pub const Editor = struct {
     }
 
     /// Open `content` as a named scratch document in a new split (vertical or
-    /// horizontal). Scratch docs have no path; `:w <name>` can still save them.
+    /// horizontal). Scratch docs have no path and are read-only: both diff
+    /// views are reports of repository state, and an editable copy could only
+    /// dirty into a `:q`-blocking orphan (`rejectReadOnly` — the index
+    /// snapshot's `diff_of` check answers first with its own message).
     fn openScratch(self: *Editor, label: []const u8, content: []const u8, lang: syntax.Language, vert: bool) void {
         const nb = buffer.Buffer.fromBytes(self.gpa, content) catch return;
         const doc = makeDoc(self.gpa, nb) catch {
@@ -6969,6 +6976,7 @@ pub const Editor = struct {
             return;
         };
         doc.lang = lang;
+        doc.read_only = true;
         doc.name = self.gpa.dupe(u8, label) catch null;
         self.docs.append(self.gpa, doc) catch {
             doc.buf.deinit();

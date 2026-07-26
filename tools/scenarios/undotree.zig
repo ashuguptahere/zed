@@ -95,6 +95,30 @@ pub fn run(ctx: *h.Ctx) !void {
         h.writeFile(ctx.io, cfg, "persistent_undo = true\n");
         h.writeFile(ctx.io, path, "one\n");
 
+        // Plant siblings in the state dir before the first write: an undo
+        // file long abandoned (90+ days by mtime), a fresh one, an old file
+        // that is not an undo file, and an undo-file-named symlink whose
+        // target is that old. Writing u.txt's history must prune exactly the
+        // first — the symlink is not a regular file (and must never be
+        // followed to its target's mtime).
+        const undo_dir = try std.fmt.allocPrint(ctx.gpa, "{s}/zedit/undo", .{state});
+        defer ctx.gpa.free(undo_dir);
+        std.Io.Dir.cwd().createDirPath(ctx.io, undo_dir) catch {};
+        const old_undo = try std.fmt.allocPrint(ctx.gpa, "{s}/00000000deadbeef.undo", .{undo_dir});
+        defer ctx.gpa.free(old_undo);
+        const fresh_undo = try std.fmt.allocPrint(ctx.gpa, "{s}/00000000cafebabe.undo", .{undo_dir});
+        defer ctx.gpa.free(fresh_undo);
+        const old_other = try std.fmt.allocPrint(ctx.gpa, "{s}/not-ours.txt", .{undo_dir});
+        defer ctx.gpa.free(old_other);
+        const link_undo = try std.fmt.allocPrint(ctx.gpa, "{s}/00000000feedface.undo", .{undo_dir});
+        defer ctx.gpa.free(link_undo);
+        h.writeFile(ctx.io, old_undo, "stale");
+        h.writeFile(ctx.io, fresh_undo, "fresh");
+        h.writeFile(ctx.io, old_other, "keep");
+        h.runQuiet(ctx.gpa, ctx.io, &.{ "touch", "-d", "2020-01-01", old_undo });
+        h.runQuiet(ctx.gpa, ctx.io, &.{ "touch", "-d", "2020-01-01", old_other });
+        h.runQuiet(ctx.gpa, ctx.io, &.{ "ln", "-s", old_other, link_undo });
+
         {
             var s = try h.Session.spawn(ctx.gpa, .{
                 .argv = &.{ "env", xdg, ctx.zedit, "--config", cfg, "u.txt" },
@@ -108,6 +132,22 @@ pub fn run(ctx: *h.Ctx) !void {
         const saved = h.readFile(ctx.gpa, ctx.io, path);
         defer ctx.gpa.free(saved);
         ctx.check("the file was written", std.mem.eql(u8, saved, "BAone\n"));
+
+        // The save wrote an undo file, which is the moment stale siblings go.
+        const stale_after = h.readFile(ctx.gpa, ctx.io, old_undo);
+        defer ctx.gpa.free(stale_after);
+        ctx.check("a 90-day-old undo file is pruned on write", stale_after.len == 0);
+        const fresh_after = h.readFile(ctx.gpa, ctx.io, fresh_undo);
+        defer ctx.gpa.free(fresh_after);
+        ctx.check("a recent sibling undo file survives", std.mem.eql(u8, fresh_after, "fresh"));
+        const other_after = h.readFile(ctx.gpa, ctx.io, old_other);
+        defer ctx.gpa.free(other_after);
+        ctx.check("an old non-undo file is not ours to delete", std.mem.eql(u8, other_after, "keep"));
+        var link_stat: bool = true;
+        _ = std.Io.Dir.cwd().statFile(ctx.io, link_undo, .{ .follow_symlinks = false }) catch {
+            link_stat = false;
+        };
+        ctx.check("an undo-named symlink is neither followed nor deleted", link_stat);
 
         {
             var s = try h.Session.spawn(ctx.gpa, .{
