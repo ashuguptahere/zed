@@ -107,8 +107,7 @@ fn decodeSgrMouse(bytes: []const u8) Decoded {
     while (i < bytes.len and (bytes[i] == ';' or (bytes[i] >= '0' and bytes[i] <= '9'))) i += 1;
     if (i >= bytes.len) return .{ .key = .unknown, .consumed = bytes.len }; // truncated
     const consumed = i + 1; // include the final M/m
-    if (bytes[i] != 'M' and bytes[i] != 'm') return .{ .key = .unknown, .consumed = consumed };
-    if (bytes[i] != 'M') return .{ .key = .unknown, .consumed = consumed }; // release: ignored
+    if (bytes[i] != 'M') return .{ .key = .unknown, .consumed = consumed }; // non-press (incl. release): ignored
 
     // button ; x ; y
     var it = std.mem.splitScalar(u8, bytes[3..i], ';');

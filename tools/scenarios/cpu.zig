@@ -37,10 +37,5 @@ pub fn run(ctx: *h.Ctx) !void {
 
     const log = h.readFile(ctx.gpa, ctx.io, logpath);
     defer ctx.gpa.free(log);
-    var count: usize = 0;
-    var it = std.mem.splitScalar(u8, log, '\n');
-    while (it.next()) |line| {
-        if (std.mem.indexOf(u8, line, "profile") != null) count += 1;
-    }
-    ctx.check("profiling lines written to log", count > 0);
+    ctx.check("profiling lines written to log", std.mem.indexOf(u8, log, "profile") != null);
 }

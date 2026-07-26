@@ -23,41 +23,40 @@ fn inWorkTree(io: std.Io, path: []const u8) bool {
     var hops: usize = 0;
     while (hops < 64) : (hops += 1) {
         const probe = std.fmt.bufPrint(&buf, "{s}/.git", .{dir}) catch return true;
-        if (std.Io.Dir.cwd().openDir(io, probe, .{})) |*d| {
-            var dd = d.*;
-            dd.close(io);
-            return true;
-        } else |_| {}
-        // A .git *file* means a worktree or submodule; openFile catches that.
-        if (std.Io.Dir.cwd().openFile(io, probe, .{})) |f| {
-            var ff = f;
-            ff.close(io);
-            return true;
-        } else |_| {}
+        // A .git *directory*, or a .git *file* (worktree or submodule).
+        if (std.Io.Dir.cwd().access(io, probe, .{})) |_| return true else |_| {}
         dir = std.fs.path.dirname(dir) orelse break;
         if (dir.len == 0) break;
     }
     return false;
 }
 
-pub fn compute(gpa: std.mem.Allocator, io: std.Io, path: []const u8, signs: *Signs) void {
-    signs.clearRetainingCapacity();
-    if (!inWorkTree(io, path)) return;
+/// Run `git diff --no-color -U0 -- path` and return its stdout (caller frees).
+/// Null on failure to run or a non-zero exit (not a repo / git error — normal).
+fn runDiff(gpa: std.mem.Allocator, io: std.Io, path: []const u8) ?[]u8 {
     const res = std.process.run(gpa, io, .{
         .argv = &.{ "git", "diff", "--no-color", "-U0", "--", path },
         .stdout_limit = .limited(8 << 20),
         .stderr_limit = .limited(64 << 10),
     }) catch |err| {
         std.log.scoped(.git).debug("git diff failed to run: {s}", .{@errorName(err)});
-        return;
+        return null;
     };
-    defer gpa.free(res.stdout);
-    defer gpa.free(res.stderr);
+    gpa.free(res.stderr);
     switch (res.term) {
-        .exited => |code| if (code != 0) return, // not a repo / git error (normal; not logged)
-        else => return,
+        .exited => |code| if (code == 0) return res.stdout,
+        else => {},
     }
-    parse(res.stdout, signs);
+    gpa.free(res.stdout);
+    return null;
+}
+
+pub fn compute(gpa: std.mem.Allocator, io: std.Io, path: []const u8, signs: *Signs) void {
+    signs.clearRetainingCapacity();
+    if (!inWorkTree(io, path)) return;
+    const out = runDiff(gpa, io, path) orelse return;
+    defer gpa.free(out);
+    parse(out, signs);
 }
 
 /// Recompute `signs` for the OLD side of `path`'s diff (index vs. worktree):
@@ -65,18 +64,9 @@ pub fn compute(gpa: std.mem.Allocator, io: std.Io, path: []const u8, signs: *Sig
 /// side-by-side view can tint the index pane. Clears on any error.
 pub fn computeOldSide(gpa: std.mem.Allocator, io: std.Io, path: []const u8, signs: *Signs) void {
     signs.clearRetainingCapacity();
-    const res = std.process.run(gpa, io, .{
-        .argv = &.{ "git", "diff", "--no-color", "-U0", "--", path },
-        .stdout_limit = .limited(8 << 20),
-        .stderr_limit = .limited(64 << 10),
-    }) catch return;
-    defer gpa.free(res.stdout);
-    defer gpa.free(res.stderr);
-    switch (res.term) {
-        .exited => |code| if (code != 0) return,
-        else => return,
-    }
-    parseOldSide(res.stdout, signs);
+    const out = runDiff(gpa, io, path) orelse return;
+    defer gpa.free(out);
+    parseOldSide(out, signs);
 }
 
 /// Old-side counterpart of `parse`: marks index-version rows that a hunk
@@ -125,19 +115,15 @@ const Pair = struct { start: usize, count: usize };
 /// Parse a "N" or "N,M" count from the start of `s` (count defaults to 1).
 fn parsePair(s: []const u8) Pair {
     var i: usize = 0;
-    while (i < s.len and isDigit(s[i])) i += 1;
+    while (i < s.len and std.ascii.isDigit(s[i])) i += 1;
     const start = std.fmt.parseInt(usize, s[0..i], 10) catch 0;
     var count: usize = 1;
     if (i < s.len and s[i] == ',') {
         var j = i + 1;
-        while (j < s.len and isDigit(s[j])) j += 1;
+        while (j < s.len and std.ascii.isDigit(s[j])) j += 1;
         count = std.fmt.parseInt(usize, s[i + 1 .. j], 10) catch 1;
     }
     return .{ .start = start, .count = count };
-}
-
-fn isDigit(c: u8) bool {
-    return c >= '0' and c <= '9';
 }
 
 test "parseOldSide marks changed and removed index rows" {

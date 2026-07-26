@@ -111,7 +111,6 @@ pub const Client = struct {
     gpa: Allocator,
     io: std.Io,
     child: std.process.Child,
-    in_fd: posix.fd_t,
     out_fd: posix.fd_t,
     alive: bool,
     next_id: i64,
@@ -182,7 +181,6 @@ pub const Client = struct {
             .gpa = gpa,
             .io = io,
             .child = child,
-            .in_fd = child.stdin.?.handle,
             .out_fd = child.stdout.?.handle,
             .alive = true,
             .next_id = 2,
@@ -231,9 +229,9 @@ pub const Client = struct {
 
         self.sendInitialize(root);
         // Pump until the server answers `initialize`, or give up.
-        const started = nowMs();
+        const started = log.nowMs();
         const deadline = started + 4000;
-        while (!self.init_done and self.alive and nowMs() < deadline) {
+        while (!self.init_done and self.alive and log.nowMs() < deadline) {
             if (pollReadable(self.out_fd, 200)) self.readAvailable();
         }
         if (!self.init_done) {
@@ -241,7 +239,7 @@ pub const Client = struct {
             self.deinit();
             return null;
         }
-        std.log.scoped(.lsp).info("{s}: handshake done in {d} ms", .{ argv[0], nowMs() - started });
+        std.log.scoped(.lsp).info("{s}: handshake done in {d} ms", .{ argv[0], log.nowMs() - started });
         self.sendNotification("initialized", "{}");
         self.sendDidOpen(language_id, content);
         return self;
@@ -604,17 +602,20 @@ pub const Client = struct {
         if (!self.alive) return;
         var hdr: [64]u8 = undefined;
         const h = std.fmt.bufPrint(&hdr, "Content-Length: {d}\r\n\r\n", .{body.len}) catch return;
-        if (!writeAllFd(self.in_fd, h) or !writeAllFd(self.in_fd, body)) self.alive = false;
+        const stdin = self.child.stdin.?;
+        stdin.writeStreamingAll(self.io, h) catch {
+            self.alive = false;
+            return;
+        };
+        stdin.writeStreamingAll(self.io, body) catch {
+            self.alive = false;
+        };
     }
 
     // --- incoming ----------------------------------------------------------
 
     /// Called by the editor when the server's stdout is readable.
-    pub fn processReadable(self: *Client) void {
-        self.readAvailable();
-    }
-
-    fn readAvailable(self: *Client) void {
+    pub fn readAvailable(self: *Client) void {
         var tmp: [4096]u8 = undefined;
         const n = posix.read(self.out_fd, &tmp) catch {
             if (self.alive) std.log.scoped(.lsp).warn("server read failed — marking it dead", .{});
@@ -824,7 +825,7 @@ pub const Client = struct {
                 else => {},
             };
             const command = if (cmd_str) |s| (self.gpa.dupe(u8, s) catch null) else null;
-            const arguments = if (args_val) |v| self.serializeJson(v) else null;
+            const arguments = if (args_val) |v| (std.json.Stringify.valueAlloc(self.gpa, v, .{}) catch null) else null;
 
             self.code_actions.append(self.gpa, .{
                 .title = owned_title,
@@ -939,20 +940,12 @@ pub const Client = struct {
             defer body.deinit(self.gpa);
             const a = self.gpa;
             body.appendSlice(a, "{\"jsonrpc\":\"2.0\",\"id\":") catch return;
-            appendIdValue(&body, a, id_val) catch return;
+            const id_json = std.json.Stringify.valueAlloc(a, id_val, .{}) catch return;
+            defer a.free(id_json);
+            body.appendSlice(a, id_json) catch return;
             body.appendSlice(a, ",\"result\":{\"applied\":true}}") catch return;
             self.writeMessage(body.items);
         }
-    }
-
-    /// Serialize a JSON value back to text (for forwarding command arguments).
-    fn serializeJson(self: *Client, v: std.json.Value) ?[]u8 {
-        var out: std.ArrayList(u8) = .empty;
-        appendJson(&out, self.gpa, v) catch {
-            out.deinit(self.gpa);
-            return null;
-        };
-        return out.toOwnedSlice(self.gpa) catch null;
     }
 
     /// Parse a `WorkspaceEdit` (the `changes` map or the `documentChanges`
@@ -1278,101 +1271,15 @@ fn contentLength(header: []const u8) ?usize {
 }
 
 fn appendEscaped(list: *std.ArrayList(u8), gpa: Allocator, s: []const u8) !void {
-    for (s) |c| switch (c) {
-        '"' => try list.appendSlice(gpa, "\\\""),
-        '\\' => try list.appendSlice(gpa, "\\\\"),
-        '\n' => try list.appendSlice(gpa, "\\n"),
-        '\r' => try list.appendSlice(gpa, "\\r"),
-        '\t' => try list.appendSlice(gpa, "\\t"),
-        else => if (c < 0x20) {
-            var b: [8]u8 = undefined;
-            try list.appendSlice(gpa, std.fmt.bufPrint(&b, "\\u{x:0>4}", .{c}) catch return);
-        } else try list.append(gpa, c),
-    };
-}
-
-/// Append a JSON-RPC id verbatim (numbers stay numbers, strings stay quoted).
-fn appendIdValue(list: *std.ArrayList(u8), gpa: Allocator, id: std.json.Value) !void {
-    switch (id) {
-        .integer => |i| {
-            var b: [32]u8 = undefined;
-            try list.appendSlice(gpa, std.fmt.bufPrint(&b, "{d}", .{i}) catch return);
-        },
-        .string => |s| {
-            try list.append(gpa, '"');
-            try appendEscaped(list, gpa, s);
-            try list.append(gpa, '"');
-        },
-        else => try list.appendSlice(gpa, "null"),
-    }
-}
-
-/// Serialize a parsed JSON value back to compact JSON text.
-fn appendJson(list: *std.ArrayList(u8), gpa: Allocator, v: std.json.Value) !void {
-    switch (v) {
-        .null => try list.appendSlice(gpa, "null"),
-        .bool => |b| try list.appendSlice(gpa, if (b) "true" else "false"),
-        .integer => |i| {
-            var b: [32]u8 = undefined;
-            try list.appendSlice(gpa, std.fmt.bufPrint(&b, "{d}", .{i}) catch return);
-        },
-        .float => |f| {
-            var b: [32]u8 = undefined;
-            try list.appendSlice(gpa, std.fmt.bufPrint(&b, "{d}", .{f}) catch return);
-        },
-        .number_string => |s| try list.appendSlice(gpa, s),
-        .string => |s| {
-            try list.append(gpa, '"');
-            try appendEscaped(list, gpa, s);
-            try list.append(gpa, '"');
-        },
-        .array => |arr| {
-            try list.append(gpa, '[');
-            for (arr.items, 0..) |item, i| {
-                if (i > 0) try list.append(gpa, ',');
-                try appendJson(list, gpa, item);
-            }
-            try list.append(gpa, ']');
-        },
-        .object => |obj| {
-            try list.append(gpa, '{');
-            var it = obj.iterator();
-            var first = true;
-            while (it.next()) |entry| {
-                if (!first) try list.append(gpa, ',');
-                first = false;
-                try list.append(gpa, '"');
-                try appendEscaped(list, gpa, entry.key_ptr.*);
-                try list.append(gpa, '"');
-                try list.append(gpa, ':');
-                try appendJson(list, gpa, entry.value_ptr.*);
-            }
-            try list.append(gpa, '}');
-        },
-    }
-}
-
-fn writeAllFd(fd: posix.fd_t, bytes: []const u8) bool {
-    var i: usize = 0;
-    while (i < bytes.len) {
-        const rc = posix.system.write(fd, bytes.ptr + i, bytes.len - i);
-        switch (posix.system.errno(rc)) {
-            .SUCCESS => i += @intCast(rc),
-            .INTR, .AGAIN => continue,
-            else => return false,
-        }
-    }
-    return true;
+    var aw: std.Io.Writer.Allocating = .fromArrayList(gpa, list);
+    defer list.* = aw.toArrayList();
+    try std.json.Stringify.encodeJsonStringChars(s, .{}, &aw.writer);
 }
 
 fn pollReadable(fd: posix.fd_t, timeout_ms: i32) bool {
     var fds = [_]posix.pollfd{.{ .fd = fd, .events = posix.POLL.IN, .revents = 0 }};
-    const rc = posix.system.poll(&fds, 1, timeout_ms);
-    return posix.system.errno(rc) == .SUCCESS and (fds[0].revents & posix.POLL.IN) != 0;
-}
-
-fn nowMs() i64 {
-    return @intCast(@divTrunc(log.nowNanos(), std.time.ns_per_ms));
+    const n = posix.poll(&fds, timeout_ms) catch return false;
+    return n > 0 and (fds[0].revents & posix.POLL.IN) != 0;
 }
 
 test "contentLength parsing" {

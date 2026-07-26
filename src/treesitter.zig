@@ -192,12 +192,6 @@ pub const Highlighter = struct {
             computeEdit(self.content.items, content)
         else
             null;
-        if (content.len == 0) {
-            self.primary.reparse(content, null);
-            if (self.secondary) |*s| s.reparse(content, null);
-            self.rememberContent(content);
-            return;
-        }
         self.primary.reparse(content, edit);
         if (self.secondary) |*s| s.reparse(content, edit);
         self.rememberContent(content);

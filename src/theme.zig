@@ -38,7 +38,6 @@ pub const Theme = struct {
     gutter_active: Color,
     selection: Color,
     match: Color, // search match highlight (background)
-    indent_guide: Color,
 
     // syntax
     comment: Color,
@@ -47,7 +46,6 @@ pub const Theme = struct {
     builtin: Color,
     function: Color,
     string_: Color,
-    char_: Color,
     number: Color,
     operator: Color,
     preproc: Color,
@@ -80,7 +78,6 @@ pub const tokyonight: Theme = .{
     .gutter_active = rgb(0x73, 0x7a, 0xa2),
     .selection = rgb(0x28, 0x34, 0x57),
     .match = rgb(0x3d, 0x59, 0xa1),
-    .indent_guide = rgb(0x29, 0x2e, 0x42),
 
     .comment = rgb(0x56, 0x5f, 0x89),
     .keyword = rgb(0xbb, 0x9a, 0xf7),
@@ -88,7 +85,6 @@ pub const tokyonight: Theme = .{
     .builtin = rgb(0xe0, 0xaf, 0x68),
     .function = rgb(0x7a, 0xa2, 0xf7),
     .string_ = rgb(0x9e, 0xce, 0x6a),
-    .char_ = rgb(0x9e, 0xce, 0x6a),
     .number = rgb(0xff, 0x9e, 0x64),
     .operator = rgb(0x89, 0xdd, 0xff),
     .preproc = rgb(0x7d, 0xcf, 0xff),
@@ -119,7 +115,6 @@ pub const gruvbox: Theme = .{
     .gutter_active = rgb(0xa8, 0x99, 0x84), // fg4
     .selection = rgb(0x50, 0x49, 0x45), // bg2
     .match = rgb(0x45, 0x85, 0x88), // neutral blue
-    .indent_guide = rgb(0x3c, 0x38, 0x36),
 
     .comment = rgb(0x92, 0x83, 0x74),
     .keyword = rgb(0xfb, 0x49, 0x34), // red (gruvbox keywords are red)
@@ -127,7 +122,6 @@ pub const gruvbox: Theme = .{
     .builtin = rgb(0xfa, 0xbd, 0x2f), // yellow
     .function = rgb(0x83, 0xa5, 0x98), // blue
     .string_ = rgb(0xb8, 0xbb, 0x26), // green
-    .char_ = rgb(0xb8, 0xbb, 0x26),
     .number = rgb(0xfe, 0x80, 0x19), // orange
     .operator = rgb(0x8e, 0xc0, 0x7c),
     .preproc = rgb(0x8e, 0xc0, 0x7c), // PreProc is aqua
@@ -158,7 +152,6 @@ pub const catppuccin: Theme = .{
     .gutter_active = rgb(0xb4, 0xbe, 0xfe), // lavender (cursor line nr)
     .selection = rgb(0x45, 0x47, 0x5a), // surface1
     .match = rgb(0x89, 0xb4, 0xfa), // blue
-    .indent_guide = rgb(0x31, 0x32, 0x44),
 
     .comment = rgb(0x6c, 0x70, 0x86),
     .keyword = rgb(0xcb, 0xa6, 0xf7), // mauve
@@ -166,7 +159,6 @@ pub const catppuccin: Theme = .{
     .builtin = rgb(0xf9, 0xe2, 0xaf), // yellow
     .function = rgb(0x89, 0xb4, 0xfa), // blue
     .string_ = rgb(0xa6, 0xe3, 0xa1), // green
-    .char_ = rgb(0xa6, 0xe3, 0xa1),
     .number = rgb(0xfa, 0xb3, 0x87), // peach
     .operator = rgb(0x89, 0xdc, 0xeb), // sky
     .preproc = rgb(0x89, 0xdc, 0xeb),
@@ -197,7 +189,6 @@ pub const nord: Theme = .{
     .gutter_active = rgb(0xd8, 0xde, 0xe9), // nord4
     .selection = rgb(0x43, 0x4c, 0x5e), // nord2
     .match = rgb(0x5e, 0x81, 0xac), // nord10
-    .indent_guide = rgb(0x3b, 0x42, 0x52),
 
     .comment = rgb(0x4c, 0x56, 0x6a),
     .keyword = rgb(0x81, 0xa1, 0xc1), // nord9 (Nord spec: keywords)
@@ -205,7 +196,6 @@ pub const nord: Theme = .{
     .builtin = rgb(0xeb, 0xcb, 0x8b), // nord13
     .function = rgb(0x88, 0xc0, 0xd0), // nord8 (functions)
     .string_ = rgb(0xa3, 0xbe, 0x8c), // nord14
-    .char_ = rgb(0xa3, 0xbe, 0x8c),
     .number = rgb(0xb4, 0x8e, 0xad), // nord15 (Nord spec: numbers)
     .operator = rgb(0x81, 0xa1, 0xc1), // nord9 (operators)
     .preproc = rgb(0x5e, 0x81, 0xac), // nord10 (preprocessor)
@@ -236,7 +226,6 @@ pub const onedark: Theme = .{
     .gutter_active = rgb(0xab, 0xb2, 0xbf),
     .selection = rgb(0x3e, 0x44, 0x51),
     .match = rgb(0x52, 0x8b, 0xff), // Atom accent blue
-    .indent_guide = rgb(0x2c, 0x31, 0x3c),
 
     .comment = rgb(0x5c, 0x63, 0x70),
     .keyword = rgb(0xc6, 0x78, 0xdd), // purple
@@ -244,7 +233,6 @@ pub const onedark: Theme = .{
     .builtin = rgb(0xe5, 0xc0, 0x7b), // yellow
     .function = rgb(0x61, 0xaf, 0xef), // blue
     .string_ = rgb(0x98, 0xc3, 0x79), // green
-    .char_ = rgb(0x98, 0xc3, 0x79),
     .number = rgb(0xd1, 0x9a, 0x66), // orange
     .operator = rgb(0x56, 0xb6, 0xc2),
     .preproc = rgb(0x56, 0xb6, 0xc2),

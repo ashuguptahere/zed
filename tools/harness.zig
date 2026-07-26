@@ -33,17 +33,11 @@ pub const Ctx = struct {
     }
 };
 
-pub const EnvVar = struct { name: []const u8, value: []const u8 };
-
 pub const SpawnOpts = struct {
     argv: []const []const u8, // full argv, including the program path
     cwd: ?[]const u8 = null,
     term: []const u8 = "xterm",
-    rows: u16 = 24,
     cols: u16 = 80,
-    /// Extra environment for the child (e.g. PATH for a mock `ssh`, or
-    /// XDG_STATE_HOME to redirect the recent-files list at a temp dir).
-    env: []const EnvVar = &.{},
 };
 
 pub const Session = struct {
@@ -62,11 +56,6 @@ pub const Session = struct {
         argv[opts.argv.len] = null;
         const term_z = try a.dupeZ(u8, opts.term);
         const cwd_z: ?[*:0]const u8 = if (opts.cwd) |cw| (try a.dupeZ(u8, cw)).ptr else null;
-        const env_z = try a.alloc(struct { name: [*:0]const u8, value: [*:0]const u8 }, opts.env.len);
-        for (opts.env, 0..) |e, i| env_z[i] = .{
-            .name = (try a.dupeZ(u8, e.name)).ptr,
-            .value = (try a.dupeZ(u8, e.value)).ptr,
-        };
 
         const master = c.posix_openpt(c.O_RDWR | c.O_NOCTTY);
         if (master < 0) return error.OpenPt;
@@ -85,15 +74,14 @@ pub const Session = struct {
             if (slave > 2) _ = c.close(slave);
             _ = c.close(master);
             _ = c.setenv("TERM", term_z, 1);
-            for (env_z) |e| _ = c.setenv(e.name, e.value, 1);
             if (cwd_z) |cw| _ = c.chdir(cw);
             _ = c.execvp(argv[0].?, @ptrCast(argv.ptr));
             c._exit(127);
         }
 
-        var ws = c.winsize{ .ws_row = opts.rows, .ws_col = opts.cols, .ws_xpixel = 0, .ws_ypixel = 0 };
+        var ws = c.winsize{ .ws_row = 24, .ws_col = opts.cols, .ws_xpixel = 0, .ws_ypixel = 0 };
         _ = c.ioctl(master, c.TIOCSWINSZ, &ws);
-        arena_state.deinit(); // child has its own copy of argv/env
+        arena_state.deinit(); // child has its own copy of argv
         return .{ .master = master, .pid = pid, .out = .empty, .gpa = gpa };
     }
 
@@ -136,13 +124,14 @@ pub const Session = struct {
         return std.mem.indexOf(u8, self.out.items, needle) != null;
     }
 
-    /// The captured output with CSI escape sequences (colour, cursor moves)
-    /// stripped — for matching text that the renderer interleaves with colour.
-    pub fn plain(self: *Session, gpa: std.mem.Allocator) ![]u8 {
+    /// The output produced since `from` with escape sequences stripped (CSI
+    /// skipped to its final letter, any other ESC plus its follow-up byte
+    /// dropped) — for matching text that the renderer interleaves with colour.
+    pub fn plainSince(self: *Session, gpa: std.mem.Allocator, from: usize) ![]u8 {
         var o: std.ArrayList(u8) = .empty;
         errdefer o.deinit(gpa);
         const s = self.out.items;
-        var i: usize = 0;
+        var i: usize = @min(from, s.len);
         while (i < s.len) {
             if (s[i] == 0x1b and i + 1 < s.len and s[i + 1] == '[') {
                 i += 2;
@@ -150,10 +139,19 @@ pub const Session = struct {
                 if (i < s.len) i += 1; // the final letter
                 continue;
             }
+            if (s[i] == 0x1b) {
+                i += 2;
+                continue;
+            }
             try o.append(gpa, s[i]);
             i += 1;
         }
         return o.toOwnedSlice(gpa);
+    }
+
+    /// The whole captured output, ANSI stripped.
+    pub fn plain(self: *Session, gpa: std.mem.Allocator) ![]u8 {
+        return self.plainSince(gpa, 0);
     }
 
     /// A mark into the output stream, for asserting on only what arrives next.
@@ -165,32 +163,13 @@ pub const Session = struct {
     /// stripped) — lets a test assert on one frame instead of the whole
     /// session, e.g. that an indicator appears and then disappears.
     pub fn containsPlainSince(self: *Session, gpa: std.mem.Allocator, from: usize, needle: []const u8) bool {
-        const s = self.out.items;
-        const start = @min(from, s.len);
-        var o: std.ArrayList(u8) = .empty;
-        defer o.deinit(gpa);
-        var i: usize = start;
-        while (i < s.len) {
-            if (s[i] == 0x1b and i + 1 < s.len and s[i + 1] == '[') {
-                i += 2;
-                while (i < s.len and !std.ascii.isAlphabetic(s[i])) i += 1;
-                i += 1;
-                continue;
-            }
-            if (s[i] == 0x1b) {
-                i += 2;
-                continue;
-            }
-            o.append(gpa, s[i]) catch return false;
-            i += 1;
-        }
-        return std.mem.indexOf(u8, o.items, needle) != null;
+        const p = self.plainSince(gpa, from) catch return false;
+        defer gpa.free(p);
+        return std.mem.indexOf(u8, p, needle) != null;
     }
 
     pub fn containsPlain(self: *Session, gpa: std.mem.Allocator, needle: []const u8) bool {
-        const p = self.plain(gpa) catch return false;
-        defer gpa.free(p);
-        return std.mem.indexOf(u8, p, needle) != null;
+        return self.containsPlainSince(gpa, 0, needle);
     }
 
     /// utime+stime in clock ticks, from /proc/<pid>/stat (Linux).
@@ -228,6 +207,18 @@ pub fn removeFile(io: std.Io, path: []const u8) void {
     std.Io.Dir.cwd().deleteFile(io, path) catch {};
 }
 
+/// `dir/name` as one allocation (caller frees with `ctx.gpa`).
+pub fn join(ctx: *Ctx, dir: []const u8, name: []const u8) []u8 {
+    return std.fmt.allocPrint(ctx.gpa, "{s}/{s}", .{ dir, name }) catch unreachable;
+}
+
+/// Run `argv` to completion, ignoring (but freeing) its output.
+pub fn runQuiet(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8) void {
+    const res = std.process.run(gpa, io, .{ .argv = argv }) catch return;
+    gpa.free(res.stdout);
+    gpa.free(res.stderr);
+}
+
 /// Create a fresh temp directory and return its path (caller frees with `gpa`).
 pub fn tempDir(gpa: std.mem.Allocator) ![]u8 {
     var tmpl = [_]u8{0} ** 32;
@@ -238,9 +229,7 @@ pub fn tempDir(gpa: std.mem.Allocator) ![]u8 {
 }
 
 pub fn removeTree(gpa: std.mem.Allocator, io: std.Io, path: []const u8) void {
-    const res = std.process.run(gpa, io, .{ .argv = &.{ "rm", "-rf", path } }) catch return;
-    gpa.free(res.stdout);
-    gpa.free(res.stderr);
+    runQuiet(gpa, io, &.{ "rm", "-rf", path });
 }
 
 /// Write `initial` to `target`, run `zedit target`, send `chunks`, then return the
@@ -254,4 +243,14 @@ pub fn runEdit(ctx: *Ctx, target: []const u8, initial: []const u8, chunks: []con
     s.sendKeys(chunks);
     s.drain(600); // let :wq save and quit
     return readFile(ctx.gpa, ctx.io, target);
+}
+
+/// One editing case: `runEdit` on `target`, then check the saved file equals
+/// `want`, printing got/want on a failure.
+pub fn case(ctx: *Ctx, target: []const u8, name: []const u8, chunks: []const []const u8, initial: []const u8, want: []const u8) void {
+    const got = runEdit(ctx, target, initial, chunks);
+    defer ctx.gpa.free(got);
+    const ok = std.mem.eql(u8, got, want);
+    if (!ok) std.debug.print("       got  \"{f}\"\n       want \"{f}\"\n", .{ std.zig.fmtString(got), std.zig.fmtString(want) });
+    ctx.check(name, ok);
 }

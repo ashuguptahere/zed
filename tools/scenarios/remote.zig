@@ -25,59 +25,46 @@ const mock_ssh =
     \\
 ;
 
-fn join(ctx: *h.Ctx, dir: []const u8, name: []const u8) []u8 {
-    return std.fmt.allocPrint(ctx.gpa, "{s}/{s}", .{ dir, name }) catch unreachable;
-}
-
-fn chmodX(ctx: *h.Ctx, path: []const u8) void {
-    const res = std.process.run(ctx.gpa, ctx.io, .{ .argv = &.{ "chmod", "+x", path } }) catch return;
-    ctx.gpa.free(res.stdout);
-    ctx.gpa.free(res.stderr);
-}
-
 pub fn run(ctx: *h.Ctx) !void {
     const dir = try h.tempDir(ctx.gpa);
     defer ctx.gpa.free(dir);
     defer h.removeTree(ctx.gpa, ctx.io, dir);
 
     // Fake remote filesystem + the mock ssh on PATH.
-    const bin = join(ctx, dir, "bin");
+    const bin = h.join(ctx, dir, "bin");
     defer ctx.gpa.free(bin);
-    const rroot = join(ctx, dir, "remote");
+    const rroot = h.join(ctx, dir, "remote");
     defer ctx.gpa.free(rroot);
-    const rsub = join(ctx, dir, "remote/sub");
+    const rsub = h.join(ctx, dir, "remote/sub");
     defer ctx.gpa.free(rsub);
     std.Io.Dir.cwd().createDirPath(ctx.io, bin) catch {};
     std.Io.Dir.cwd().createDirPath(ctx.io, rsub) catch {};
-    const ssh_path = join(ctx, dir, "bin/ssh");
+    const ssh_path = h.join(ctx, dir, "bin/ssh");
     defer ctx.gpa.free(ssh_path);
     h.writeFile(ctx.io, ssh_path, mock_ssh);
-    chmodX(ctx, ssh_path);
+    h.runQuiet(ctx.gpa, ctx.io, &.{ "chmod", "+x", ssh_path });
 
-    const rfile = join(ctx, dir, "remote/hello.txt");
+    const rfile = h.join(ctx, dir, "remote/hello.txt");
     defer ctx.gpa.free(rfile);
     h.writeFile(ctx.io, rfile, "remote alpha\nremote beta\n");
-    const rdeep = join(ctx, dir, "remote/sub/deep.txt");
+    const rdeep = h.join(ctx, dir, "remote/sub/deep.txt");
     defer ctx.gpa.free(rdeep);
     h.writeFile(ctx.io, rdeep, "nested\n");
     // A path with a space and a quote: the shell-quoting must keep it inert.
-    const rodd = join(ctx, dir, "remote/od'd name.txt");
+    const rodd = h.join(ctx, dir, "remote/od'd name.txt");
     defer ctx.gpa.free(rodd);
     h.writeFile(ctx.io, rodd, "odd\n");
 
-    const path_env = try std.fmt.allocPrint(ctx.gpa, "{s}:/usr/bin:/bin", .{bin});
+    const path_env = try std.fmt.allocPrint(ctx.gpa, "PATH={s}:/usr/bin:/bin", .{bin});
     defer ctx.gpa.free(path_env);
-    const env = [_]h.EnvVar{
-        .{ .name = "PATH", .value = path_env },
-        .{ .name = "MOCK_REMOTE_ROOT", .value = rroot },
-    };
+    const root_env = try std.fmt.allocPrint(ctx.gpa, "MOCK_REMOTE_ROOT={s}", .{rroot});
+    defer ctx.gpa.free(root_env);
 
     // Open a remote file, edit it, write it back over ssh.
     {
         var s = try h.Session.spawn(ctx.gpa, .{
-            .argv = &.{ ctx.zedit, "ssh://testhost/remotefs/hello.txt" },
+            .argv = &.{ "env", path_env, root_env, ctx.zedit, "ssh://testhost/remotefs/hello.txt" },
             .cwd = dir,
-            .env = &env,
         });
         defer s.finish();
         s.drain(900);
@@ -96,9 +83,8 @@ pub fn run(ctx: *h.Ctx) !void {
     // the remote command is quoted, not interpolated.
     {
         var s = try h.Session.spawn(ctx.gpa, .{
-            .argv = &.{ ctx.zedit, "ssh://testhost/remotefs/od'd name.txt" },
+            .argv = &.{ "env", path_env, root_env, ctx.zedit, "ssh://testhost/remotefs/od'd name.txt" },
             .cwd = dir,
-            .env = &env,
         });
         defer s.finish();
         s.drain(900);
@@ -116,9 +102,8 @@ pub fn run(ctx: *h.Ctx) !void {
     // filtered pick opens over ssh.
     {
         var s = try h.Session.spawn(ctx.gpa, .{
-            .argv = &.{ ctx.zedit, "ssh://testhost/remotefs" },
+            .argv = &.{ "env", path_env, root_env, ctx.zedit, "ssh://testhost/remotefs" },
             .cwd = dir,
-            .env = &env,
         });
         defer s.finish();
         s.drain(1200);
@@ -134,9 +119,8 @@ pub fn run(ctx: *h.Ctx) !void {
     // `:ssh host` browses the login directory (the mock maps it to the root).
     {
         var s = try h.Session.spawn(ctx.gpa, .{
-            .argv = &.{ ctx.zedit, "ssh://testhost/remotefs/hello.txt" },
+            .argv = &.{ "env", path_env, root_env, ctx.zedit, "ssh://testhost/remotefs/hello.txt" },
             .cwd = dir,
-            .env = &env,
         });
         defer s.finish();
         s.drain(800);
@@ -157,11 +141,10 @@ pub fn run(ctx: *h.Ctx) !void {
             \\
         ;
         h.writeFile(ctx.io, ssh_path, failing_ssh);
-        chmodX(ctx, ssh_path);
+        h.runQuiet(ctx.gpa, ctx.io, &.{ "chmod", "+x", ssh_path });
         var s = try h.Session.spawn(ctx.gpa, .{
-            .argv = &.{ ctx.zedit, "ssh://nope/remotefs/x.txt" },
+            .argv = &.{ "env", path_env, root_env, ctx.zedit, "ssh://nope/remotefs/x.txt" },
             .cwd = dir,
-            .env = &env,
         });
         defer s.finish();
         s.drain(1000);
@@ -173,27 +156,28 @@ pub fn run(ctx: *h.Ctx) !void {
 
     // --- startup screen -------------------------------------------------
     {
-        const state = join(ctx, dir, "state");
+        const state = h.join(ctx, dir, "state");
         defer ctx.gpa.free(state);
-        const state_dir = join(ctx, dir, "state/zedit");
+        const state_dir = h.join(ctx, dir, "state/zedit");
         defer ctx.gpa.free(state_dir);
         std.Io.Dir.cwd().createDirPath(ctx.io, state_dir) catch {};
-        const a_txt = join(ctx, dir, "alpha.txt");
+        const a_txt = h.join(ctx, dir, "alpha.txt");
         defer ctx.gpa.free(a_txt);
-        const b_txt = join(ctx, dir, "beta.txt");
+        const b_txt = h.join(ctx, dir, "beta.txt");
         defer ctx.gpa.free(b_txt);
         h.writeFile(ctx.io, a_txt, "aaa\n");
         h.writeFile(ctx.io, b_txt, "bbb\n");
-        const recent_file = join(ctx, dir, "state/zedit/recent");
+        const recent_file = h.join(ctx, dir, "state/zedit/recent");
         defer ctx.gpa.free(recent_file);
         const listing = try std.fmt.allocPrint(ctx.gpa, "f {s}\nf {s}\nf {s}/gone.txt\n", .{ a_txt, b_txt, dir });
         defer ctx.gpa.free(listing);
         h.writeFile(ctx.io, recent_file, listing);
 
-        const state_env = [_]h.EnvVar{.{ .name = "XDG_STATE_HOME", .value = state }};
+        const state_env = try std.fmt.allocPrint(ctx.gpa, "XDG_STATE_HOME={s}", .{state});
+        defer ctx.gpa.free(state_env);
 
         // No file argument: the startup screen lists the recent entries.
-        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ctx.zedit}, .cwd = dir, .env = &state_env });
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ "env", state_env, ctx.zedit }, .cwd = dir });
         defer s.finish();
         s.drain(700);
         ctx.check("startup screen lists recent files", s.containsPlain(ctx.gpa, "alpha.txt") and
@@ -220,7 +204,7 @@ pub fn run(ctx: *h.Ctx) !void {
         ctx.check("recent list records the newest first", std.mem.indexOf(u8, saved[0..first_line_end], "beta.txt") != null);
 
         // A file argument skips the screen entirely.
-        var s2 = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "alpha.txt" }, .cwd = dir, .env = &state_env });
+        var s2 = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ "env", state_env, ctx.zedit, "alpha.txt" }, .cwd = dir });
         defer s2.finish();
         s2.drain(700);
         ctx.check("a file argument skips the startup screen", !s2.containsPlain(ctx.gpa, "Recent") and

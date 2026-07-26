@@ -13,158 +13,150 @@ const ESC = "\x1b";
 const CR = "\r";
 const target = "/tmp/zedit_it_compat.txt";
 
-fn case(ctx: *h.Ctx, name: []const u8, chunks: []const []const u8, initial: []const u8, want: []const u8) void {
-    const got = h.runEdit(ctx, target, initial, chunks);
-    defer ctx.gpa.free(got);
-    const ok = std.mem.eql(u8, got, want);
-    if (!ok) std.debug.print("       got  \"{f}\"\n       want \"{f}\"\n", .{ std.zig.fmtString(got), std.zig.fmtString(want) });
-    ctx.check(name, ok);
-}
-
 pub fn run(ctx: *h.Ctx) !void {
-    case(ctx, "nvim#1 dw deletes word + trailing space", &.{ "dw", ":wq", CR }, "foo bar baz\n", "bar baz\n");
-    case(ctx, "nvim#2 cw acts like ce (space survives)", &.{ "cw", "X", ESC, ":wq", CR }, "foo bar\n", "X bar\n");
-    case(ctx, "nvim#3 dw on last word stops at newline", &.{ "wdw", ":wq", CR }, "foo  bar\n", "foo  \n");
-    case(ctx, "nvim#4 dw from mid-word", &.{ "ldw", ":wq", CR }, "foo bar\n", "fbar\n");
-    case(ctx, "nvim#5 dw sole word + dot repeat", &.{ "dwj.", ":wq", CR }, "foo\nbar\n", "\n\n");
-    case(ctx, "nvim#6 d$ empties the line, keeps it", &.{ "d$", ":wq", CR }, "abc def\n", "\n");
-    case(ctx, "nvim#7 2dw", &.{ "2dw", ":wq", CR }, "one two three\n", "three\n");
-    case(ctx, "nvim#8 x then $p pastes after EOL char", &.{ "x$p", ":wq", CR }, "hello\n", "elloh\n");
-    case(ctx, "nvim#9 di( seeks forward to the pair", &.{ "di(", ":wq", CR }, "a(b c)d\n", "a()d\n");
-    case(ctx, "nvim#10 ci( seeks forward", &.{ "ci(", "Z", ESC, ":wq", CR }, "x (abc) y\n", "x (Z) y\n");
-    case(ctx, "nvim#11 ci' seeks forward", &.{ "ci'", "Q", ESC, ":wq", CR }, "foo 'bar' baz\n", "foo 'Q' baz\n");
-    case(ctx, "nvim#12 yy j p linewise paste below", &.{ "yyjp", ":wq", CR }, "aaa\nbbb\nccc\n", "aaa\nbbb\naaa\nccc\n");
-    case(ctx, "nvim#13 J leaves cursor on joining space", &.{ "Jx", ":wq", CR }, "abc\ndef\n", "abcdef\n");
-    case(ctx, "nvim#14 I inserts at first non-blank", &.{ "I", ">", ESC, ":wq", CR }, "  indented\n", "  >indented\n");
-    case(ctx, "nvim#15 ~ toggles case", &.{ "~", ":wq", CR }, "word\n", "Word\n");
-    case(ctx, "nvim#16 delete-all writes 0 bytes", &.{ "ggVGd", ":wq", CR }, "one\ntwo\nthree\n", "");
-    case(ctx, "nvim#17 * jumps to next occurrence", &.{ "*x", ":wq", CR }, "foo bar foo\n", "foo bar oo\n");
-    case(ctx, "nvim#18 3x clamps at EOL", &.{ "3x", ":wq", CR }, "abc\n", "\n");
-    case(ctx, "nvim#19 df<space>", &.{ "df ", ":wq", CR }, "a b c d\n", "b c d\n");
-    case(ctx, "nvim#20 f( then ci( from the paren", &.{ "f(ci(", "X", ESC, ":wq", CR }, "foo(bar)\n", "foo(X)\n");
-    case(ctx, "nvim#21 daw + P round-trips", &.{ "dawP", ":wq", CR }, "one two\n", "one two\n");
-    case(ctx, "nvim#22 visual U uppercases selection", &.{ "veU", ":wq", CR }, "hello world\n", "HELLO world\n");
-    case(ctx, "nvim#23 dw then dot at new position", &.{ "dw.", ":wq", CR }, "abc def ghi\n", "ghi\n");
-    case(ctx, "nvim#24 ddp swaps lines", &.{ "ddp", ":wq", CR }, "x\ny\nz\n", "y\nx\nz\n");
-    case(ctx, "nvim#25 w then cw on second word", &.{ "wcw", "ZZZ", ESC, ":wq", CR }, "aaa bbb\n", "aaa ZZZ\n");
+    h.case(ctx, target, "nvim#1 dw deletes word + trailing space", &.{ "dw", ":wq", CR }, "foo bar baz\n", "bar baz\n");
+    h.case(ctx, target, "nvim#2 cw acts like ce (space survives)", &.{ "cw", "X", ESC, ":wq", CR }, "foo bar\n", "X bar\n");
+    h.case(ctx, target, "nvim#3 dw on last word stops at newline", &.{ "wdw", ":wq", CR }, "foo  bar\n", "foo  \n");
+    h.case(ctx, target, "nvim#4 dw from mid-word", &.{ "ldw", ":wq", CR }, "foo bar\n", "fbar\n");
+    h.case(ctx, target, "nvim#5 dw sole word + dot repeat", &.{ "dwj.", ":wq", CR }, "foo\nbar\n", "\n\n");
+    h.case(ctx, target, "nvim#6 d$ empties the line, keeps it", &.{ "d$", ":wq", CR }, "abc def\n", "\n");
+    h.case(ctx, target, "nvim#7 2dw", &.{ "2dw", ":wq", CR }, "one two three\n", "three\n");
+    h.case(ctx, target, "nvim#8 x then $p pastes after EOL char", &.{ "x$p", ":wq", CR }, "hello\n", "elloh\n");
+    h.case(ctx, target, "nvim#9 di( seeks forward to the pair", &.{ "di(", ":wq", CR }, "a(b c)d\n", "a()d\n");
+    h.case(ctx, target, "nvim#10 ci( seeks forward", &.{ "ci(", "Z", ESC, ":wq", CR }, "x (abc) y\n", "x (Z) y\n");
+    h.case(ctx, target, "nvim#11 ci' seeks forward", &.{ "ci'", "Q", ESC, ":wq", CR }, "foo 'bar' baz\n", "foo 'Q' baz\n");
+    h.case(ctx, target, "nvim#12 yy j p linewise paste below", &.{ "yyjp", ":wq", CR }, "aaa\nbbb\nccc\n", "aaa\nbbb\naaa\nccc\n");
+    h.case(ctx, target, "nvim#13 J leaves cursor on joining space", &.{ "Jx", ":wq", CR }, "abc\ndef\n", "abcdef\n");
+    h.case(ctx, target, "nvim#14 I inserts at first non-blank", &.{ "I", ">", ESC, ":wq", CR }, "  indented\n", "  >indented\n");
+    h.case(ctx, target, "nvim#15 ~ toggles case", &.{ "~", ":wq", CR }, "word\n", "Word\n");
+    h.case(ctx, target, "nvim#16 delete-all writes 0 bytes", &.{ "ggVGd", ":wq", CR }, "one\ntwo\nthree\n", "");
+    h.case(ctx, target, "nvim#17 * jumps to next occurrence", &.{ "*x", ":wq", CR }, "foo bar foo\n", "foo bar oo\n");
+    h.case(ctx, target, "nvim#18 3x clamps at EOL", &.{ "3x", ":wq", CR }, "abc\n", "\n");
+    h.case(ctx, target, "nvim#19 df<space>", &.{ "df ", ":wq", CR }, "a b c d\n", "b c d\n");
+    h.case(ctx, target, "nvim#20 f( then ci( from the paren", &.{ "f(ci(", "X", ESC, ":wq", CR }, "foo(bar)\n", "foo(X)\n");
+    h.case(ctx, target, "nvim#21 daw + P round-trips", &.{ "dawP", ":wq", CR }, "one two\n", "one two\n");
+    h.case(ctx, target, "nvim#22 visual U uppercases selection", &.{ "veU", ":wq", CR }, "hello world\n", "HELLO world\n");
+    h.case(ctx, target, "nvim#23 dw then dot at new position", &.{ "dw.", ":wq", CR }, "abc def ghi\n", "ghi\n");
+    h.case(ctx, target, "nvim#24 ddp swaps lines", &.{ "ddp", ":wq", CR }, "x\ny\nz\n", "y\nx\nz\n");
+    h.case(ctx, target, "nvim#25 w then cw on second word", &.{ "wcw", "ZZZ", ESC, ":wq", CR }, "aaa bbb\n", "aaa ZZZ\n");
 
     // :s substitution — expected results generated by the same headless nvim
     // (patterns chosen to mean the same thing in vim magic and zedit's modern
     // regex syntax).
-    case(ctx, "nvim#s1 :%s g flag replaces all", &.{ ":%s/foo/bar/g\r", ":wq", CR }, "foo foo\nxfoo\n", "bar bar\nxbar\n");
-    case(ctx, "nvim#s2 :s current line, first only", &.{ ":s/o/0/\r", ":wq", CR }, "foo\nfoo\n", "f0o\nfoo\n");
-    case(ctx, "nvim#s3 :2,3s range", &.{ ":2,3s/a/X/g\r", ":wq", CR }, "aa\naa\naa\naa\n", "aa\nXX\nXX\naa\n");
-    case(ctx, "nvim#s4 dot metachar", &.{ ":%s/b.d/X/g\r", ":wq", CR }, "bad bed\nbid\n", "X X\nX\n");
-    case(ctx, "nvim#s5 anchor ^ prefixes lines", &.{ ":%s/^/> /\r", ":wq", CR }, "a\nb\n", "> a\n> b\n");
-    case(ctx, "nvim#s6 i flag ignores case", &.{ ":%s/FOO/x/gi\r", ":wq", CR }, "FOO foo\n", "x x\n");
-    case(ctx, "nvim#s7 character classes", &.{ ":%s/[0-9][0-9]*/N/g\r", ":wq", CR }, "a1 b22 c333\n", "aN bN cN\n");
-    case(ctx, "nvim#s8 no match leaves file unchanged", &.{ ":%s/xyz/Q/g\r", ":wq", CR }, "no match here\n", "no match here\n");
+    h.case(ctx, target, "nvim#s1 :%s g flag replaces all", &.{ ":%s/foo/bar/g\r", ":wq", CR }, "foo foo\nxfoo\n", "bar bar\nxbar\n");
+    h.case(ctx, target, "nvim#s2 :s current line, first only", &.{ ":s/o/0/\r", ":wq", CR }, "foo\nfoo\n", "f0o\nfoo\n");
+    h.case(ctx, target, "nvim#s3 :2,3s range", &.{ ":2,3s/a/X/g\r", ":wq", CR }, "aa\naa\naa\naa\n", "aa\nXX\nXX\naa\n");
+    h.case(ctx, target, "nvim#s4 dot metachar", &.{ ":%s/b.d/X/g\r", ":wq", CR }, "bad bed\nbid\n", "X X\nX\n");
+    h.case(ctx, target, "nvim#s5 anchor ^ prefixes lines", &.{ ":%s/^/> /\r", ":wq", CR }, "a\nb\n", "> a\n> b\n");
+    h.case(ctx, target, "nvim#s6 i flag ignores case", &.{ ":%s/FOO/x/gi\r", ":wq", CR }, "FOO foo\n", "x x\n");
+    h.case(ctx, target, "nvim#s7 character classes", &.{ ":%s/[0-9][0-9]*/N/g\r", ":wq", CR }, "a1 b22 c333\n", "aN bN cN\n");
+    h.case(ctx, target, "nvim#s8 no match leaves file unchanged", &.{ ":%s/xyz/Q/g\r", ":wq", CR }, "no match here\n", "no match here\n");
 
     // Jumplist (Ctrl-o = \x0f back, Ctrl-i = Tab forward) — nvim-verified.
-    case(ctx, "nvim#j1 G then Ctrl-o returns", &.{ "G\x0fx", ":wq", CR }, "aaa\nbbb\nccc\nddd\neee\n", "aa\nbbb\nccc\nddd\neee\n");
-    case(ctx, "nvim#j2 search then Ctrl-o returns to origin", &.{ "/ddd\r\x0fx", ":wq", CR }, "aaa\nbbb\nccc\nddd\neee\n", "aa\nbbb\nccc\nddd\neee\n");
-    case(ctx, "nvim#j3 Ctrl-o then Ctrl-i goes forward again", &.{ "G\x0f\tx", ":wq", CR }, "aaa\nbbb\nccc\nddd\neee\n", "aaa\nbbb\nccc\nddd\nee\n");
+    h.case(ctx, target, "nvim#j1 G then Ctrl-o returns", &.{ "G\x0fx", ":wq", CR }, "aaa\nbbb\nccc\nddd\neee\n", "aa\nbbb\nccc\nddd\neee\n");
+    h.case(ctx, target, "nvim#j2 search then Ctrl-o returns to origin", &.{ "/ddd\r\x0fx", ":wq", CR }, "aaa\nbbb\nccc\nddd\neee\n", "aa\nbbb\nccc\nddd\neee\n");
+    h.case(ctx, target, "nvim#j3 Ctrl-o then Ctrl-i goes forward again", &.{ "G\x0f\tx", ":wq", CR }, "aaa\nbbb\nccc\nddd\neee\n", "aaa\nbbb\nccc\nddd\nee\n");
 
     // Autoindent (nvim has 'autoindent' on by default; ours matches).
-    case(ctx, "nvim#a1 o inherits indent", &.{ "obar", ESC, ":wq", CR }, "    foo\n", "    foo\n    bar\n");
-    case(ctx, "nvim#a2 O inherits indent", &.{ "Obar", ESC, ":wq", CR }, "    foo\n", "    bar\n    foo\n");
-    case(ctx, "nvim#a3 Enter inherits indent", &.{ "A\rbar", ESC, ":wq", CR }, "    foo\n", "    foo\n    bar\n");
-    case(ctx, "nvim#a4 blank o-line is stripped on Esc", &.{ "o", ESC, ":wq", CR }, "    foo\n", "    foo\n\n");
-    case(ctx, "nvim#a5 blank intermediate stripped, indent carries", &.{ "A\r\rbar", ESC, ":wq", CR }, "    foo\n", "    foo\n\n    bar\n");
-    case(ctx, "nvim#a6 Enter mid-line moves tail with indent", &.{ "fbi\r", ESC, ":wq", CR }, "    foo bar\n", "    foo \n    bar\n");
-    case(ctx, "nvim#a7 cc keeps the indent", &.{ "ccbar", ESC, ":wq", CR }, "    foo\n", "    bar\n");
-    case(ctx, "nvim#a8 tab indent copied verbatim", &.{ "obar", ESC, ":wq", CR }, "\tfoo\n", "\tfoo\n\tbar\n");
-    case(ctx, "nvim#a9 blank Enter-line stripped on Esc", &.{ "A\r", ESC, ":wq", CR }, "    foo\n", "    foo\n\n");
+    h.case(ctx, target, "nvim#a1 o inherits indent", &.{ "obar", ESC, ":wq", CR }, "    foo\n", "    foo\n    bar\n");
+    h.case(ctx, target, "nvim#a2 O inherits indent", &.{ "Obar", ESC, ":wq", CR }, "    foo\n", "    bar\n    foo\n");
+    h.case(ctx, target, "nvim#a3 Enter inherits indent", &.{ "A\rbar", ESC, ":wq", CR }, "    foo\n", "    foo\n    bar\n");
+    h.case(ctx, target, "nvim#a4 blank o-line is stripped on Esc", &.{ "o", ESC, ":wq", CR }, "    foo\n", "    foo\n\n");
+    h.case(ctx, target, "nvim#a5 blank intermediate stripped, indent carries", &.{ "A\r\rbar", ESC, ":wq", CR }, "    foo\n", "    foo\n\n    bar\n");
+    h.case(ctx, target, "nvim#a6 Enter mid-line moves tail with indent", &.{ "fbi\r", ESC, ":wq", CR }, "    foo bar\n", "    foo \n    bar\n");
+    h.case(ctx, target, "nvim#a7 cc keeps the indent", &.{ "ccbar", ESC, ":wq", CR }, "    foo\n", "    bar\n");
+    h.case(ctx, target, "nvim#a8 tab indent copied verbatim", &.{ "obar", ESC, ":wq", CR }, "\tfoo\n", "\tfoo\n\tbar\n");
+    h.case(ctx, target, "nvim#a9 blank Enter-line stripped on Esc", &.{ "A\r", ESC, ":wq", CR }, "    foo\n", "    foo\n\n");
 
     // Counted find-char: `[count]f/t/F/T` and `[count];`. Ground truth from
     // headless nvim on "alpha beta gamma alpha beta" — vim counts occurrences
     // and fails the motion outright when there are too few.
     const ff = "alpha beta gamma alpha beta\n";
-    case(ctx, "nvim#f1 3fa lands on the third a", &.{ "3fa", "x", ":wq", CR }, ff, "alpha beta gmma alpha beta\n");
-    case(ctx, "nvim#f2 2ta stops before the second a", &.{ "2ta", "x", ":wq", CR }, ff, "alpha bea gamma alpha beta\n");
-    case(ctx, "nvim#f3 d3fa deletes through the third a", &.{ "d3fa", ":wq", CR }, ff, "mma alpha beta\n");
-    case(ctx, "nvim#f4 2; repeats the find twice", &.{ "fa", "2;", "x", ":wq", CR }, ff, "alpha beta gmma alpha beta\n");
-    case(ctx, "nvim#f5 $3Fa searches backwards by count", &.{ "$", "3Fa", "x", ":wq", CR }, ff, "alpha beta gamm alpha beta\n");
-    case(ctx, "nvim#f6 a count past the last match does nothing", &.{ "9fa", "x", ":wq", CR }, ff, "lpha beta gamma alpha beta\n");
+    h.case(ctx, target, "nvim#f1 3fa lands on the third a", &.{ "3fa", "x", ":wq", CR }, ff, "alpha beta gmma alpha beta\n");
+    h.case(ctx, target, "nvim#f2 2ta stops before the second a", &.{ "2ta", "x", ":wq", CR }, ff, "alpha bea gamma alpha beta\n");
+    h.case(ctx, target, "nvim#f3 d3fa deletes through the third a", &.{ "d3fa", ":wq", CR }, ff, "mma alpha beta\n");
+    h.case(ctx, target, "nvim#f4 2; repeats the find twice", &.{ "fa", "2;", "x", ":wq", CR }, ff, "alpha beta gmma alpha beta\n");
+    h.case(ctx, target, "nvim#f5 $3Fa searches backwards by count", &.{ "$", "3Fa", "x", ":wq", CR }, ff, "alpha beta gamm alpha beta\n");
+    h.case(ctx, target, "nvim#f6 a count past the last match does nothing", &.{ "9fa", "x", ":wq", CR }, ff, "lpha beta gamma alpha beta\n");
 
     // The undo tree: `g-`/`g+` walk states in the order they were made, so a
     // change stranded by undo-then-edit is still reachable. Ground truth from
     // headless nvim on "one" with the same keys.
     const ut = "one\n";
-    case(ctx, "nvim#u1 u returns to the state before the insert", &.{ "IA", ESC, "u", ":wq", CR }, ut, "one\n");
-    case(ctx, "nvim#u2 editing after an undo replaces the redo", &.{ "IA", ESC, "u", "IB", ESC, ":wq", CR }, ut, "Bone\n");
-    case(ctx, "nvim#u3 g- reaches the abandoned branch", &.{ "IA", ESC, "u", "IB", ESC, "g-", ":wq", CR }, ut, "Aone\n");
-    case(ctx, "nvim#u4 g- again reaches the original", &.{ "IA", ESC, "u", "IB", ESC, "g-", "g-", ":wq", CR }, ut, "one\n");
-    case(ctx, "nvim#u5 g+ walks back forward in time", &.{ "IA", ESC, "u", "IB", ESC, "g-", "g-", "g+", ":wq", CR }, ut, "Aone\n");
+    h.case(ctx, target, "nvim#u1 u returns to the state before the insert", &.{ "IA", ESC, "u", ":wq", CR }, ut, "one\n");
+    h.case(ctx, target, "nvim#u2 editing after an undo replaces the redo", &.{ "IA", ESC, "u", "IB", ESC, ":wq", CR }, ut, "Bone\n");
+    h.case(ctx, target, "nvim#u3 g- reaches the abandoned branch", &.{ "IA", ESC, "u", "IB", ESC, "g-", ":wq", CR }, ut, "Aone\n");
+    h.case(ctx, target, "nvim#u4 g- again reaches the original", &.{ "IA", ESC, "u", "IB", ESC, "g-", "g-", ":wq", CR }, ut, "one\n");
+    h.case(ctx, target, "nvim#u5 g+ walks back forward in time", &.{ "IA", ESC, "u", "IB", ESC, "g-", "g-", "g+", ":wq", CR }, ut, "Aone\n");
 
     // `:earlier` / `:later`, counted in changes and in time. Ground truth from
     // real nvim driven through a pty (running the keys as `-c` arguments joins
     // the two inserts into one undo block and hides the difference).
-    case(ctx, "nvim#u6 :earlier 1 steps back one change", &.{ "IA", ESC, "IB", ESC, ":earlier 1", CR, ":wq", CR }, ut, "Aone\n");
-    case(ctx, "nvim#u7 :earlier 2 steps back two", &.{ "IA", ESC, "IB", ESC, ":earlier 2", CR, ":wq", CR }, ut, "one\n");
-    case(ctx, "nvim#u8 :later 1 comes forward again", &.{ "IA", ESC, "IB", ESC, ":earlier 2", CR, ":later 1", CR, ":wq", CR }, ut, "Aone\n");
-    case(ctx, "nvim#u9 :earlier 1h clamps to the oldest state", &.{ "IA", ESC, "IB", ESC, ":earlier 1h", CR, ":wq", CR }, ut, "one\n");
-    case(ctx, "nvim#u10 :later 1h clamps to the newest", &.{ "IA", ESC, "IB", ESC, ":earlier 1h", CR, ":later 1h", CR, ":wq", CR }, ut, "BAone\n");
+    h.case(ctx, target, "nvim#u6 :earlier 1 steps back one change", &.{ "IA", ESC, "IB", ESC, ":earlier 1", CR, ":wq", CR }, ut, "Aone\n");
+    h.case(ctx, target, "nvim#u7 :earlier 2 steps back two", &.{ "IA", ESC, "IB", ESC, ":earlier 2", CR, ":wq", CR }, ut, "one\n");
+    h.case(ctx, target, "nvim#u8 :later 1 comes forward again", &.{ "IA", ESC, "IB", ESC, ":earlier 2", CR, ":later 1", CR, ":wq", CR }, ut, "Aone\n");
+    h.case(ctx, target, "nvim#u9 :earlier 1h clamps to the oldest state", &.{ "IA", ESC, "IB", ESC, ":earlier 1h", CR, ":wq", CR }, ut, "one\n");
+    h.case(ctx, target, "nvim#u10 :later 1h clamps to the newest", &.{ "IA", ESC, "IB", ESC, ":earlier 1h", CR, ":later 1h", CR, ":wq", CR }, ut, "BAone\n");
 
     // `:earlier Nf` / `:later Nf` count file writes, not changes. Ground truth
     // from real nvim through a pty: write, edit, write, edit, then walk back.
     const wr = &[_][]const u8{ "IA", ESC, ":w", CR, "IB", ESC, ":w", CR, "IC", ESC };
-    case(ctx, "nvim#u11 :earlier 1f returns to the last write", wr ++ &[_][]const u8{ ":earlier 1f", CR, ":wq", CR }, ut, "BAone\n");
-    case(ctx, "nvim#u12 :earlier 2f goes back two writes", wr ++ &[_][]const u8{ ":earlier 2f", CR, ":wq", CR }, ut, "Aone\n");
-    case(ctx, "nvim#u13 :earlier 3f clamps past the first write", wr ++ &[_][]const u8{ ":earlier 3f", CR, ":wq", CR }, ut, "one\n");
-    case(ctx, "nvim#u14 :later 1f comes forward a write", wr ++ &[_][]const u8{ ":earlier 2f", CR, ":later 1f", CR, ":wq", CR }, ut, "BAone\n");
-    case(ctx, "nvim#u15 :earlier 1f with no writes goes to the start", &.{ "IA", ESC, "IB", ESC, ":earlier 1f", CR, ":wq", CR }, ut, "one\n");
+    h.case(ctx, target, "nvim#u11 :earlier 1f returns to the last write", wr ++ &[_][]const u8{ ":earlier 1f", CR, ":wq", CR }, ut, "BAone\n");
+    h.case(ctx, target, "nvim#u12 :earlier 2f goes back two writes", wr ++ &[_][]const u8{ ":earlier 2f", CR, ":wq", CR }, ut, "Aone\n");
+    h.case(ctx, target, "nvim#u13 :earlier 3f clamps past the first write", wr ++ &[_][]const u8{ ":earlier 3f", CR, ":wq", CR }, ut, "one\n");
+    h.case(ctx, target, "nvim#u14 :later 1f comes forward a write", wr ++ &[_][]const u8{ ":earlier 2f", CR, ":later 1f", CR, ":wq", CR }, ut, "BAone\n");
+    h.case(ctx, target, "nvim#u15 :earlier 1f with no writes goes to the start", &.{ "IA", ESC, "IB", ESC, ":earlier 1f", CR, ":wq", CR }, ut, "one\n");
 
     // Visual-mode "around" objects — nvim-verified on "x = add(a, b)".
     const va = "x = add(a, b)\n";
-    case(ctx, "nvim#v1 va( takes the brackets", &.{ "fa", "va(d", ":wq", CR }, va, "x = add\n");
-    case(ctx, "nvim#v2 vi( keeps them", &.{ "fa", "vi(d", ":wq", CR }, va, "x = add()\n");
-    case(ctx, "nvim#v3 vaw takes the word and its space", &.{ "fa", "vawd", ":wq", CR }, va, "x =(a, b)\n");
-    case(ctx, "nvim#v4 vaW takes the whole WORD", &.{ "fa", "vaWd", ":wq", CR }, va, "x = b)\n");
+    h.case(ctx, target, "nvim#v1 va( takes the brackets", &.{ "fa", "va(d", ":wq", CR }, va, "x = add\n");
+    h.case(ctx, target, "nvim#v2 vi( keeps them", &.{ "fa", "vi(d", ":wq", CR }, va, "x = add()\n");
+    h.case(ctx, target, "nvim#v3 vaw takes the word and its space", &.{ "fa", "vawd", ":wq", CR }, va, "x =(a, b)\n");
+    h.case(ctx, target, "nvim#v4 vaW takes the whole WORD", &.{ "fa", "vaWd", ":wq", CR }, va, "x = b)\n");
 
     // Command-line history (Up = \x1b[A, Down = \x1b[B) — nvim-verified.
     // ':' Up recalls the last ex command; Enter replays it.
-    case(ctx, "nvim#h1 : Up replays last command", &.{ ":s/a/X/\r", "j", ":", "\x1b[A", "\r", ":wq", CR }, "aa\naa\n", "Xa\nXa\n");
+    h.case(ctx, target, "nvim#h1 : Up replays last command", &.{ ":s/a/X/\r", "j", ":", "\x1b[A", "\r", ":wq", CR }, "aa\naa\n", "Xa\nXa\n");
     // Up filters by the typed prefix: ':s' skips the ':2' entry.
-    case(ctx, "nvim#h2 Up filters by typed prefix", &.{ ":s/a/X/\r", ":2\r", ":s", "\x1b[A", "\r", ":wq", CR }, "aa\naa\naa\n", "Xa\nXa\naa\n");
+    h.case(ctx, target, "nvim#h2 Up filters by typed prefix", &.{ ":s/a/X/\r", ":2\r", ":s", "\x1b[A", "\r", ":wq", CR }, "aa\naa\naa\n", "Xa\nXa\naa\n");
     // '/' has its own history; Up recalls the last pattern.
-    case(ctx, "nvim#h3 / Up recalls last search", &.{ "/alpha\r", "gg", "/", "\x1b[A", "\r", "x", ":wq", CR }, "one\nalpha\ntwo\nalpha\n", "one\nlpha\ntwo\nalpha\n");
+    h.case(ctx, target, "nvim#h3 / Up recalls last search", &.{ "/alpha\r", "gg", "/", "\x1b[A", "\r", "x", ":wq", CR }, "one\nalpha\ntwo\nalpha\n", "one\nlpha\ntwo\nalpha\n");
     // Down past the newest entry restores the typed-but-unrun line.
-    case(ctx, "nvim#h4 Down restores the typed line", &.{ ":s/a/X/\r", "j", ":s/a/Y/", "\x1b[A", "\x1b[B", "\r", ":wq", CR }, "aa\naa\n", "Xa\nYa\n");
+    h.case(ctx, target, "nvim#h4 Down restores the typed line", &.{ ":s/a/X/\r", "j", ":s/a/Y/", "\x1b[A", "\x1b[B", "\r", ":wq", CR }, "aa\naa\n", "Xa\nYa\n");
     // :qa with unsaved changes refuses (nvim E37); the :wq still writes.
-    case(ctx, "nvim#h5 :qa refuses unsaved changes", &.{ "x", ":qa\r", ":wq", CR }, "aa\n", "a\n");
+    h.case(ctx, target, "nvim#h5 :qa refuses unsaved changes", &.{ "x", ":qa\r", ":wq", CR }, "aa\n", "a\n");
 
     // Paragraph motions and text objects ({ } ip ap) — nvim-verified.
     const P2 = "aaa\nbbb\n\nccc\nddd\n";
     const P3 = "aaa\n\nbbb\n\nccc\n";
-    case(ctx, "nvim#p1 } lands on the empty line", &.{ "}x", ":wq", CR }, P2, P2);
-    case(ctx, "nvim#p2 d} from col 0 is linewise", &.{ "d}", ":wq", CR }, P2, "\nccc\nddd\n");
-    case(ctx, "nvim#p3 d} mid-line stays charwise", &.{ "lld}", ":wq", CR }, P2, "aa\n\nccc\nddd\n");
-    case(ctx, "nvim#p4 { lands on the empty line", &.{ "G{x", ":wq", CR }, P2, P2);
-    case(ctx, "nvim#p5 d{ deletes back to boundary", &.{ "G$d{", ":wq", CR }, P2, "aaa\nbbb\nd\n");
-    case(ctx, "nvim#p6 dip deletes the paragraph", &.{ "dip", ":wq", CR }, P2, "\nccc\nddd\n");
-    case(ctx, "nvim#p7 dap takes the trailing blank", &.{ "dap", ":wq", CR }, P2, "ccc\nddd\n");
-    case(ctx, "nvim#p8 dip on a blank line", &.{ "jdip", ":wq", CR }, "aaa\n\n\nbbb\n", "aaa\nbbb\n");
-    case(ctx, "nvim#p9 dap on last para takes leading blank", &.{ "Gdap", ":wq", CR }, P2, "aaa\nbbb\n");
-    case(ctx, "nvim#p10 vip d is linewise", &.{ "vipd", ":wq", CR }, P2, "\nccc\nddd\n");
-    case(ctx, "nvim#p11 yap P round-trips", &.{ "yapP", ":wq", CR }, P3, "aaa\n\naaa\n\nbbb\n\nccc\n");
-    case(ctx, "nvim#p12 2} skips a boundary", &.{ "2}x", ":wq", CR }, P3, P3);
-    case(ctx, "nvim#p13 whitespace-only line is no boundary", &.{ "}x", ":wq", CR }, "aaa\n  \nbbb\n\nccc\n", "aaa\n  \nbbb\n\nccc\n");
-    case(ctx, "nvim#p14 cip changes the paragraph", &.{ "cip", "XX", ESC, ":wq", CR }, P2, "XX\n\nccc\nddd\n");
-    case(ctx, "nvim#p15 } at EOF clamps to last line", &.{ "}}x", ":wq", CR }, P2, "aaa\nbbb\n\nccc\ndd\n");
-    case(ctx, "nvim#p16 d2ap takes two paragraphs", &.{ "d2ap", ":wq", CR }, P3, "ccc\n");
+    h.case(ctx, target, "nvim#p1 } lands on the empty line", &.{ "}x", ":wq", CR }, P2, P2);
+    h.case(ctx, target, "nvim#p2 d} from col 0 is linewise", &.{ "d}", ":wq", CR }, P2, "\nccc\nddd\n");
+    h.case(ctx, target, "nvim#p3 d} mid-line stays charwise", &.{ "lld}", ":wq", CR }, P2, "aa\n\nccc\nddd\n");
+    h.case(ctx, target, "nvim#p4 { lands on the empty line", &.{ "G{x", ":wq", CR }, P2, P2);
+    h.case(ctx, target, "nvim#p5 d{ deletes back to boundary", &.{ "G$d{", ":wq", CR }, P2, "aaa\nbbb\nd\n");
+    h.case(ctx, target, "nvim#p6 dip deletes the paragraph", &.{ "dip", ":wq", CR }, P2, "\nccc\nddd\n");
+    h.case(ctx, target, "nvim#p7 dap takes the trailing blank", &.{ "dap", ":wq", CR }, P2, "ccc\nddd\n");
+    h.case(ctx, target, "nvim#p8 dip on a blank line", &.{ "jdip", ":wq", CR }, "aaa\n\n\nbbb\n", "aaa\nbbb\n");
+    h.case(ctx, target, "nvim#p9 dap on last para takes leading blank", &.{ "Gdap", ":wq", CR }, P2, "aaa\nbbb\n");
+    h.case(ctx, target, "nvim#p10 vip d is linewise", &.{ "vipd", ":wq", CR }, P2, "\nccc\nddd\n");
+    h.case(ctx, target, "nvim#p11 yap P round-trips", &.{ "yapP", ":wq", CR }, P3, "aaa\n\naaa\n\nbbb\n\nccc\n");
+    h.case(ctx, target, "nvim#p12 2} skips a boundary", &.{ "2}x", ":wq", CR }, P3, P3);
+    h.case(ctx, target, "nvim#p13 whitespace-only line is no boundary", &.{ "}x", ":wq", CR }, "aaa\n  \nbbb\n\nccc\n", "aaa\n  \nbbb\n\nccc\n");
+    h.case(ctx, target, "nvim#p14 cip changes the paragraph", &.{ "cip", "XX", ESC, ":wq", CR }, P2, "XX\n\nccc\nddd\n");
+    h.case(ctx, target, "nvim#p15 } at EOF clamps to last line", &.{ "}}x", ":wq", CR }, P2, "aaa\nbbb\n\nccc\ndd\n");
+    h.case(ctx, target, "nvim#p16 d2ap takes two paragraphs", &.{ "d2ap", ":wq", CR }, P3, "ccc\n");
 
     // The cursor never sits past the last character in normal mode, so
     // commands after `$` act on the last character (regression: `$x` used to
     // do nothing and `$dh`/`$d0`/`$db` were all off by one). nvim-verified.
-    case(ctx, "nvim#c1 $x deletes the last character", &.{ "$x", ":wq", CR }, "abc\n", "ab\n");
-    case(ctx, "nvim#c2 $dh deletes before the last", &.{ "$dh", ":wq", CR }, "abc\n", "ac\n");
-    case(ctx, "nvim#c3 $d0 keeps the last character", &.{ "$d0", ":wq", CR }, "abc\n", "c\n");
-    case(ctx, "nvim#c4 $db from end of line", &.{ "$db", ":wq", CR }, "abc def\n", "abc f\n");
-    case(ctx, "nvim#c5 $dF exclusive backward find", &.{ "$dFc", ":wq", CR }, "abc def\n", "abf\n");
+    h.case(ctx, target, "nvim#c1 $x deletes the last character", &.{ "$x", ":wq", CR }, "abc\n", "ab\n");
+    h.case(ctx, target, "nvim#c2 $dh deletes before the last", &.{ "$dh", ":wq", CR }, "abc\n", "ac\n");
+    h.case(ctx, target, "nvim#c3 $d0 keeps the last character", &.{ "$d0", ":wq", CR }, "abc\n", "c\n");
+    h.case(ctx, target, "nvim#c4 $db from end of line", &.{ "$db", ":wq", CR }, "abc def\n", "abc f\n");
+    h.case(ctx, target, "nvim#c5 $dF exclusive backward find", &.{ "$dFc", ":wq", CR }, "abc def\n", "abf\n");
 
     // Regex `/` search: the pattern jumps, then x edits at the match.
-    case(ctx, "regex / search jumps to match", &.{ "/b.d\r", "x", ":wq", CR }, "xxx\nbad\n", "xxx\nad\n");
+    h.case(ctx, target, "regex / search jumps to match", &.{ "/b.d\r", "x", ":wq", CR }, "xxx\nbad\n", "xxx\nad\n");
     // Capture groups in the replacement swap two words.
-    case(ctx, "capture groups in :s replacement", &.{ ":%s/(\\w+) (\\w+)/\\2 \\1/\r", ":wq", CR }, "one two\n", "two one\n");
+    h.case(ctx, target, "capture groups in :s replacement", &.{ ":%s/(\\w+) (\\w+)/\\2 \\1/\r", ":wq", CR }, "one two\n", "two one\n");
 }

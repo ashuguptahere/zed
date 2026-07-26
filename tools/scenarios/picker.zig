@@ -32,7 +32,6 @@ fn run_picker(
     var s = try h.Session.spawn(ctx.gpa, .{
         .argv = &.{ ctx.zedit, open_arg },
         .cwd = dir,
-        .term = "xterm",
     });
     s.drain(400);
     s.sendKeys(chunks);
@@ -223,7 +222,7 @@ pub fn run(ctx: *h.Ctx) !void {
         defer ctx.gpa.free(late);
         h.writeFile(ctx.io, a, "aaa\n");
 
-        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "a.txt" }, .cwd = dir, .term = "xterm" });
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "a.txt" }, .cwd = dir });
         defer s.finish();
         s.drain(400);
         s.send(" ff"); // first open warms the cache

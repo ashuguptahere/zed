@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const posix = std.posix;
+const log = @import("log.zig");
 
 /// The release version, read from the VERSION file at the repo root (the
 /// single source of truth; CHANGELOG.md documents each release).
@@ -118,41 +119,29 @@ const help_text =
 ;
 
 pub fn printHelp() void {
-    writeFd(posix.STDOUT_FILENO, help_text);
+    log.writeAll(posix.STDOUT_FILENO, help_text);
 }
 
 pub fn printVersion() void {
-    writeFd(posix.STDOUT_FILENO, "zedit " ++ version ++ "\n");
+    log.writeAll(posix.STDOUT_FILENO, "zedit " ++ version ++ "\n");
 }
 
 pub fn printError(message: []const u8) void {
-    writeFd(posix.STDERR_FILENO, "zedit: ");
-    writeFd(posix.STDERR_FILENO, message);
-    writeFd(posix.STDERR_FILENO, "\n");
+    log.writeAll(posix.STDERR_FILENO, "zedit: ");
+    log.writeAll(posix.STDERR_FILENO, message);
+    log.writeAll(posix.STDERR_FILENO, "\n");
 }
 
 /// Print a block of normal output (the --benchmark report).
 pub fn printOut(text: []const u8) void {
-    writeFd(posix.STDOUT_FILENO, text);
+    log.writeAll(posix.STDOUT_FILENO, text);
 }
 
 /// Print a normal (non-error) one-liner, e.g. where --init-config wrote to.
 pub fn printNote(message: []const u8) void {
-    writeFd(posix.STDOUT_FILENO, "zedit: wrote ");
-    writeFd(posix.STDOUT_FILENO, message);
-    writeFd(posix.STDOUT_FILENO, "\n");
-}
-
-fn writeFd(fd: posix.fd_t, bytes: []const u8) void {
-    var i: usize = 0;
-    while (i < bytes.len) {
-        const rc = posix.system.write(fd, bytes.ptr + i, bytes.len - i);
-        switch (posix.system.errno(rc)) {
-            .SUCCESS => i += @intCast(rc),
-            .INTR, .AGAIN => continue,
-            else => return,
-        }
-    }
+    log.writeAll(posix.STDOUT_FILENO, "zedit: wrote ");
+    log.writeAll(posix.STDOUT_FILENO, message);
+    log.writeAll(posix.STDOUT_FILENO, "\n");
 }
 
 fn eql(a: []const u8, b: []const u8) bool {

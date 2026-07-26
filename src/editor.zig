@@ -173,22 +173,22 @@ const Span = struct {
 /// exception — it always lives here, and `Editor.buf` points at the active one.
 const Doc = struct {
     buf: buffer.Buffer,
-    name: ?[]u8, // display name for scratch buffers (buf.path == null)
+    name: ?[]u8 = null, // display name for scratch buffers (buf.path == null)
     diff_of: ?*Doc = null, // side-by-side index snapshot: the worktree doc it mirrors
     lang: syntax.Language,
     history: undo.History,
-    marks: [26]?Pos,
+    marks: [26]?Pos = [_]?Pos{null} ** 26,
     git_signs: git.Signs,
-    lsp: ?lsp.Client,
-    lsp_rev: u64,
-    ts: ?treesitter.Highlighter,
-    ts_styles: std.ArrayList(syntax.Style),
-    ts_line_starts: std.ArrayList(usize),
-    ts_doc_len: usize,
-    ts_vis_start: usize,
-    ts_rev: u64,
-    ts_q_top: usize,
-    ts_q_rows: usize,
+    lsp: ?lsp.Client = null,
+    lsp_rev: u64 = 0,
+    ts: ?treesitter.Highlighter = null,
+    ts_styles: std.ArrayList(syntax.Style) = .empty,
+    ts_line_starts: std.ArrayList(usize) = .empty,
+    ts_doc_len: usize = 0,
+    ts_vis_start: usize = 0,
+    ts_rev: u64 = 0,
+    ts_q_top: usize = std.math.maxInt(usize),
+    ts_q_rows: usize = 0,
 };
 
 /// A viewport onto a document. The *active* window's viewport is mirrored on
@@ -243,222 +243,221 @@ pub const Editor = struct {
     wins: std.ArrayList(*Win),
     cur: *Win, // focused window
     d: *Doc, // focused window's document (== cur.doc)
-    split_vertical: bool, // window tiling orientation (true = side-by-side columns)
+    split_vertical: bool = true, // window tiling orientation (true = side-by-side columns)
 
-    mode: Mode,
-    cy: usize,
-    cx: usize,
-    goal_col: usize,
+    mode: Mode = .normal,
+    cy: usize = 0,
+    cx: usize = 0,
+    goal_col: usize = 0,
 
-    top: usize,
-    left: usize,
-    win: term.Size,
+    top: usize = 0,
+    left: usize = 0,
+    win: term.Size = .{ .rows = 24, .cols = 80 },
 
     // command assembly
-    count: usize,
-    count2: usize,
-    operator: Operator,
-    await_arg: Await,
-    pending_register: ?u8,
-    last_find: ?Find,
+    count: usize = 0,
+    count2: usize = 0,
+    operator: Operator = .none,
+    await_arg: Await = .none,
+    pending_register: ?u8 = null,
+    last_find: ?Find = null,
 
     // subsystems
     registers: register.Store,
     history: undo.History,
-    marks: [26]?Pos,
+    marks: [26]?Pos = [_]?Pos{null} ** 26,
 
     // visual
-    vstart: Pos,
+    vstart: Pos = .{ .row = 0, .col = 0 },
 
     // multiple cursors (one per line; primary stays cy/cx). Empty = single cursor.
-    extra: std.ArrayList(Pos),
+    extra: std.ArrayList(Pos) = .empty,
 
     // surround pending state
-    surr_span: ?Span,
-    surr_from: u8,
+    surr_span: ?Span = null,
+    surr_from: u8 = 0,
 
     // jumplist (Ctrl-o / Ctrl-i): positions recorded before jump-motions.
-    jumps: std.ArrayList(Jump),
-    jump_idx: usize, // == jumps.len when at the "live" end
+    jumps: std.ArrayList(Jump) = .empty,
+    jump_idx: usize = 0, // == jumps.len when at the "live" end
 
     // search
-    last_search: std.ArrayList(u8),
-    last_search_forward: bool,
+    last_search: std.ArrayList(u8) = .empty,
+    last_search_forward: bool = true,
     // Compiled form of the pattern being highlighted/jumped (cached per text;
     // null when the pattern is empty or (still) invalid, e.g. mid-typing).
-    search_re: ?regex.Regex,
-    search_re_pat: std.ArrayList(u8),
-    search_origin: Pos, // cursor when a / or ? search began (for incremental preview)
-    prev_search: std.ArrayList(u8), // last_search saved on entry, restored if cancelled
+    search_re: ?regex.Regex = null,
+    search_re_pat: std.ArrayList(u8) = .empty,
+    search_origin: Pos = .{ .row = 0, .col = 0 }, // cursor when a / or ? search began (for incremental preview)
+    prev_search: std.ArrayList(u8) = .empty, // last_search saved on entry, restored if cancelled
 
     // Active snippet session: the tabstops left to visit, where the cursor is
     // in that list, and whether the current placeholder is still untouched (so
     // the first keystroke replaces it, as every snippet-aware editor does).
-    snip_stops: std.ArrayList(SnipStop),
-    snip_idx: usize,
-    snip_pristine: bool,
+    snip_stops: std.ArrayList(SnipStop) = .empty,
+    snip_idx: usize = 0,
+    snip_pristine: bool = false,
 
     // The editor's one timer: a deadline for a request that should follow a
     // pause in typing (completion, or a workspace-symbol query). The poll in
     // the main loop waits until then instead of forever, fires it, and
     // disarms — so an idle editor still blocks indefinitely (zero CPU).
-    comp_due_ms: ?i64,
-    due_kind: enum { completion, wsymbol },
+    comp_due_ms: ?i64 = null,
+    due_kind: enum { completion, wsymbol } = .completion,
 
     // Picker preview: the file shown beside the results, cached so moving the
     // selection re-reads only when the path actually changes.
-    preview_path: ?[]u8,
-    preview_text: ?[]u8,
-    preview_top: usize, // first line of the file to show (grep/reference hits centre)
-    preview_scroll: isize, // lines the reader scrolled, relative to that
-    preview_ts: ?treesitter.Highlighter, // reused across files of one language
-    preview_ts_lang: syntax.Language, // which language `preview_ts` was built for
-    preview_warm: bool, // the file is loaded but not parsed yet (see render)
-    preview_styles: std.ArrayList(syntax.Style), // styles for the queried range
-    preview_vis: usize, // byte offset the styles start at
+    preview_path: ?[]u8 = null,
+    preview_text: ?[]u8 = null,
+    preview_top: usize = 0, // first line of the file to show (grep/reference hits centre)
+    preview_scroll: isize = 0, // lines the reader scrolled, relative to that
+    preview_ts: ?treesitter.Highlighter = null, // reused across files of one language
+    preview_ts_lang: syntax.Language = .none, // which language `preview_ts` was built for
+    preview_warm: bool = false, // the file is loaded but not parsed yet (see render)
+    preview_styles: std.ArrayList(syntax.Style) = .empty, // styles for the queried range
+    preview_vis: usize = 0, // byte offset the styles start at
 
     // Rows an overlay (popup) painted over this frame. The next frame must
     // repaint exactly these — the rest can still be diffed, so dismissing a
     // popup costs a few rows instead of the whole screen.
-    overlay_top: usize,
-    overlay_bot: usize,
+    overlay_top: usize = 0,
+    overlay_bot: usize = 0,
 
     // showcmd: the partial command as typed (vim's 'showcmd'), shown at the
     // right of the statusline and cleared the moment the command completes.
-    showcmd: [12]u8,
-    showcmd_len: usize,
-    showcmd_done: bool, // holds the finished command until the next one begins
+    showcmd: [12]u8 = undefined,
+    showcmd_len: usize = 0,
+    showcmd_done: bool = false, // holds the finished command until the next one begins
 
     // command/search line
-    cmd: std.ArrayList(u8),
-    cmd_kind: CmdKind,
+    cmd: std.ArrayList(u8) = .empty,
+    cmd_kind: CmdKind = .ex,
     // command-line history (`:` and `/ ?` kept separate, like vim) and
     // Tab-completion state (the "wildmenu").
-    ex_hist: std.ArrayList([]u8),
-    search_hist: std.ArrayList([]u8),
-    hist_pos: ?usize, // index of the recalled entry; null = not navigating
-    hist_stash: std.ArrayList(u8), // the typed line: history filter + Down-restore
-    wild: std.ArrayList(WildItem),
-    wild_idx: ?usize, // selected candidate; null = original text shown
-    wild_stem: std.ArrayList(u8), // cmd content when completion started
+    ex_hist: std.ArrayList([]u8) = .empty,
+    search_hist: std.ArrayList([]u8) = .empty,
+    hist_pos: ?usize = null, // index of the recalled entry; null = not navigating
+    hist_stash: std.ArrayList(u8) = .empty, // the typed line: history filter + Down-restore
+    wild: std.ArrayList(WildItem) = .empty,
+    wild_idx: ?usize = null, // selected candidate; null = original text shown
+    wild_stem: std.ArrayList(u8) = .empty, // cmd content when completion started
 
     // picker (fuzzy file finder / global search)
-    picker_kind: PickerKind,
-    picker_items: std.ArrayList(PickItem),
-    picker_text: std.ArrayList(u8), // backing store for every row's strings
+    picker_kind: PickerKind = .files,
+    picker_items: std.ArrayList(PickItem) = .empty,
+    picker_text: std.ArrayList(u8) = .empty, // backing store for every row's strings
     // file-tree sidebar (Space e; side set by the config's `sidebar`)
-    sb_open: bool,
-    sb_focus: bool, // keys go to the tree instead of the buffer
-    sb_entries: std.ArrayList(SbEntry),
+    sb_open: bool = false,
+    sb_focus: bool = false, // keys go to the tree instead of the buffer
+    sb_entries: std.ArrayList(SbEntry) = .empty,
     sb_expanded: std.StringHashMap(void), // owned keys: expanded dir paths
-    sb_sel: usize,
-    sb_scroll: usize,
+    sb_sel: usize = 0,
+    sb_scroll: usize = 0,
 
     // Recently-opened files/directories (the startup screen) and the remote
     // root when the session was opened on an ssh:// directory.
     recents: recent.List,
-    recent_path: ?[]const u8, // override for tests; null = the XDG state path
-    dashboard: bool, // showing the startup screen (empty session, no file yet)
-    dash_sel: usize,
-    remote_root: ?[]u8, // ssh://host/dir the picker lists, when remote
+    dashboard: bool = false, // showing the startup screen (empty session, no file yet)
+    dash_sel: usize = 0,
+    remote_root: ?[]u8 = null, // ssh://host/dir the picker lists, when remote
 
     // Warm file-list cache (the Zed trick: opening the picker does no
     // filesystem work after the first walk; Ctrl-r in the picker refreshes).
-    fcache: std.ArrayList([]u8), // project file paths, walked once per session
-    fcache_masks: std.ArrayList(u64), // fuzzy.charMask per path, for prefiltering
-    fcache_ready: bool,
+    fcache: std.ArrayList([]u8) = .empty, // project file paths, walked once per session
+    fcache_masks: std.ArrayList(u64) = .empty, // fuzzy.charMask per path, for prefiltering
+    fcache_ready: bool = false,
     /// Set when a freshly opened document still needs the work that only
     /// *decorates* it — highlighting, git signs, the LSP handshake. The run
     /// loop paints the text first and does them on the next pass, the same
     /// rule the first frame follows.
-    decorate_pending: bool,
+    decorate_pending: bool = false,
     /// An in-progress project walk. The picker opens *before* the walk runs
     /// and the results stream in a chunk per loop iteration, so a huge tree
     /// never blocks the first frame or your typing (helix does this with
     /// background threads; cooperative chunks fit an editor that is otherwise
     /// single-threaded and idle-blocked in poll()).
-    walk_dir: ?std.Io.Dir,
-    walker: ?std.Io.Dir.SelectiveWalker,
+    walk_dir: ?std.Io.Dir = null,
+    walker: ?std.Io.Dir.SelectiveWalker = null,
     /// Which line `style_buf` currently holds styles for, and whose buffer —
     /// a wrapped line is drawn a row at a time and must not be re-styled once
     /// per row.
-    style_row: usize,
-    style_buf_of: ?*const buffer.Buffer,
-    prev_query: std.ArrayList(u8), // last filtered query (incremental narrowing)
+    style_row: usize = 0,
+    style_buf_of: ?*const buffer.Buffer = null,
+    prev_query: std.ArrayList(u8) = .empty, // last filtered query (incremental narrowing)
     /// How many `fcache` entries the current grep query has already read. The
     /// walk streams files in while the picker is open, so the grep resumes
     /// from here instead of re-reading the project on every slice.
-    grep_scanned: usize,
-    picker_filtered: std.ArrayList(u32),
-    picker_query: std.ArrayList(u8),
-    picker_sel: usize,
-    picker_scroll: usize,
+    grep_scanned: usize = 0,
+    picker_filtered: std.ArrayList(u32) = .empty,
+    picker_query: std.ArrayList(u8) = .empty,
+    picker_sel: usize = 0,
+    picker_scroll: usize = 0,
 
     // macros
-    recording: ?u8,
-    macro_buf: std.ArrayList(u8),
-    replay_depth: usize,
+    recording: ?u8 = null,
+    macro_buf: std.ArrayList(u8) = .empty,
+    replay_depth: usize = 0,
 
     // dot-repeat
-    dot_keys: std.ArrayList(u8),
-    dot_temp: std.ArrayList(u8),
-    change_started: bool,
-    in_dot: bool,
+    dot_keys: std.ArrayList(u8) = .empty,
+    dot_temp: std.ArrayList(u8) = .empty,
+    change_started: bool = false,
+    in_dot: bool = false,
 
     // rendering / io
-    frame: std.ArrayList(u8),
+    frame: std.ArrayList(u8) = .empty,
     // Row-diff state: each frame is built as positioned, colour-independent
     // segments (one per screen row per window/sidebar/status). When nothing
     // overlays them, only segments whose bytes changed since the previous
     // frame are written — a big bandwidth win over SSH.
-    seg_marks: std.ArrayList(Seg),
-    segs_end: usize,
-    prev_frame: std.ArrayList(u8),
-    prev_marks: std.ArrayList(Seg),
-    prev_valid: bool,
-    out_frame: std.ArrayList(u8),
-    status: std.ArrayList(u8),
+    seg_marks: std.ArrayList(Seg) = .empty,
+    segs_end: usize = 0,
+    prev_frame: std.ArrayList(u8) = .empty,
+    prev_marks: std.ArrayList(Seg) = .empty,
+    prev_valid: bool = false,
+    out_frame: std.ArrayList(u8) = .empty,
+    status: std.ArrayList(u8) = .empty,
     lang: syntax.Language,
-    style_buf: std.ArrayList(syntax.Style),
+    style_buf: std.ArrayList(syntax.Style) = .empty,
     git_signs: git.Signs,
-    cur_fg: ?Color,
-    cur_bg: ?Color,
+    cur_fg: ?Color = null,
+    cur_bg: ?Color = null,
 
     // tree-sitter highlighting (lexer fallback when null). The query runs only
     // over the visible byte range; ts_styles holds styles for that range.
-    ts: ?treesitter.Highlighter,
-    ts_styles: std.ArrayList(syntax.Style), // styles for [ts_vis_start, ...)
-    ts_line_starts: std.ArrayList(usize), // whole-document per-line byte offset
-    ts_doc_len: usize,
-    ts_vis_start: usize, // doc byte offset of the queried region
-    ts_rev: u64, // buffer revision last parsed
-    ts_q_top: usize, // viewport top of the last query (sentinel = stale)
-    ts_q_rows: usize,
+    ts: ?treesitter.Highlighter = null,
+    ts_styles: std.ArrayList(syntax.Style) = .empty, // styles for [ts_vis_start, ...)
+    ts_line_starts: std.ArrayList(usize) = .empty, // whole-document per-line byte offset
+    ts_doc_len: usize = 0,
+    ts_vis_start: usize = 0, // doc byte offset of the queried region
+    ts_rev: u64 = 0, // buffer revision last parsed
+    ts_q_top: usize = std.math.maxInt(usize), // viewport top of the last query (sentinel = stale)
+    ts_q_rows: usize = 0,
 
     // language server
     lsp_cmd: ?[]const u8, // override command, else a per-language default
-    lsp: ?lsp.Client,
-    lsp_rev: u64, // buffer revision last sent via didChange
+    lsp: ?lsp.Client = null,
+    lsp_rev: u64 = 0, // buffer revision last sent via didChange
     // completion popup (insert mode)
-    comp_open: bool,
-    comp_filtered: std.ArrayList(usize), // indices into lsp.completions matching the prefix
-    comp_sel: usize,
-    sig_open: bool, // signature-help popup is showing (reads lsp.signature)
+    comp_open: bool = false,
+    comp_filtered: std.ArrayList(usize) = .empty, // indices into lsp.completions matching the prefix
+    comp_sel: usize = 0,
+    sig_open: bool = false, // signature-help popup is showing (reads lsp.signature)
 
     // Autoindent: the row whose auto-inserted indent is still untouched (it
     // is stripped when left blank, like vim), and the indent text itself
     // (carried across consecutive Enters even after a strip).
-    ai_row: ?usize,
-    ai_indent: std.ArrayList(u8),
+    ai_row: ?usize = null,
+    ai_indent: std.ArrayList(u8) = .empty,
 
     // Bracketed paste (terminal paste, incl. over SSH): content arrives fenced
     // in \x1b[200~ ... \x1b[201~ and is inserted literally.
-    pasting: bool,
-    paste_carry: [8]u8, // partial end-marker bytes at a read boundary
-    paste_carry_len: usize,
+    pasting: bool = false,
+    paste_carry: [8]u8 = undefined, // partial end-marker bytes at a read boundary
+    paste_carry_len: usize = 0,
 
-    quit: bool,
-    inbuf: [256]u8,
+    quit: bool = false,
+    inbuf: [256]u8 = undefined,
 
     /// Build a fresh, empty Doc holding `b`; its per-doc state is placeholder
     /// (the active doc's real state lives on the Editor and is swapped in here
@@ -467,21 +466,9 @@ pub const Editor = struct {
         const doc = try gpa.create(Doc);
         doc.* = .{
             .buf = b,
-            .name = null,
             .lang = syntax.detect(b.path),
             .history = undo.History.init(gpa),
-            .marks = [_]?Pos{null} ** 26,
             .git_signs = git.Signs.init(gpa),
-            .lsp = null,
-            .lsp_rev = 0,
-            .ts = null,
-            .ts_styles = .empty,
-            .ts_line_starts = .empty,
-            .ts_doc_len = 0,
-            .ts_vis_start = 0,
-            .ts_rev = 0,
-            .ts_q_top = std.math.maxInt(usize),
-            .ts_q_rows = 0,
         };
         return doc;
     }
@@ -517,133 +504,13 @@ pub const Editor = struct {
             .wins = wins,
             .cur = win,
             .d = doc,
-            .split_vertical = true,
-            .mode = .normal,
-            .cy = 0,
-            .cx = 0,
-            .goal_col = 0,
-            .top = 0,
-            .left = 0,
-            .win = .{ .rows = 24, .cols = 80 },
-            .count = 0,
-            .count2 = 0,
-            .operator = .none,
-            .await_arg = .none,
-            .pending_register = null,
-            .last_find = null,
             .registers = register.Store.init(gpa),
             .history = undo.History.init(gpa),
-            .marks = [_]?Pos{null} ** 26,
-            .vstart = .{ .row = 0, .col = 0 },
-            .extra = .empty,
-            .surr_span = null,
-            .surr_from = 0,
-            .jumps = .empty,
-            .jump_idx = 0,
-            .last_search = .empty,
-            .last_search_forward = true,
-            .search_re = null,
-            .search_re_pat = .empty,
-            .search_origin = .{ .row = 0, .col = 0 },
-            .prev_search = .empty,
-            .snip_stops = .empty,
-            .snip_idx = 0,
-            .snip_pristine = false,
-            .preview_path = null,
-            .preview_text = null,
-            .preview_top = 0,
-            .preview_scroll = 0,
-            .preview_ts = null,
-            .preview_ts_lang = .none,
-            .preview_warm = false,
-            .preview_styles = .empty,
-            .preview_vis = 0,
-            .overlay_top = 0,
-            .overlay_bot = 0,
-            .comp_due_ms = null,
-            .due_kind = .completion,
-            .showcmd = undefined,
-            .showcmd_len = 0,
-            .showcmd_done = false,
-            .cmd = .empty,
-            .ex_hist = .empty,
-            .search_hist = .empty,
-            .hist_pos = null,
-            .hist_stash = .empty,
-            .wild = .empty,
-            .wild_idx = null,
-            .wild_stem = .empty,
-            .cmd_kind = .ex,
-            .picker_kind = .files,
-            .picker_items = .empty,
-            .picker_text = .empty,
-            .sb_open = false,
-            .sb_focus = false,
-            .sb_entries = .empty,
             .sb_expanded = std.StringHashMap(void).init(gpa),
-            .sb_sel = 0,
-            .sb_scroll = 0,
-            .fcache = .empty,
-            .fcache_masks = .empty,
-            .fcache_ready = false,
-            .decorate_pending = false,
-            .walk_dir = null,
-            .walker = null,
             .recents = .{ .gpa = gpa },
-            .recent_path = null,
-            .dashboard = false,
-            .dash_sel = 0,
-            .remote_root = null,
-            .style_row = 0,
-            .style_buf_of = null,
-            .prev_query = .empty,
-            .grep_scanned = 0,
-            .picker_filtered = .empty,
-            .picker_query = .empty,
-            .picker_sel = 0,
-            .picker_scroll = 0,
-            .recording = null,
-            .macro_buf = .empty,
-            .replay_depth = 0,
-            .dot_keys = .empty,
-            .dot_temp = .empty,
-            .change_started = false,
-            .in_dot = false,
-            .frame = .empty,
-            .seg_marks = .empty,
-            .segs_end = 0,
-            .prev_frame = .empty,
-            .prev_marks = .empty,
-            .prev_valid = false,
-            .out_frame = .empty,
-            .status = .empty,
             .lang = syntax.detect(doc.buf.path),
-            .style_buf = .empty,
             .git_signs = git.Signs.init(gpa),
-            .cur_fg = null,
-            .cur_bg = null,
-            .ts = null,
-            .ts_styles = .empty,
-            .ts_line_starts = .empty,
-            .ts_doc_len = 0,
-            .ts_vis_start = 0,
-            .ts_rev = 0,
-            .ts_q_top = std.math.maxInt(usize),
-            .ts_q_rows = 0,
             .lsp_cmd = lsp_cmd,
-            .lsp = null,
-            .lsp_rev = 0,
-            .comp_open = false,
-            .comp_filtered = .empty,
-            .comp_sel = 0,
-            .sig_open = false,
-            .ai_row = null,
-            .ai_indent = .empty,
-            .pasting = false,
-            .paste_carry = undefined,
-            .paste_carry_len = 0,
-            .quit = false,
-            .inbuf = undefined,
         };
     }
 
@@ -655,7 +522,7 @@ pub const Editor = struct {
         self.preview_styles.deinit(self.gpa);
         self.endSnippet();
         self.snip_stops.deinit(self.gpa);
-        recent.save(&self.recents, self.io, self.recent_path);
+        recent.save(&self.recents, self.io);
         self.recents.deinit();
         if (self.remote_root) |r| self.gpa.free(r);
         self.registers.deinit();
@@ -803,7 +670,7 @@ pub const Editor = struct {
                 continue;
             }
             if (ready.other) {
-                if (self.lsp) |*c| c.processReadable();
+                if (self.lsp) |*c| c.readAvailable();
                 try self.consumeLspResults();
                 needs_render = true;
             }
@@ -1135,13 +1002,13 @@ pub const Editor = struct {
         switch (k) {
             .char => |c| try self.normalChar(c),
             .ctrl => |c| self.normalCtrl(c),
-            .left => self.moveAndReset(.{ .pos = self.left1(), .kind = .exclusive, .col_mode = .exact }),
-            .right => self.moveAndReset(.{ .pos = self.right1(), .kind = .exclusive, .col_mode = .exact }),
+            .left => self.doMotion(.{ .pos = self.left1(), .kind = .exclusive, .col_mode = .exact }),
+            .right => self.doMotion(.{ .pos = self.afterCursor(), .kind = .exclusive, .col_mode = .exact }),
             .up => self.doMotion(self.vertical(true, 1)),
             .down => self.doMotion(self.vertical(false, 1)),
-            .home => self.moveAndReset(.{ .pos = .{ .row = self.cy, .col = 0 }, .kind = .exclusive, .col_mode = .exact }),
-            .end => self.moveAndReset(.{ .pos = .{ .row = self.cy, .col = self.curLine().len }, .kind = .inclusive, .col_mode = .exact }),
-            .backspace => self.moveAndReset(.{ .pos = self.left1(), .kind = .exclusive, .col_mode = .exact }),
+            .home => self.doMotion(.{ .pos = .{ .row = self.cy, .col = 0 }, .kind = .exclusive, .col_mode = .exact }),
+            .end => self.doMotion(.{ .pos = .{ .row = self.cy, .col = self.curLine().len }, .kind = .inclusive, .col_mode = .exact }),
+            .backspace => self.doMotion(.{ .pos = self.left1(), .kind = .exclusive, .col_mode = .exact }),
             .page_up => self.pageMove(true),
             .page_down => self.pageMove(false),
             .tab => self.jumpForward(), // Ctrl-i arrives as Tab; vim treats them alike
@@ -1344,7 +1211,7 @@ pub const Editor = struct {
             },
             .z_prefix => {
                 if (k == .char and k.char == 'Z') {
-                    if (try self.write(self.cmdArgNone())) self.quit = true;
+                    if (try self.write("")) self.quit = true;
                 } else if (k == .char and k.char == 'Q') {
                     self.quit = true;
                 }
@@ -1612,18 +1479,24 @@ pub const Editor = struct {
         self.setCursor(sp.start);
     }
 
-    /// The around-span (delimiters inclusive) of the pair identified by `c`.
-    fn findSurroundSpan(self: *Editor, c: u8) ?motion.Span {
+    /// The pair/quote object identified by `c` (inner, or around with the
+    /// delimiters included).
+    fn delimObject(self: *Editor, c: u8, around: bool) ?motion.Span {
         return switch (c) {
-            '(', ')', 'b' => motion.objPair(self.buf, self.cursor(), '(', ')', true),
-            '[', ']' => motion.objPair(self.buf, self.cursor(), '[', ']', true),
-            '{', '}', 'B' => motion.objPair(self.buf, self.cursor(), '{', '}', true),
-            '<', '>' => motion.objPair(self.buf, self.cursor(), '<', '>', true),
-            '"' => motion.objQuote(self.buf, self.cursor(), '"', true),
-            '\'' => motion.objQuote(self.buf, self.cursor(), '\'', true),
-            '`' => motion.objQuote(self.buf, self.cursor(), '`', true),
+            '(', ')', 'b' => motion.objPair(self.buf, self.cursor(), '(', ')', around),
+            '[', ']' => motion.objPair(self.buf, self.cursor(), '[', ']', around),
+            '{', '}', 'B' => motion.objPair(self.buf, self.cursor(), '{', '}', around),
+            '<', '>' => motion.objPair(self.buf, self.cursor(), '<', '>', around),
+            '"' => motion.objQuote(self.buf, self.cursor(), '"', around),
+            '\'' => motion.objQuote(self.buf, self.cursor(), '\'', around),
+            '`' => motion.objQuote(self.buf, self.cursor(), '`', around),
             else => null,
         };
+    }
+
+    /// The around-span (delimiters inclusive) of the pair identified by `c`.
+    fn findSurroundSpan(self: *Editor, c: u8) ?motion.Span {
+        return self.delimObject(c, true);
     }
 
     fn textObjectSpan(self: *Editor, around: bool, c: u8) ?Span {
@@ -1637,14 +1510,7 @@ pub const Editor = struct {
         const obj: ?motion.Span = switch (c) {
             'w' => motion.objWord(self.buf, self.cursor(), false, around),
             'W' => motion.objWord(self.buf, self.cursor(), true, around),
-            '(', ')', 'b' => motion.objPair(self.buf, self.cursor(), '(', ')', around),
-            '[', ']' => motion.objPair(self.buf, self.cursor(), '[', ']', around),
-            '{', '}', 'B' => motion.objPair(self.buf, self.cursor(), '{', '}', around),
-            '<', '>' => motion.objPair(self.buf, self.cursor(), '<', '>', around),
-            '"' => motion.objQuote(self.buf, self.cursor(), '"', around),
-            '\'' => motion.objQuote(self.buf, self.cursor(), '\'', around),
-            '`' => motion.objQuote(self.buf, self.cursor(), '`', around),
-            else => null,
+            else => self.delimObject(c, around),
         };
         const o = obj orelse return null;
         const end_excl = if (o.empty) o.end else Pos{ .row = o.end.row, .col = unicode.nextBoundary(self.buf.line(o.end.row), o.end.col) };
@@ -1787,10 +1653,6 @@ pub const Editor = struct {
         self.resetPending();
     }
 
-    fn moveAndReset(self: *Editor, res: MotionResult) void {
-        self.doMotion(res);
-    }
-
     fn buildSpan(self: *Editor, res: MotionResult) Span {
         const cur = self.cursor();
         if (res.kind == .linewise) {
@@ -1834,11 +1696,6 @@ pub const Editor = struct {
 
     fn left1(self: *Editor) Pos {
         return .{ .row = self.cy, .col = unicode.prevBoundary(self.curLine(), self.cx) };
-    }
-
-    fn right1(self: *Editor) Pos {
-        const line = self.curLine();
-        return .{ .row = self.cy, .col = if (self.cx < line.len) unicode.nextBoundary(line, self.cx) else self.cx };
     }
 
     fn vertical(self: *Editor, up: bool, n: usize) MotionResult {
@@ -2203,11 +2060,7 @@ pub const Editor = struct {
     fn changeToLineEnd(self: *Editor, change: bool) !void {
         const line = self.curLine();
         const span: Span = .{ .lines = false, .start = .{ .row = self.cy, .col = self.cx }, .end = .{ .row = self.cy, .col = line.len } };
-        const text = try self.extract(span);
-        defer self.gpa.free(text);
-        self.yankTo(text, false);
-        self.pushUndo();
-        self.setCursor(self.deleteSpan(span));
+        try self.charwiseDelete(span);
         if (change) self.mode = .insert;
         self.resetPending();
     }
@@ -2286,16 +2139,15 @@ pub const Editor = struct {
             const cur_len = self.buf.line(self.cy).len;
             const next = self.gpa.dupe(u8, self.buf.line(self.cy + 1)) catch break;
             defer self.gpa.free(next);
-            var start: usize = 0;
-            while (start < next.len and (next[start] == ' ' or next[start] == '\t')) start += 1;
+            const rest = std.mem.trimStart(u8, next, " \t");
             self.buf.removeLineAt(self.cy + 1);
-            const need_space = cur_len > 0 and next.len > start;
+            const need_space = cur_len > 0 and rest.len > 0;
             self.cx = cur_len;
             if (need_space) {
                 self.buf.insertBytes(self.cy, cur_len, " ") catch {};
-                self.buf.insertBytes(self.cy, cur_len + 1, next[start..]) catch {};
+                self.buf.insertBytes(self.cy, cur_len + 1, rest) catch {};
             } else {
-                self.buf.insertBytes(self.cy, cur_len, next[start..]) catch {};
+                self.buf.insertBytes(self.cy, cur_len, rest) catch {};
             }
         }
         self.updateGoal();
@@ -2667,7 +2519,16 @@ pub const Editor = struct {
 
     fn visualKey(self: *Editor, k: key.Key) !void {
         if (self.await_arg != .none) return self.awaitKey(k); // v i{obj} / v a{obj}
-        switch (k) {
+        // Arrows act exactly like h/l/k/j — translate for dispatch only; the
+        // goal-column guard below still keys on the original key.
+        const kk: key.Key = switch (k) {
+            .left => .{ .char = 'h' },
+            .right => .{ .char = 'l' },
+            .up => .{ .char = 'k' },
+            .down => .{ .char = 'j' },
+            else => k,
+        };
+        switch (kk) {
             .escape => self.mode = .normal,
             .char => |c| switch (c) {
                 'h' => self.cx = unicode.prevBoundary(self.curLine(), self.cx),
@@ -2724,19 +2585,6 @@ pub const Editor = struct {
                 },
                 ':' => self.enterCmd(.ex),
                 else => {},
-            },
-            .left => self.cx = unicode.prevBoundary(self.curLine(), self.cx),
-            .right => {
-                const line = self.curLine();
-                if (self.cx < line.len) self.cx = unicode.nextBoundary(line, self.cx);
-            },
-            .up => if (self.cy > 0) {
-                self.cy -= 1;
-                self.cx = byteAtDisplayCol(self.curLine(), self.goal_col);
-            },
-            .down => if (self.cy + 1 < self.buf.lineCount()) {
-                self.cy += 1;
-                self.cx = byteAtDisplayCol(self.curLine(), self.goal_col);
             },
             else => {},
         }
@@ -2827,11 +2675,7 @@ pub const Editor = struct {
     fn visualSurround(self: *Editor) void {
         var start = self.vstart;
         var end = self.cursor();
-        if (cmpPos(end, start) < 0) {
-            const tmp = start;
-            start = end;
-            end = tmp;
-        }
+        if (cmpPos(end, start) < 0) std.mem.swap(Pos, &start, &end);
         end = .{ .row = end.row, .col = unicode.nextBoundary(self.buf.line(end.row), end.col) };
         self.mode = .normal;
         self.beginSurroundAdd(.{ .lines = false, .start = start, .end = end });
@@ -2966,6 +2810,19 @@ pub const Editor = struct {
         }
     }
 
+    /// The vim motion char an arrow/Home/End key stands for (0 = not one).
+    fn arrowChar(k: key.Key) u8 {
+        return switch (k) {
+            .left => 'h',
+            .right => 'l',
+            .up => 'k',
+            .down => 'j',
+            .home => '0',
+            .end => '$',
+            else => 0,
+        };
+    }
+
     /// Returns true if the key was handled across all cursors.
     fn multiNormal(self: *Editor, k: key.Key) !bool {
         switch (k) {
@@ -3012,28 +2869,8 @@ pub const Editor = struct {
                 },
                 else => return false,
             },
-            .left => {
-                self.multiMove('h');
-                return true;
-            },
-            .right => {
-                self.multiMove('l');
-                return true;
-            },
-            .up => {
-                self.multiMove('k');
-                return true;
-            },
-            .down => {
-                self.multiMove('j');
-                return true;
-            },
-            .home => {
-                self.multiMove('0');
-                return true;
-            },
-            .end => {
-                self.multiMove('$');
+            .left, .right, .up, .down, .home, .end => {
+                self.multiMove(arrowChar(k));
                 return true;
             },
             else => return false,
@@ -3141,19 +2978,9 @@ pub const Editor = struct {
     }
 
     fn multiInsertMove(self: *Editor, k: key.Key) !void {
-        const c: u8 = switch (k) {
-            .left => 'h',
-            .right => 'l',
-            .up => 'k',
-            .down => 'j',
-            .home => '0',
-            .end => '$',
-            else => 0,
-        };
+        const c = arrowChar(k);
         if (c == 0) return;
-        self.setCursor(self.movedCaret(self.cursor(), c));
-        for (self.extra.items) |*e| e.* = self.movedCaret(e.*, c);
-        self.dedupeByLine();
+        self.multiMove(c);
     }
 
     fn extraColAt(self: *Editor, row: usize) ?usize {
@@ -3287,11 +3114,9 @@ pub const Editor = struct {
     // === picker (file finder / global search) ==============================
 
     /// Load the recently-opened list and, when the session started with no
-    /// file, show the startup screen. `state_path` overrides the XDG state
-    /// file (tests point it at a temp dir).
-    pub fn startSession(self: *Editor, state_path: ?[]const u8, show_dashboard: bool) void {
-        self.recent_path = state_path;
-        self.recents = recent.load(self.gpa, self.io, state_path);
+    /// file, show the startup screen.
+    pub fn startSession(self: *Editor, show_dashboard: bool) void {
+        self.recents = recent.load(self.gpa, self.io);
         self.dashboard = show_dashboard and self.recents.entries.items.len > 0;
         self.dash_sel = 0;
     }
@@ -3318,11 +3143,17 @@ pub const Editor = struct {
         self.prev_query.clearRetainingCapacity(); // the candidate set grew
     }
 
-    pub fn openFilePicker(self: *Editor) void {
+    /// Reset the picker state and select `kind` — the shared prologue of
+    /// every picker opener.
+    fn startPicker(self: *Editor, kind: PickerKind) void {
         self.freePicker();
-        self.picker_kind = .files;
+        self.picker_kind = kind;
         self.picker_sel = 0;
         self.picker_scroll = 0;
+    }
+
+    pub fn openFilePicker(self: *Editor) void {
+        self.startPicker(.files);
         self.ensureFileCache(); // starts the walk; does not wait for it
         self.fillFileItems();
         self.refilter();
@@ -3338,10 +3169,7 @@ pub const Editor = struct {
     }
 
     fn openGrepPicker(self: *Editor) void {
-        self.freePicker();
-        self.picker_kind = .grep;
-        self.picker_sel = 0;
-        self.picker_scroll = 0;
+        self.startPicker(.grep);
         self.ensureFileCache();
         self.mode = .picker;
         self.refilter();
@@ -3352,10 +3180,7 @@ pub const Editor = struct {
     /// apply it.
     fn openCodeActionPicker(self: *Editor) void {
         const client = if (self.lsp) |*c| c else return;
-        self.freePicker();
-        self.picker_kind = .code_action;
-        self.picker_sel = 0;
-        self.picker_scroll = 0;
+        self.startPicker(.code_action);
         for (client.code_actions.items, 0..) |action, i| {
             self.addPickItem(action.title, action.title, i);
         }
@@ -3367,10 +3192,7 @@ pub const Editor = struct {
     /// name) and open it; the symbol index is stashed in `PickItem.line`.
     fn openSymbolPicker(self: *Editor) void {
         const client = if (self.lsp) |*c| c else return;
-        self.freePicker();
-        self.picker_kind = .symbol;
-        self.picker_sel = 0;
-        self.picker_scroll = 0;
+        self.startPicker(.symbol);
         const spaces = "                    "; // 20 spaces, sliced by depth
         for (client.symbols.items, 0..) |sym, i| {
             const pad = spaces[0..@min(@as(usize, sym.depth) * 2, spaces.len)];
@@ -3385,10 +3207,7 @@ pub const Editor = struct {
     /// Populate the picker with the open buffers (`Space f b`); the doc index
     /// is stashed in `PickItem.line`.
     fn openBufferPicker(self: *Editor) void {
-        self.freePicker();
-        self.picker_kind = .buffer;
-        self.picker_sel = 0;
-        self.picker_scroll = 0;
+        self.startPicker(.buffer);
         for (self.docs.items, 0..) |doc, i| {
             const name = docLabel(doc);
             const mark: []const u8 = if (doc == self.d) "* " else "  ";
@@ -3403,10 +3222,7 @@ pub const Editor = struct {
 
     /// Populate the picker with the built-in theme names and open it.
     fn openThemePicker(self: *Editor) void {
-        self.freePicker();
-        self.picker_kind = .theme;
-        self.picker_sel = 0;
-        self.picker_scroll = 0;
+        self.startPicker(.theme);
         for (theme.themes) |t| {
             self.addPickItem(t.name, t.name, 0);
         }
@@ -3490,7 +3306,7 @@ pub const Editor = struct {
     fn stepWalk(self: *Editor, budget_us: i64) bool {
         var w = if (self.walker) |*x| x else return false;
         var sp = log.Span.start();
-        const deadline = nowMs() * 1000 + budget_us;
+        const deadline = log.nowMs() * 1000 + budget_us;
         const before = self.fcache.items.len;
         var done = false;
         var checked: usize = 0;
@@ -3521,7 +3337,7 @@ pub const Editor = struct {
             self.fcache_masks.append(self.gpa, fuzzy.charMask(p)) catch break;
             // Check the clock every so often rather than per entry.
             checked += 1;
-            if (checked % 512 == 0 and nowMs() * 1000 >= deadline) break;
+            if (checked % 512 == 0 and log.nowMs() * 1000 >= deadline) break;
         }
         if (done) {
             w.deinit();
@@ -3583,7 +3399,7 @@ pub const Editor = struct {
             // — the same debounce auto-completion uses, and the same single
             // timer, so an idle picker still costs nothing.
             self.due_kind = .wsymbol;
-            self.comp_due_ms = nowMs() + @as(i64, @intCast(config.settings.completion_delay_ms));
+            self.comp_due_ms = log.nowMs() + @as(i64, @intCast(config.settings.completion_delay_ms));
             return;
         }
         self.picker_scroll = 0;
@@ -3952,10 +3768,7 @@ pub const Editor = struct {
         const n = self.docs.items.len;
         if (n <= 1) return;
         self.addJump();
-        var idx: usize = 0;
-        for (self.docs.items, 0..) |doc, i| if (doc == self.d) {
-            idx = i;
-        };
+        const idx = self.docIndex(self.d);
         const ni = if (forward) (idx + 1) % n else (idx + n - 1) % n;
         self.focusDoc(self.docs.items[ni]);
         self.placeAt(self.cy);
@@ -4233,7 +4046,7 @@ pub const Editor = struct {
         // Stop at the end of the file: keep a few lines on screen rather than
         // scrolling into blank space, and remember the clamp so holding the
         // key does not build up an offset that has to be unwound.
-        const n_lines = countLines(text);
+        const n_lines = std.mem.count(u8, text, "\n") + 1;
         const max_first = n_lines -| @min(n_lines, 3);
         if (first > max_first) {
             first = max_first;
@@ -4312,7 +4125,7 @@ pub const Editor = struct {
             const d = unicode.decode(line[i..]);
             const cw = if (d.cp == '\t') @min(tabWidth(), w - used) else unicode.width(d.cp);
             if (used + cw > w) break;
-            try self.setFg(if (styled) self.styleColor(self.style_buf.items[i]) else th_fg());
+            try self.setFg(if (styled) self.styleColor(self.style_buf.items[i]) else theme.current.fg);
             if (d.cp == '\t') {
                 try self.emitSpaces(cw);
             } else {
@@ -4891,10 +4704,6 @@ pub const Editor = struct {
         self.setStatus("{s}", .{b[0..n]});
     }
 
-    fn cmdArgNone(_: *Editor) []const u8 {
-        return "";
-    }
-
     /// A plain-English reason for a failed save (raw enum only as last resort).
     fn saveErrorReason(err: anyerror) []const u8 {
         return switch (err) {
@@ -5393,10 +5202,7 @@ pub const Editor = struct {
     /// each keystroke re-asks after the same pause auto-completion uses.
     fn openWorkspaceSymbolPicker(self: *Editor) void {
         if (self.lsp == null) return self.setStatus("no language server", .{});
-        self.freePicker();
-        self.picker_kind = .wsymbol;
-        self.picker_sel = 0;
-        self.picker_scroll = 0;
+        self.startPicker(.wsymbol);
         self.mode = .picker;
         self.refilter();
         self.sendWorkspaceSymbolQuery();
@@ -5436,10 +5242,7 @@ pub const Editor = struct {
     /// `Space l D` — every diagnostic the servers have reported for the open
     /// buffers, most severe first, grouped by file.
     fn openDiagnosticPicker(self: *Editor) void {
-        self.freePicker();
-        self.picker_kind = .diagnostic;
-        self.picker_sel = 0;
-        self.picker_scroll = 0;
+        self.startPicker(.diagnostic);
         const cwd = std.process.currentPathAlloc(self.io, self.gpa) catch return;
         defer self.gpa.free(cwd);
 
@@ -5475,16 +5278,11 @@ pub const Editor = struct {
         const client = if (self.lsp) |*c| c else return;
         const cwd = std.process.currentPathAlloc(self.io, self.gpa) catch return;
         defer self.gpa.free(cwd);
-        self.freePicker();
-        self.picker_kind = .reference;
-        self.picker_sel = 0;
-        self.picker_scroll = 0;
+        self.startPicker(.reference);
         for (client.references.items) |ref| {
             const abs = uriToPath(self.gpa, ref.uri) orelse continue;
             defer self.gpa.free(abs);
-            var rel: []const u8 = abs;
-            if (abs.len > cwd.len + 1 and std.mem.startsWith(u8, abs, cwd) and abs[cwd.len] == '/')
-                rel = abs[cwd.len + 1 ..];
+            const rel = relativeTo(cwd, abs);
             const text = self.openDocLine(cwd, abs, ref.line);
             var db: [512]u8 = undefined;
             const disp = std.fmt.bufPrint(&db, "{s}:{d}: {s}", .{ rel, ref.line + 1, std.mem.trim(u8, text, " \t") }) catch continue;
@@ -5602,14 +5400,14 @@ pub const Editor = struct {
     /// is scheduled, which is the only timer zedit ever arms.
     fn pollTimeout(self: *Editor) i32 {
         const due = self.comp_due_ms orelse return -1;
-        const left = due - nowMs();
+        const left = due - log.nowMs();
         return if (left <= 0) 0 else @intCast(@min(left, std.math.maxInt(i32)));
     }
 
     /// True when the debounce has elapsed (the caller then sends the request).
     fn completionDue(self: *Editor) bool {
         const due = self.comp_due_ms orelse return false;
-        return nowMs() >= due;
+        return log.nowMs() >= due;
     }
 
     /// Arm the auto-completion debounce after an identifier keystroke. Typing
@@ -5623,7 +5421,7 @@ pub const Editor = struct {
             return;
         }
         self.due_kind = .completion;
-        self.comp_due_ms = nowMs() + @as(i64, @intCast(config.settings.completion_delay_ms));
+        self.comp_due_ms = log.nowMs() + @as(i64, @intCast(config.settings.completion_delay_ms));
     }
 
     fn lspSignatureHelp(self: *Editor) void {
@@ -5655,8 +5453,6 @@ pub const Editor = struct {
         } else if (self.comp_sel > 0) self.comp_sel -= 1;
     }
 
-    /// Rebuild the visible completion list from the prefix under the cursor;
-    /// closes the popup if nothing matches.
     /// Rebuild the visible list from the prefix under the cursor, fuzzily:
     /// `mc` matches `mockComplete`, and candidates are ranked by the same
     /// scorer the pickers use (consecutive runs and word starts win).
@@ -5668,7 +5464,7 @@ pub const Editor = struct {
         };
         const prefix = self.completionPrefix();
         const qmask = fuzzy.charMask(prefix);
-        var scored: std.ArrayList(struct { idx: usize, score: i32 }) = .empty;
+        var scored: std.ArrayList(Scored) = .empty;
         defer scored.deinit(self.gpa);
         for (client.completions.items, 0..) |it, i| {
             if (prefix.len == 0) {
@@ -5677,15 +5473,10 @@ pub const Editor = struct {
             }
             if (!fuzzy.maskMatches(fuzzy.charMask(it.label), qmask)) continue; // cheap reject
             const s = fuzzy.score(it.label, prefix) orelse continue;
-            scored.append(self.gpa, .{ .idx = i, .score = s }) catch {};
+            scored.append(self.gpa, .{ .idx = @intCast(i), .score = s }) catch {};
         }
         if (prefix.len > 0) {
-            const Item = @TypeOf(scored.items[0]);
-            std.mem.sort(Item, scored.items, {}, struct {
-                fn less(_: void, a: Item, b: Item) bool {
-                    return a.score > b.score; // best first
-                }
-            }.less);
+            std.mem.sort(Scored, scored.items, {}, scoredLess);
             for (scored.items) |s| self.comp_filtered.append(self.gpa, s.idx) catch {};
         }
         if (self.comp_filtered.items.len == 0) {
@@ -5695,7 +5486,6 @@ pub const Editor = struct {
         }
     }
 
-    /// Replace the prefix under the cursor with the selected completion.
     /// Insert the selected candidate. The server's own `textEdit` range wins
     /// over our identifier-prefix guess; `additionalTextEdits` (auto-imports)
     /// are applied too; and a snippet item expands its placeholders and starts
@@ -5723,7 +5513,7 @@ pub const Editor = struct {
         var parsed: ?snippet.Parsed = null;
         defer if (parsed) |*p| p.deinit(self.gpa);
         var text = item.insert;
-        if (item.is_snippet and snippet.hasTabstops(item.insert)) {
+        if (item.is_snippet) {
             parsed = snippet.parse(self.gpa, item.insert) catch null;
             if (parsed) |p| text = p.text;
         }
@@ -5809,9 +5599,7 @@ pub const Editor = struct {
         const s = self.snip_stops.items[self.snip_idx];
         const list = s.choices orelse return false;
 
-        var n: usize = 0;
-        var it = std.mem.splitScalar(u8, list, ',');
-        while (it.next()) |_| n += 1;
+        const n = std.mem.count(u8, list, ",") + 1;
         if (n <= 1) return false;
         const next = if (forward) (s.choice + 1) % n else (s.choice + n - 1) % n;
 
@@ -6088,11 +5876,8 @@ pub const Editor = struct {
         defer entries.deinit(self.gpa);
         self.history.list(self.buf, self.cy, self.cx, &entries) catch return self.setStatus("out of memory", .{});
         if (entries.items.len == 0) return self.setStatus("no changes yet", .{});
-        self.freePicker();
-        self.picker_kind = .undo;
-        self.picker_sel = 0;
-        self.picker_scroll = 0;
-        const now = nowMs();
+        self.startPicker(.undo);
+        const now = log.nowMs();
         for (entries.items) |e| {
             var b: [96]u8 = undefined;
             const secs = @divTrunc(now - e.time_ms, 1000);
@@ -6696,9 +6481,8 @@ pub const Editor = struct {
         if (self.sb_sel < self.sb_scroll) self.sb_scroll = self.sb_sel;
         if (self.sb_sel >= self.sb_scroll + rows) self.sb_scroll = self.sb_sel - rows + 1;
 
-        var b: [16]u8 = undefined;
         self.beginSeg(1, x);
-        try self.emit(try std.fmt.bufPrint(&b, "\x1b[1;{d}H", .{x}));
+        try self.emitFmt("\x1b[1;{d}H", .{x});
         try self.setBg(if (self.sb_focus) th.mode_command else th.status_seg_bg);
         try self.setFg(if (self.sb_focus) th.bg else th.status_seg_fg);
         try self.emit(" EXPLORER");
@@ -6708,7 +6492,7 @@ pub const Editor = struct {
         while (r < rows) : (r += 1) {
             const idx = self.sb_scroll + r;
             self.beginSeg(r + 2, x);
-            try self.emit(try std.fmt.bufPrint(&b, "\x1b[{d};{d}H", .{ r + 2, x }));
+            try self.emitFmt("\x1b[{d};{d}H", .{ r + 2, x });
             const selected = idx == self.sb_sel and idx < self.sb_entries.items.len;
             try self.setBg(if (selected and self.sb_focus) th.selection else if (selected) th.cursorline else th.bg_dark);
             if (idx < self.sb_entries.items.len) {
@@ -6835,7 +6619,6 @@ pub const Editor = struct {
         const view = self.buildView(w);
         const text_rows = self.winTextRows(w);
         const tinted = self.diffTinted(w);
-        var b: [16]u8 = undefined;
         var r: usize = 0;
         var file_row = view.top;
         // With soft wrap one buffer line can fill several screen rows, so the
@@ -6845,7 +6628,7 @@ pub const Editor = struct {
         var wl: WrapLayout = .{ .starts = .{0} ** max_wrap_rows, .n = 1, .indent = 0 };
         while (r < text_rows) : (r += 1) {
             self.beginSeg(w.gy + r, w.gx);
-            try self.emit(try std.fmt.bufPrint(&b, "\x1b[{d};{d}H", .{ w.gy + r, w.gx }));
+            try self.emitFmt("\x1b[{d};{d}H", .{ w.gy + r, w.gx });
             if (file_row >= view.buf.lineCount()) {
                 try self.setBg(th.bg);
                 try self.setFg(th.fg_dim);
@@ -6891,9 +6674,8 @@ pub const Editor = struct {
     /// bottom region row. Only used when more than one window is open.
     fn emitWinStatus(self: *Editor, w: *Win, view: View) !void {
         const th = theme.current;
-        var b: [16]u8 = undefined;
         self.beginSeg(w.gy + w.gh - 1, w.gx);
-        try self.emit(try std.fmt.bufPrint(&b, "\x1b[{d};{d}H", .{ w.gy + w.gh - 1, w.gx }));
+        try self.emitFmt("\x1b[{d};{d}H", .{ w.gy + w.gh - 1, w.gx });
         const active = w == self.cur;
         try self.setBg(if (active) th.status_seg_bg else th.status_bg);
         try self.setFg(if (active) th.status_seg_fg else th.fg_dim);
@@ -6911,16 +6693,14 @@ pub const Editor = struct {
     /// a new one.
     fn emitWrapGutter(self: *Editor, view: *const View) !void {
         if (view.gutter == 0) return;
-        try self.setFg(theme.current.indent_guide);
+        try self.setFg(theme.current.cursorline);
         try self.emitSpaces(view.gutter - 2);
         try self.emit("\u{21B3}"); // ↳
         try self.emit(" ");
     }
 
     fn gutterFor(line_count: usize) usize {
-        var n = line_count;
-        var digits: usize = 1;
-        while (n >= 10) : (n = n / 10) digits += 1;
+        const digits = @as(usize, std.math.log10_int(line_count)) + 1; // lineCount() is never 0
         return @max(digits, 3) + 2; // git sign column + numbers + trailing space
     }
 
@@ -7337,31 +7117,20 @@ pub const Editor = struct {
     }
 
     /// `:update` — ask the release remote for its newest `v*` tag and compare
-    /// it with this build's version. One `git ls-remote` call, on demand only:
-    /// zedit never phones home on its own.
+    /// it with this build's version.
     fn checkForUpdate(self: *Editor) void {
-        const url = "https://github.com/ashuguptahere/zed.git";
-        const res = std.process.run(self.gpa, self.io, .{
-            .argv = &.{ "git", "ls-remote", "--tags", "--refs", url },
-            .stdout_limit = .limited(1 << 20),
-            .stderr_limit = .limited(8 << 10),
-        }) catch {
-            self.setStatus("update check failed (git not available?)", .{});
-            return;
-        };
-        defer self.gpa.free(res.stdout);
-        defer self.gpa.free(res.stderr);
-        switch (res.term) {
-            .exited => |code| if (code != 0) {
-                std.log.scoped(.editor).warn("ls-remote failed: {s}", .{std.mem.trim(u8, res.stderr, " \n")});
-                return self.setStatus("update check failed (no network?)", .{});
+        switch (fetchNewestTag(self.gpa, self.io)) {
+            .no_git => self.setStatus("update check failed (git not available?)", .{}),
+            .no_network => self.setStatus("update check failed (no network?)", .{}),
+            .failed => self.setStatus("update check failed", .{}),
+            .no_release => self.setStatus("no releases published yet", .{}),
+            .tag => |newest| {
+                defer self.gpa.free(newest);
+                switch (compareVersions(newest, cli.version)) {
+                    .gt => self.setStatus("update available: {s} (you have {s})", .{ newest, cli.version }),
+                    else => self.setStatus("up to date ({s})", .{cli.version}),
+                }
             },
-            else => return self.setStatus("update check failed", .{}),
-        }
-        const newest = newestTag(res.stdout) orelse return self.setStatus("no releases published yet", .{});
-        switch (compareVersions(newest, cli.version)) {
-            .gt => self.setStatus("update available: {s} (you have {s})", .{ newest, cli.version }),
-            else => self.setStatus("up to date ({s})", .{cli.version}),
         }
     }
 
@@ -7443,11 +7212,10 @@ pub const Editor = struct {
         const anchor = @min(self.cmdPrompt().len + items[0].show + 1, self.win.cols -| width);
 
         self.markOverlayRows(rows - height, rows - 1);
-        var b: [24]u8 = undefined;
         var i: usize = 0;
         while (i < height) : (i += 1) {
             const idx = first + i;
-            try self.emit(try std.fmt.bufPrint(&b, "\x1b[{d};{d}H", .{ rows - height + i, anchor }));
+            try self.emitFmt("\x1b[{d};{d}H", .{ rows - height + i, anchor });
             const selected = self.wild_idx != null and idx == self.wild_idx.?;
             try self.setBg(if (selected) th.mode_command else th.status_seg_bg);
             try self.setFg(if (selected) th.bg else th.status_seg_fg);
@@ -7485,15 +7253,14 @@ pub const Editor = struct {
         const top = rows - height - 1; // 1-based; leave the status bar at the bottom
         self.markOverlayRows(top, top + height);
 
-        var b: [16]u8 = undefined;
-        try self.emit(try std.fmt.bufPrint(&b, "\x1b[{d};1H", .{top}));
+        try self.emitFmt("\x1b[{d};1H", .{top});
         try self.setBg(th.mode_command);
         try self.setFg(th.bg);
         try self.emit(title);
         try self.emitSpaces(width - title.len);
 
         for (menu, 0..) |it, i| {
-            try self.emit(try std.fmt.bufPrint(&b, "\x1b[{d};1H", .{top + 1 + i}));
+            try self.emitFmt("\x1b[{d};1H", .{top + 1 + i});
             try self.setBg(th.status_seg_bg);
             try self.setFg(th.mode_normal);
             try self.emitFmt("  {s}  ", .{it.key});
@@ -7523,8 +7290,7 @@ pub const Editor = struct {
         if (col > self.win.cols) return;
         const avail = self.win.cols - col + 1; // cells from `col` to the screen edge
 
-        var b: [16]u8 = undefined;
-        try self.emit(try std.fmt.bufPrint(&b, "\x1b[{d};{d}H", .{ row, col }));
+        try self.emitFmt("\x1b[{d};{d}H", .{ row, col });
         try self.setBg(th.status_seg_bg);
         try self.emit(" ");
         // Emit the label a codepoint at a time, switching colour over the active
@@ -7588,12 +7354,11 @@ pub const Editor = struct {
         const col = @max(@as(usize, 1), self.cur.gx + gutter + self.cursorScreenCol());
         self.markOverlayRows(start_row, start_row + height - 1);
 
-        var b: [16]u8 = undefined;
         var i: usize = 0;
         while (i < height) : (i += 1) {
             const idx = first + i;
             const selected = idx == self.comp_sel;
-            try self.emit(try std.fmt.bufPrint(&b, "\x1b[{d};{d}H", .{ start_row + i, col }));
+            try self.emitFmt("\x1b[{d};{d}H", .{ start_row + i, col });
             try self.setBg(if (selected) th.selection else th.status_seg_bg);
             try self.setFg(if (selected) th.fg else th.status_seg_fg);
             const label = client.completions.items[items[idx]].label;
@@ -7772,7 +7537,7 @@ pub const Editor = struct {
                 var c = if (start < left) left else start;
                 while (c < start + w and c < right) : (c += 1) {
                     if (byte < first_nb and c % tabWidth() == 0 and c < indent_cols) {
-                        try self.setFg(th.indent_guide);
+                        try self.setFg(th.cursorline);
                         try self.emit(indent_glyph);
                     } else {
                         try self.emit(" ");
@@ -7858,21 +7623,9 @@ pub const Editor = struct {
     /// Emit inlay-hint virtual text (dim), one codepoint at a time, advancing
     /// the rendered column `dc` and clipping to the visible window [left, right).
     fn emitInlayText(self: *Editor, text: []const u8, dc: *usize, left: usize, right: usize, row_bg: Color) !void {
-        const th = theme.current;
         try self.setBg(row_bg);
-        try self.setFg(th.comment);
-        var j: usize = 0;
-        while (j < text.len) {
-            const d = unicode.decode(text[j..]);
-            const w = cellWidth(d.cp, dc.*);
-            const start = dc.*;
-            dc.* += w;
-            const bytes = text[j .. j + d.len];
-            j += d.len;
-            if (start + w <= left) continue;
-            if (start >= right) break;
-            try self.emit(if (isControlCp(d.cp)) "?" else bytes);
-        }
+        try self.setFg(theme.current.comment);
+        try self.emitVirtual(text, dc, left, right);
     }
 
     fn styleColor(_: *Editor, s: syntax.Style) Color {
@@ -7885,7 +7638,7 @@ pub const Editor = struct {
             .builtin => th.builtin,
             .function => th.function,
             .string_ => th.string_,
-            .char_ => th.char_,
+            .char_ => th.string_,
             .number => th.number,
             .operator => th.operator,
             .preproc => th.preproc,
@@ -8134,8 +7887,7 @@ pub const Editor = struct {
     }
 
     fn emitSpaces(self: *Editor, n: usize) !void {
-        var i: usize = 0;
-        while (i < n) : (i += 1) try self.frame.append(self.gpa, ' ');
+        try self.frame.appendNTimes(self.gpa, ' ', n);
     }
 
     fn setStatus(self: *Editor, comptime fmt: []const u8, args: anytype) void {
@@ -8179,9 +7931,7 @@ fn incompleteEscapeTail(buf: []const u8) bool {
 
 /// The leading whitespace (spaces/tabs) of a line.
 fn leadingIndent(line: []const u8) []const u8 {
-    var i: usize = 0;
-    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
-    return line[0..i];
+    return line[0 .. std.mem.indexOfNone(u8, line, " \t") orelse line.len];
 }
 
 fn lineIsBlank(line: []const u8) bool {
@@ -8260,7 +8010,6 @@ fn expandReplacement(out: *std.ArrayList(u8), gpa: Allocator, rep: []const u8, l
     }
 }
 
-/// Order text edits last-position-first (line then column, descending).
 /// Apply LSP `TextEdit`s to `buf`, last-position-first so earlier positions
 /// stay valid. Handles multi-line ranges and multi-line replacement text.
 /// Returns the number applied.
@@ -8343,18 +8092,41 @@ fn samePath(cwd: []const u8, doc_path: []const u8, abs: []const u8) bool {
         std.mem.endsWith(u8, abs, doc_path);
 }
 
+/// What asking the release remote for its newest tag produced. The tag is
+/// owned by the caller.
+pub const UpdateCheck = union(enum) {
+    tag: []u8,
+    no_git, // git could not be run
+    no_network, // ls-remote failed
+    failed, // ls-remote killed/signalled (or out of memory)
+    no_release, // no `v*` tags published
+};
+
+/// Ask the release remote for its newest `v*` tag: one `git ls-remote` call,
+/// on demand only — zedit never phones home on its own. Shared by `:update`
+/// (statusline) and main.zig's `--check-update` (stdout/exit codes).
+pub fn fetchNewestTag(gpa: std.mem.Allocator, io: std.Io) UpdateCheck {
+    const url = "https://github.com/ashuguptahere/zed.git";
+    const res = std.process.run(gpa, io, .{
+        .argv = &.{ "git", "ls-remote", "--tags", "--refs", url },
+        .stdout_limit = .limited(1 << 20),
+        .stderr_limit = .limited(8 << 10),
+    }) catch return .no_git;
+    defer gpa.free(res.stdout);
+    defer gpa.free(res.stderr);
+    switch (res.term) {
+        .exited => |code| if (code != 0) {
+            std.log.scoped(.editor).warn("ls-remote failed: {s}", .{std.mem.trim(u8, res.stderr, " \n")});
+            return .no_network;
+        },
+        else => return .failed,
+    }
+    const newest = newestTag(res.stdout) orelse return .no_release;
+    return .{ .tag = gpa.dupe(u8, newest) catch return .failed };
+}
+
 /// The highest `refs/tags/vX.Y.Z` in `git ls-remote` output (the `v` stripped).
-/// Null when the output holds no version tags. Shared with main.zig's
-/// `--check-update`, which runs the same check without a terminal.
-pub fn newestReleaseTag(text: []const u8) ?[]const u8 {
-    return newestTag(text);
-}
-
-/// Whether release `tag` is newer than the running `current` version.
-pub fn versionIsNewer(tag: []const u8, current: []const u8) bool {
-    return compareVersions(tag, current) == .gt;
-}
-
+/// Null when the output holds no version tags.
 fn newestTag(text: []const u8) ?[]const u8 {
     var best: ?[]const u8 = null;
     var it = std.mem.splitScalar(u8, text, '\n');
@@ -8369,7 +8141,7 @@ fn newestTag(text: []const u8) ?[]const u8 {
 }
 
 /// Compare dotted numeric versions ("0.10.1" > "0.9.9"), ignoring any suffix.
-fn compareVersions(a: []const u8, b: []const u8) std.math.Order {
+pub fn compareVersions(a: []const u8, b: []const u8) std.math.Order {
     var ita = std.mem.splitScalar(u8, a, '.');
     var itb = std.mem.splitScalar(u8, b, '.');
     var i: usize = 0;
@@ -8388,10 +8160,6 @@ fn numPrefix(s: []const u8) usize {
         n = n * 10 + (c - '0');
     }
     return n;
-}
-
-fn nowMs() i64 {
-    return @intCast(@divTrunc(log.nowNanos(), std.time.ns_per_ms));
 }
 
 /// The buffer position `offset` bytes into text that was inserted at
@@ -8424,14 +8192,6 @@ fn severityTag(sev: u8) []const u8 {
         3 => "I",
         else => "H",
     };
-}
-
-fn countLines(text: []const u8) usize {
-    return std.mem.count(u8, text, "\n") + 1;
-}
-
-fn th_fg() Color {
-    return theme.current.fg;
 }
 
 /// Linear blend of two colours: `pct`% of `b` into `a` (integer math, no

@@ -45,10 +45,7 @@ pub fn detect(path: ?[]const u8) Language {
         .{ "json", Language.json },
         .{ "diff", Language.diff },   .{ "patch", Language.diff },
     };
-    inline for (map) |entry| {
-        if (std.mem.eql(u8, ext, entry[0])) return entry[1];
-    }
-    return .none;
+    return std.StaticStringMap(Language).initComptime(map).get(ext) orelse .none;
 }
 
 const Spec = struct {
@@ -95,20 +92,20 @@ pub fn highlight(lang: Language, line: []const u8, out: []Style) void {
 
         // Preprocessor line (C): '#' as the first non-blank char.
         if (spec.hash_preproc and !seen_nonws and c == '#') {
-            fill(out, i, line.len, .preproc);
+            @memset(out[i..line.len], .preproc);
             return;
         }
         seen_nonws = true;
 
         // Line comment to end of line.
-        if (spec.line_comment.len > 0 and startsWith(line, i, spec.line_comment)) {
-            fill(out, i, line.len, .comment);
+        if (spec.line_comment.len > 0 and std.mem.startsWith(u8, line[i..], spec.line_comment)) {
+            @memset(out[i..line.len], .comment);
             return;
         }
         // Zig builtins: @name
         if (spec.at_builtin and c == '@' and i + 1 < line.len and isIdentStart(line[i + 1])) {
             const e = identEnd(line, i + 1);
-            fill(out, i, e, .builtin);
+            @memset(out[i..e], .builtin);
             i = e;
             continue;
         }
@@ -121,9 +118,9 @@ pub fn highlight(lang: Language, line: []const u8, out: []Style) void {
             i = lexString(line, i, '\'', out, style);
             continue;
         }
-        if (isDigit(c)) {
+        if (std.ascii.isDigit(c)) {
             const e = numberEnd(line, i);
-            fill(out, i, e, .number);
+            @memset(out[i..e], .number);
             i = e;
             continue;
         }
@@ -131,7 +128,7 @@ pub fn highlight(lang: Language, line: []const u8, out: []Style) void {
             const e = identEnd(line, i);
             const word = line[i..e];
             const style = classifyWord(spec, word, line, e);
-            fill(out, i, e, style);
+            @memset(out[i..e], style);
             i = e;
             continue;
         }
@@ -169,7 +166,7 @@ fn lexString(line: []const u8, start: usize, quote: u8, out: []Style, style: Sty
         }
         j += 1;
     }
-    fill(out, start, j, style);
+    @memset(out[start..j], style);
     return j;
 }
 
@@ -177,7 +174,7 @@ fn numberEnd(line: []const u8, start: usize) usize {
     var j = start;
     while (j < line.len) {
         const c = line[j];
-        if (isDigit(c) or c == '.' or c == '_' or c == 'x' or c == 'b' or c == 'o' or
+        if (std.ascii.isDigit(c) or c == '.' or c == '_' or c == 'x' or c == 'b' or c == 'o' or
             (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F'))
         {
             j += 1;
@@ -192,28 +189,16 @@ fn identEnd(line: []const u8, start: usize) usize {
     return j;
 }
 
-fn fill(out: []Style, start: usize, end: usize, style: Style) void {
-    var k = start;
-    while (k < end) : (k += 1) out[k] = style;
-}
-
-fn startsWith(line: []const u8, at: usize, needle: []const u8) bool {
-    return at + needle.len <= line.len and std.mem.eql(u8, line[at .. at + needle.len], needle);
-}
-
 fn inList(list: []const []const u8, word: []const u8) bool {
     for (list) |w| if (std.mem.eql(u8, w, word)) return true;
     return false;
 }
 
-fn isDigit(c: u8) bool {
-    return c >= '0' and c <= '9';
-}
 fn isIdentStart(c: u8) bool {
     return c == '_' or (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c >= 0x80;
 }
 fn isIdentChar(c: u8) bool {
-    return isIdentStart(c) or isDigit(c);
+    return isIdentStart(c) or std.ascii.isDigit(c);
 }
 fn isOperator(c: u8) bool {
     return std.mem.indexOfScalar(u8, "+-*/%=<>!&|^~?:.,;(){}[]", c) != null;

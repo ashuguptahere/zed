@@ -45,35 +45,19 @@ pub const Parsed = struct {
     }
 };
 
-/// Whether `s` contains anything the snippet grammar would act on. Used to
-/// skip the whole machinery for the common plain-text case.
-pub fn hasTabstops(s: []const u8) bool {
-    var i: usize = 0;
-    while (i < s.len) : (i += 1) {
-        if (s[i] == '\\') {
-            i += 1;
-            continue;
-        }
-        if (s[i] == '$') return true;
-    }
-    return false;
-}
-
-/// Parse snippet syntax into literal text plus its tabstops, ordered the way
-/// Tab visits them: ascending index, with `$0` last.
-pub const Error = error{OutOfMemory};
-
 /// Nesting depth cap. Placeholders nest a level or two in real snippets;
 /// the limit exists because the text comes from a language server, and
 /// unbounded `${1:${2:${3:…}}}` recursion would otherwise be a stack overflow
 /// triggered by remote input. Beyond it, the inner text is taken literally.
 const max_depth = 8;
 
-pub fn parse(gpa: std.mem.Allocator, src: []const u8) Error!Parsed {
+/// Parse snippet syntax into literal text plus its tabstops, ordered the way
+/// Tab visits them: ascending index, with `$0` last.
+pub fn parse(gpa: std.mem.Allocator, src: []const u8) std.mem.Allocator.Error!Parsed {
     return parseDepth(gpa, src, 0);
 }
 
-fn parseDepth(gpa: std.mem.Allocator, src: []const u8, depth: u8) Error!Parsed {
+fn parseDepth(gpa: std.mem.Allocator, src: []const u8, depth: u8) std.mem.Allocator.Error!Parsed {
     var text: std.ArrayList(u8) = .empty;
     errdefer text.deinit(gpa);
     var stops: std.ArrayList(Stop) = .empty;
@@ -141,7 +125,7 @@ fn parseBraced(
     text: *std.ArrayList(u8),
     stops: *std.ArrayList(Stop),
     depth: u8,
-) Error!?usize {
+) std.mem.Allocator.Error!?usize {
     if (depth >= max_depth) return null; // too deep: treat the `$` literally
     const close = matchBrace(src, start + 1) orelse return null;
     const body = src[start + 2 .. close];
@@ -216,12 +200,6 @@ fn lessStop(_: void, a: Stop, b: Stop) bool {
     if (a.final != b.final) return b.final;
     if (a.index != b.index) return a.index < b.index;
     return a.offset < b.offset;
-}
-
-test "plain text has no tabstops" {
-    try std.testing.expect(!hasTabstops("just text"));
-    try std.testing.expect(!hasTabstops("cost \\$5"));
-    try std.testing.expect(hasTabstops("foo($1)"));
 }
 
 test "bare tabstops are removed and recorded" {

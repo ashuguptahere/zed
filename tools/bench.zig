@@ -169,7 +169,7 @@ fn interactionTable(gpa: std.mem.Allocator, zedit: []const u8) void {
 /// a settle-only number would read as if you had waited for all of it.
 fn measureInteraction(gpa: std.mem.Allocator, ed: Editor, it: Interaction) ?[3]f64 {
     var s = spawnOn(gpa, ed, "build.zig") orelse return null;
-    defer quitAndFinish(&s, ed);
+    defer quitAndFinish(&s);
     _ = waitQuiet(&s, 80, 8000);
     var out: [3]f64 = .{ -1, -1, -1 };
     for (0..2) |pass| {
@@ -208,7 +208,7 @@ fn measureStartup(gpa: std.mem.Allocator, ed: Editor, file: []const u8, n: usize
     var i: usize = 0;
     while (i < n) : (i += 1) {
         var s = spawnOn(gpa, ed, file) orelse break;
-        defer quitAndFinish(&s, ed);
+        defer quitAndFinish(&s);
         const t0 = nowNs();
         _ = waitQuiet(&s, 80, 8000);
         out.append(gpa, msBetween(t0, nowNs()) - 80.0) catch break;
@@ -226,7 +226,7 @@ fn measureFirstPaint(gpa: std.mem.Allocator, ed: Editor, file: []const u8, n: us
     var i: usize = 0;
     while (i < n) : (i += 1) {
         var s = spawnOn(gpa, ed, file) orelse break;
-        defer quitAndFinish(&s, ed);
+        defer quitAndFinish(&s);
         if (firstByteMs(&s, 8000)) |ms| out.append(gpa, ms) catch break;
         _ = waitQuiet(&s, 50, 4000);
     }
@@ -237,7 +237,7 @@ fn measureFirstPaint(gpa: std.mem.Allocator, ed: Editor, file: []const u8, n: us
 fn measureKeypress(gpa: std.mem.Allocator, ed: Editor, n: usize) []f64 {
     var out: std.ArrayList(f64) = .empty;
     var s = spawnOn(gpa, ed, small_file) orelse return out.toOwnedSlice(gpa) catch &.{};
-    defer quitAndFinish(&s, ed);
+    defer quitAndFinish(&s);
     _ = waitQuiet(&s, 80, 8000);
     var i: usize = 0;
     while (i < n * 4) : (i += 1) {
@@ -260,7 +260,7 @@ fn measureSearch(gpa: std.mem.Allocator, ed: Editor, n: usize, warm: bool) []f64
     var i: usize = 0;
     while (i < n) : (i += 1) {
         var s = spawnOn(gpa, ed, big_file) orelse break;
-        defer quitAndFinish(&s, ed);
+        defer quitAndFinish(&s);
         _ = waitQuiet(&s, 80, 8000);
         if (warm) {
             s.send("/value_150000\r");
@@ -284,7 +284,7 @@ fn measureSearch(gpa: std.mem.Allocator, ed: Editor, n: usize, warm: bool) []f64
 /// once first (so zedit's cached walk is measured on the second open).
 fn measurePicker(gpa: std.mem.Allocator, ed: Editor, picker_key: []const u8, warm: bool) f64 {
     var s = spawnOn(gpa, ed, "build.zig") orelse return -1;
-    defer quitAndFinish(&s, ed);
+    defer quitAndFinish(&s);
     _ = waitQuiet(&s, 80, 8000);
     if (warm) {
         s.send(picker_key);
@@ -312,10 +312,10 @@ fn spawnOn(gpa: std.mem.Allocator, ed: Editor, file: []const u8) ?h.Session {
     }) catch null;
 }
 
-fn quitAndFinish(s: *h.Session, ed: Editor) void {
+fn quitAndFinish(s: *h.Session) void {
     // Best-effort clean quit so no editor lingers holding the pty.
     s.send("\x1b\x1b");
-    if (std.mem.eql(u8, ed.name, "helix")) s.send(":q!\r") else s.send(":q!\r");
+    s.send(":q!\r");
     s.drain(150);
     s.finish();
 }

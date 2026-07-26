@@ -155,6 +155,13 @@ pub const default_text =
     \\
 ;
 
+/// "true"/"false" → the bool; anything else is null (setting left untouched).
+fn parseBool(value: []const u8) ?bool {
+    if (std.mem.eql(u8, value, "true")) return true;
+    if (std.mem.eql(u8, value, "false")) return false;
+    return null;
+}
+
 /// Apply `key = value` lines to the live settings. Forgiving by design:
 /// malformed lines and unknown keys/values are skipped, never fatal.
 pub fn apply(text: []const u8) void {
@@ -173,64 +180,59 @@ pub fn apply(text: []const u8) void {
             const n = std.fmt.parseInt(usize, value, 10) catch continue;
             if (n >= 1 and n <= 16) settings.tab_width = n;
         } else if (std.mem.eql(u8, key, "nerd_font")) {
-            if (std.mem.eql(u8, value, "true")) settings.nerd_font = true;
-            if (std.mem.eql(u8, value, "false")) settings.nerd_font = false;
+            if (parseBool(value)) |b| settings.nerd_font = b;
         } else if (std.mem.eql(u8, key, "sidebar")) {
-            if (std.mem.eql(u8, value, "left")) settings.sidebar = .left;
-            if (std.mem.eql(u8, value, "right")) settings.sidebar = .right;
+            if (std.meta.stringToEnum(Side, value)) |s| settings.sidebar = s;
         } else if (std.mem.eql(u8, key, "relative_numbers")) {
-            if (std.mem.eql(u8, value, "true")) settings.relative_numbers = true;
-            if (std.mem.eql(u8, value, "false")) settings.relative_numbers = false;
+            if (parseBool(value)) |b| settings.relative_numbers = b;
         } else if (std.mem.eql(u8, key, "large_file_mb")) {
             const n = std.fmt.parseInt(usize, value, 10) catch continue;
             settings.large_file_mb = n;
         } else if (std.mem.eql(u8, key, "autoindent")) {
-            if (std.mem.eql(u8, value, "true")) settings.autoindent = true;
-            if (std.mem.eql(u8, value, "false")) settings.autoindent = false;
+            if (parseBool(value)) |b| settings.autoindent = b;
         } else if (std.mem.eql(u8, key, "buffer_tabs")) {
-            if (std.mem.eql(u8, value, "true")) settings.buffer_tabs = true;
-            if (std.mem.eql(u8, value, "false")) settings.buffer_tabs = false;
+            if (parseBool(value)) |b| settings.buffer_tabs = b;
         } else if (std.mem.eql(u8, key, "auto_completion")) {
-            if (std.mem.eql(u8, value, "true")) settings.auto_completion = true;
-            if (std.mem.eql(u8, value, "false")) settings.auto_completion = false;
+            if (parseBool(value)) |b| settings.auto_completion = b;
         } else if (std.mem.eql(u8, key, "completion_delay_ms")) {
             const n = std.fmt.parseInt(usize, value, 10) catch continue;
             if (n <= 10_000) settings.completion_delay_ms = n;
         } else if (std.mem.eql(u8, key, "wrap_indent")) {
-            if (std.mem.eql(u8, value, "true")) settings.wrap_indent = true;
-            if (std.mem.eql(u8, value, "false")) settings.wrap_indent = false;
+            if (parseBool(value)) |b| settings.wrap_indent = b;
         } else if (std.mem.eql(u8, key, "wrap_column")) {
             if (std.fmt.parseInt(usize, value, 10)) |n| {
                 if (n <= 4096) settings.wrap_column = n;
             } else |_| {}
         } else if (std.mem.eql(u8, key, "persistent_undo")) {
-            if (std.mem.eql(u8, value, "true")) settings.persistent_undo = true;
-            if (std.mem.eql(u8, value, "false")) settings.persistent_undo = false;
+            if (parseBool(value)) |b| settings.persistent_undo = b;
         } else if (std.mem.eql(u8, key, "soft_wrap")) {
-            if (std.mem.eql(u8, value, "true")) settings.soft_wrap = true;
-            if (std.mem.eql(u8, value, "false")) settings.soft_wrap = false;
+            if (parseBool(value)) |b| settings.soft_wrap = b;
         } else if (std.mem.eql(u8, key, "inline_diagnostics")) {
-            if (std.mem.eql(u8, value, "true")) settings.inline_diagnostics = true;
-            if (std.mem.eql(u8, value, "false")) settings.inline_diagnostics = false;
+            if (parseBool(value)) |b| settings.inline_diagnostics = b;
         } else if (std.mem.eql(u8, key, "format_on_save")) {
-            if (std.mem.eql(u8, value, "true")) settings.format_on_save = true;
-            if (std.mem.eql(u8, value, "false")) settings.format_on_save = false;
+            if (parseBool(value)) |b| settings.format_on_save = b;
         }
     }
 }
 
-/// The standard config path, built into `buf`: $XDG_CONFIG_HOME/zedit/config or
-/// ~/.config/zedit/config. Null when neither env var exists. (libc getenv — the
-/// editor links libc for tree-sitter anyway.)
-pub fn standardPath(buf: []u8) ?[]const u8 {
-    if (std.c.getenv("XDG_CONFIG_HOME")) |xdg_z| {
+/// An XDG base-directory path, built into `buf`: `$env_var/zedit/leaf`, or
+/// `$HOME/home_fallback/zedit/leaf` when the variable is unset or empty. Null
+/// when neither env var exists. (libc getenv — the editor links libc for
+/// tree-sitter anyway.) Shared by the config, recent-list and undo paths.
+pub fn xdgPath(buf: []u8, env_var: [:0]const u8, home_fallback: []const u8, leaf: []const u8) ?[]const u8 {
+    if (std.c.getenv(env_var)) |xdg_z| {
         const xdg = std.mem.sliceTo(xdg_z, 0);
-        if (xdg.len > 0)
-            return std.fmt.bufPrint(buf, "{s}/zedit/config", .{xdg}) catch null;
+        if (xdg.len > 0) return std.fmt.bufPrint(buf, "{s}/zedit/{s}", .{ xdg, leaf }) catch null;
     }
     const home_z = std.c.getenv("HOME") orelse return null;
     const home = std.mem.sliceTo(home_z, 0);
-    return std.fmt.bufPrint(buf, "{s}/.config/zedit/config", .{home}) catch null;
+    return std.fmt.bufPrint(buf, "{s}/{s}/zedit/{s}", .{ home, home_fallback, leaf }) catch null;
+}
+
+/// The standard config path: $XDG_CONFIG_HOME/zedit/config or
+/// ~/.config/zedit/config.
+pub fn standardPath(buf: []u8) ?[]const u8 {
+    return xdgPath(buf, "XDG_CONFIG_HOME", ".config", "config");
 }
 
 /// Load the config file (from `override` if given, else the standard path) and
@@ -254,10 +256,7 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, override: ?[]const u8) bool {
 /// directory), refusing to overwrite an existing file. Returns the path.
 pub fn writeDefault(io: std.Io, buf: []u8) ![]const u8 {
     const path = standardPath(buf) orelse return error.NoHome;
-    if (std.Io.Dir.cwd().readFileAlloc(io, path, std.heap.page_allocator, .limited(1))) |data| {
-        std.heap.page_allocator.free(data);
-        return error.PathAlreadyExists;
-    } else |_| {}
+    if (std.Io.Dir.cwd().access(io, path, .{})) |_| return error.PathAlreadyExists else |_| {}
     const dir_end = std.mem.lastIndexOfScalar(u8, path, '/') orelse return error.NoHome;
     std.Io.Dir.cwd().createDirPath(io, path[0..dir_end]) catch {};
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = default_text });

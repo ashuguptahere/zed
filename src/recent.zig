@@ -16,6 +16,8 @@
 //! local path has since disappeared are dropped when the list is read.
 
 const std = @import("std");
+const config = @import("config.zig");
+const remote = @import("remote.zig");
 
 pub const max_entries = 30;
 
@@ -63,21 +65,15 @@ pub const List = struct {
 
 /// The state-file path, built into `buf`. Null when neither env var exists.
 pub fn statePath(buf: []u8) ?[]const u8 {
-    if (std.c.getenv("XDG_STATE_HOME")) |xdg_z| {
-        const xdg = std.mem.sliceTo(xdg_z, 0);
-        if (xdg.len > 0) return std.fmt.bufPrint(buf, "{s}/zedit/recent", .{xdg}) catch null;
-    }
-    const home_z = std.c.getenv("HOME") orelse return null;
-    const home = std.mem.sliceTo(home_z, 0);
-    return std.fmt.bufPrint(buf, "{s}/.local/state/zedit/recent", .{home}) catch null;
+    return config.xdgPath(buf, "XDG_STATE_HOME", ".local/state", "recent");
 }
 
 /// Read the list, dropping entries whose local path no longer exists (remote
 /// `ssh://` entries are kept as-is — checking them would mean a network call).
-pub fn load(gpa: std.mem.Allocator, io: std.Io, override: ?[]const u8) List {
+pub fn load(gpa: std.mem.Allocator, io: std.Io) List {
     var list: List = .{ .gpa = gpa };
     var pbuf: [512]u8 = undefined;
-    const path = override orelse (statePath(&pbuf) orelse return list);
+    const path = statePath(&pbuf) orelse return list;
     const text = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(64 << 10)) catch return list;
     defer gpa.free(text);
     parse(&list, text);
@@ -109,7 +105,7 @@ fn prune(list: *List, io: std.Io) void {
     var i: usize = 0;
     while (i < list.entries.items.len) {
         const e = list.entries.items[i];
-        if (isRemote(e.path) or exists(io, e.path, e.kind)) {
+        if (remote.isRemote(e.path) or exists(io, e.path, e.kind)) {
             i += 1;
             continue;
         }
@@ -118,37 +114,20 @@ fn prune(list: *List, io: std.Io) void {
     }
 }
 
-pub fn isRemote(path: []const u8) bool {
-    return std.mem.startsWith(u8, path, "ssh://");
-}
-
 fn exists(io: std.Io, path: []const u8, kind: Kind) bool {
-    switch (kind) {
-        .dir => {
-            var d = std.Io.Dir.cwd().openDir(io, path, .{}) catch return false;
-            d.close(io);
-            return true;
-        },
-        .file => {
-            var f = std.Io.Dir.cwd().openFile(io, path, .{}) catch return false;
-            f.close(io);
-            return true;
-        },
-    }
+    const st = std.Io.Dir.cwd().statFile(io, path, .{}) catch return false;
+    return (kind == .dir) == (st.kind == .directory);
 }
 
 /// Write the list back (creating the directory). Best-effort: failures are
 /// logged, never surfaced — losing the recent list must not break a session.
-pub fn save(list: *const List, io: std.Io, override: ?[]const u8) void {
+pub fn save(list: *const List, io: std.Io) void {
     var pbuf: [512]u8 = undefined;
-    const path = override orelse (statePath(&pbuf) orelse return);
+    const path = statePath(&pbuf) orelse return;
     var text: std.ArrayList(u8) = .empty;
     defer text.deinit(list.gpa);
     for (list.entries.items) |e| {
-        text.append(list.gpa, if (e.kind == .dir) 'd' else 'f') catch return;
-        text.append(list.gpa, ' ') catch return;
-        text.appendSlice(list.gpa, e.path) catch return;
-        text.append(list.gpa, '\n') catch return;
+        text.print(list.gpa, "{c} {s}\n", .{ @as(u8, if (e.kind == .dir) 'd' else 'f'), e.path }) catch return;
     }
     if (std.mem.lastIndexOfScalar(u8, path, '/')) |cut| {
         std.Io.Dir.cwd().createDirPath(io, path[0..cut]) catch {};
@@ -189,10 +168,4 @@ test "parse reads entries in order and skips junk" {
     try std.testing.expectEqualStrings("ssh://host/etc/hosts", list.entries.items[0].path);
     try std.testing.expectEqual(Kind.dir, list.entries.items[1].kind);
     try std.testing.expectEqualStrings("/a b/c.txt", list.entries.items[2].path); // spaces survive
-}
-
-test "isRemote spots ssh targets" {
-    try std.testing.expect(isRemote("ssh://host/etc/hosts"));
-    try std.testing.expect(!isRemote("/local/path"));
-    try std.testing.expect(!isRemote("sshfoo"));
 }

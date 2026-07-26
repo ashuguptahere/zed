@@ -155,6 +155,10 @@ The shortlist is done; these are the next-highest gaps from
       headless-nvim ground truth: visual-mode `a` objects behaved like `i`
       ones, counted find-char (`3fa`, `d3fa`, `2;`) ignored the count, and the
       grep picker missed every file the project walk had not yet delivered.
+- [x] Repo-wide over-engineering audit applied: 81 verified findings, net
+      −722 lines (init field-defaults, std.json serializers, shared
+      xdgPath/nowMs/writeAll helpers, harness dedup, ~30 hand-rolled loops
+      replaced with std calls). Benchmarks and all 401 checks unchanged.
 - [x] Soft wrap: word breaks, indent retention (`wrap_indent`) and a
       `wrap_column`, with the screen-line motions following the real break
       points. Found and fixed a row being drawn past its break point.

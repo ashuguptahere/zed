@@ -9,12 +9,6 @@ const CR = "\r";
 const BS = "\x7f";
 const target = "/tmp/zedit_it_feat.txt";
 
-fn case(ctx: *h.Ctx, name: []const u8, chunks: []const []const u8, initial: []const u8, want: []const u8) void {
-    const got = h.runEdit(ctx, target, initial, chunks);
-    defer ctx.gpa.free(got);
-    ctx.check(name, std.mem.eql(u8, got, want));
-}
-
 pub fn run(ctx: *h.Ctx) !void {
     // ---- visual rendering (needs a .zig file for language detection) ----
     const zig_target = "/tmp/zedit_it_feat.zig";
@@ -44,17 +38,17 @@ pub fn run(ctx: *h.Ctx) !void {
     h.removeFile(ctx.io, zig_target);
 
     // ---- auto-pairs ----
-    case(ctx, "autopair inserts closer", &.{ "i", "(", "x", ESC, ":wq", CR }, "", "(x)\n");
-    case(ctx, "autopair steps over closer", &.{ "i", "(", ")", ESC, ":wq", CR }, "", "()\n");
+    h.case(ctx, target, "autopair inserts closer", &.{ "i", "(", "x", ESC, ":wq", CR }, "", "(x)\n");
+    h.case(ctx, target, "autopair steps over closer", &.{ "i", "(", ")", ESC, ":wq", CR }, "", "()\n");
     // The emptied (but once-edited) line writes "\n", not 0 bytes — verified
     // against nvim (see vim_compat.zig and Buffer.emptied).
-    case(ctx, "backspace deletes empty pair", &.{ "i", "(", BS, ESC, ":wq", CR }, "", "\n");
-    case(ctx, "autopair quotes", &.{ "i", "\"", "hi", ESC, ":wq", CR }, "", "\"hi\"\n");
+    h.case(ctx, target, "backspace deletes empty pair", &.{ "i", "(", BS, ESC, ":wq", CR }, "", "\n");
+    h.case(ctx, target, "autopair quotes", &.{ "i", "\"", "hi", ESC, ":wq", CR }, "", "\"hi\"\n");
 
     // ---- comment toggle ----
-    case(ctx, "gcc comments line", &.{ "gcc", ":wq", CR }, "abc\n", "// abc\n");
-    case(ctx, "gcc twice toggles back", &.{ "gcc", "gcc", ":wq", CR }, "abc\n", "abc\n");
-    case(ctx, "gcj comments two lines", &.{ "gcj", ":wq", CR }, "a\nb\nc\n", "// a\n// b\nc\n");
+    h.case(ctx, target, "gcc comments line", &.{ "gcc", ":wq", CR }, "abc\n", "// abc\n");
+    h.case(ctx, target, "gcc twice toggles back", &.{ "gcc", "gcc", ":wq", CR }, "abc\n", "abc\n");
+    h.case(ctx, target, "gcj comments two lines", &.{ "gcj", ":wq", CR }, "a\nb\nc\n", "// a\n// b\nc\n");
 
     // ---- showcmd: the partial command as typed (vim's 'showcmd') ----
     // The indicator accumulates keys while a command is incomplete and clears

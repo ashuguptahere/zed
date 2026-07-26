@@ -13,7 +13,7 @@ pub const Pos = buffer.Pos;
 
 /// First regex match after `from`, wrapping to the top.
 pub fn next(buf: *const buffer.Buffer, from: Pos, re: *const regex.Regex) ?Pos {
-    if (re.literal()) |lit| return nextLiteral(buf, from, lit);
+    if (re.lit) |lit| return nextLiteral(buf, from, lit);
     const lines = buf.lineCount();
     // Remainder of the current line, starting just past the cursor.
     if (re.find(buf.line(from.row), from.col + 1)) |m|
@@ -29,7 +29,7 @@ pub fn next(buf: *const buffer.Buffer, from: Pos, re: *const regex.Regex) ?Pos {
 
 /// Last regex match strictly before `from`, wrapping to the bottom.
 pub fn prev(buf: *const buffer.Buffer, from: Pos, re: *const regex.Regex) ?Pos {
-    if (re.literal()) |lit| return prevLiteral(buf, from, lit);
+    if (re.lit) |lit| return prevLiteral(buf, from, lit);
     const lines = buf.lineCount();
     if (lastMatchBefore(buf.line(from.row), re, from.col)) |c|
         return .{ .row = from.row, .col = c };
@@ -285,7 +285,6 @@ test "regex word-boundary search like *" {
 }
 
 test "simd literal scan matches std.mem across edge cases" {
-    const gpa = std.testing.allocator;
     // Cases that break naive vector scans: matches at the very start and end,
     // needles spanning a 32-byte chunk boundary, repeated first bytes, a
     // needle longer than the haystack, and single-byte needles.
@@ -315,5 +314,4 @@ test "simd literal scan matches std.mem across edge cases" {
             try std.testing.expectEqual(want_last, simdLastIndexOf(hay, hay.len, needle));
         }
     }
-    _ = gpa;
 }

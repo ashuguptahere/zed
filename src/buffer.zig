@@ -374,7 +374,6 @@ pub const Buffer = struct {
     /// The row's bytes as mutable storage (converting a borrowed line to owned
     /// first) — for same-length in-place edits like case toggling.
     pub fn lineMut(self: *Buffer, row: usize) ![]u8 {
-        try self.materialize();
         const l = try self.toOwned(row);
         return l.items;
     }
@@ -400,7 +399,6 @@ pub const Buffer = struct {
 
     /// Insert one codepoint at (row, col). Returns the new column (col + bytes).
     pub fn insertCodepoint(self: *Buffer, row: usize, col: usize, cp: u21) !usize {
-        try self.materialize();
         var enc: [4]u8 = undefined;
         const n = std.unicode.utf8Encode(cp, &enc) catch return col;
         const l = try self.toOwned(row);
@@ -497,7 +495,6 @@ pub const Buffer = struct {
 
     /// Insert raw bytes into a line at a byte offset.
     pub fn insertBytes(self: *Buffer, row: usize, col: usize, bytes: []const u8) !void {
-        try self.materialize();
         const l = try self.toOwned(row);
         try l.insertSlice(self.gpa, col, bytes);
         self.emptied = false;
@@ -507,7 +504,6 @@ pub const Buffer = struct {
 
     /// Remove bytes [start, end) from a line.
     pub fn deleteInLine(self: *Buffer, row: usize, start: usize, end: usize) !void {
-        try self.materialize();
         if (end <= start) return;
         const l = try self.toOwned(row);
         try l.replaceRange(self.gpa, start, end - start, &[_]u8{});
@@ -517,7 +513,6 @@ pub const Buffer = struct {
 
     /// Replace a line's entire content.
     pub fn setLine(self: *Buffer, row: usize, bytes: []const u8) !void {
-        try self.materialize();
         const l = try self.toOwned(row);
         l.clearRetainingCapacity();
         try l.appendSlice(self.gpa, bytes);

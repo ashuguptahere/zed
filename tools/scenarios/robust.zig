@@ -6,16 +6,6 @@
 const std = @import("std");
 const h = @import("../harness.zig");
 
-fn join(ctx: *h.Ctx, dir: []const u8, name: []const u8) []u8 {
-    return std.fmt.allocPrint(ctx.gpa, "{s}/{s}", .{ dir, name }) catch unreachable;
-}
-
-fn chmod(ctx: *h.Ctx, mode: []const u8, path: []const u8) void {
-    const res = std.process.run(ctx.gpa, ctx.io, .{ .argv = &.{ "chmod", mode, path } }) catch return;
-    ctx.gpa.free(res.stdout);
-    ctx.gpa.free(res.stderr);
-}
-
 pub fn run(ctx: *h.Ctx) !void {
     const dir = try h.tempDir(ctx.gpa);
     defer ctx.gpa.free(dir);
@@ -24,7 +14,7 @@ pub fn run(ctx: *h.Ctx) !void {
     // A file smuggling an OSC title-set and a clear-screen CSI must render as
     // plain '?' text — the raw escape bytes must never reach the terminal.
     {
-        const evil = join(ctx, dir, "evil.txt");
+        const evil = h.join(ctx, dir, "evil.txt");
         defer ctx.gpa.free(evil);
         h.writeFile(ctx.io, evil, "before \x1b]0;pwned\x07 middle \x1b[2J after\n");
         var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "evil.txt" }, .cwd = dir, .term = "xterm-256color" });
@@ -38,11 +28,11 @@ pub fn run(ctx: *h.Ctx) !void {
 
     // :w on a read-only file reports "permission denied", not a raw enum.
     {
-        const ro = join(ctx, dir, "ro.txt");
+        const ro = h.join(ctx, dir, "ro.txt");
         defer ctx.gpa.free(ro);
         h.writeFile(ctx.io, ro, "locked\n");
-        chmod(ctx, "444", ro);
-        defer chmod(ctx, "644", ro);
+        h.runQuiet(ctx.gpa, ctx.io, &.{ "chmod", "444", ro });
+        defer h.runQuiet(ctx.gpa, ctx.io, &.{ "chmod", "644", ro });
         var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "ro.txt" }, .cwd = dir, .term = "xterm-256color" });
         defer s.finish();
         s.drain(400);
@@ -62,7 +52,7 @@ pub fn run(ctx: *h.Ctx) !void {
 
     // :qa with unsaved changes refuses with a hint; :qa! then discards.
     {
-        const f = join(ctx, dir, "f.txt");
+        const f = h.join(ctx, dir, "f.txt");
         defer ctx.gpa.free(f);
         h.writeFile(ctx.io, f, "aa\n");
         var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "f.txt" }, .cwd = dir, .term = "xterm-256color" });

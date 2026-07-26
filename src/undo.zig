@@ -24,6 +24,7 @@
 
 const std = @import("std");
 const buffer = @import("buffer.zig");
+const config = @import("config.zig");
 const log = @import("log.zig");
 const Allocator = std.mem.Allocator;
 
@@ -67,67 +68,14 @@ pub const Entry = struct {
     branch: bool, // its parent has more than one child: an alternative history
 };
 
-/// A bounds-checked walk over the undo file: every read either returns a value
-/// or signals that the file is too short, so a truncated or hostile file can
-/// only ever be rejected.
-const Reader = struct {
-    b: []const u8,
-    i: usize = 0,
-
-    fn take(self: *Reader, n: usize) Slice {
-        if (self.i + n > self.b.len) return .{ .s = self.b[self.b.len..] };
-        defer self.i += n;
-        return .{ .s = self.b[self.i..][0..n] };
-    }
-
-    fn byte(self: *Reader) ?u8 {
-        const s = self.take(1);
-        return if (s.s.len == 1) s.s[0] else null;
-    }
-
-    fn word(self: *Reader) ?u32 {
-        const s = self.take(4);
-        if (s.s.len != 4) return null;
-        return std.mem.littleToNative(u32, std.mem.bytesToValue(u32, s.s));
-    }
-
-    fn long(self: *Reader) ?u64 {
-        const s = self.take(8);
-        if (s.s.len != 8) return null;
-        return std.mem.littleToNative(u64, std.mem.bytesToValue(u64, s.s));
-    }
-
-    const Slice = struct {
-        s: []const u8,
-        fn eqlStr(self: Slice, other: []const u8) bool {
-            return std.mem.eql(u8, self.s, other);
-        }
-    };
-};
-
 /// Where a file's history is kept: `$XDG_STATE_HOME/zedit/undo/<hash>`. The
 /// name is a hash of the absolute path (paths are longer than a filename may
 /// be, and contain slashes); the path itself is stored inside the file and
 /// checked on load, so a collision cannot apply the wrong history.
 pub fn filePath(buf: []u8, abs_path: []const u8) ?[]const u8 {
     var home_buf: [512]u8 = undefined;
-    const dir = stateDir(&home_buf) orelse return null;
+    const dir = config.xdgPath(&home_buf, "XDG_STATE_HOME", ".local/state", "undo") orelse return null;
     return std.fmt.bufPrint(buf, "{s}/{x:0>16}.undo", .{ dir, std.hash.Wyhash.hash(0, abs_path) }) catch null;
-}
-
-fn stateDir(buf: []u8) ?[]const u8 {
-    if (std.c.getenv("XDG_STATE_HOME")) |xdg_z| {
-        const xdg = std.mem.sliceTo(xdg_z, 0);
-        if (xdg.len > 0) return std.fmt.bufPrint(buf, "{s}/zedit/undo", .{xdg}) catch null;
-    }
-    const home_z = std.c.getenv("HOME") orelse return null;
-    return std.fmt.bufPrint(buf, "{s}/.local/state/zedit/undo", .{std.mem.sliceTo(home_z, 0)}) catch null;
-}
-
-/// Monotonic milliseconds — the same clock the profiler uses, so history
-/// timestamps cannot jump when the wall clock is adjusted.
-fn nowMs() i64 {
-    return @intCast(@divTrunc(log.nowNanos(), std.time.ns_per_ms));
 }
 
 pub const History = struct {
@@ -198,7 +146,7 @@ pub const History = struct {
             .children = 0,
             .depth = self.nodes.items[parent].depth + 1,
             .seq = self.next_seq,
-            .time_ms = nowMs(),
+            .time_ms = log.nowMs(),
             .saved = false,
             .alive = true,
         }) catch {
@@ -228,7 +176,7 @@ pub const History = struct {
             .children = 0,
             .depth = 0,
             .seq = self.next_seq,
-            .time_ms = nowMs(),
+            .time_ms = log.nowMs(),
             .saved = false,
             .alive = true,
         }) catch {
@@ -694,34 +642,35 @@ pub const History = struct {
     }
 
     fn parseInto(h: *History, raw: []const u8, for_file: []const u8, content: []const u8) bool {
-        var r = Reader{ .b = raw };
-        if (!r.take(magic.len).eqlStr(magic)) return false;
-        if ((r.byte() orelse return false) != format_version) return false;
-        const plen = r.word() orelse return false;
-        if (!r.take(plen).eqlStr(for_file)) return false;
-        const anchor_len = r.long() orelse return false;
-        const anchor_hash = r.long() orelse return false;
+        // A fixed reader turns every read past the end into `error.EndOfStream`,
+        // so a truncated or hostile file can only ever be rejected.
+        var r: std.Io.Reader = .fixed(raw);
+        if (!std.mem.eql(u8, r.take(magic.len) catch return false, magic)) return false;
+        if ((r.takeByte() catch return false) != format_version) return false;
+        const plen = r.takeInt(u32, .little) catch return false;
+        if (!std.mem.eql(u8, r.take(plen) catch return false, for_file)) return false;
+        const anchor_len = r.takeInt(u64, .little) catch return false;
+        const anchor_hash = r.takeInt(u64, .little) catch return false;
         if (anchor_len != content.len or anchor_hash != std.hash.Wyhash.hash(0, content)) return false;
-        const cur_seq = r.word() orelse return false;
-        h.next_seq = r.word() orelse return false;
-        const count = r.word() orelse return false;
+        const cur_seq = r.takeInt(u32, .little) catch return false;
+        h.next_seq = r.takeInt(u32, .little) catch return false;
+        const count = r.takeInt(u32, .little) catch return false;
         if (count > 1_000_000) return false;
 
         var i: u32 = 0;
         while (i < count) : (i += 1) {
-            const seq = r.word() orelse return false;
-            const parent_seq = r.word() orelse return false;
-            const child_seq = r.word() orelse return false;
-            const at = r.word() orelse return false;
-            const old_len = r.word() orelse return false;
-            const new_len = r.word() orelse return false;
-            const cy = r.word() orelse return false;
-            const cx = r.word() orelse return false;
-            const time_ms: i64 = @bitCast(r.long() orelse return false);
-            const saved = (r.byte() orelse return false) != 0;
+            const seq = r.takeInt(u32, .little) catch return false;
+            const parent_seq = r.takeInt(u32, .little) catch return false;
+            const child_seq = r.takeInt(u32, .little) catch return false;
+            const at = r.takeInt(u32, .little) catch return false;
+            const old_len = r.takeInt(u32, .little) catch return false;
+            const new_len = r.takeInt(u32, .little) catch return false;
+            const cy = r.takeInt(u32, .little) catch return false;
+            const cx = r.takeInt(u32, .little) catch return false;
+            const time_ms: i64 = @bitCast(r.takeInt(u64, .little) catch return false);
+            const saved = (r.takeByte() catch return false) != 0;
             const want = if (parent_seq == no_seq) 0 else @as(usize, old_len) + new_len;
-            const body = r.take(want).s;
-            if (body.len != want) return false;
+            const body = r.take(want) catch return false;
             const bytes = h.gpa.dupe(u8, body) catch return false;
             const parent = if (parent_seq == no_seq) null else h.indexOfSeq(parent_seq) orelse {
                 h.gpa.free(bytes);

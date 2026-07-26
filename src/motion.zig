@@ -150,23 +150,12 @@ pub fn matchPair(buf: *const buffer.Buffer, pos: Pos) ?Pos {
 
     // Find the first bracket at or after the cursor on this line.
     var col = pos.col;
-    var open_idx: ?usize = null;
-    var close_idx: ?usize = null;
-    while (col < line.len) {
-        const c = line[col];
-        if (std.mem.indexOfScalar(u8, opens, c)) |k| {
-            open_idx = k;
-            break;
-        }
-        if (std.mem.indexOfScalar(u8, closes, c)) |k| {
-            close_idx = k;
-            break;
-        }
-        col = unicode.nextBoundary(line, col);
+    while (col < line.len) : (col = unicode.nextBoundary(line, col)) {
+        if (std.mem.indexOfScalar(u8, opens, line[col])) |k|
+            return scan(buf, .{ .row = pos.row, .col = col }, opens[k], closes[k], true);
+        if (std.mem.indexOfScalar(u8, closes, line[col])) |k|
+            return scan(buf, .{ .row = pos.row, .col = col }, closes[k], opens[k], false);
     }
-
-    if (open_idx) |k| return scan(buf, .{ .row = pos.row, .col = col }, opens[k], closes[k], true);
-    if (close_idx) |k| return scan(buf, .{ .row = pos.row, .col = col }, closes[k], opens[k], false);
     return null;
 }
 

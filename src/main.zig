@@ -121,7 +121,7 @@ pub fn main(init: std.process.Init) !void {
     defer terminal.restore();
 
     // Recently-opened list: drives the startup screen when no file was given.
-    ed.startSession(null, cfg.file == null and !cfg.tutor and !open_picker);
+    ed.startSession(cfg.file == null and !cfg.tutor and !open_picker);
     if (cfg.file) |p| ed.noteRecent(p, .file);
     if (remote_dir) |d| {
         ed.openRemoteDir(d);
@@ -141,38 +141,30 @@ pub fn main(init: std.process.Init) !void {
 /// `--check-update`: compare this build's version with the newest published
 /// release tag. Runs without a terminal, so scripts and CI can use it.
 fn checkUpdate(gpa: std.mem.Allocator, io: std.Io) void {
-    const url = "https://github.com/ashuguptahere/zed.git";
-    const res = std.process.run(gpa, io, .{
-        .argv = &.{ "git", "ls-remote", "--tags", "--refs", url },
-        .stdout_limit = .limited(1 << 20),
-        .stderr_limit = .limited(8 << 10),
-    }) catch {
-        cli.printError("cannot check for updates (is git installed?)");
-        std.process.exit(1);
-    };
-    defer gpa.free(res.stdout);
-    defer gpa.free(res.stderr);
-    switch (res.term) {
-        .exited => |code| if (code != 0) {
-            std.log.scoped(.main).warn("ls-remote failed: {s}", .{std.mem.trim(u8, res.stderr, " \n")});
+    switch (editor.fetchNewestTag(gpa, io)) {
+        .no_git => {
+            cli.printError("cannot check for updates (is git installed?)");
+            std.process.exit(1);
+        },
+        .no_network => {
             cli.printError("cannot reach the release server (no network?)");
             std.process.exit(1);
         },
-        else => {
+        .failed => {
             cli.printError("cannot check for updates");
             std.process.exit(1);
         },
-    }
-    var b: [256]u8 = undefined;
-    const newest = editor.newestReleaseTag(res.stdout) orelse {
-        cli.printOut("zedit: no releases published yet\n");
-        return;
-    };
-    if (editor.versionIsNewer(newest, cli.version)) {
-        cli.printOut(std.fmt.bufPrint(&b, "zedit: update available — {s} (you have {s})\n" ++
-            "  https://github.com/ashuguptahere/zed/releases/latest\n", .{ newest, cli.version }) catch return);
-    } else {
-        cli.printOut(std.fmt.bufPrint(&b, "zedit: up to date ({s})\n", .{cli.version}) catch return);
+        .no_release => cli.printOut("zedit: no releases published yet\n"),
+        .tag => |newest| {
+            defer gpa.free(newest);
+            var b: [256]u8 = undefined;
+            if (editor.compareVersions(newest, cli.version) == .gt) {
+                cli.printOut(std.fmt.bufPrint(&b, "zedit: update available — {s} (you have {s})\n" ++
+                    "  https://github.com/ashuguptahere/zed/releases/latest\n", .{ newest, cli.version }) catch return);
+            } else {
+                cli.printOut(std.fmt.bufPrint(&b, "zedit: up to date ({s})\n", .{cli.version}) catch return);
+            }
+        },
     }
 }
 

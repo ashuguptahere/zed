@@ -7,19 +7,15 @@ const h = @import("../harness.zig");
 
 const CTRL_W = "\x17";
 
-fn join(ctx: *h.Ctx, dir: []const u8, name: []const u8) []u8 {
-    return std.fmt.allocPrint(ctx.gpa, "{s}/{s}", .{ dir, name }) catch unreachable;
-}
-
 pub fn run(ctx: *h.Ctx) !void {
     // A vertical split shows two different buffers side by side at once.
     {
         const dir = try h.tempDir(ctx.gpa);
         defer ctx.gpa.free(dir);
         defer h.removeTree(ctx.gpa, ctx.io, dir);
-        const a = join(ctx, dir, "a.txt");
+        const a = h.join(ctx, dir, "a.txt");
         defer ctx.gpa.free(a);
-        const b = join(ctx, dir, "b.txt");
+        const b = h.join(ctx, dir, "b.txt");
         defer ctx.gpa.free(b);
         h.writeFile(ctx.io, a, "alpha\n");
         h.writeFile(ctx.io, b, "bravo\n");
@@ -44,9 +40,9 @@ pub fn run(ctx: *h.Ctx) !void {
         const dir = try h.tempDir(ctx.gpa);
         defer ctx.gpa.free(dir);
         defer h.removeTree(ctx.gpa, ctx.io, dir);
-        const a = join(ctx, dir, "a.txt");
+        const a = h.join(ctx, dir, "a.txt");
         defer ctx.gpa.free(a);
-        const b = join(ctx, dir, "b.txt");
+        const b = h.join(ctx, dir, "b.txt");
         defer ctx.gpa.free(b);
         h.writeFile(ctx.io, a, "aaa\n");
         h.writeFile(ctx.io, b, "bbb\n");
@@ -114,7 +110,7 @@ pub fn run(ctx: *h.Ctx) !void {
         const dir = try h.tempDir(ctx.gpa);
         defer ctx.gpa.free(dir);
         defer h.removeTree(ctx.gpa, ctx.io, dir);
-        const a = join(ctx, dir, "a.txt");
+        const a = h.join(ctx, dir, "a.txt");
         defer ctx.gpa.free(a);
         h.writeFile(ctx.io, a, "aaa\n");
 

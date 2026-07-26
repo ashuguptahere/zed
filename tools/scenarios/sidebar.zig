@@ -5,27 +5,17 @@
 const std = @import("std");
 const h = @import("../harness.zig");
 
-fn join(ctx: *h.Ctx, dir: []const u8, name: []const u8) []u8 {
-    return std.fmt.allocPrint(ctx.gpa, "{s}/{s}", .{ dir, name }) catch unreachable;
-}
-
-fn git(ctx: *h.Ctx, argv: []const []const u8) void {
-    const res = std.process.run(ctx.gpa, ctx.io, .{ .argv = argv }) catch return;
-    ctx.gpa.free(res.stdout);
-    ctx.gpa.free(res.stderr);
-}
-
 pub fn run(ctx: *h.Ctx) !void {
     // Sidebar: tree renders, navigation opens a file, a directory expands.
     {
         const dir = try h.tempDir(ctx.gpa);
         defer ctx.gpa.free(dir);
         defer h.removeTree(ctx.gpa, ctx.io, dir);
-        const a = join(ctx, dir, "alpha.txt");
+        const a = h.join(ctx, dir, "alpha.txt");
         defer ctx.gpa.free(a);
-        const sub = join(ctx, dir, "subdir");
+        const sub = h.join(ctx, dir, "subdir");
         defer ctx.gpa.free(sub);
-        const inner = join(ctx, dir, "subdir/inner.txt");
+        const inner = h.join(ctx, dir, "subdir/inner.txt");
         defer ctx.gpa.free(inner);
         h.writeFile(ctx.io, a, "aaa\n");
         std.Io.Dir.cwd().createDirPath(ctx.io, sub) catch {};
@@ -72,9 +62,9 @@ pub fn run(ctx: *h.Ctx) !void {
         const dir = try h.tempDir(ctx.gpa);
         defer ctx.gpa.free(dir);
         defer h.removeTree(ctx.gpa, ctx.io, dir);
-        const a = join(ctx, dir, "a.txt");
+        const a = h.join(ctx, dir, "a.txt");
         defer ctx.gpa.free(a);
-        const cfg = join(ctx, dir, "cfg");
+        const cfg = h.join(ctx, dir, "cfg");
         defer ctx.gpa.free(cfg);
         h.writeFile(ctx.io, a, "aaa\n");
         h.writeFile(ctx.io, cfg, "sidebar = right\n");
@@ -94,12 +84,12 @@ pub fn run(ctx: *h.Ctx) !void {
         const dir = try h.tempDir(ctx.gpa);
         defer ctx.gpa.free(dir);
         defer h.removeTree(ctx.gpa, ctx.io, dir);
-        const f = join(ctx, dir, "f.txt");
+        const f = h.join(ctx, dir, "f.txt");
         defer ctx.gpa.free(f);
-        git(ctx, &.{ "git", "-C", dir, "init", "-q" });
+        h.runQuiet(ctx.gpa, ctx.io, &.{ "git", "-C", dir, "init", "-q" });
         h.writeFile(ctx.io, f, "alpha\nbeta\ngamma\n");
-        git(ctx, &.{ "git", "-C", dir, "add", "f.txt" });
-        git(ctx, &.{ "git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@t.t", "commit", "-q", "-m", "init" });
+        h.runQuiet(ctx.gpa, ctx.io, &.{ "git", "-C", dir, "add", "f.txt" });
+        h.runQuiet(ctx.gpa, ctx.io, &.{ "git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@t.t", "commit", "-q", "-m", "init" });
         h.writeFile(ctx.io, f, "alpha\nBETA\ngamma\nadded\n");
 
         var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "f.txt" }, .cwd = dir, .term = "xterm-256color" });

@@ -32,10 +32,10 @@ fn paintBeforeDecorating(ctx: *h.Ctx) !void {
     const other = try std.fmt.allocPrint(ctx.gpa, "{s}/other.txt", .{dir});
     defer ctx.gpa.free(other);
 
-    git(ctx, &.{ "git", "-C", dir, "init", "-q" });
+    h.runQuiet(ctx.gpa, ctx.io, &.{ "git", "-C", dir, "init", "-q" });
     h.writeFile(ctx.io, file, "alpha\nbravo\n");
-    git(ctx, &.{ "git", "-C", dir, "add", name });
-    git(ctx, &.{ "git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@t.t", "commit", "-q", "-m", "init" });
+    h.runQuiet(ctx.gpa, ctx.io, &.{ "git", "-C", dir, "add", name });
+    h.runQuiet(ctx.gpa, ctx.io, &.{ "git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@t.t", "commit", "-q", "-m", "init" });
     h.writeFile(ctx.io, file, "alpha\nCHANGEDLINE\n"); // a change for the gutter
     h.writeFile(ctx.io, other, "nothing here\n");
 
@@ -56,14 +56,6 @@ fn paintBeforeDecorating(ctx: *h.Ctx) !void {
     s.drain(200);
 }
 
-/// Run a git subcommand in `dir`, ignoring (but freeing) its output. Uses `-C`
-/// and `-c` flags so it works regardless of the global/system git config.
-fn git(ctx: *h.Ctx, argv: []const []const u8) void {
-    const res = std.process.run(ctx.gpa, ctx.io, .{ .argv = argv }) catch return;
-    ctx.gpa.free(res.stdout);
-    ctx.gpa.free(res.stderr);
-}
-
 /// Build a fresh repo with `committed` committed and `modified` in the working
 /// tree, open zedit on the file, drain the first frames, run the checks against
 /// the live session, then quit and clean up.
@@ -81,10 +73,10 @@ fn capture(
     const file = try std.fmt.allocPrint(ctx.gpa, "{s}/{s}", .{ dir, name });
     defer ctx.gpa.free(file);
 
-    git(ctx, &.{ "git", "-C", dir, "init", "-q" });
+    h.runQuiet(ctx.gpa, ctx.io, &.{ "git", "-C", dir, "init", "-q" });
     h.writeFile(ctx.io, file, committed);
-    git(ctx, &.{ "git", "-C", dir, "add", name });
-    git(ctx, &.{ "git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@t.t", "commit", "-q", "-m", "init" });
+    h.runQuiet(ctx.gpa, ctx.io, &.{ "git", "-C", dir, "add", name });
+    h.runQuiet(ctx.gpa, ctx.io, &.{ "git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@t.t", "commit", "-q", "-m", "init" });
     h.writeFile(ctx.io, file, modified); // working-tree change
 
     var s = try h.Session.spawn(ctx.gpa, .{

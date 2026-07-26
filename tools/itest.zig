@@ -41,8 +41,8 @@ pub fn main(init: std.process.Init) !void {
     var ctx = h.Ctx{
         .gpa = init.gpa,
         .io = init.io,
-        .zedit = try absolute(arena, cwd, argv[1]),
-        .mock = try absolute(arena, cwd, argv[2]),
+        .zedit = try std.fs.path.resolve(arena, &.{ cwd, argv[1] }),
+        .mock = try std.fs.path.resolve(arena, &.{ cwd, argv[2] }),
     };
 
     inline for (scenarios) |s| {
@@ -52,9 +52,4 @@ pub fn main(init: std.process.Init) !void {
 
     std.debug.print("\n{d} passed, {d} failed\n", .{ ctx.passed, ctx.failed });
     if (ctx.failed > 0) std.process.exit(1);
-}
-
-fn absolute(arena: std.mem.Allocator, cwd: []const u8, path: []const u8) ![]const u8 {
-    if (std.fs.path.isAbsolute(path)) return path;
-    return std.fs.path.join(arena, &.{ cwd, path });
 }

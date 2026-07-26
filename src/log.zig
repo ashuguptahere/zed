@@ -23,11 +23,9 @@ pub const options: std.Options = .{
     .log_level = .debug,
 };
 
-/// Open `path` for logging (truncating any previous contents). Quietly does
-/// nothing useful if the file cannot be opened — diagnostics must never take
-/// the editor down.
-/// Open the log sink. Returns false when the path cannot be opened, so the
-/// caller can tell the user their --log flag was not honoured.
+/// Open the log sink at `path` (truncating any previous contents). Returns
+/// false when the path cannot be opened, so the caller can tell the user
+/// their --log flag was not honoured.
 pub fn enable(path: []const u8) bool {
     const fd = posix.openat(posix.AT.FDCWD, path, .{
         .ACCMODE = .WRONLY,
@@ -58,6 +56,12 @@ pub fn nowNanos() i128 {
     return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
 }
 
+/// Monotonic milliseconds — the same clock as `nowNanos`, so timestamps
+/// cannot jump when the wall clock is adjusted.
+pub fn nowMs() i64 {
+    return @intCast(@divTrunc(nowNanos(), std.time.ns_per_ms));
+}
+
 fn logFn(
     comptime level: std.log.Level,
     comptime scope: @EnumLiteral(),
@@ -76,14 +80,17 @@ fn logFn(
     writeAll(fd, line);
 }
 
-fn writeAll(fd: posix.fd_t, bytes: []const u8) void {
+/// Write all of `bytes` to `fd`, retrying on EINTR/EAGAIN; any other error
+/// gives up silently. Shared best-effort fd writer (log sink, CLI output,
+/// remote pipes).
+pub fn writeAll(fd: posix.fd_t, bytes: []const u8) void {
     var i: usize = 0;
     while (i < bytes.len) {
         const rc = posix.system.write(fd, bytes.ptr + i, bytes.len - i);
         switch (posix.system.errno(rc)) {
             .SUCCESS => i += @intCast(rc),
             .INTR, .AGAIN => continue,
-            else => return, // give up silently; logging is best-effort
+            else => return,
         }
     }
 }

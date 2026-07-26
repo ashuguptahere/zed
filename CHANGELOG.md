@@ -2,6 +2,16 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.9.0 - 2026-07-26
+
+### Changed
+
+- Applied a repo-wide over-engineering audit: 81 verified findings, net −722 lines, no behaviour change (one tiny fix below rode along, which is why this is a minor bump). Highlights: Editor.init's 145 lines of constant field assignments became field defaults on the struct (init is now 26 lines); the hand-rolled JSON serializers in the LSP client became `std.json.Stringify` calls (−102 lines); the undo-file parser's bespoke byte reader became `std.Io.Reader.fixed`; six copy-pasted scenario helpers (`case`, `join`, run-and-free, ANSI-strip) merged into the pty harness; the XDG path builder, monotonic-ms clock and fd write loop each collapsed from three copies to one shared function; ten picker openers share one prologue; and ~30 hand-rolled loops now use the std function that already did the job (`std.ascii.isDigit`/`toLower`, `@memset`, `std.mem.swap`/`trimStart`/`indexOfNone`/`replaceOwned`, `std.math.log10_int`, `std.StaticStringMap`, `std.Io.Dir.access`/`statFile`). Two `Theme` fields no palette distinguished (`char_`, `indent_guide`) were removed. The measured perf machinery (SIMD search, picker arena, frame diffing, style cache) was deliberately left untouched; the benchmark table is unchanged.
+
+### Fixed
+
+- An escaped `\$` in a snippet without tabstops was left as a literal backslash-dollar instead of being unescaped; noticed while removing the pre-scan that caused it.
+
 ## 0.8.0 - 2026-07-26
 
 ### Added

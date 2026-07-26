@@ -10,23 +10,19 @@ const h = @import("../harness.zig");
 const TAB = "\t";
 const GRUVBOX_BG = "\x1b[48;2;40;40;40m"; // #282828
 
-fn join(ctx: *h.Ctx, dir: []const u8, name: []const u8) []u8 {
-    return std.fmt.allocPrint(ctx.gpa, "{s}/{s}", .{ dir, name }) catch unreachable;
-}
-
 pub fn run(ctx: *h.Ctx) !void {
     const dir = try h.tempDir(ctx.gpa);
     defer ctx.gpa.free(dir);
     defer h.removeTree(ctx.gpa, ctx.io, dir);
-    const alpha = join(ctx, dir, "alpha.txt");
+    const alpha = h.join(ctx, dir, "alpha.txt");
     defer ctx.gpa.free(alpha);
-    const alpine = join(ctx, dir, "alpine.txt");
+    const alpine = h.join(ctx, dir, "alpine.txt");
     defer ctx.gpa.free(alpine);
-    const hidden = join(ctx, dir, ".hidden.txt");
+    const hidden = h.join(ctx, dir, ".hidden.txt");
     defer ctx.gpa.free(hidden);
-    const sub = join(ctx, dir, "sub");
+    const sub = h.join(ctx, dir, "sub");
     defer ctx.gpa.free(sub);
-    const inner = join(ctx, dir, "sub/inner.txt");
+    const inner = h.join(ctx, dir, "sub/inner.txt");
     defer ctx.gpa.free(inner);
     h.writeFile(ctx.io, alpha, "aaa\n");
     h.writeFile(ctx.io, alpine, "ppp\n");
@@ -63,7 +59,7 @@ pub fn run(ctx: *h.Ctx) !void {
     // executing ":e alp" then opens a NEW empty buffer named "alp", which a
     // write materialises as that file.
     {
-        const alp = join(ctx, dir, "alp");
+        const alp = h.join(ctx, dir, "alp");
         defer ctx.gpa.free(alp);
         var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "alpha.txt" }, .cwd = dir, .term = "xterm-256color" });
         defer s.finish();
@@ -125,7 +121,7 @@ pub fn run(ctx: *h.Ctx) !void {
 
     // --benchmark runs headless and prints the timing report to stdout.
     {
-        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "--benchmark", "alpha.txt" }, .cwd = dir, .term = "xterm" });
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "--benchmark", "alpha.txt" }, .cwd = dir });
         defer s.finish();
         s.drain(800);
         ctx.check("--benchmark prints a timing report", s.containsPlain(ctx.gpa, "open") and

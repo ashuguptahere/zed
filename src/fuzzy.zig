@@ -15,7 +15,7 @@ pub fn score(candidate: []const u8, query: []const u8) ?i32 {
     var prev_matched = false;
     for (candidate, 0..) |c, i| {
         if (qi >= query.len) break;
-        if (lower(c) == lower(query[qi])) {
+        if (std.ascii.toLower(c) == std.ascii.toLower(query[qi])) {
             s += 1;
             if (prev_matched) s += 6; // consecutive run
             if (i == 0 or isBoundary(candidate[i - 1])) s += 10; // word start
@@ -28,10 +28,6 @@ pub fn score(candidate: []const u8, query: []const u8) ?i32 {
     if (qi < query.len) return null;
     // Prefer shorter candidates on ties.
     return s - @as(i32, @intCast(candidate.len / 4));
-}
-
-fn lower(c: u8) u8 {
-    return if (c >= 'A' and c <= 'Z') c - 'A' + 'a' else c;
 }
 
 fn isBoundary(c: u8) bool {
@@ -61,7 +57,7 @@ test "empty query matches" {
 pub fn charMask(s: []const u8) u64 {
     var m: u64 = 0;
     for (s) |raw| {
-        const c = lower(raw);
+        const c = std.ascii.toLower(raw);
         if (c >= 'a' and c <= 'z') {
             m |= @as(u64, 1) << @intCast(c - 'a');
         } else if (c >= '0' and c <= '9') {

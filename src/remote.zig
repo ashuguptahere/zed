@@ -16,6 +16,7 @@
 //! (`ControlMaster`) makes the repeated calls of a picker session cheap.
 
 const std = @import("std");
+const log = @import("log.zig");
 
 /// A parsed `ssh://[user@]host[:port]/path` target. Slices borrow from the URL.
 pub const Target = struct {
@@ -47,7 +48,7 @@ pub fn parse(url: []const u8) ?Target {
     if (std.mem.lastIndexOfScalar(u8, authority[host_start..], ':')) |rel| {
         const colon = host_start + rel;
         const p = authority[colon + 1 ..];
-        if (p.len > 0 and allDigits(p)) {
+        if (p.len > 0 and std.mem.findNone(u8, p, "0123456789") == null) {
             port = p;
             authority = authority[0..colon];
         }
@@ -56,28 +57,12 @@ pub fn parse(url: []const u8) ?Target {
     return .{ .dest = authority, .port = port, .path = path };
 }
 
-fn allDigits(s: []const u8) bool {
-    for (s) |c| {
-        if (!std.ascii.isDigit(c)) return false;
-    }
-    return true;
-}
-
 /// Wrap `s` for the remote shell: `'` + s (with `'` → `'\''`) + `'`.
 /// The result is a single shell word whatever `s` contains.
 pub fn shellQuote(gpa: std.mem.Allocator, s: []const u8) ![]u8 {
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(gpa);
-    try out.append(gpa, '\'');
-    for (s) |c| {
-        if (c == '\'') {
-            try out.appendSlice(gpa, "'\\''");
-        } else {
-            try out.append(gpa, c);
-        }
-    }
-    try out.append(gpa, '\'');
-    return out.toOwnedSlice(gpa);
+    const esc = try std.mem.replaceOwned(u8, gpa, s, "'", "'\\''");
+    defer gpa.free(esc);
+    return std.fmt.allocPrint(gpa, "'{s}'", .{esc});
 }
 
 /// The common ssh options: never prompt (so the editor cannot hang), and reuse
@@ -164,7 +149,7 @@ pub fn write(gpa: std.mem.Allocator, io: std.Io, t: Target, data: []const u8) Er
         std.log.scoped(.remote).warn("ssh failed to run: {s}", .{@errorName(err)});
         return error.SshFailed;
     };
-    writeAllFd(child.stdin.?.handle, data);
+    log.writeAll(child.stdin.?.handle, data);
     child.stdin.?.close(io);
     child.stdin = null;
     const term = child.wait(io) catch return error.SshFailed;
@@ -227,18 +212,6 @@ pub fn isDir(gpa: std.mem.Allocator, io: std.Io, t: Target) bool {
         .exited => |code| code == 0,
         else => false,
     };
-}
-
-fn writeAllFd(fd: std.posix.fd_t, bytes: []const u8) void {
-    var i: usize = 0;
-    while (i < bytes.len) {
-        const rc = std.posix.system.write(fd, bytes.ptr + i, bytes.len - i);
-        switch (std.posix.errno(rc)) {
-            .SUCCESS => i += @intCast(rc),
-            .INTR, .AGAIN => continue,
-            else => return,
-        }
-    }
 }
 
 test "parse plain host and path" {

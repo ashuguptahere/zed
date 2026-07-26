@@ -67,6 +67,9 @@ const meta_bytes = "\\.*+?()[]|^${";
 pub const Regex = struct {
     prog: []Inst,
     fold: bool,
+    /// If the whole pattern is one literal string (no metacharacters,
+    /// case-sensitive), that string — callers use SIMD substring search as a
+    /// fast path. Null otherwise.
     lit: ?[]u8,
     /// Scratch for `find` (two thread lists and a per-pc visited stamp),
     /// allocated once here so matching never allocates or fails. `find` is
@@ -143,7 +146,7 @@ pub const Regex = struct {
             while (i < clist.len) : (i += 1) {
                 const t = clist.items[i];
                 const consume = switch (self.prog[t.pc]) {
-                    .char => |c| pos < haystack.len and (if (self.fold) lower(haystack[pos]) else haystack[pos]) == c,
+                    .char => |c| pos < haystack.len and (if (self.fold) std.ascii.toLower(haystack[pos]) else haystack[pos]) == c,
                     .any => pos < haystack.len and haystack[pos] != '\n',
                     .class => |set| pos < haystack.len and hasBit(&set, haystack[pos]),
                     .match => {
@@ -177,13 +180,6 @@ pub const Regex = struct {
                 g.* = .{ .start = slots[2 * grp], .end = slots[2 * grp + 1] };
         }
         return m;
-    }
-
-    /// If the whole pattern is one literal string (no metacharacters,
-    /// case-sensitive), return it — callers use SIMD substring search as a
-    /// fast path. Null otherwise.
-    pub fn literal(self: *const Regex) ?[]const u8 {
-        return self.lit;
     }
 
     /// Add thread `pc` to `list`, resolving zero-width instructions (jumps,
@@ -315,7 +311,7 @@ const Parser = struct {
             '$' => return p.mk(.{ .assert = .end }),
             '*', '+', '?' => return error.InvalidPattern, // nothing to repeat
             '{' => return error.InvalidPattern, // counted repeats unsupported
-            else => return p.mk(.{ .char = if (p.fold) lower(c) else c }),
+            else => return p.mk(.{ .char = if (p.fold) std.ascii.toLower(c) else c }),
         }
     }
 
@@ -462,17 +458,9 @@ fn emit(prog: *std.ArrayList(Inst), gpa: std.mem.Allocator, node: *const Node) e
 
 // ------------------------------------------------------------ characters
 
-fn lower(c: u8) u8 {
-    return if (c >= 'A' and c <= 'Z') c + ('a' - 'A') else c;
-}
-
-fn isWord(c: u8) bool {
-    return c == '_' or (c >= '0' and c <= '9') or (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z');
-}
-
 fn holds(a: Assert, haystack: []const u8, pos: usize) bool {
-    const before = pos > 0 and isWord(haystack[pos - 1]);
-    const after = pos < haystack.len and isWord(haystack[pos]);
+    const before = pos > 0 and (haystack[pos - 1] == '_' or std.ascii.isAlphanumeric(haystack[pos - 1]));
+    const after = pos < haystack.len and (haystack[pos] == '_' or std.ascii.isAlphanumeric(haystack[pos]));
     return switch (a) {
         .begin => pos == 0,
         .end => pos == haystack.len,
@@ -502,7 +490,7 @@ fn setRange(set: *ClassSet, lo: u8, hi: u8) void {
 /// Merge a `\w`-family escape into `set` (uppercase = complemented).
 fn addPerl(set: *ClassSet, esc: u8) void {
     var s: ClassSet = @splat(0);
-    switch (lower(esc)) {
+    switch (std.ascii.toLower(esc)) {
         'w' => {
             setRange(&s, 'a', 'z');
             setRange(&s, 'A', 'Z');
@@ -736,19 +724,19 @@ test "case-insensitive matching folds ASCII" {
 test "literal fast path" {
     var a = try Regex.compile(testing.allocator, "hello", false);
     defer a.deinit(testing.allocator);
-    try testing.expectEqualStrings("hello", a.literal().?);
+    try testing.expectEqualStrings("hello", a.lit.?);
 
     var b = try Regex.compile(testing.allocator, "hel.o", false);
     defer b.deinit(testing.allocator);
-    try testing.expectEqual(@as(?[]const u8, null), b.literal());
+    try testing.expectEqual(@as(?[]const u8, null), b.lit);
 
     var c = try Regex.compile(testing.allocator, "a\\.b", false);
     defer c.deinit(testing.allocator);
-    try testing.expectEqual(@as(?[]const u8, null), c.literal());
+    try testing.expectEqual(@as(?[]const u8, null), c.lit);
 
     var d = try Regex.compile(testing.allocator, "hello", true);
     defer d.deinit(testing.allocator);
-    try testing.expectEqual(@as(?[]const u8, null), d.literal());
+    try testing.expectEqual(@as(?[]const u8, null), d.lit);
 }
 
 test "empty pattern matches the empty string at from" {

@@ -13,6 +13,7 @@ const posix = std.posix;
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
+    io = init.io;
     const argv = try init.minimal.args.toSlice(init.arena.allocator());
     var fmt_mode = false;
     var xfile = false;
@@ -57,11 +58,10 @@ pub fn main(init: std.process.Init) !void {
                 "]}}}}", .{});
         } else if (eql(method, "textDocument/didChange")) {
             const kind = if (changeHasRange(obj)) "INCREMENTAL" else "FULL";
-            diag(gpa, kind, 0, 2);
+            send(gpa, "{{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{{\"uri\":\"x\"," ++
+                "\"diagnostics\":[{{\"range\":{{\"start\":{{\"line\":0,\"character\":0}},\"end\":{{\"line\":0,\"character\":1}}}}," ++
+                "\"severity\":2,\"message\":\"{s}\"}}]}}}}", .{kind});
         } else if (eql(method, "textDocument/completion")) {
-            // Plain items, a snippet item (insertTextFormat 2, with two
-            // placeholders and a final stop), and a textEdit item whose range
-            // the client must honour instead of guessing the prefix.
             // Two plain items, a snippet item (insertTextFormat 2, two
             // placeholders and a final stop), and a textEdit item whose range
             // replaces the four characters before the cursor — the client must
@@ -99,26 +99,17 @@ pub fn main(init: std.process.Init) !void {
             // something cross-file to jump to. The query is echoed into the
             // first name to prove it reached the server.
             const q = strField(getField(parsed.value, "params") orelse parsed.value, "query") orelse "";
-            sendRaw(gpa, "{\"jsonrpc\":\"2.0\",\"id\":");
-            sendInt(gpa, id orelse 0);
-            sendRaw(gpa, ",\"result\":[{\"name\":\"wsymFor_");
-            sendRaw(gpa, q);
-            sendRaw(gpa, "\",\"kind\":12,\"location\":{\"uri\":\"");
-            sendRaw(gpa, doc_uri);
-            sendRaw(gpa, "\",\"range\":{\"start\":{\"line\":2,\"character\":6},\"end\":{\"line\":2,\"character\":6}}}}," ++
-                "{\"name\":\"otherSymbol\",\"kind\":23,\"location\":{\"uri\":\"file:///tmp/zedit_it_other.zig\"," ++
-                "\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":0}}}}]}");
-            flush(gpa);
+            send(gpa, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":[{{\"name\":\"wsymFor_{s}\",\"kind\":12,\"location\":{{\"uri\":\"{s}\"," ++
+                "\"range\":{{\"start\":{{\"line\":2,\"character\":6}},\"end\":{{\"line\":2,\"character\":6}}}}}}}}," ++
+                "{{\"name\":\"otherSymbol\",\"kind\":23,\"location\":{{\"uri\":\"file:///tmp/zedit_it_other.zig\"," ++
+                "\"range\":{{\"start\":{{\"line\":0,\"character\":0}},\"end\":{{\"line\":0,\"character\":0}}}}}}}}]}}", .{ id orelse 0, q, doc_uri });
         } else if (eql(method, "textDocument/documentSymbol")) {
             // A nested DocumentSymbol[] (struct Foo with a child field, plus a
             // top-level fn main) to exercise the client's flattening.
-            sendRaw(gpa, "{\"jsonrpc\":\"2.0\",\"id\":");
-            sendInt(gpa, id orelse 0);
-            sendRaw(gpa, ",\"result\":[" ++
-                "{\"name\":\"Foo\",\"kind\":23,\"selectionRange\":{\"start\":{\"line\":0,\"character\":6},\"end\":{\"line\":0,\"character\":7}},\"children\":[" ++
-                "{\"name\":\"field_a\",\"kind\":8,\"selectionRange\":{\"start\":{\"line\":0,\"character\":6},\"end\":{\"line\":0,\"character\":7}}}]}," ++
-                "{\"name\":\"main\",\"kind\":12,\"selectionRange\":{\"start\":{\"line\":2,\"character\":6},\"end\":{\"line\":2,\"character\":7}}}]}");
-            flush(gpa);
+            send(gpa, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":[" ++
+                "{{\"name\":\"Foo\",\"kind\":23,\"selectionRange\":{{\"start\":{{\"line\":0,\"character\":6}},\"end\":{{\"line\":0,\"character\":7}}}},\"children\":[" ++
+                "{{\"name\":\"field_a\",\"kind\":8,\"selectionRange\":{{\"start\":{{\"line\":0,\"character\":6}},\"end\":{{\"line\":0,\"character\":7}}}}}}]}}," ++
+                "{{\"name\":\"main\",\"kind\":12,\"selectionRange\":{{\"start\":{{\"line\":2,\"character\":6}},\"end\":{{\"line\":2,\"character\":7}}}}}}]}}", .{id orelse 0});
         } else if (eql(method, "textDocument/hover")) {
             send(gpa, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{{\"contents\":\"mock hover\"}}}}", .{id orelse 0});
         } else if (eql(method, "textDocument/definition")) {
@@ -132,70 +123,42 @@ pub fn main(init: std.process.Init) !void {
                 "\"range\":{{\"start\":{{\"line\":2,\"character\":6}},\"end\":{{\"line\":2,\"character\":6}}}}}}]}}", .{id orelse 0});
         } else if (eql(method, "textDocument/rename")) {
             const new_name = strField(getField(parsed.value, "params") orelse parsed.value, "newName") orelse "x";
-            sendRaw(gpa, "{\"jsonrpc\":\"2.0\",\"id\":");
-            sendInt(gpa, id orelse 0);
-            sendRaw(gpa, ",\"result\":{\"changes\":{\"");
-            sendRaw(gpa, doc_uri);
-            sendRaw(gpa, "\":[{\"range\":{\"start\":{\"line\":0,\"character\":6},\"end\":{\"line\":0,\"character\":7}},\"newText\":\"");
-            sendRaw(gpa, new_name);
-            sendRaw(gpa, "\"}]");
+            var extra: []const u8 = "";
+            defer if (extra.len > 0) gpa.free(extra);
             if (xfile) {
                 if (std.mem.lastIndexOfScalar(u8, doc_uri, '/')) |slash| {
-                    sendRaw(gpa, ",\"");
-                    sendRaw(gpa, doc_uri[0 .. slash + 1]);
-                    sendRaw(gpa, "zedit_it_other.zig\":[{\"range\":{\"start\":{\"line\":0,\"character\":6},\"end\":{\"line\":0,\"character\":7}},\"newText\":\"");
-                    sendRaw(gpa, new_name);
-                    sendRaw(gpa, "\"}]");
+                    extra = std.fmt.allocPrint(gpa, ",\"{s}zedit_it_other.zig\":[{{\"range\":{{\"start\":{{\"line\":0,\"character\":6}}," ++
+                        "\"end\":{{\"line\":0,\"character\":7}}}},\"newText\":\"{s}\"}}]", .{ doc_uri[0 .. slash + 1], new_name }) catch "";
                 }
             }
-            sendRaw(gpa, "}}}");
-            flush(gpa);
+            send(gpa, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{{\"changes\":{{\"{s}\":[{{\"range\":{{\"start\":{{\"line\":0,\"character\":6}}," ++
+                "\"end\":{{\"line\":0,\"character\":7}}}},\"newText\":\"{s}\"}}]{s}}}}}}}", .{ id orelse 0, doc_uri, new_name, extra });
         } else if (eql(method, "textDocument/codeAction")) {
-            sendRaw(gpa, "{\"jsonrpc\":\"2.0\",\"id\":");
-            sendInt(gpa, id orelse 0);
-            sendRaw(gpa, ",\"result\":[{\"title\":\"Rename a to A\",\"kind\":\"quickfix\",\"edit\":{\"changes\":{\"");
-            sendRaw(gpa, doc_uri);
-            sendRaw(gpa, "\":[{\"range\":{\"start\":{\"line\":0,\"character\":6},\"end\":{\"line\":0,\"character\":7}},\"newText\":\"A\"}]}}}," ++
-                "{\"title\":\"Run mock command\",\"command\":\"mock.run\"}]}");
-            flush(gpa);
+            send(gpa, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":[{{\"title\":\"Rename a to A\",\"kind\":\"quickfix\",\"edit\":{{\"changes\":{{\"{s}\":" ++
+                "[{{\"range\":{{\"start\":{{\"line\":0,\"character\":6}},\"end\":{{\"line\":0,\"character\":7}}}},\"newText\":\"A\"}}]}}}}}}," ++
+                "{{\"title\":\"Run mock command\",\"command\":\"mock.run\"}}]}}", .{ id orelse 0, doc_uri });
         } else if (eql(method, "workspace/executeCommand")) {
             const cmd = strField(getField(parsed.value, "params") orelse parsed.value, "command") orelse "";
             if (eql(cmd, "mock.run") and doc_uri.len > 0) {
-                sendRaw(gpa, "{\"jsonrpc\":\"2.0\",\"id\":999,\"method\":\"workspace/applyEdit\",\"params\":{\"edit\":{\"changes\":{\"");
-                sendRaw(gpa, doc_uri);
-                sendRaw(gpa, "\":[{\"range\":{\"start\":{\"line\":1,\"character\":6},\"end\":{\"line\":1,\"character\":7}},\"newText\":\"B\"}]}}}}");
-                flush(gpa);
+                send(gpa, "{{\"jsonrpc\":\"2.0\",\"id\":999,\"method\":\"workspace/applyEdit\",\"params\":{{\"edit\":{{\"changes\":{{\"{s}\":" ++
+                    "[{{\"range\":{{\"start\":{{\"line\":1,\"character\":6}},\"end\":{{\"line\":1,\"character\":7}}}},\"newText\":\"B\"}}]}}}}}}}}", .{doc_uri});
             }
             send(gpa, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":null}}", .{id orelse 0});
         } else if (eql(method, "textDocument/references")) {
             // Two in-document references ("a" on line 0 and "c" on line 2).
-            sendRaw(gpa, "{\"jsonrpc\":\"2.0\",\"id\":");
-            sendInt(gpa, id orelse 0);
-            sendRaw(gpa, ",\"result\":[{\"uri\":\"");
-            sendRaw(gpa, doc_uri);
-            sendRaw(gpa, "\",\"range\":{\"start\":{\"line\":0,\"character\":6},\"end\":{\"line\":0,\"character\":7}}},{\"uri\":\"");
-            sendRaw(gpa, doc_uri);
-            sendRaw(gpa, "\",\"range\":{\"start\":{\"line\":2,\"character\":6},\"end\":{\"line\":2,\"character\":7}}}]}");
-            flush(gpa);
+            send(gpa, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":[{{\"uri\":\"{s}\",\"range\":{{\"start\":{{\"line\":0,\"character\":6}},\"end\":{{\"line\":0,\"character\":7}}}}}}," ++
+                "{{\"uri\":\"{s}\",\"range\":{{\"start\":{{\"line\":2,\"character\":6}},\"end\":{{\"line\":2,\"character\":7}}}}}}]}}", .{ id orelse 0, doc_uri, doc_uri });
         } else if (eql(method, "textDocument/formatting")) {
             // One idempotent whole-document edit that appends a "// fmt"
             // comment to line 0 (multi-line range AND multi-line newText).
             send(gpa, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":[{{\"range\":{{\"start\":{{\"line\":0,\"character\":0}},\"end\":{{\"line\":2,\"character\":12}}}}," ++
                 "\"newText\":\"const a = 1; // fmt\\nconst b = 2;\\nconst c = 3;\"}}]}}", .{id orelse 0});
-        } else if (eql(method, "shutdown")) {
-            send(gpa, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":null}}", .{id orelse 0});
         }
         // Everything else (initialized, the applyEdit response, etc.) is ignored.
     }
 }
 
-// --- diagnostics / message sending -----------------------------------------
-
-fn diag(gpa: std.mem.Allocator, message: []const u8, line: u32, severity: u32) void {
-    send(gpa, "{{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{{\"uri\":\"x\"," ++
-        "\"diagnostics\":[{{\"range\":{{\"start\":{{\"line\":{d},\"character\":0}},\"end\":{{\"line\":{d},\"character\":1}}}}," ++
-        "\"severity\":{d},\"message\":\"{s}\"}}]}}}}", .{ line, line, severity, message });
-}
+// --- message sending --------------------------------------------------------
 
 /// A formatted JSON-RPC message (the format string uses `{{`/`}}` for literal
 /// braces), framed with Content-Length and written to stdout.
@@ -207,33 +170,10 @@ fn send(gpa: std.mem.Allocator, comptime fmt: []const u8, args: anytype) void {
     writeAll(body);
 }
 
-// For messages that embed an arbitrary URI/name we stream pieces directly.
-var frame: std.ArrayList(u8) = .empty;
-fn sendRaw(gpa: std.mem.Allocator, s: []const u8) void {
-    frame.appendSlice(gpa, s) catch {};
-}
-fn sendInt(gpa: std.mem.Allocator, n: i64) void {
-    var b: [32]u8 = undefined;
-    frame.appendSlice(gpa, std.fmt.bufPrint(&b, "{d}", .{n}) catch return) catch {};
-}
-fn flush(gpa: std.mem.Allocator) void {
-    defer frame.clearRetainingCapacity();
-    var hdr: [64]u8 = undefined;
-    writeAll(std.fmt.bufPrint(&hdr, "Content-Length: {d}\r\n\r\n", .{frame.items.len}) catch return);
-    writeAll(frame.items);
-    _ = gpa;
-}
+var io: std.Io = undefined; // set once in main, for writeAll
 
 fn writeAll(bytes: []const u8) void {
-    var i: usize = 0;
-    while (i < bytes.len) {
-        const rc = posix.system.write(1, bytes.ptr + i, bytes.len - i);
-        switch (posix.errno(rc)) {
-            .SUCCESS => i += @intCast(rc),
-            .INTR, .AGAIN => continue,
-            else => return,
-        }
-    }
+    std.Io.File.stdout().writeStreamingAll(io, bytes) catch return;
 }
 
 // --- incoming framing -------------------------------------------------------

@@ -13,19 +13,13 @@ pub const Decoded = struct {
     len: u3,
 };
 
-/// Number of bytes in the UTF-8 sequence that starts with `first`.
-/// Returns 1 for an invalid lead byte so callers can always make progress.
-pub fn sequenceLen(first: u8) u3 {
-    return std.unicode.utf8ByteSequenceLength(first) catch 1;
-}
-
 /// Decode the codepoint at the start of `bytes`.
 ///
 /// `bytes` must be non-empty. Malformed sequences decode to the replacement
 /// character U+FFFD with a length of 1, guaranteeing forward progress.
 pub fn decode(bytes: []const u8) Decoded {
     std.debug.assert(bytes.len > 0);
-    const len = sequenceLen(bytes[0]);
+    const len = std.unicode.utf8ByteSequenceLength(bytes[0]) catch 1;
     if (len == 1 or len > bytes.len) {
         if (bytes[0] < 0x80) return .{ .cp = bytes[0], .len = 1 };
         return .{ .cp = 0xFFFD, .len = 1 };
