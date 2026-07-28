@@ -124,9 +124,9 @@ below and prioritised in `TODO.md`.
 Per `/home/origo/Desktop/zed/CLAUDE.md`:
 - Tree-sitter highlighting with incremental parsing (10 languages; Helix has far more, but the mechanism is there)
 - LSP: diagnostics (gutter + statusline), hover, goto definition, completion popup, signature help *with overload cycling* (Helix only added cycling in 24.07), rename, code actions, inlay hints, document-symbols picker, `]d`/`[d` diagnostic navigation, incremental didChange sync
-- Fuzzy pickers: files, project-wide content grep, buffers, themes — with a warm cached file list
+- Fuzzy pickers: files, project-wide content grep, buffers, themes — with a warm cached file list, and Helix's space-separated **multi-term** queries (every term must match, in any order; the grep picker stays one regex)
 - Which-key leader popup with nested groups (≈ Helix space-mode hints)
-- File-tree sidebar (`Space e`) — Helix stable has only a directory *picker*, no tree
+- File-tree sidebar (`Space e`, a three-state open/refocus/close cycle) — Helix stable has only a directory *picker*, no tree
 - Git gutter signs plus inline, side-by-side and woven line-by-line diff views (the diff views exceed Helix)
 - Multiple buffers + windows/splits with `Ctrl-w` focus/management
 - Surround (`ys`/`cs`/`ds`/visual `S` ≈ Helix `ms`/`mr`/`md`), comment toggling, auto-pairs
@@ -197,7 +197,7 @@ Ground truth: `/home/origo/Desktop/zed/CLAUDE.md` (note: the on-disk version is 
 - **LSP core:** diagnostics (gutter + statusline), hover `K`, `gd`, rename, code actions (incl. `executeCommand` and server-initiated `applyEdit`), completion popup, signature help with overload cycling, document symbols picker, **inlay hints as virtual text** (0.10 parity), incremental `didChange` sync — with documented single-file/single-line limits
 - **Tree-sitter highlighting, incremental + viewport-scoped queries**, 10 languages, two-layer Markdown (an injections approximation)
 - **AstroNvim-style leader UX:** which-key popup with nested groups (`Space f/l/g/e/c/w/q`)
-- **Telescope-equivalents:** fuzzy file finder, project content grep (regex, per line), buffer picker, theme picker — with a warm cached file list
+- **Telescope-equivalents:** fuzzy file finder, project content grep (regex, per line), buffer picker, theme picker — with a warm cached file list and space-separated multi-term queries
 - **gitsigns-equivalent** gutter signs, plus inline unified diff, side-by-side index diff, and a VS Code-style in-buffer line-by-line diff (old lines woven in as virtual rows)
 - **neo-tree-equivalent** sidebar file explorer (navigation/open + reveal of the active file on buffer switch; no create/rename/delete, not watched)
 - **Vim core:** motions/operators/registers/marks/macros/dot-repeat, text objects (word + bracket/quote), visual char/line/block (block I/A works; block paste and short-line `A` padding are approximate), surround, incremental highlighted literal search (incsearch+hlsearch defaults)

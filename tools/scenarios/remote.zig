@@ -195,6 +195,20 @@ pub fn run(ctx: *h.Ctx) !void {
         s.drain(1200);
         ctx.check("remote directory lists files in the picker", s.containsPlain(ctx.gpa, "hello.txt") and
             s.containsPlain(ctx.gpa, "deep.txt"));
+        {
+            // The picker has no statusline, so it renders a status message on
+            // its bottom row. The startup greeting belongs to a buffer
+            // session: left set, it would cost this listing a result row —
+            // and a remote session gets no scope hint of its own to show
+            // there (there is no remote content search).
+            var scr = try h.Screen.init(ctx.gpa, 24, 80);
+            defer scr.deinit();
+            scr.apply(s.out.items);
+            const bottom = try scr.rowText(ctx.gpa, 24);
+            defer ctx.gpa.free(bottom);
+            ctx.check("a picker-first session keeps its bottom row for results",
+                std.mem.indexOf(u8, bottom, ":q to quit") == null);
+        }
         s.send("deep\r"); // filter to the nested file and open it
         s.drain(900);
         ctx.check("picking a remote file opens it", s.containsPlain(ctx.gpa, "nested"));

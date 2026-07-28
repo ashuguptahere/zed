@@ -2,6 +2,38 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.21.0 - 2026-07-28
+
+### Added
+
+- Multi-term fuzzy queries in every client-filtered picker (files, buffers,
+  themes, document symbols, references, diagnostics, code actions, undo
+  list), helix-style: the query splits on spaces and every term must match
+  independently, in any order — `render editor` finds
+  `src/editor/render.zig` — with the per-term scores summed. Two pickers do
+  their own matching and are unchanged: the grep picker (`Space f w`) is
+  pure regex, where a space is a literal and `foo.*bar` expresses ordering,
+  and the workspace-symbol picker (`Space l S`) forwards the query verbatim,
+  spaces included, to the language server that matches it.
+- Content-search discoverability: a `zedit <dir>` session opens the file
+  picker with a one-time status line naming the scopes ("type to match file
+  NAMES — Space f w searches file contents"), and a files-picker query with
+  zero matches shows a dim hint row pointing at `Space f w` instead of a
+  silently empty list.
+
+### Changed
+
+- `Space e` is now VS Code's three-state cycle: closed → open + focused;
+  open but unfocused → refocus it (no rebuild — selection and scroll
+  survive), which restores a keyboard route into an `Esc`-unfocused tree;
+  open + focused → close. `Esc` (unfocus), `q` (close) and mouse clicks are
+  unchanged.
+- Status messages set while a picker is open (the scope hint, a remote
+  listing's file count) now paint the picker's bottom row dim; they used to
+  be invisible because the picker view has no statusline. The row is
+  *reserved* while a message is up rather than painted over the list, so no
+  result is hidden under it — and a click there selects nothing.
+
 ## 0.20.0 - 2026-07-26
 
 ### Added

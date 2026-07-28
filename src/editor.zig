@@ -623,7 +623,12 @@ pub const Editor = struct {
         self.term.installResizeHandler();
         try self.term.enterAltScreen();
         self.win = self.term.size();
-        self.setStatus("zedit {s} — :q to quit, i to insert", .{@import("cli.zig").version});
+        // The greeting belongs to a buffer session: it must neither clobber a
+        // status set before the loop starts (the `zedit <dir>` browser's
+        // search-scope hint) nor — now that the picker renders the status on
+        // its bottom row — cost a remote directory session a result row.
+        if (self.status.items.len == 0 and self.mode != .picker)
+            self.setStatus("zedit {s} — :q to quit, i to insert", .{@import("cli.zig").version});
 
         // Paint the text first, then do everything that decorates it. Syntax
         // highlighting (a grammar query compile plus a full parse), the git
@@ -1035,7 +1040,9 @@ pub const Editor = struct {
         const lay = self.pickerLayout();
         if (m.row <= lay.top) return; // the prompt row
         if (m.col < lay.body_x or m.col >= lay.body_x + lay.list_w) return; // the preview
-        const fi = self.picker_scroll + (m.row - lay.top - 1);
+        const shown = m.row - lay.top - 1;
+        if (shown >= lay.visible) return; // the status row, when one is up
+        const fi = self.picker_scroll + shown;
         if (fi >= self.picker_filtered.items.len) return;
         if (fi == self.picker_sel) return self.pickerOpen();
         self.picker_sel = fi;
@@ -3598,6 +3605,11 @@ pub const Editor = struct {
         const q = self.picker_query.items;
         // Incremental narrowing: extending the query can only shrink the match
         // set, so rescore just the current survivors instead of every item.
+        // Still sound with multi-term (space-separated) queries: appended
+        // bytes either extend the last term — matching a longer subsequence
+        // implies its prefix matched — or, after a space, start a new term,
+        // which is one more constraint. Either way every match of "ab c" was
+        // already a match of "ab", so the survivors contain them all.
         const narrow = self.picker_kind == .files and self.prev_query.items.len > 0 and
             q.len > self.prev_query.items.len and std.mem.startsWith(u8, q, self.prev_query.items);
         var survivors: std.ArrayList(u32) = .empty;
@@ -3609,7 +3621,10 @@ pub const Editor = struct {
             var i: u32 = 0;
             while (i < self.picker_items.items.len) : (i += 1) self.picker_filtered.append(self.gpa, i) catch {};
         } else {
-            const qmask = fuzzy.charMask(q);
+            // The mask covers only the query's non-space characters: spaces
+            // separate terms, and each term's chars must all appear in a
+            // matching candidate — so their union must too.
+            const qmask = fuzzy.queryMask(q);
             var scored: std.ArrayList(Scored) = .empty;
             defer scored.deinit(self.gpa);
             const n = if (narrow) survivors.items.len else self.picker_items.items.len;
@@ -3620,7 +3635,7 @@ pub const Editor = struct {
                 // Char-bag prefilter (files only — `.line` indexes the cache).
                 if (self.picker_kind == .files and it.line < self.fcache_masks.items.len and
                     !fuzzy.maskMatches(self.fcache_masks.items[it.line], qmask)) continue;
-                if (fuzzy.score(self.itemPath(it), q)) |s| scored.append(self.gpa, .{ .idx = i, .score = s }) catch {};
+                if (fuzzy.scoreTerms(self.itemPath(it), q)) |s| scored.append(self.gpa, .{ .idx = i, .score = s }) catch {};
             }
             std.mem.sort(Scored, scored.items, {}, scoredLess);
             for (scored.items) |s| self.picker_filtered.append(self.gpa, s.idx) catch {};
@@ -4113,12 +4128,21 @@ pub const Editor = struct {
         body_w: usize, // width beside the sidebar
         list_w: usize, // the results' width (rest is the preview)
         preview: bool,
+        status: bool, // the bottom row is the status message's, not a result's
     };
     fn pickerLayout(self: *Editor) PickerLayout {
         // The title bar keeps row 1 in the picker view too; the prompt and
         // results shift below it.
         const top = 1 + @as(usize, if (tabsVisible()) 1 else 0);
         const rows: usize = self.win.rows;
+        // A status message set while the picker is up (the `zedit <dir>` scope
+        // hint, a remote listing's file count) owns the bottom row — the
+        // picker view has no statusline of its own. Reserving the row here
+        // rather than painting over the list is what keeps the rows the
+        // renderer draws and the rows the click hit-test resolves one set:
+        // otherwise the last result would be hidden under the message and
+        // still open when clicked.
+        const status = self.status.items.len > 0;
         // Columns: [sidebar] [list] [preview]
         const side_w = if (self.sb_open) self.sbWidth() else 0;
         const body_w = self.win.cols -| side_w;
@@ -4127,11 +4151,12 @@ pub const Editor = struct {
         const wants_preview = self.previewKind() != .none and body_w >= 40;
         return .{
             .top = top,
-            .visible = if (rows > top) rows - top else 1,
+            .visible = @max(1, (rows -| top) -| @as(usize, @intFromBool(status))),
             .body_x = if (self.sb_open and config.settings.sidebar == .left) side_w + 1 else 1,
             .body_w = body_w,
             .list_w = if (wants_preview) @max(body_w / 2, 24) else body_w,
             .preview = wants_preview,
+            .status = status,
         };
     }
 
@@ -4216,11 +4241,39 @@ pub const Editor = struct {
                 const text = disp[0..@min(disp.len, maxw)];
                 try self.emitSanitized(text);
                 used = 2 + unicode.displayWidth(text);
+            } else if (fi == 0 and self.picker_kind == .files and self.picker_query.items.len > 0) {
+                // Zero file-name matches: point at the other search scope
+                // before the user concludes the file is missing (this picker
+                // matches *names*; `Space f w` searches contents).
+                const hint = "no file names match \u{2014} Space f w searches contents";
+                const ascii = "no file names match"; // safe to byte-slice
+                const maxw = list_w -| 3;
+                const text = if (unicode.displayWidth(hint) <= maxw) hint else ascii[0..@min(ascii.len, maxw)];
+                try self.setFg(th.fg_dim);
+                try self.emit("  ");
+                try self.emitSanitized(text);
+                used = 2 + unicode.displayWidth(text);
             }
             if (used < list_w) try self.emitSpaces(list_w - used);
         }
 
-        if (wants_preview) try self.renderPreview(prev_x, prev_w, top, rows);
+        // The status row (`pickerLayout` already kept it out of the list) is
+        // the bottom one, so the preview stops a row short of it.
+        if (wants_preview) try self.renderPreview(prev_x, prev_w, top, rows -| @as(usize, @intFromBool(lay.status)));
+
+        // A status message set while the picker is up — the `zedit <dir>`
+        // scope hint, a remote listing's file count — paints that row dim:
+        // the picker view has no statusline, and the next keystroke clears it
+        // (`handleKey`). Clipped and sanitized like any other outside text: a
+        // remote destination and a file name both reach here.
+        if (lay.status) {
+            try self.emitFmt("\x1b[{d};{d}H", .{ rows, body_x });
+            try self.setBg(th.bg);
+            try self.setFg(th.fg_dim);
+            const cut = clipCells(self.status.items, lay.body_w);
+            try self.emitSanitized(self.status.items[0..cut.bytes]);
+            try self.emitSpaces(lay.body_w - cut.cells);
+        }
 
         const promptw = klabel.len + 1;
         try self.emitFmt("\x1b[{d};{d}H", .{ top, body_x + promptw + unicode.displayWidth(self.picker_query.items) });
@@ -4238,6 +4291,14 @@ pub const Editor = struct {
         if (self.picker_sel < self.picker_filtered.items.len) {
             const it = self.picker_items.items[self.picker_filtered.items[self.picker_sel]];
             if (remote.isRemote(self.itemPath(it))) return .none;
+        } else if (self.picker_query.items.len > 0) {
+            // A query nothing matches: there is nothing to preview, so the
+            // results — and the files picker's no-match hint — take the full
+            // width. With no query typed yet the pane stays reserved, because
+            // a cold `zedit <dir>` paints its first frame before the walk has
+            // delivered a single row and the list must not re-lay itself out
+            // under the reader a frame later.
+            return .none;
         }
         return switch (self.picker_kind) {
             .files => .file,
@@ -7148,15 +7209,20 @@ pub const Editor = struct {
         }
     }
 
-    /// `Space e`: open + focus the sidebar, or close it when already open.
+    /// `Space e` — VS Code's three-state cycle: closed → open + focused;
+    /// open but unfocused → just refocus it (no rebuild — selection and
+    /// scroll survive, and it is the keyboard route back into an Esc'd
+    /// tree); open + focused → close.
     fn sidebarToggle(self: *Editor) void {
-        if (self.sb_open) {
-            self.sb_open = false;
-            self.sb_focus = false;
-        } else {
+        if (!self.sb_open) {
             self.sb_open = true;
             self.sb_focus = true;
             self.sbRebuild();
+        } else if (!self.sb_focus) {
+            self.sb_focus = true;
+        } else {
+            self.sb_open = false;
+            self.sb_focus = false;
         }
     }
 
@@ -8131,6 +8197,11 @@ pub const Editor = struct {
         }
         self.sb_focus = false; // typing goes to the search box
         self.openFilePicker();
+        // One-time scope hint (the next keystroke clears it): a directory
+        // session lands here, where "search" too easily reads as content
+        // search. Remote sessions skip it — no remote grep exists.
+        if (self.remote_root == null)
+            self.setStatus("type to match file NAMES \u{2014} Space f w searches file contents", .{});
     }
 
     /// Record the working directory in the recent list (`zedit .`).

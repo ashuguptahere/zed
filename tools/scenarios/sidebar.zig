@@ -93,6 +93,114 @@ pub fn run(ctx: *h.Ctx) !void {
         s.drain(200);
     }
 
+    // Space e is a three-state cycle (VS Code's): closed -> open + focused;
+    // open + unfocused -> just refocus it (no rebuild: the selection survives
+    // and a file created meanwhile stays out of the tree until R); open +
+    // focused -> close. Before the cycle, Space e closed an unfocused tree,
+    // leaving no keyboard route back into it.
+    {
+        const dir = try h.tempDir(ctx.gpa);
+        defer ctx.gpa.free(dir);
+        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const a = h.join(ctx, dir, "alpha.txt");
+        defer ctx.gpa.free(a);
+        const sub = h.join(ctx, dir, "subdir");
+        defer ctx.gpa.free(sub);
+        h.writeFile(ctx.io, a, "aaa\n");
+        std.Io.Dir.cwd().createDirPath(ctx.io, sub) catch {};
+
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "alpha.txt" }, .cwd = dir, .term = "xterm-256color" });
+        defer s.finish();
+        s.drain(400);
+        s.send(" e"); // closed -> open + focused
+        s.drain(400);
+        s.send("j"); // selection to row 3 (alpha.txt; subdir sorts first)
+        s.drain(300);
+        s.send("\x1b"); // Esc: open, unfocused
+        s.drain(300);
+        {
+            var scr = try screen(ctx, &s);
+            defer scr.deinit();
+            ctx.check("Esc unfocuses but keeps the tree", scr.colOf(ctx.gpa, 1, "EXPLORER") != null and
+                scr.at(1, 2).bg != MODE_COMMAND);
+        }
+        const late = h.join(ctx, dir, "zz_late.txt");
+        defer ctx.gpa.free(late);
+        h.writeFile(ctx.io, late, "late\n"); // would join the tree on any rebuild
+        s.send(" e"); // open + unfocused -> refocus, nothing else
+        s.drain(400);
+        {
+            var scr = try screen(ctx, &s);
+            defer scr.deinit();
+            ctx.check("Space e refocuses an open unfocused tree", scr.at(1, 2).bg == MODE_COMMAND);
+            const col = scr.colOf(ctx.gpa, 3, "alpha.txt") orelse 0;
+            ctx.check("refocusing keeps the selection row", col > 0 and scr.at(3, col).bg == UI_SEL);
+            ctx.check("refocusing does not rebuild the tree", !treeHas(ctx, &scr, "zz_late", 1, 28));
+        }
+        s.send("R"); // sanity: an explicit refresh does pick the new file up
+        s.drain(400);
+        {
+            var scr = try screen(ctx, &s);
+            defer scr.deinit();
+            ctx.check("R still rebuilds the tree", treeHas(ctx, &scr, "zz_late", 1, 28));
+        }
+        s.send(" e"); // open + focused -> close
+        s.drain(400);
+        {
+            var scr = try screen(ctx, &s);
+            defer scr.deinit();
+            ctx.check("Space e from a focused tree closes it", scr.colOf(ctx.gpa, 1, "EXPLORER") == null);
+        }
+        s.send(":qa\r");
+        s.drain(200);
+    }
+
+    // The refocus step keeps the *scroll* as well as the selection — a
+    // rebuild would reset neither by itself, but `sbRebuild` clamps `sb_sel`
+    // and any reordering would move the viewport. A tree taller than the 22
+    // rows the sidebar has is the only way to see the difference.
+    {
+        const dir = try h.tempDir(ctx.gpa);
+        defer ctx.gpa.free(dir);
+        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const first = h.join(ctx, dir, "aaa.txt");
+        defer ctx.gpa.free(first);
+        h.writeFile(ctx.io, first, "x\n");
+        var i: usize = 0;
+        while (i < 30) : (i += 1) {
+            var nb: [16]u8 = undefined;
+            const name = try std.fmt.bufPrint(&nb, "s{d:0>2}.txt", .{i});
+            const p = h.join(ctx, dir, name);
+            defer ctx.gpa.free(p);
+            h.writeFile(ctx.io, p, "x\n");
+        }
+
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "aaa.txt" }, .cwd = dir, .term = "xterm-256color" });
+        defer s.finish();
+        s.drain(500);
+        s.send(" eG"); // open + focus, then jump to the last entry (s29.txt)
+        s.drain(500);
+        s.send("\x1b"); // unfocus; the tree keeps its scrolled viewport
+        s.drain(300);
+        s.send(" e"); // refocus
+        s.drain(500);
+        {
+            var scr = try screen(ctx, &s);
+            defer scr.deinit();
+            var sel_row: usize = 0;
+            var r: usize = 2;
+            while (r < 24) : (r += 1) {
+                if (rowHasAt(ctx, &scr, r, "s29.txt", 1, 28)) sel_row = r;
+            }
+            const col = if (sel_row != 0) scr.colOf(ctx.gpa, sel_row, "s29.txt").? else 0;
+            ctx.check("refocusing keeps the selection in a scrolled tree", sel_row != 0 and
+                scr.at(sel_row, col).bg == UI_SEL);
+            ctx.check("refocusing keeps the scroll position", !treeHas(ctx, &scr, "aaa.txt", 1, 28));
+        }
+        s.send(":qa\r");
+        s.drain(200);
+    }
+
     // Explorer mouse clicks (sidebar left, 80x24: tree cols 1..28, rows 2..23).
     // Dirs sort first, so screen row 2 = subdir, row 3 = alpha.txt.
     {

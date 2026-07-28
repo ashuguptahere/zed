@@ -175,6 +175,166 @@ pub fn run(ctx: *h.Ctx) !void {
         s.drain(200);
     }
 
+    // Multi-term fuzzy queries (helix-style): every space-separated term must
+    // match independently, in any order — "sub gamma" and "gamma sub" both
+    // single out sub/gamma.txt — and a term matching nothing empties the
+    // results, which shows the content-search hint (files picker only). The
+    // `zedit <dir>` session also opens with a one-time scope status line.
+    {
+        const dir = try h.tempDir(ctx.gpa);
+        defer ctx.gpa.free(dir);
+        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const sub = h.join(ctx, dir, "sub");
+        defer ctx.gpa.free(sub);
+        std.Io.Dir.cwd().createDirPath(ctx.io, sub) catch {};
+        const g = h.join(ctx, dir, "sub/gamma.txt");
+        defer ctx.gpa.free(g);
+        const decoy = h.join(ctx, dir, "gamma.txt"); // "gamma" but not "sub"
+        defer ctx.gpa.free(decoy);
+        const other = h.join(ctx, dir, "sub/alpha.txt"); // "sub" but not "gamma"
+        defer ctx.gpa.free(other);
+        h.writeFile(ctx.io, g, "right\n");
+        h.writeFile(ctx.io, decoy, "wrong\n");
+        h.writeFile(ctx.io, other, "wrong\n");
+
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "." }, .cwd = dir, .cols = 110 });
+        defer s.finish();
+        s.drain(700);
+        ctx.check("a directory session states the search scopes", s.containsPlain(ctx.gpa, "type to match file NAMES") and
+            s.containsPlain(ctx.gpa, "Space f w searches file contents"));
+
+        s.send("sub gamma"); // only sub/gamma.txt holds both terms
+        s.drain(500);
+        ctx.check("the scope status is one-time (first keystroke clears it)", !onScreen(ctx, &s, "type to match file NAMES"));
+        s.send("\r");
+        s.drain(400);
+        s.send("x:w\r");
+        s.drain(400);
+        {
+            const got = h.readFile(ctx.gpa, ctx.io, g);
+            defer ctx.gpa.free(got);
+            ctx.check("multi-term query opens the file matching every term", std.mem.eql(u8, got, "ight\n"));
+        }
+
+        s.send(" ff");
+        s.drain(300);
+        s.send("gamma sub"); // reversed order: the same single match
+        s.drain(500);
+        s.send("\r");
+        s.drain(400);
+        s.send("x:w\r");
+        s.drain(400);
+        {
+            const got = h.readFile(ctx.gpa, ctx.io, g);
+            defer ctx.gpa.free(got);
+            ctx.check("reversed term order matches the same file", std.mem.eql(u8, got, "ght\n"));
+        }
+
+        s.send(" ff");
+        s.drain(300);
+        s.send("gamma zq"); // no file name holds z+q: zero matches
+        s.drain(500);
+        ctx.check("a hopeless term empties the results and hints at Space f w", onScreen(ctx, &s, "no file names match") and
+            onScreen(ctx, &s, "Space f w searches contents"));
+        s.send("\x1b");
+        s.drain(300);
+        s.send(" fb"); // the hint is the files picker's alone
+        s.drain(300);
+        s.send("zq");
+        s.drain(400);
+        ctx.check("the zero-match hint stays out of the buffer picker", !onScreen(ctx, &s, "no file names match"));
+        s.send("\x1b");
+        s.drain(300);
+        s.send(" ftzq"); // themes: a fuzzy picker, but not the file-name one
+        s.drain(400);
+        ctx.check("the zero-match hint stays out of the theme picker", !onScreen(ctx, &s, "no file names match"));
+        s.send("\x1b");
+        s.drain(300);
+        s.send(" fwzqzq"); // grep: an empty content search is not a missing name
+        s.drain(700);
+        ctx.check("the zero-match hint stays out of the grep picker", !onScreen(ctx, &s, "no file names match"));
+        s.send("\x1b:qa!\r");
+        s.drain(200);
+    }
+
+    // Multi-term is the *shared* refilter's rule, so it holds in every fuzzy
+    // picker — not only the file one, which is the sole kind with the
+    // extend-narrow fast path and the char-bitmask prefilter. Pinned on the
+    // buffer picker: both buffers carry "alpha", only one carries "q7q7".
+    {
+        const dir = try h.tempDir(ctx.gpa);
+        defer ctx.gpa.free(dir);
+        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const only = h.join(ctx, dir, "alpha_only.txt");
+        defer ctx.gpa.free(only);
+        const both = h.join(ctx, dir, "q7q7_alpha.txt");
+        defer ctx.gpa.free(both);
+        h.writeFile(ctx.io, only, "first\n");
+        h.writeFile(ctx.io, both, "second\n");
+
+        // The target must NOT be the buffer already showing, or a picker that
+        // matched nothing would edit the right file by doing nothing at all.
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "q7q7_alpha.txt" }, .cwd = dir, .cols = 110 });
+        defer s.finish();
+        s.drain(500);
+        s.send(":e alpha_only.txt\r"); // now the *other* buffer is active
+        s.drain(600);
+        s.send(" fb"); // the buffer picker, where "alpha" alone matches both
+        s.drain(400);
+        s.send("alpha q7q7"); // the second term singles one out
+        s.drain(500);
+        s.send("\r");
+        s.drain(400);
+        s.send("x:w\r"); // no match => this edits the still-active alpha_only
+        s.drain(600);
+        {
+            const got = h.readFile(ctx.gpa, ctx.io, both);
+            defer ctx.gpa.free(got);
+            ctx.check("multi-term filters the buffer picker too", std.mem.eql(u8, got, "econd\n"));
+        }
+        {
+            const got = h.readFile(ctx.gpa, ctx.io, only);
+            defer ctx.gpa.free(got);
+            ctx.check("the buffer holding only the first term is left alone", std.mem.eql(u8, got, "first\n"));
+        }
+        s.send("\x1b:qa!\r");
+        s.drain(200);
+    }
+
+    // The grep picker is the one query that is NOT term-split: it is a single
+    // regex, so a space matches a space. `alpha beta` finds the line that
+    // spells it and not the line that merely holds both words in the other
+    // order — which is exactly what a multi-term matcher would have returned.
+    // (`foo.*bar` is how the grep picker asks for order; the docs say so.)
+    {
+        const dir = try h.tempDir(ctx.gpa);
+        defer ctx.gpa.free(dir);
+        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const pair = h.join(ctx, dir, "pair.txt");
+        defer ctx.gpa.free(pair);
+        const swapped = h.join(ctx, dir, "swapped.txt");
+        defer ctx.gpa.free(swapped);
+        h.writeFile(ctx.io, pair, "alpha beta\n");
+        h.writeFile(ctx.io, swapped, "beta then alpha\n");
+
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "pair.txt" }, .cwd = dir, .cols = 110 });
+        defer s.finish();
+        s.drain(500);
+        s.send(" fwalpha beta");
+        s.drain(800);
+        ctx.check("grep keeps the space literal, matching the adjacent words", onScreen(ctx, &s, "pair.txt:1"));
+        ctx.check("grep does not term-split: both words in any order is no match",
+            !onScreen(ctx, &s, "swapped.txt:1"));
+        s.send("\x1b");
+        s.drain(300);
+        s.send(" fwbeta.*alpha"); // ordering in grep is spelled with a regex
+        s.drain(800);
+        ctx.check("grep expresses order with a regex instead", onScreen(ctx, &s, "swapped.txt:1") and
+            !onScreen(ctx, &s, "pair.txt:1"));
+        s.send("\x1b:qa!\r");
+        s.drain(200);
+    }
+
     // Buffers appear as tabs across the top once more than one is open.
     {
         const dir = try h.tempDir(ctx.gpa);
@@ -550,7 +710,141 @@ pub fn run(ctx: *h.Ctx) !void {
     }
 
     try pickerClicks(ctx);
+    try statusRow(ctx);
+    try previewPaneReserved(ctx);
+    try narrowByKeystroke(ctx);
     try nonameBuffer(ctx);
+}
+
+/// Collapsing the preview pane when nothing is selected has to key on the
+/// *query*, not merely on an empty result list: `zedit <dir>` paints its
+/// first frame before the walk has delivered a single row, so a pane that
+/// only appears once rows land would re-lay the whole picker out under the
+/// reader a frame later. An empty directory is that state made permanent.
+fn previewPaneReserved(ctx: *h.Ctx) !void {
+    const dir = try h.tempDir(ctx.gpa);
+    defer ctx.gpa.free(dir);
+    defer h.removeTree(ctx.gpa, ctx.io, dir);
+
+    var s = try h.Session.spawn(ctx.gpa, .{
+        .argv = &.{ ctx.zedit, "." },
+        .cwd = dir,
+        .cols = 110,
+        .term = "xterm-256color",
+    });
+    defer s.finish();
+    s.drain(700);
+    {
+        var scr = try h.Screen.init(ctx.gpa, 24, 110);
+        defer scr.deinit();
+        scr.apply(s.out.items);
+        // The pane's header bar (tokyonight status_seg_bg) at row 2, col 70:
+        // sidebar 1..28, results 29..69, preview 70..110.
+        ctx.check("the preview pane is reserved before anything is typed",
+            scr.at(2, 80).bg == h.rgb(0x29, 0x2e, 0x42));
+    }
+    s.send("zq"); // a query nothing matches: now the results do take the width
+    s.drain(500);
+    {
+        var scr = try h.Screen.init(ctx.gpa, 24, 110);
+        defer scr.deinit();
+        scr.apply(s.out.items);
+        ctx.check("a query with no match gives the width back to the results",
+            scr.at(2, 80).bg != h.rgb(0x29, 0x2e, 0x42));
+    }
+    s.send("\x1b:qa!\r");
+    s.drain(300);
+}
+
+/// The picker has no statusline, so a message set while it is up (the
+/// `zedit <dir>` scope hint, a remote listing's count) takes its bottom row.
+/// That row must be *reserved* in the layout rather than painted over the
+/// list: `pickerLayout` feeds both the renderer and the click hit-test, so a
+/// row painted over would still resolve to the result underneath it and open
+/// a file the reader cannot see.
+fn statusRow(ctx: *h.Ctx) !void {
+    const dir = try h.tempDir(ctx.gpa);
+    defer ctx.gpa.free(dir);
+    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    // More files than the list has rows (24 rows − title − prompt = 21), so
+    // the bottom row would otherwise carry a real, clickable result.
+    var i: usize = 0;
+    while (i < 30) : (i += 1) {
+        var nb: [16]u8 = undefined;
+        const name = try std.fmt.bufPrint(&nb, "f{d:0>2}.txt", .{i});
+        const p = h.join(ctx, dir, name);
+        defer ctx.gpa.free(p);
+        h.writeFile(ctx.io, p, "x\n");
+    }
+
+    var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "." }, .cwd = dir, .cols = 110 });
+    defer s.finish();
+    s.drain(700);
+    {
+        var scr = try h.Screen.init(ctx.gpa, 24, 110);
+        defer scr.deinit();
+        scr.apply(s.out.items);
+        const txt = try scr.rowText(ctx.gpa, 24);
+        defer ctx.gpa.free(txt);
+        ctx.check("the picker's status message lands on the bottom row",
+            std.mem.indexOf(u8, txt, "type to match file NAMES") != null);
+    }
+    // Two clicks on that row: the first would select the hidden result, the
+    // second (already selected) would open it and close the picker. Both must
+    // be inert, exactly as the prompt row is.
+    s.send("\x1b[<0;35;24M\x1b[<0;35;24m");
+    s.drain(400);
+    s.send("\x1b[<0;35;24M\x1b[<0;35;24m");
+    s.drain(500);
+    ctx.check("clicking the status row cannot open a hidden result", onScreen(ctx, &s, "FILES"));
+    s.send("\x1b:qa!\r");
+    s.drain(300);
+}
+
+/// The files picker narrows instead of rescoring when the query only grows,
+/// and a multi-term query must not break that: typed one key at a time,
+/// "ed re" has to land on exactly the files a from-scratch rescore would
+/// find. `Ctrl-r` forces that rescore (it clears `prev_query`), so the two
+/// paths are compared against each other rather than against a guess.
+fn narrowByKeystroke(ctx: *h.Ctx) !void {
+    const dir = try h.tempDir(ctx.gpa);
+    defer ctx.gpa.free(dir);
+    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const names = [_][]const u8{
+        "reduced.txt", // "ed" and "re"
+        "pipeline_red.txt", // "ed" and "re"
+        "edit.txt", // "ed" only  — dropped by the second term
+        "order.txt", // "re" only  — dropped by the first
+    };
+    for (names) |n| {
+        const p = h.join(ctx, dir, n);
+        defer ctx.gpa.free(p);
+        h.writeFile(ctx.io, p, "x\n");
+    }
+
+    // Opened on a file, not the directory: the explorer tree would list every
+    // name in the sidebar columns and defeat the negative assertions.
+    var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "reduced.txt" }, .cwd = dir, .cols = 110 });
+    defer s.finish();
+    s.drain(600);
+    s.send(" ff");
+    s.drain(500);
+    for ([_][]const u8{ "e", "d", " ", "r", "e" }) |k| { // one key, one refilter
+        s.send(k);
+        s.drain(250);
+    }
+    ctx.check("narrowing key by key keeps every multi-term match",
+        onScreen(ctx, &s, "reduced.txt") and onScreen(ctx, &s, "pipeline_red.txt"));
+    ctx.check("narrowing key by key drops the one-term files",
+        !onScreen(ctx, &s, "edit.txt") and !onScreen(ctx, &s, "order.txt"));
+
+    s.send("\x12"); // Ctrl-r: re-walk and rescore from scratch, same query
+    s.drain(800);
+    ctx.check("a full rescore of the same query agrees with the narrowing",
+        onScreen(ctx, &s, "reduced.txt") and onScreen(ctx, &s, "pipeline_red.txt") and
+            !onScreen(ctx, &s, "edit.txt") and !onScreen(ctx, &s, "order.txt"));
+    s.send("\x1b:qa!\r");
+    s.drain(300);
 }
 
 /// The `▶` selection marker's screen row within the picker's result column

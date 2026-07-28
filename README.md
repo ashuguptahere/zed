@@ -75,7 +75,12 @@
   `Space f b` buffers, `Space f t` themes; `Space b …` buffers (picker,
   next/previous, close); `Space l …` language tools — one
   consistent UI (`Ctrl-n/p` move, `Enter` opens, `Esc` cancels, `Ctrl-r`
-  refreshes). The file list is cached per session with per-path char-bitmask
+  refreshes). Fuzzy queries are multi-term (helix-style): spaces split the
+  query and every term must match, in any order — `render editor` finds
+  `src/editor/render.zig` (the grep picker stays pure regex: a space is a
+  literal there, `foo.*bar` asks for order) — and a files query with no
+  match hints at `Space f w`, the *content* search. The file list is cached
+  per session with per-path char-bitmask
   prefiltering and incremental query narrowing — the same tricks that make
   Zed's finder feel instant
 - **Startup screen** listing recently opened files and directories (`j`/`k`,
@@ -109,11 +114,12 @@
   cursor, undo history, highlighting and language server. `:bd` follows
   vim: the last buffer is replaced by an empty `[No Name]` (the window
   stays), a dirty buffer refuses unless forced with `:bd!`
-- **File-tree sidebar** (`Space e`): browse and open files, expand
-  directories — by key or by mouse (a single click toggles a directory or
-  opens a file, VS Code-style); lives on the left or right (config
-  `sidebar = left|right`), and follows you — switching buffers reveals and
-  selects the active file in the tree
+- **File-tree sidebar** (`Space e`, VS Code's three-state cycle: open +
+  focus → refocus an open tree → close a focused one): browse and open
+  files, expand directories — by key or by mouse (a single click toggles a
+  directory or opens a file, VS Code-style); lives on the left or right
+  (config `sidebar = left|right`), and follows you — switching buffers
+  reveals and selects the active file in the tree
 - **One search layout everywhere**: tree on the left, results in the middle,
   and a live tree-sitter-highlighted **preview** of the selection on the right
   (`Ctrl-d`/`Ctrl-u` or the wheel scroll it) — `zedit <dir>` opens into it

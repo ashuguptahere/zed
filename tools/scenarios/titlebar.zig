@@ -148,7 +148,9 @@ pub fn run(ctx: *h.Ctx) !void {
             ctx.check("revealed row is selected (dim ui_sel)", found_row != 0 and scr.at(found_row, found_col).bg == UI_SEL_DIM);
         }
 
-        s.send(" e"); // close the sidebar for the cycling checks
+        s.send(" e"); // the tree is open + unfocused: Space e refocuses it...
+        s.drain(300);
+        s.send("q"); // ...and q closes it for the cycling checks
         s.drain(300);
 
         // ]b / [b cycle through buffers; a count skips.

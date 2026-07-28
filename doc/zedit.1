@@ -501,13 +501,21 @@ groups open a nested popup of their own.
 .B Space f f
 Fuzzy file finder (file names). The file list is cached per session;
 .B Ctrl-r
-inside the picker re\-walks the project.
+inside the picker re\-walks the project. When no file name matches the query,
+a dim hint row points at
+.B Space f w
+(the content search). Starting zedit on a directory shows the same
+distinction once in the status line.
 .TP
 .B Space f w
 Global search across file \fIcontents\fP (find words). The query is a regex
 with the same modern syntax as
 .BR / ,
-matched per line; a plain string stays on the literal fast path. While the
+matched per line; a plain string stays on the literal fast path. Unlike the
+fuzzy pickers a space here is a literal character \(em the query is one
+regex, so
+.B foo.*bar
+is the way to ask for order. While the
 pattern is incomplete (a lone parenthesis, a trailing backslash) the previous
 results stay and the prompt shows a dim tag.
 .TP
@@ -553,7 +561,9 @@ opening one closes the others first. A file with no changes reports so instead
 of opening an empty view.
 .TP
 .B Space e
-Toggle the file-tree explorer. Its header lives in the title bar; while the
+The file-tree explorer, as a three-state cycle (VS Code's): closed, it opens
+with focus; open but unfocused, it takes focus back (selection and scroll
+untouched); focused, it closes. Its header lives in the title bar; while the
 tree is open, switching buffers reveals the active file in it (ancestor
 directories expand and its row is selected). Inside it:
 .B j k
@@ -586,7 +596,18 @@ or the arrow keys to move the selection,
 .B Enter
 to open, and
 .B Esc
-to cancel. The in\-buffer
+to cancel. A fuzzy query splits on spaces and every term must match
+independently, in any order (helix\-style):
+.I render editor
+finds
+.I src/editor/render.zig
+as well as
+.IR render_editor.zig ;
+the scores add up, shorter candidates still win ties. The workspace\-symbol
+picker is the other exception besides
+.BR "Space f w" :
+the language server does its matching, so the query reaches it verbatim,
+spaces included. The in\-buffer
 .B /
 and
 .B ?

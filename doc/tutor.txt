@@ -266,11 +266,14 @@
 
   The Space key is the leader: press  Space  and a which-key popup lists
   what can follow.  In any picker: type to filter, move with Ctrl-n and
-  Ctrl-p (or the arrows), open with Enter, cancel with Esc.
+  Ctrl-p (or the arrows), open with Enter, cancel with Esc.  A fuzzy
+  query splits on spaces and every term must match, in any order:
+  "render editor" finds editor/render.zig and render_editor.zig alike.
 
      Space f f  fuzzy file finder (matches file NAMES)
      Space f w  project-wide content search (greps file CONTENTS;
-                regex, same syntax as /)
+                regex, same syntax as / — a space is a literal here,
+                and  foo.*bar  asks for order)
      Space f b  switch between the open buffers
      Space b    Buffers menu: picker, next/previous, close
      Space e    file explorer: a tree of this directory on the side
@@ -290,6 +293,8 @@
 
   3. Press  Space e  for the file tree: j/k move, Enter opens, h
      collapses, q closes.  Space still opens the leader menu in there.
+     Esc keeps the tree but returns to the text;  Space e  then focuses
+     it again (and from a focused tree, closes it — VS Code's cycle).
      The mouse works too: a single click expands or collapses a
      directory, or opens a file.  While the tree is open it follows
      you: switching buffers expands and selects the active file's row.

@@ -411,3 +411,49 @@ The shortlist is done; these are the next-highest gaps from
       clicks probed at every boundary column, all picker kinds,
       sidebar=right and a 16-column terminal. Suites green (unit + 707
       itest).
+- [x] Three picker/explorer UX items (owner-approved): (1) `Space e` is
+      VS Code's three-state cycle — closed → open+focused, open+unfocused →
+      refocus (no rebuild, selection survives), focused → close. (2)
+      Space-separated multi-term fuzzy queries (`fuzzy.scoreTerms`) in every
+      fuzzy picker via the shared `refilter`; grep stays pure regex (space
+      is a literal, `foo.*bar` orders); the char-bitmask prefilter masks
+      only non-space query chars (`fuzzy.queryMask`), extend-narrows argued
+      sound with terms. (3) Content-search discoverability: one-time scope
+      status on `zedit <dir>` (picker now renders status on its bottom
+      row — reserved, not painted over the list, so no result hides under
+      it), dim zero-match hint row in the files picker only. Unit tests in
+      fuzzy.zig + pty scenarios (sidebar/picker), each proven fail-without
+      by planting the old behaviour back and recording the failures: the
+      two-state `sidebarToggle` (4 sidebar checks + 3 titlebar), a rebuild
+      in the refocus branch (1), `scoreTerms` bypassed to `score` (2 unit +
+      6 pty), a per-term score bonus (the byte-identity unit test), the
+      scope status removed (1) and the hint row removed (1). Also pinned:
+      multi-term in a *non*-files picker (buffers, so the claim covers the
+      shared `refilter` and not just the narrowing path) and the grep
+      picker's space staying literal — `alpha beta` finds the adjacent
+      words, not the line holding both in the other order, with
+      `beta.*alpha` for order. Docs swept including `doc/COMPARISON.md`.
+      (UNRELEASED)
+- [x] Defect pass over the three items above. Fixed: (a) the picker's new
+      status row landed *on* the last result row — `pickerLayout` now
+      reserves it, `pickerClick` rejects it, and the preview stops a row
+      short, so the renderer and the hit-test cannot disagree (two clicks
+      on that row used to open a result nobody could see); (b) the status
+      text is clipped with the shared `clipCells`, which counts the cells
+      `emitSanitized` actually paints, instead of a hand-rolled loop —
+      remote destinations and file names reach that row; (c) `previewKind`
+      collapsed the pane whenever *nothing was selected*, which on a cold
+      `zedit <dir>` is the first frame, re-laying the picker out one frame
+      later — it now keys on a typed query; (d) the startup greeting is
+      suppressed for a session that starts in the picker, where it would
+      cost a remote listing a result row. Documented: the workspace-symbol
+      picker is server-matched, so multi-term does not apply and its query
+      (spaces included) is forwarded verbatim — the CHANGELOG had claimed
+      otherwise. Verified by hand: the `Space e` cycle leaves a
+      side-by-side diff pair untouched (refocus assigns one bool), works
+      with `sidebar = right`, and the status/hint rows survive 16- and
+      3-column terminals; `Space e` inside a picker types into the query
+      (a leading space is just a term separator), which is the sane
+      reading. Bench unchanged against a clean HEAD build: startup
+      5.7→5.6 ms, keypress 0.12→0.12 ms, picker-open 6.1/4.7→6.2/4.7 ms
+      cold/warm. (UNRELEASED)

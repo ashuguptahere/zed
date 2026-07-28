@@ -173,7 +173,7 @@ Source is `src/`, one responsibility per module:
 | `theme.zig`   | Colour palettes (Tokyo Night default + Gruvbox/Catppuccin/Nord/One Dark), the active-theme global, 24-bit SGR helpers. |
 | `config.zig`  | The single documented config file (`~/.config/zedit/config`): parse, apply, standard path, `--init-config` default text. |
 | `syntax.zig`  | Dependency-free per-line lexer producing per-byte styles. |
-| `fuzzy.zig`   | Subsequence scorer for the pickers. |
+| `fuzzy.zig`   | Subsequence scorer for the pickers, plus the space-separated multi-term rule (`scoreTerms`) and the prefilter's query mask. |
 | `git.zig`     | Git change signs for the gutter (parses `git diff -U0`; skips the subprocess entirely outside a work tree). |
 | `snippet.zig` | LSP snippet parsing: `$1`, `${1:placeholder}`, `${1|a,b|}`, `$0`, escapes → plain text + tabstops. |
 | `recent.zig`  | The recently-opened list behind the startup screen (XDG state file). |
@@ -389,12 +389,22 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   `g s` side-by-side, `g l` line diff); `Space e` file explorer, `Space c` close buffer,
   `Space w` write, `Space q` quit. In a picker: type to filter, `Ctrl-n`/`Ctrl-p` or
   arrows to move, `Enter` to open, `Esc` to cancel, and `Ctrl-r` re-walks the
-  project (the file list is cached per session — the Zed-style warm picker:
+  project. Fuzzy queries are multi-term, helix-style (`fuzzy.scoreTerms`):
+  the query splits on spaces and every term must match independently, in any
+  order, the per-term scores summing (so the shorter-candidate tiebreak
+  carries over). The two pickers that do not match client-side are the
+  exceptions: the grep picker's query is one regex, where a space is a
+  literal and `foo.*bar` expresses order, and the workspace-symbol picker
+  hands the query — spaces and all — to the language server, which owns the
+  matching and shows every row it returns. (The file list is
+  cached per session — the Zed-style warm picker:
   opening does no filesystem work after the first walk, candidates are
   prefiltered with per-path char bitmasks, and extending the query narrows the
   previous result set instead of rescoring everything — the grep picker narrows
   the same way, filtering the hits it already has rather than re-reading every
-  file, so a keystroke costs 4 µs once the scan has covered the project).
+  file, so a keystroke costs 4 µs once the scan has covered the project —
+  narrowing stays sound with multi-term queries, since appended bytes only
+  ever extend the last term or add one, both of which shrink the match set.)
   Every picker uses one layout: the title bar on row 1 (when enabled), the
   file tree on its side (when open), the prompt and
   results next to it (selected row on the theme's `ui_sel` background), and —
@@ -416,7 +426,17 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   entries (an ssh round trip per keystroke) and on narrow terminals, where the
   results take the full width.
   Note the three search scopes: `/` searches the current buffer, `Space f w`
-  searches file *contents* across the project, `Space f f` matches file *names*.
+  searches file *contents* across the project, `Space f f` matches file *names*
+  — a `zedit <dir>` session says so in a one-time status line, and a files
+  query with zero matches shows a dim hint row pointing at `Space f w` (with
+  nothing to preview, those results take the full width — but only once a
+  query has been typed: before that the pane stays reserved, so a cold
+  `zedit <dir>`, which paints before the walk delivers a row, does not
+  re-lay itself out a frame later). A status message
+  raised while a picker is up owns the view's **bottom row**, dim — the
+  picker has no statusline of its own — and `pickerLayout` reserves that row
+  instead of painting over the list, so the renderer and the click hit-test
+  keep agreeing on which rows are results.
   The grep picker takes the same modern regexes as `/` (case-sensitive,
   matched per line). A plain-string query keeps the literal fast path:
   indexOf matching, and extending it narrows the hits already on screen. A
@@ -468,7 +488,10 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   drawn dim (`fg_dim`) through the render sanitizer like any untrusted text.
 - **Sidebar (`Space e`):** a file-tree of the cwd on the configured side
   (config `sidebar = left|right`), which carves its width off the window
-  tiling. Its "EXPLORER" header lives in the title bar when that row is shown
+  tiling. `Space e` is VS Code's three-state cycle: closed → open + focused;
+  open but unfocused → refocus it (no rebuild — selection and scroll survive,
+  the keyboard route back into an Esc'd tree); open + focused → close.
+  Its "EXPLORER" header lives in the title bar when that row is shown
   (drawn by the sidebar itself only when `buffer_tabs = false`); the selected
   row uses the theme's `ui_sel` background while focused and
   `mixColor(bg_dark, ui_sel, 50)` unfocused — never `cursorline`, which
@@ -780,7 +803,11 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   newline — and a literal query's narrowing compares against the row text as
   stored, which is capped at 120 bytes: a match hiding past that column on a
   very long line is dropped where a rescan would have kept it (the row could
-  not have shown it either). Statusline separators assume a nerd font.
+  not have shown it either). Multi-term fuzzy queries have no operators
+  beyond the space: every term is a plain fuzzy subsequence, with no negation
+  (`!term`), no exact/anchored term and no per-term case rule — and the grep
+  picker is not term-split at all, since a space is a legal literal in a
+  regex. Statusline separators assume a nerd font.
 - Windows/splits use a flat even tiling in one orientation at a time (a split
   re-tiles all windows; no nested/mixed layouts or per-window resizing). Only
   the active window has live LSP polling and an editable selection/search/inlay
@@ -844,8 +871,10 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   click-to-move-cursor or drag selection — a plain click or drag in the text
   area stays unbound).
 - The sidebar tree is flat-file only (no rename/create/delete operations from
-  the tree), rebuilt on expand/toggle rather than watched (reveal-on-switch
-  rebuilds only when it has to expand an ancestor). The side-by-side diff's
+  the tree), rebuilt on open/expand rather than watched (reveal-on-switch
+  rebuilds only when it has to expand an ancestor, and `Space e` refocusing an
+  already-open tree deliberately rebuilds nothing — a file created meanwhile
+  stays out of it until `R`). The side-by-side diff's
   alignment and tints reflect the file as last *saved* (they refresh on `:w`,
   like the gutter signs — unsaved edits shift rows until then), the index
   pane's tree-sitter highlighting covers only the viewport it last had focus
