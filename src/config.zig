@@ -42,6 +42,10 @@ pub const Settings = struct {
     /// milliseconds. Only armed while typing an identifier, so an idle editor
     /// still blocks in poll() and burns no CPU.
     completion_delay_ms: usize = 150,
+    /// Complete from the words already in the open buffers when no language
+    /// server answers (none installed for the filetype, or an empty result) —
+    /// vim's keyword completion. False leaves completion to the server alone.
+    buffer_completion: bool = true,
     /// Show each diagnostic's message inline at the end of its line (dim,
     /// severity-coloured virtual text — helix/nvim call this virtual_text).
     /// The gutter sign and the statusline message appear either way.
@@ -132,6 +136,11 @@ pub const default_text =
     \\# an identifier, so an idle editor still uses no CPU.
     \\completion_delay_ms = 150
     \\
+    \\# Complete from words already in the open buffers when no language server
+    \\# answers (none is installed for the filetype, or it returned nothing) —
+    \\# vim's keyword completion. Set false to complete only from a server.
+    \\buffer_completion = true
+    \\
     \\# Show each diagnostic's message inline at the end of its line, as dim
     \\# severity-coloured text (the gutter sign and statusline message show
     \\# regardless). Set false for a quieter buffer.
@@ -220,6 +229,8 @@ pub fn apply(text: []const u8) void {
             if (parseBool(value)) |b| settings.persistent_undo = b;
         } else if (std.mem.eql(u8, key, "soft_wrap")) {
             if (parseBool(value)) |b| settings.soft_wrap = b;
+        } else if (std.mem.eql(u8, key, "buffer_completion")) {
+            if (parseBool(value)) |b| settings.buffer_completion = b;
         } else if (std.mem.eql(u8, key, "inline_diagnostics")) {
             if (parseBool(value)) |b| settings.inline_diagnostics = b;
         } else if (std.mem.eql(u8, key, "format_on_save")) {

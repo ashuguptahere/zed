@@ -150,6 +150,15 @@ only while typing, so an idle editor still blocks in
 .BR poll (2)
 and uses no CPU.
 .TP
+.B buffer_completion
+.BR true / false
+(default true). When no language server answers \(em none is installed for the
+filetype, or it returned nothing \(em fill the completion popup from the
+identifiers already in the open buffers (vim's keyword completion). The word
+being typed is never offered as its own completion.
+.B false
+completes only from a server.
+.TP
 .B wrap_indent
 (default true). Repeat a wrapped line's indent in front of every continuation
 row, so it hangs under its own first character. Capped at half the window.

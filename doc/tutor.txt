@@ -359,6 +359,12 @@
   dismisses.  Matching is fuzzy, so typing  mplt  finds  mockComplete .
   Set  auto_completion = false  in your config for manual-only popups.
 
+  You do not need a language server for this.  With none installed the
+  popup fills from the words already in your open buffers, so a name you
+  typed once completes everywhere after that;  buffer_completion = false
+  turns that off.  When a server does exist for the filetype but is not
+  installed, the statusline says which one to install.
+
   Some completions are snippets.  Accepting one fills in placeholder
   text and drops the cursor on the first placeholder: just type to
   replace it, press Tab to move to the next, and Esc when you are done.

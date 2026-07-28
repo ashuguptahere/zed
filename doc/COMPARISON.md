@@ -135,6 +135,7 @@ Per `/home/origo/Desktop/zed/CLAUDE.md`:
 - Themes (5) + single config file, `--tutor`, `--log`, powerline statusline, relative line numbers, cursorline, indent guides
 - Live file preview in every picker (tree-sitter highlighted, independently scrollable) — Helix previews only in some pickers
 - Snippet completion with tabstops, fuzzy-ranked auto-completion, workspace-symbol search and a cross-buffer diagnostics list
+- Buffer-word completion when no language server answers (vim's keyword completion, fuzzy-ranked across every open buffer) — Helix has no server-free completion at all
 - Structural text objects from the syntax tree (`af`/`if`, `ac`/`ic`, `aa`/`ia`, `aC`/`iC`, `]f`/`[f`) — Helix's tree-sitter object set is larger, but the mechanism is there
 - Fish-style inline suggestions on the command line (history/command-name ghost text, Right/End to accept) — neither Helix nor stock Neovim ships this
 - Mouse wheel scrolling; buffer tabs along the top; a recently-opened startup screen; `:update` against the release tags
@@ -177,7 +178,7 @@ Ground truth: `/home/origo/Desktop/zed/CLAUDE.md` (note: the on-disk version is 
 3. **OSC 52 clipboard (provider in 0.10, default fallback even without SSH in 0.11)** — gives zedit `"+` with zero dependencies and zero syscalls beyond the existing frame write; perfectly on-brand.
 4. **Async tree-sitter parsing (0.11)** — Neovim moved parsing off the input path for large buffers; zedit parses synchronously per keystroke (incremental, but still blocking).
 5. **Built-in snippet expansion + completion side effects (`vim.snippet` 0.10; snippet/`additionalTextEdits` handling built into LSP completion in 0.11)** — directly addresses zedit's "no snippets/`textEdit` completions" gap.
-6. **`'autocomplete'` — auto-triggered insert completion (0.12)** — zedit's completion is manual `Ctrl-n` only; as-you-type triggering is what makes its completion feel like nvim-cmp/AstroNvim.
+6. ~~**`'autocomplete'` — auto-triggered insert completion (0.12)**~~ — **DONE** (debounced as-you-type popup; and it now works with no server at all, filling from buffer words like nvim's `Ctrl-n`).
 7. **Fuzzy completion filtering (`completeopt=fuzzy`, 0.11)** — zedit already ships `fuzzy.zig` for pickers; apply it to the completion popup.
 8. **LSP/inlay-hint request de-duplication — new requests cancel in-flight ones (0.11 perf)** — zedit's own docs flag "re-requested per edit, not debounced"; this is Neovim's exact fix.
 9. **Default LSP keymap cluster `grr grn gra gri gO` + `Ctrl-s` signature help (0.11), `grt grx` (0.12)** — zedit's `gr` = rename conflicts with Neovim's `gr` prefix; aligning now is cheap, later is breaking.

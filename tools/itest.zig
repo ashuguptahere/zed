@@ -24,6 +24,7 @@ const scenarios = .{
     .{ "remote", @import("scenarios/remote.zig") },
     .{ "ssh", @import("scenarios/ssh.zig") },
     .{ "lsp", @import("scenarios/lsp.zig") },
+    .{ "bufcomplete", @import("scenarios/bufcomplete.zig") },
     .{ "cpu", @import("scenarios/cpu.zig") },
     .{ "wrap", @import("scenarios/wrap.zig") },
     .{ "undotree", @import("scenarios/undotree.zig") },

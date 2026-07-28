@@ -288,6 +288,7 @@ test {
     _ = @import("recent.zig");
     _ = @import("remote.zig");
     _ = @import("snippet.zig");
+    _ = @import("complete.zig");
     _ = @import("lsp.zig");
     _ = @import("treesitter.zig");
     _ = @import("editor.zig");

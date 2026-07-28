@@ -46,7 +46,10 @@
     across a run of comment lines), and `]f`/`[f` to step between functions
   - Built-ins (no plugins): autoindent, auto-pairs, comment toggle (`gcc` / `gc{motion}`),
     surround (`ys`/`cs`/`ds`, visual `S`), blockwise visual (`Ctrl-v` + `I`/`A`),
-    multiple cursors (`Ctrl-n` / `Ctrl-p` add carets; edits apply to all)
+    multiple cursors (`Ctrl-n` / `Ctrl-p` add carets; edits apply to all),
+    **buffer-word completion** — with no language server installed the popup
+    still fills from the identifiers in your open buffers (vim's keyword
+    completion; `buffer_completion = false` turns it off)
 - **LSP**, auto-launched per filetype (`zls`, `clangd`, `pylsp`,
   `typescript-language-server`; any server via `--lsp <cmd>`); one client per
   open buffer, so different languages run side by side:
@@ -54,7 +57,9 @@
     severity-coloured; `inline_diagnostics = false` to silence), with `]d` /
     `[d` navigation
   - completion that pops up as you type (debounced; `Ctrl-n` on demand) and
-    is **fuzzy** matched — `mplt` finds `mockComplete`
+    is **fuzzy** matched — `mplt` finds `mockComplete`; when no server is
+    installed for the filetype the statusline says which one to install and
+    the popup falls back to words from the open buffers
   - workspace symbol search (`Space l S`) and a diagnostics list
     (`Space l D`) across all open buffers
   - snippets with tabstops (`Tab`/`Shift-Tab` between placeholders, typing
@@ -201,8 +206,8 @@ Format is `key = value` with `#` comments; unknown keys are ignored and a
 missing file just means defaults. Settings today: `theme`, `tab_width`,
 `nerd_font`, `sidebar`, `relative_numbers`, `large_file_mb`, `autoindent`,
 `buffer_tabs`, `auto_completion`, `completion_delay_ms`,
-`inline_diagnostics`, `soft_wrap`, `wrap_indent`, `wrap_column`,
-`persistent_undo`, `format_on_save`.
+`buffer_completion`, `inline_diagnostics`, `soft_wrap`, `wrap_indent`,
+`wrap_column`, `persistent_undo`, `format_on_save`, `cmdline_suggestions`.
 
 Every CLI option has a short and a long form (`-h/--help`, `-v/--version`,
 `-l/--log`, `-s/--lsp`, `-c/--config`, `-t/--tutor`, `-b/--benchmark`,

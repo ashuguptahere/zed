@@ -6,7 +6,13 @@
 //! references, and formatting. Flags: `--fmt` advertises formatting in the
 //! initialize response (turning on the editor's format-on-save); `--xfile`
 //! makes rename return a second file's edits (sibling `zedit_it_other.zig`)
-//! to exercise cross-file WorkspaceEdits.
+//! to exercise cross-file WorkspaceEdits; `--nocomp` answers completion with
+//! an empty list (the editor should then fall back to buffer words);
+//! `--thenempty` answers the *first* completion with items and every later one
+//! with an empty list — a real server's behaviour once the prefix stops
+//! matching, and the case where a popup is left indexing a list that is gone;
+//! `--die` exits right after the handshake, so the editor holds a client that
+//! is attached but dead.
 
 const std = @import("std");
 const posix = std.posix;
@@ -17,9 +23,16 @@ pub fn main(init: std.process.Init) !void {
     const argv = try init.minimal.args.toSlice(init.arena.allocator());
     var fmt_mode = false;
     var xfile = false;
+    var nocomp = false;
+    var thenempty = false;
+    var die = false;
+    var comps: usize = 0; // completion requests answered so far
     for (argv[1..]) |a| {
         if (eql(a, "--fmt")) fmt_mode = true;
         if (eql(a, "--xfile")) xfile = true;
+        if (eql(a, "--nocomp")) nocomp = true;
+        if (eql(a, "--thenempty")) thenempty = true;
+        if (eql(a, "--die")) die = true;
     }
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(gpa);
@@ -56,12 +69,18 @@ pub fn main(init: std.process.Init) !void {
                 "{{\"range\":{{\"start\":{{\"line\":1,\"character\":0}},\"end\":{{\"line\":1,\"character\":1}}}},\"severity\":1,\"message\":\"mock error\"}}," ++
                 "{{\"range\":{{\"start\":{{\"line\":2,\"character\":0}},\"end\":{{\"line\":2,\"character\":1}}}},\"severity\":2,\"message\":\"mock warn\"}}" ++
                 "]}}}}", .{});
+            if (die) std.process.exit(0); // handshake done, then gone
         } else if (eql(method, "textDocument/didChange")) {
             const kind = if (changeHasRange(obj)) "INCREMENTAL" else "FULL";
             send(gpa, "{{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{{\"uri\":\"x\"," ++
                 "\"diagnostics\":[{{\"range\":{{\"start\":{{\"line\":0,\"character\":0}},\"end\":{{\"line\":0,\"character\":1}}}}," ++
                 "\"severity\":2,\"message\":\"{s}\"}}]}}}}", .{kind});
+        } else if (eql(method, "textDocument/completion") and (nocomp or (thenempty and comps > 0))) {
+            // A server that has nothing to offer here.
+            comps += 1;
+            send(gpa, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{{\"items\":[]}}}}", .{id orelse 0});
         } else if (eql(method, "textDocument/completion")) {
+            comps += 1;
             // Two plain items, a snippet item (insertTextFormat 2, two
             // placeholders and a final stop), and a textEdit item whose range
             // replaces the four characters before the cursor — the client must

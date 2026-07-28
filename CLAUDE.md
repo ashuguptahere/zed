@@ -175,6 +175,7 @@ Source is `src/`, one responsibility per module:
 | `syntax.zig`  | Dependency-free per-line lexer producing per-byte styles. |
 | `fuzzy.zig`   | Subsequence scorer for the pickers, plus the space-separated multi-term rule (`scoreTerms`) and the prefilter's query mask. |
 | `git.zig`     | Git change signs for the gutter (parses `git diff -U0`; skips the subprocess entirely outside a work tree). |
+| `complete.zig` | Buffer-word completion candidates: identifiers harvested from the open buffers (the fallback when no server answers). |
 | `snippet.zig` | LSP snippet parsing: `$1`, `${1:placeholder}`, `${1|a,b|}`, `$0`, escapes → plain text + tabstops. |
 | `recent.zig`  | The recently-opened list behind the startup screen (XDG state file). |
 | `remote.zig`  | Editing over SSH: `ssh://user@host/path` parsing, read/write/list via one `ssh` per operation. |
@@ -653,7 +654,29 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   it is armed *only* while typing, so an idle editor still blocks in `poll(2)`
   at zero CPU; `auto_completion = false` restores manual-only behaviour.
   `Ctrl-n` requests it on demand either way (popup: `Ctrl-n`/`Ctrl-p` or
-  arrows to move, `Tab`/`Enter` to accept, `Esc` to dismiss). The list is
+  arrows to move, `Tab`/`Enter` to accept, `Esc` to dismiss). **With no
+  server** — none installed for the filetype, or one that returns nothing —
+  the same popup fills from the identifiers in the open buffers (vim's
+  keyword completion, `complete.zig`; config `buffer_completion`, on by
+  default): the current buffer first, then the others, deduplicated, ranked
+  with `fuzzy.score`, and never offering the word being typed at the cursor.
+  The scan walks **outward from the cursor line** so the caps keep the
+  *nearest* words (top-down filled all 200 slots a thousand lines above the
+  cursor, and the name on the line you just wrote was never offered). It runs
+  on the same debounce (never per keystroke) and is bounded three ways —
+  1000 lines each way, 128 KB of text, 200 candidates, the byte budget shared
+  across every buffer. The byte budget is the one that always bites: `cap`
+  limits what is *kept*, but dedup costs a scan of the kept list per word
+  *examined*, so a file with a small vocabulary used to scan megabytes —
+  measured at 82 ms a harvest, now 2.3 ms worst case (78–144 µs on ordinary
+  source). The words are *copied* into a reused byte arena, because the popup
+  outlives the buffer edits made while it is open. A server that exited or
+  crashed counts as "no server" too, so completion keeps working instead of
+  posting requests into a dead pipe.
+  When the filetype *has* a known server that failed to launch, the
+  statusline says so once for the document ("no language server for python
+  (install pylsp); completing from open buffers"); a filetype with no known
+  server stays silent. The list is
   filtered **fuzzily** and ranked with the pickers' scorer (`fuzzy.zig`), so
   `mplt` finds `mockComplete`. Accepting an item honours the server's own
   `textEdit` range (rather than guessing the identifier prefix) and applies any
@@ -706,7 +729,8 @@ Runtime configuration is one documented file (see `config.zig`): theme,
 `tab_width`, `nerd_font`, `sidebar` (left/right), `relative_numbers`,
 `large_file_mb`, `autoindent`, `buffer_tabs`, `auto_completion`,
 `completion_delay_ms`, `inline_diagnostics`, `soft_wrap`, `wrap_indent`,
-`wrap_column`, `persistent_undo`, `format_on_save`, `cmdline_suggestions`;
+`wrap_column`, `persistent_undo`, `format_on_save`, `cmdline_suggestions`,
+`buffer_completion`;
 `zedit --init-config` writes the annotated default.
 `zedit --tutor` opens the embedded interactive tutorial (`doc/tutor.txt`,
 embedded via `build.zig`).
@@ -814,6 +838,18 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   overlay; inactive windows render from their cached state.
 - Block paste of a blockwise yank is charwise (not a true rectangular paste);
   block `A` on lines shorter than the block does not pad with spaces.
+- Buffer-word completion is a flat word list, not vim's full `'complete'`
+  machinery: no completion from included files, tags or the dictionary, and
+  no `Ctrl-x` sub-modes. Proximity decides which words are *collected*
+  (outward from the cursor until a cap is hit), but the fuzzy score alone
+  ranks them, so a nearer match does not outrank a better-scoring far one.
+  The harvest reaches 1000 lines each way, 128 KB and 200 candidates, so a
+  word further out in a very large file is not offered. A word must start
+  with an ASCII letter or `_` to be collected (it may continue with any
+  non-ASCII bytes, so `café_count` is kept whole, but `über` is skipped) —
+  proper Unicode identifier classification would need a character table.
+  `Ctrl-n` with no prefix under the cursor offers nothing, where vim would
+  list every keyword.
 - LSP does diagnostics/hover/goto (definition, implementation, type)/
   references/completion/signature help/rename/code actions/formatting/inlay
   hints/document + workspace symbols with incremental (or

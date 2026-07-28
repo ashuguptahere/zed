@@ -457,3 +457,45 @@ The shortlist is done; these are the next-highest gaps from
       reading. Bench unchanged against a clean HEAD build: startup
       5.7→5.6 ms, keypress 0.12→0.12 ms, picker-open 6.1/4.7→6.2/4.7 ms
       cold/warm. (UNRELEASED)
+- [x] Buffer-word completion (`complete.zig`, config `buffer_completion`) —
+      the owner's report was "no completion when creating a new file (python
+      on mac)": completion was LSP-only, so with no pylsp installed the popup
+      never appeared and nothing said why. The popup now falls back to the
+      identifiers in the open buffers (vim's keyword completion) when no
+      server answers or a server returns nothing: outward from the cursor
+      line through the current buffer, then the others, deduplicated,
+      fuzzy-ranked, never offering the word being typed. The harvest runs on
+      the existing completion debounce (no new timer) and is bounded three
+      ways — 1000 lines each way, 128 KB of text, 200 candidates, the byte
+      budget shared across buffers — and the words are copied into a reused
+      arena because buffer lines move under an open popup. Plus a
+      missing-server hint in the statusline ("no language server for python
+      (install pylsp); completing from open buffers"), once per document,
+      silent for filetypes with no known server. Found and fixed on the way:
+      excluding only the typed *prefix* let the word under the cursor
+      complete itself (typing `x` in front of `aaa` offered `xaaa`, and the
+      popup then swallowed the following Esc) — the whole identifier at the
+      cursor is excluded now.
+      Four more came out of the adversarial review: (1) a server response
+      that replaced its list with an empty one left the popup indexing items
+      that were gone, and the next frame read off the end and **killed the
+      editor** — the popup is dropped as each response lands now; (2) a
+      server that died after the handshake took completion with it (request
+      into a dead pipe, no popup, no fallback) — a dead client counts as "no
+      server"; (3) the scan read its window top-down, so the 200-candidate
+      cap filled a thousand lines above the cursor and the word on the line
+      you just wrote was never offered — it walks outward from the cursor
+      now; (4) the cap bounds candidates, not work — dedup scans the kept
+      list once per word *examined*, so a file whose vocabulary never reaches
+      the cap scanned its whole window at **82 ms per typing pause**
+      (measured, 4000x3 KB lines / 199 distinct words) — a 128 KB byte budget
+      brings that to 2.3 ms.
+      17 pty checks in `tools/scenarios/bufcomplete.zig` (each proven to fail
+      without the change by planting the old behaviour) plus 10 harvester
+      unit tests; `mock_lsp` gained `--nocomp` (empty result), `--thenempty`
+      (items, then empty) and `--die` (exits after the handshake).
+      Measured (ReleaseFast, `log.Span` "buffer completion"): 10 MB / 186k
+      lines 1.4 ms on the first harvest at a new position, then ~22 us;
+      78-144 us on `src/editor.zig`; 2.3 ms on the adversarial
+      low-vocabulary file. One harvest per typing pause, never per keystroke.
+      Idle CPU still 0.0 ms over 3 s (`cpu` scenario). (UNRELEASED)

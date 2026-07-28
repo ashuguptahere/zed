@@ -33,6 +33,7 @@ const recent = @import("recent.zig");
 const snippet = @import("snippet.zig");
 const remote = @import("remote.zig");
 const regex = @import("regex.zig");
+const complete = @import("complete.zig");
 const ansi = term.ansi;
 const Allocator = std.mem.Allocator;
 const Pos = buffer.Pos;
@@ -468,8 +469,13 @@ pub const Editor = struct {
     lsp_rev: u64 = 0, // buffer revision last sent via didChange
     // completion popup (insert mode)
     comp_open: bool = false,
-    comp_filtered: std.ArrayList(usize) = .empty, // indices into lsp.completions matching the prefix
+    comp_filtered: std.ArrayList(usize) = .empty, // indices into the active candidate list
     comp_sel: usize = 0,
+    // Buffer-word fallback: identifiers harvested from the open buffers when
+    // no language server answers. `comp_words_src` says which list the popup
+    // (and `comp_filtered`) is indexing — these words, or the server's items.
+    comp_words: complete.Words = .{},
+    comp_words_src: bool = false,
     sig_open: bool = false, // signature-help popup is showing (reads lsp.signature)
 
     // Autoindent: the row whose auto-inserted indent is still untouched (it
@@ -591,6 +597,7 @@ pub const Editor = struct {
         self.ts_line_starts.deinit(self.gpa);
         if (self.lsp) |*c| c.deinit();
         self.comp_filtered.deinit(self.gpa);
+        self.comp_words.deinit(self.gpa);
         self.extra.deinit(self.gpa);
         self.freePicker();
         self.picker_items.deinit(self.gpa);
@@ -2557,7 +2564,7 @@ pub const Editor = struct {
                 if (c == '(' or c == ',') self.lspSignatureHelp();
             },
             .ctrl => |c| switch (c) {
-                'n' => self.lspCompletion(), // request completion
+                'n' => self.requestCompletion(), // request completion
                 'k' => self.lspHover(), // hover (parallels normal-mode K)
                 else => {},
             },
@@ -5535,6 +5542,17 @@ pub const Editor = struct {
             self.lsp_rev = self.buf.revision;
             c.requestInlayHints(self.buf.lineCount());
             self.setStatus("language server started", .{});
+        } else if (self.lsp_cmd == null) {
+            // This filetype has a known server and it is not installed: say so,
+            // so "nothing completes" is explained rather than silent. Once per
+            // document, since this runs once per document (the decorate pass
+            // after its first paint) and never on the typing path. A filetype
+            // with no known server stays quiet.
+            self.setStatus("no language server for {s} (install {s}){s}", .{
+                langId(self.lang),
+                argv_store[0],
+                if (config.settings.buffer_completion) "; completing from open buffers" else "",
+            });
         }
     }
 
@@ -5568,10 +5586,23 @@ pub const Editor = struct {
         }
         if (client.comp_ready) {
             client.comp_ready = false;
-            if (self.mode == .insert and client.completions.items.len > 0) {
-                self.comp_open = true;
-                self.comp_sel = 0;
-                self.filterCompletions();
+            // The response replaced the server's list wholesale, so an open
+            // popup is now indexing items that are gone. Drop it first: the
+            // branches below reopen it from whichever list they fill, and the
+            // fallback is allowed to decline (`buffer_completion = false`, or
+            // no prefix under the cursor) without leaving the popup pointed
+            // past the end of an empty list.
+            self.comp_open = false;
+            self.comp_filtered.clearRetainingCapacity();
+            if (self.mode == .insert) {
+                if (client.completions.items.len > 0) {
+                    self.comp_words_src = false; // the server's list wins
+                    self.comp_open = true;
+                    self.comp_sel = 0;
+                    self.filterCompletions();
+                } else {
+                    self.bufferComplete(); // nothing from the server: use the buffers
+                }
             }
         }
         if (client.sig_ready) {
@@ -5967,10 +5998,95 @@ pub const Editor = struct {
         return applied;
     }
 
-    fn lspCompletion(self: *Editor) void {
+    /// The language server, if one is attached *and still running*. A server
+    /// that exited or crashed answers nothing, so completion must treat it
+    /// exactly like one that was never installed rather than wait forever.
+    fn liveLsp(self: *Editor) ?*lsp.Client {
+        const c = if (self.lsp) |*cl| cl else return null;
+        return if (c.alive) c else null;
+    }
+
+    /// Ask for completions (the debounce fired, or `Ctrl-n`): the language
+    /// server when one is running, else the words already in the open buffers.
+    /// A server that answers with an empty list falls back the same way, in
+    /// `consumeLspResults`.
+    fn requestCompletion(self: *Editor) void {
         self.comp_due_ms = null;
+        const client = self.liveLsp() orelse return self.bufferComplete();
         self.syncLsp(); // the server must see the text this completes against
-        if (self.lsp) |*c| c.requestCompletion(self.cy, self.charCol());
+        client.requestCompletion(self.cy, self.charCol());
+    }
+
+    /// Fill the popup from identifiers already in the open buffers — vim's
+    /// keyword completion, and the reason completion works at all when no
+    /// language server is installed.
+    fn bufferComplete(self: *Editor) void {
+        if (!config.settings.buffer_completion or self.mode != .insert) return;
+        if (self.completionPrefix().len == 0) return;
+        var sp = log.Span.start();
+        self.harvestWords(self.completionWord());
+        self.comp_words_src = true;
+        self.comp_sel = 0;
+        self.comp_open = self.comp_words.count() > 0;
+        if (self.comp_open) self.filterCompletions(); // closes it again if nothing matches
+        sp.lap("buffer completion");
+    }
+
+    /// How much text a harvest reads, and how many candidates it keeps. These
+    /// are what stops a huge file from stalling the keystroke after the popup:
+    /// the scan is bounded work near the cursor, not a walk of the document.
+    /// The byte budget is the one that always bites — a file with a small
+    /// vocabulary never reaches `harvest_cap`, so `harvest_reach` alone left
+    /// the scan free to read megabytes (and one minified line can be megabytes
+    /// on its own): 82 ms a harvest, measured, against 2.3 ms now. 128 KB is
+    /// far past where ordinary source hits the cap.
+    const harvest_reach: usize = 1000; // lines each way from the cursor
+    const harvest_bytes: usize = 128 * 1024;
+    const harvest_cap: usize = 200;
+
+    /// Refill `comp_words` for this request: the current buffer first (so its
+    /// words win a duplicate), then the other open buffers. One byte budget
+    /// spans the whole harvest, so ten open buffers cost what one does.
+    fn harvestWords(self: *Editor, skip: []const u8) void {
+        self.comp_words.reset();
+        var budget: usize = harvest_bytes;
+        if (self.harvestBuf(self.buf, self.cy, skip, &budget)) return;
+        for (self.docs.items) |doc| {
+            if (&doc.buf == self.buf) continue;
+            if (self.harvestBuf(&doc.buf, 0, skip, &budget)) return;
+        }
+    }
+
+    /// Harvest outward from `centre` — that line, then the one above, then the
+    /// one below, up to `harvest_reach` each way — spending at most `budget`
+    /// bytes. Outward, not top-of-window-down, is what makes the caps select
+    /// the *nearest* words: scanning the window in line order filled all 200
+    /// slots a thousand lines above the cursor, so the identifier on the line
+    /// you just wrote was never offered. Returns true when the scan is over:
+    /// the candidate cap is full, or the budget is spent.
+    fn harvestBuf(self: *Editor, b: *const buffer.Buffer, centre: usize, skip: []const u8, budget: *usize) bool {
+        const n = b.lineCount();
+        if (n == 0) return false;
+        const start = @min(centre, n - 1);
+        if (self.harvestLine(b, start, skip, budget)) return true;
+        var d: usize = 1;
+        while (d <= harvest_reach) : (d += 1) {
+            const up = d <= start;
+            const down = start + d < n;
+            if (!up and !down) break; // both directions exhausted
+            if (up and self.harvestLine(b, start - d, skip, budget)) return true;
+            if (down and self.harvestLine(b, start + d, skip, budget)) return true;
+        }
+        return false;
+    }
+
+    /// One line into the candidate list; true when the scan should stop.
+    fn harvestLine(self: *Editor, b: *const buffer.Buffer, row: usize, skip: []const u8, budget: *usize) bool {
+        const text = b.line(row);
+        if (self.comp_words.addLine(self.gpa, text, skip, harvest_cap, budget.*)) return true;
+        if (text.len >= budget.*) return true;
+        budget.* -= text.len;
+        return false;
     }
 
     /// How long the main loop may block: forever unless a completion request
@@ -5990,7 +6106,7 @@ pub const Editor = struct {
     /// Fire the action the shared debounce timer was armed for.
     fn fireDue(self: *Editor) void {
         switch (self.due_kind) {
-            .completion => self.lspCompletion(),
+            .completion => self.requestCompletion(),
             .wsymbol => self.sendWorkspaceSymbolQuery(),
             .grep => self.grepRescan(),
         }
@@ -6001,7 +6117,8 @@ pub const Editor = struct {
     /// typist pauses — one round trip per pause, not per character.
     fn armCompletion(self: *Editor) void {
         if (!config.settings.auto_completion) return;
-        if (self.mode != .insert or self.lsp == null) return;
+        if (self.mode != .insert) return;
+        if (self.liveLsp() == null and !config.settings.buffer_completion) return;
         if (self.completionPrefix().len == 0) {
             self.comp_due_ms = null;
             return;
@@ -6031,6 +6148,22 @@ pub const Editor = struct {
         return line[start..self.cx];
     }
 
+    /// The whole identifier the cursor sits in — the prefix plus whatever
+    /// follows it on the line. This is the word being typed, and it is never a
+    /// candidate for completing itself (typing inside `value` must not offer
+    /// `value` back).
+    fn completionWord(self: *Editor) []const u8 {
+        const line = self.curLine();
+        const start = self.cx - self.completionPrefix().len;
+        var end = self.cx;
+        while (end < line.len) {
+            const d = unicode.decode(line[end..]);
+            if (!isIdentCp(d.cp)) break;
+            end += d.len;
+        }
+        return line[start..end];
+    }
+
     fn compMove(self: *Editor, down: bool) void {
         const n = self.comp_filtered.items.len;
         if (n == 0) return;
@@ -6039,26 +6172,38 @@ pub const Editor = struct {
         } else if (self.comp_sel > 0) self.comp_sel -= 1;
     }
 
+    /// How many candidates the popup is showing, from whichever source filled
+    /// it: the server's items, or the words harvested from the open buffers.
+    fn compCount(self: *const Editor) usize {
+        if (self.comp_words_src) return self.comp_words.count();
+        return if (self.lsp) |*c| c.completions.items.len else 0;
+    }
+
+    /// Candidate `i`'s text in the active source (see `compCount`).
+    fn compLabel(self: *const Editor, i: usize) []const u8 {
+        if (self.comp_words_src) return self.comp_words.get(i);
+        return if (self.lsp) |*c| c.completions.items[i].label else "";
+    }
+
     /// Rebuild the visible list from the prefix under the cursor, fuzzily:
     /// `mc` matches `mockComplete`, and candidates are ranked by the same
     /// scorer the pickers use (consecutive runs and word starts win).
     fn filterCompletions(self: *Editor) void {
         self.comp_filtered.clearRetainingCapacity();
-        const client = if (self.lsp) |*c| c else {
-            self.comp_open = false;
-            return;
-        };
         const prefix = self.completionPrefix();
         const qmask = fuzzy.charMask(prefix);
         var scored: std.ArrayList(Scored) = .empty;
         defer scored.deinit(self.gpa);
-        for (client.completions.items, 0..) |it, i| {
+        const n = self.compCount();
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
             if (prefix.len == 0) {
                 self.comp_filtered.append(self.gpa, i) catch {};
                 continue;
             }
-            if (!fuzzy.maskMatches(fuzzy.charMask(it.label), qmask)) continue; // cheap reject
-            const s = fuzzy.score(it.label, prefix) orelse continue;
+            const label = self.compLabel(i);
+            if (!fuzzy.maskMatches(fuzzy.charMask(label), qmask)) continue; // cheap reject
+            const s = fuzzy.score(label, prefix) orelse continue;
             scored.append(self.gpa, .{ .idx = @intCast(i), .score = s }) catch {};
         }
         if (prefix.len > 0) {
@@ -6078,9 +6223,24 @@ pub const Editor = struct {
     /// a tabstop session.
     fn acceptCompletion(self: *Editor) void {
         defer self.comp_open = false;
-        const client = if (self.lsp) |*c| c else return;
         if (self.comp_sel >= self.comp_filtered.items.len) return;
-        const item = client.completions.items[self.comp_filtered.items[self.comp_sel]];
+        const idx = self.comp_filtered.items[self.comp_sel];
+
+        // A buffer word is plain text: replace the typed prefix with it, and
+        // that is the whole story — no server range, no snippet, no imports.
+        if (self.comp_words_src) {
+            const word = self.comp_words.get(idx);
+            const start = self.cx - self.completionPrefix().len;
+            self.pushUndo();
+            self.buf.deleteInLine(self.cy, start, self.cx) catch {};
+            self.insertTextAt(self.cy, start, word);
+            self.updateGoal();
+            self.syncLsp();
+            return;
+        }
+
+        const client = if (self.lsp) |*c| c else return;
+        const item = client.completions.items[idx];
 
         // Where the completion replaces text.
         var row = self.cy;
@@ -8526,7 +8686,6 @@ pub const Editor = struct {
     /// Completion popup, anchored under the cursor (or above if near the bottom).
     fn renderCompletion(self: *Editor, gutter: usize) !void {
         const th = theme.current;
-        const client = if (self.lsp) |*c| c else return;
         const items = self.comp_filtered.items;
         if (items.len == 0) return;
 
@@ -8541,7 +8700,7 @@ pub const Editor = struct {
         var width: usize = 10;
         var vi: usize = 0;
         while (vi < height and first + vi < items.len) : (vi += 1) {
-            const label = client.completions.items[items[first + vi]].label;
+            const label = self.compLabel(items[first + vi]);
             width = @max(width, @min(label.len + 2, 40));
         }
 
@@ -8563,7 +8722,7 @@ pub const Editor = struct {
             try self.emitFmt("\x1b[{d};{d}H", .{ start_row + i, col });
             try self.setBg(if (selected) th.selection else th.status_seg_bg);
             try self.setFg(if (selected) th.fg else th.status_seg_fg);
-            const label = client.completions.items[items[idx]].label;
+            const label = self.compLabel(items[idx]);
             try self.emit(" ");
             const shown = @min(label.len, width - 1);
             try self.emitSanitized(label[0..shown]);

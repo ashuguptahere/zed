@@ -2,6 +2,55 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.22.0 - 2026-07-28
+
+### Added
+
+- Buffer-word completion (`complete.zig`, config `buffer_completion`, on by
+  default): when no language server answers — none installed for the
+  filetype, or one that returns an empty list — the completion popup fills
+  from the identifiers already in the open buffers, vim's keyword
+  completion. The current buffer is harvested first, then the others;
+  duplicates keep their first occurrence, the word being typed is never
+  offered as its own completion, and the list is fuzzy-ranked with the
+  pickers' scorer. Accepting works exactly as an LSP item does minus the
+  server bits (replace the typed prefix; no `additionalTextEdits`, no
+  snippet). The harvest runs on the existing completion debounce, never per
+  keystroke, walks outward from the cursor line so the nearest words win,
+  and is bounded three ways (1000 lines each way, 128 KB of text, 200
+  candidates), so no timer was added and a huge file cannot stall typing:
+  2.3 ms worst case, 78–144 µs on ordinary source.
+- A missing-server hint: opening a file whose filetype *has* a known server
+  (`zls`, `clangd`, `pylsp`, `typescript-language-server`, `rust-analyzer`,
+  `gopls`) that fails to launch now says so in the statusline — "no language
+  server for python (install pylsp); completing from open buffers" — once
+  for the document, instead of leaving "nothing completes" unexplained. A
+  filetype with no known server stays silent.
+
+### Fixed
+
+- Typing inside an existing word no longer offers that word back as a
+  completion: the whole identifier at the cursor is excluded, not just the
+  prefix before it.
+- A language server whose next response *replaced* its completion list with
+  an empty one could leave the open popup indexing items that no longer
+  existed; the following frame read past the end of the list and killed the
+  editor. The popup is now dropped the moment a response lands, and reopened
+  from whichever list fills it.
+- A language server that exited or crashed after the handshake silently took
+  completion with it — the request went into a dead pipe and no popup ever
+  came, with no fallback. A dead client now counts as "no server", so the
+  buffer words take over.
+- Buffer-word completion offered words from a thousand lines above the cursor
+  instead of the ones beside it: the scan read its window top-down and the
+  200-candidate cap filled before it ever reached the cursor's line. It now
+  walks outward from the cursor.
+- Bounded the harvest by bytes as well as lines. The candidate cap does not
+  bound the *work* — deduplication scans the kept list once per word
+  examined, so a file whose vocabulary never reaches the cap scanned every
+  line of its window: 82 ms on each typing pause, measured, against 2.3 ms
+  now.
+
 ## 0.21.0 - 2026-07-28
 
 ### Added
