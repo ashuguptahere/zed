@@ -42,6 +42,78 @@ fn treeHas(ctx: *h.Ctx, scr: *h.Screen, needle: []const u8, min_col: usize, max_
 }
 
 pub fn run(ctx: *h.Ctx) !void {
+    // Tree arrows (VS Code): Right expands a directory, Left collapses it —
+    // the same pair `l`/`h` bind to. And `a`/`A` create a file/folder, with
+    // intermediate directories made on the way (VS Code's rule).
+    {
+        const dir = try h.tempDir(ctx.gpa);
+        defer ctx.gpa.free(dir);
+        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const a = h.join(ctx, dir, "alpha.txt");
+        defer ctx.gpa.free(a);
+        const sub = h.join(ctx, dir, "subdir");
+        defer ctx.gpa.free(sub);
+        const inner = h.join(ctx, dir, "subdir/inner.txt");
+        defer ctx.gpa.free(inner);
+        h.writeFile(ctx.io, a, "aaa\n");
+        std.Io.Dir.cwd().createDirPath(ctx.io, sub) catch {};
+        h.writeFile(ctx.io, inner, "inner\n");
+
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "alpha.txt" }, .cwd = dir, .term = "xterm-256color" });
+        defer s.finish();
+        s.drain(600);
+        s.send(" e"); // open + focus the tree; "subdir" sorts first
+        s.drain(400);
+        // Left is tested against a tree `l` expanded, so it cannot pass just
+        // because Right did nothing.
+        s.send("l");
+        s.drain(400);
+        var m = s.out.items.len;
+        s.send("\x1b[D"); // Left
+        s.drain(400);
+        ctx.check("Left collapses an expanded directory", !s.containsPlainSince(ctx.gpa, m, "inner.txt") and
+            s.containsPlainSince(ctx.gpa, m, "subdir"));
+        m = s.out.items.len;
+        s.send("\x1b[C"); // Right
+        s.drain(400);
+        ctx.check("Right expands a directory in the tree", s.containsPlainSince(ctx.gpa, m, "inner.txt"));
+        s.send("\x1b[D"); // collapse again, so `A` lands beside subdir
+        s.drain(400);
+
+        // `A` on the collapsed "subdir" row makes a sibling folder.
+        s.send("A");
+        s.drain(300);
+        ctx.check("A prompts for a new folder", s.containsPlain(ctx.gpa, "new folder:"));
+        s.send("made/deep\r"); // two levels, neither existing
+        s.drain(500);
+        ctx.check("A creates nested folders", s.containsPlain(ctx.gpa, "created made/deep/"));
+        // `a` writes a file into a directory that does not exist yet either
+        // (creating a folder leaves the focus in the tree, so no refocus).
+        s.send("a");
+        s.drain(300);
+        ctx.check("a prompts for a new file", s.containsPlain(ctx.gpa, "new file:"));
+        s.send("\x15fresh/note.txt\r"); // Ctrl-u clears the prefill
+        s.drain(700);
+        ctx.check("a creates the file and opens it", s.containsPlain(ctx.gpa, "created fresh/note.txt"));
+        s.send("ihello\x1b:w\r");
+        s.drain(500);
+        s.send(":qa!\r");
+        s.drain(300);
+
+        const made = h.join(ctx, dir, "made/deep");
+        defer ctx.gpa.free(made);
+        const st = std.Io.Dir.cwd().statFile(ctx.io, made, .{}) catch {
+            ctx.check("A made the directory on disk", false);
+            return;
+        };
+        ctx.check("A made the directory on disk", st.kind == .directory);
+        const note = h.join(ctx, dir, "fresh/note.txt");
+        defer ctx.gpa.free(note);
+        const got = h.readFile(ctx.gpa, ctx.io, note);
+        defer ctx.gpa.free(got);
+        ctx.check("the new file is the one being edited", std.mem.eql(u8, got, "hello\n"));
+    }
+
     // Sidebar: tree renders, navigation opens a file, a directory expands.
     {
         const dir = try h.tempDir(ctx.gpa);

@@ -81,7 +81,9 @@
   which-key menus: `Space f f` find files, `Space f w` find words (regex grep,
   same syntax as `/`),
   `Space f b` buffers, `Space f t` themes; `Space b …` buffers (picker,
-  next/previous, close); `Space l …` language tools — one
+  next/previous, close others); `Space u …` UI toggles (wrap, numbers, inline
+  diagnostics, tabs, autoindent, completion, format-on-save, mouse — flipped
+  for the session, the config file untouched); `Space l …` language tools — one
   consistent UI (`Ctrl-n/p` move, `Enter` opens, `Esc` cancels, `Ctrl-r`
   refreshes). Fuzzy queries are multi-term (helix-style): spaces split the
   query and every term must match, in any order — `render editor` finds
@@ -140,8 +142,12 @@
   stays), a dirty buffer refuses unless forced with `:bd!`
 - **File-tree sidebar** (`Space e`, VS Code's three-state cycle: open +
   focus → refocus an open tree → close a focused one): browse and open
-  files, expand directories — by key or by mouse (a single click toggles a
-  directory or opens a file, VS Code-style); lives on the left or right
+  files, expand directories — by key (`l`/`h` or Right/Left, VS Code's tree
+  arrows) or by mouse (a single click toggles a
+  directory or opens a file, VS Code-style); `a` creates a file and `A` a
+  folder, making any missing directories on the way (`a` then
+  `src/new/mod.zig` works with no `src/new` yet — and so does `:w` to such a
+  path); lives on the left or right
   (config `sidebar = left|right`), and follows you — switching buffers
   reveals and selects the active file in the tree
 - **One search layout everywhere**: tree on the left, results in the middle,

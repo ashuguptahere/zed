@@ -26,10 +26,27 @@ pub const Ctx = struct {
     mock: []const u8, // path to the built mock_lsp binary
     passed: usize = 0,
     failed: usize = 0,
+    /// Names of the checks that failed, reprinted at the end of the run. A CI
+    /// log is usually read (and pasted) from its tail, where the per-check
+    /// [FAIL] line has long scrolled away — so the summary has to carry it.
+    failures: std.ArrayList([]const u8) = .empty,
+    /// The suite currently running, so a failure names where to look.
+    suite: []const u8 = "",
 
     pub fn check(self: *Ctx, name: []const u8, cond: bool) void {
-        if (cond) self.passed += 1 else self.failed += 1;
+        if (cond) {
+            self.passed += 1;
+        } else {
+            self.failed += 1;
+            const label = std.fmt.allocPrint(self.gpa, "{s}: {s}", .{ self.suite, name }) catch name;
+            self.failures.append(self.gpa, label) catch {};
+        }
         std.debug.print("  [{s}] {s}\n", .{ if (cond) "PASS" else "FAIL", name });
+    }
+
+    pub fn deinit(self: *Ctx) void {
+        for (self.failures.items) |f| self.gpa.free(f);
+        self.failures.deinit(self.gpa);
     }
 };
 

@@ -10,6 +10,71 @@ const BS = "\x7f";
 const target = "/tmp/zedit_it_feat.txt";
 
 pub fn run(ctx: *h.Ctx) !void {
+    // ---- `:w` creates missing parent directories (VS Code's rule) ----------
+    {
+        const dir = try h.tempDir(ctx.gpa);
+        defer ctx.gpa.free(dir);
+        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ctx.zedit}, .cwd = dir });
+        defer s.finish();
+        s.drain(500);
+        s.send(ESC); // dismiss the startup screen (`q` there quits)
+        s.drain(200);
+        s.send("ihi" ++ ESC ++ ":w deep/er/note.txt" ++ CR);
+        s.drain(600);
+        ctx.check("writing under a missing directory succeeds", s.containsPlain(ctx.gpa, "\"deep/er/note.txt\" written"));
+        s.send(":q!" ++ CR);
+        s.drain(200);
+        const made = h.join(ctx, dir, "deep/er/note.txt");
+        defer ctx.gpa.free(made);
+        const got = h.readFile(ctx.gpa, ctx.io, made);
+        defer ctx.gpa.free(got);
+        ctx.check("the directories were created on the way", std.mem.eql(u8, got, "hi\n"));
+    }
+
+    // ---- `Space u` UI toggles ---------------------------------------------
+    {
+        const dir = try h.tempDir(ctx.gpa);
+        defer ctx.gpa.free(dir);
+        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const f = h.join(ctx, dir, "t.txt");
+        defer ctx.gpa.free(f);
+        h.writeFile(ctx.io, f, "alpha\nbeta\ngamma\n");
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "t.txt" }, .cwd = dir, .term = "xterm-256color" });
+        defer s.finish();
+        s.drain(600);
+        var m = s.out.items.len;
+        s.send(" ");
+        s.drain(300);
+        ctx.check("Space lists the UI-toggles group", s.containsPlainSince(ctx.gpa, m, "UI toggles"));
+        s.send("u");
+        s.drain(300);
+        ctx.check("Space u lists the toggles", s.containsPlain(ctx.gpa, "soft wrap") and
+            s.containsPlain(ctx.gpa, "buffer tabs"));
+        // The tabline is on by default: toggling it off must remove the row.
+        m = s.out.items.len;
+        s.send("t");
+        s.drain(400);
+        ctx.check("Space u t reports the new state", s.containsPlainSince(ctx.gpa, m, "buffer tabs: off"));
+        var scr = try h.Screen.init(ctx.gpa, 24, 80);
+        defer scr.deinit();
+        scr.apply(s.out.items);
+        const row1 = try scr.rowText(ctx.gpa, 1);
+        defer ctx.gpa.free(row1);
+        ctx.check("Space u t actually removes the tabline", std.mem.indexOf(u8, row1, "t.txt") == null);
+        m = s.out.items.len;
+        s.send(" ut");
+        s.drain(400);
+        ctx.check("Space u t toggles back on", s.containsPlainSince(ctx.gpa, m, "buffer tabs: on"));
+        // A toggle with a visible geometry change: numbers.
+        m = s.out.items.len;
+        s.send(" un");
+        s.drain(400);
+        ctx.check("Space u n toggles relative numbers", s.containsPlainSince(ctx.gpa, m, "relative numbers:"));
+        s.send(":q!" ++ CR);
+        s.drain(200);
+    }
+
     // ---- visual rendering (needs a .zig file for language detection) ----
     const zig_target = "/tmp/zedit_it_feat.zig";
     const zig_src =
@@ -61,22 +126,27 @@ pub fn run(ctx: *h.Ctx) !void {
         defer s.finish();
         s.drain(400);
 
-        // Special keys never render in the indicator — nvim shows nothing
-        // for a bare <Down>, <Esc> or <PageDown> (0.12.4 --clean, pty at
-        // 100x24: last row stays empty after each); showcmd used to capture
-        // their raw escape bytes and paint ^[[B / ^[ / ^[[6~.
+        // A special key shows its NAME, never its escape sequence. This is a
+        // deliberate divergence from nvim, which renders nothing for a bare
+        // <Down>/<Esc>/<PageDown> (0.12.4 --clean, pty at 100x24: last row
+        // stays empty after each) — the owner wants to see the key that
+        // acted. The bug being guarded is the original one: showcmd used to
+        // capture the raw escape bytes and paint ^[[B / ^[ / ^[[6~.
         var m = s.mark();
         s.send("\x1b[B"); // Down
         s.drain(250);
-        ctx.check("a bare arrow never renders its sequence", !s.containsPlainSince(ctx.gpa, m, "^["));
+        ctx.check("an arrow renders its name", s.containsPlainSince(ctx.gpa, m, "<Down>"));
+        ctx.check("an arrow never renders its sequence", !s.containsPlainSince(ctx.gpa, m, "^["));
         m = s.mark();
         s.send("\x1b[6~"); // PageDown
         s.drain(250);
-        ctx.check("a paging key renders nothing", !s.containsPlainSince(ctx.gpa, m, "^["));
+        ctx.check("a paging key renders its name", s.containsPlainSince(ctx.gpa, m, "<PageDown>"));
+        ctx.check("a paging key never renders its sequence", !s.containsPlainSince(ctx.gpa, m, "^["));
         m = s.mark();
         s.send("\x1b"); // bare Esc
         s.drain(250);
-        ctx.check("a bare Esc renders nothing", !s.containsPlainSince(ctx.gpa, m, "^["));
+        ctx.check("a bare Esc renders its name", s.containsPlainSince(ctx.gpa, m, "<Esc>"));
+        ctx.check("a bare Esc never renders its sequence", !s.containsPlainSince(ctx.gpa, m, "^["));
         s.send("gg");
         s.drain(150);
 

@@ -153,13 +153,14 @@ const Await = enum {
     space_lang, // <space>l — the AstroNvim Language-tools group
     space_git, // <space>g — the Git group (diff views)
     space_buffer, // <space>b — the Buffers group (picker, next/prev, close)
+    space_ui, // <space>u — the UI-toggles group
     surround_add_char, // ys{motion}{char} / visual S{char}
     surround_delete, // ds{char}
     surround_change_from, // cs{old}...
     surround_change_to, // cs{old}{new}
 };
 
-const CmdKind = enum { ex, search_forward, search_backward, rename };
+const CmdKind = enum { ex, search_forward, search_backward, rename, new_file, new_dir };
 
 const Find = struct { kind: Await, ch: u21 };
 
@@ -404,6 +405,9 @@ pub const Editor = struct {
     sb_open: bool = false,
     sb_focus: bool = false, // keys go to the tree instead of the buffer
     sb_entries: std.ArrayList(SbEntry) = .empty,
+    /// Scratch for the new-file prompt's pre-filled directory (reused, so the
+    /// prompt costs no allocation per keypress).
+    sb_prefill: std.ArrayList(u8) = .empty,
     sb_expanded: std.StringHashMap(void), // owned keys: expanded dir paths
     sb_sel: usize = 0,
     sb_scroll: usize = 0,
@@ -651,6 +655,7 @@ pub const Editor = struct {
         self.picker_text.deinit(self.gpa);
         self.sbFree();
         self.sb_entries.deinit(self.gpa);
+        self.sb_prefill.deinit(self.gpa);
         var xit = self.sb_expanded.keyIterator();
         while (xit.next()) |k| self.gpa.free(k.*);
         self.sb_expanded.deinit();
@@ -1045,14 +1050,20 @@ pub const Editor = struct {
         if (!self.in_dot) self.dotCapturePre(raw);
         // showcmd records the *decoded* key, never raw bytes: an arrow's
         // escape sequence must not appear as ^[[B. Characters and control
-        // keys read back as text (^W for Ctrl-w, as vim shows); special keys
-        // (arrows, Esc, paging, …) act at once and clear the indicator —
-        // nvim renders nothing for them (pty-probed: bare <Down>/<Esc> show
-        // nothing; `2` then <Down> and `d` then <Down> execute and clear).
+        // keys read back as text (^W for Ctrl-w, as vim shows).
+        //
+        // A special key is shown by NAME (`<Down>`, `<Esc>`, `<PageUp>`) —
+        // a deliberate divergence from nvim, which renders nothing for them
+        // (pty-probed). The owner wants to see the key that just acted, and
+        // the indicator already holds a finished command until the next one
+        // starts, so a key that executes at once fits the same slot.
         // Dot-repeat (above) and macro capture keep the raw bytes untouched.
         switch (k) {
             .char, .ctrl => self.showcmdPush(raw),
-            else => {
+            else => if (keyName(k)) |name| {
+                self.showcmdPush(name);
+                self.showcmd_done = true; // it acted: hold it until the next key
+            } else {
                 self.showcmd_len = 0;
                 self.showcmd_done = false;
             },
@@ -1060,6 +1071,29 @@ pub const Editor = struct {
         try self.handleKey(k);
         if (!self.in_dot) self.dotCapturePost();
         self.showcmdSettle();
+    }
+
+    /// What to show in the command indicator for a key that is not text.
+    /// Null for keys with nothing worth showing (a mouse report, an unknown
+    /// sequence), which clear the indicator instead.
+    fn keyName(k: key.Key) ?[]const u8 {
+        return switch (k) {
+            .up => "<Up>",
+            .down => "<Down>",
+            .left => "<Left>",
+            .right => "<Right>",
+            .home => "<Home>",
+            .end => "<End>",
+            .page_up => "<PageUp>",
+            .page_down => "<PageDown>",
+            .enter => "<CR>",
+            .tab => "<Tab>",
+            .shift_tab => "<S-Tab>",
+            .backspace => "<BS>",
+            .delete => "<Del>",
+            .escape => "<Esc>",
+            else => null,
+        };
     }
 
     /// Record a key as part of the command being typed. Only the buffer modes
@@ -1374,7 +1408,7 @@ pub const Editor = struct {
         const buf = &w.doc.buf;
         const last_line = buf.lineCount() - 1;
         const before = w.top;
-        w.top = self.winLineAfterRows(w, w.top, step, up); // three *screen* rows
+        w.top = self.winStepRows(w, w.top, step, up, true); // three *screen* rows
         const moved = if (w.top > before) w.top - before else before - w.top;
         if (moved == 0) return; // already at an end: nothing moves, cursor included
         // Clamped in both directions: an inactive window's bookmarked cursor
@@ -1733,6 +1767,7 @@ pub const Editor = struct {
                     'f' => self.await_arg = .space_find,
                     'l' => self.await_arg = .space_lang,
                     'g' => self.await_arg = .space_git,
+                    'u' => self.await_arg = .space_ui,
                     'e' => self.sidebarToggle(), // file explorer (AstroNvim <leader>e)
                     'w' => _ = try self.write(""),
                     'q' => self.doQuit(),
@@ -1746,7 +1781,21 @@ pub const Editor = struct {
                     'b' => self.openBufferPicker(), // same picker as <space>f b
                     'n' => self.cycleDoc(true, 1), // next buffer (]b)
                     'p' => self.cycleDoc(false, 1), // previous buffer ([b)
-                    'c' => self.closeDoc(false), // same as <space>c
+                    'c' => self.closeOthers(), // AstroNvim's <leader>bc
+                    else => {},
+                };
+            },
+            .space_ui => {
+                self.resetPending();
+                if (k == .char) switch (k.char) {
+                    'n' => self.toggleSetting(&config.settings.relative_numbers, "relative numbers"),
+                    'w' => self.toggleSetting(&config.settings.soft_wrap, "soft wrap"),
+                    'd' => self.toggleSetting(&config.settings.inline_diagnostics, "inline diagnostics"),
+                    't' => self.toggleSetting(&config.settings.buffer_tabs, "buffer tabs"),
+                    'i' => self.toggleSetting(&config.settings.autoindent, "autoindent"),
+                    'c' => self.toggleSetting(&config.settings.auto_completion, "auto completion"),
+                    'f' => self.toggleSetting(&config.settings.format_on_save, "format on save"),
+                    'm' => self.toggleMouse(),
                     else => {},
                 };
             },
@@ -5179,6 +5228,8 @@ pub const Editor = struct {
             .search_forward => "/",
             .search_backward => "?",
             .rename => "rename: ",
+            .new_file => "new file: ",
+            .new_dir => "new folder: ",
         };
     }
 
@@ -5244,6 +5295,7 @@ pub const Editor = struct {
                         if (!self.search_hit) self.failed = true; // E486: no match
                     },
                     .rename => self.lspRename(),
+                    .new_file, .new_dir => self.createEntry(kind == .new_dir),
                 }
             },
             .backspace => {
@@ -5485,7 +5537,7 @@ pub const Editor = struct {
         return switch (self.cmd_kind) {
             .ex => &self.ex_hist,
             .search_forward, .search_backward => &self.search_hist,
-            .rename => null,
+            .rename, .new_file, .new_dir => null,
         };
     }
 
@@ -7405,6 +7457,55 @@ pub const Editor = struct {
         self.refilter();
     }
 
+    /// `Space u …` — flip a boolean setting for this session and say so. The
+    /// config file is not touched: a toggle is for the next five minutes, not
+    /// for every session (edit the file for that).
+    fn toggleSetting(self: *Editor, flag: *bool, name: []const u8) void {
+        flag.* = !flag.*;
+        self.prev_valid = false; // geometry may have changed (tabs, wrap)
+        self.setStatus("{s}: {s}", .{ name, if (flag.*) "on" else "off" });
+    }
+
+    /// The mouse toggle also has to tell the terminal, since reporting is a
+    /// mode we asked it to enter — turning it off hands the pointer back for
+    /// the terminal's own text selection, which is why a user wants the key.
+    fn toggleMouse(self: *Editor) void {
+        const on = !config.settings.mouse;
+        config.settings.mouse = on;
+        self.term.write(if (on) term.ansi.enable_mouse else term.ansi.disable_mouse) catch {};
+        self.setStatus("mouse reporting: {s}", .{if (on) "on" else "off"});
+    }
+
+    /// `Space b c` — AstroNvim's "close all buffers except this one". Refuses
+    /// if any of them is unsaved, naming it, rather than discarding work.
+    fn closeOthers(self: *Editor) void {
+        const keep = self.d;
+        var dirty: ?*Doc = null;
+        for (self.docs.items) |doc| {
+            if (doc != keep and doc.buf.dirty) dirty = doc;
+        }
+        if (dirty) |doc| return self.setStatus("no write since last change: {s}", .{docLabel(doc)});
+        // Every window must point at `keep` before anything is freed — a
+        // split still showing a victim would be a dangling doc pointer.
+        for (self.wins.items) |w| {
+            if (w.doc != keep) w.doc = keep;
+        }
+        var closed: usize = 0;
+        while (true) {
+            var victim: ?*Doc = null;
+            for (self.docs.items) |doc| {
+                if (doc != keep) victim = doc;
+            }
+            const v = victim orelse break;
+            self.destroyDoc(v);
+            closed += 1;
+        }
+        if (closed == 0) return self.setStatus("no other buffers", .{});
+        self.clearExtra();
+        self.placeAt(self.cy);
+        self.setStatus("closed {d} buffer{s}", .{ closed, if (closed == 1) "" else "s" });
+    }
+
     fn stopMacro(self: *Editor) void {
         // The closing 'q' was recorded by processInput; drop it.
         if (self.macro_buf.items.len > 0) self.macro_buf.items.len -= 1;
@@ -7502,8 +7603,21 @@ pub const Editor = struct {
     /// than there are rows on screen — which is what makes `Ctrl-f` land where
     /// it looks like it should.
     fn winLineAfterRows(self: *Editor, w: *Win, row: usize, n: usize, up: bool) usize {
+        return self.winStepRows(w, row, n, up, false);
+    }
+
+    /// Step `n` screen rows from buffer line `row`. `display` also counts the
+    /// rows that belong to no buffer line — a diff pair's fillers and the line
+    /// view's woven old lines — which is what a *viewport* step must do: with
+    /// them uncounted, a notch travels a different distance every time it
+    /// crosses a hunk, which is the jumping a scroll past a change shows.
+    /// Cursor motions leave them out, keeping vim's line-based meaning.
+    fn winStepRows(self: *Editor, w: *Win, row: usize, n: usize, up: bool, display: bool) usize {
         const last = w.doc.buf.lineCount() - 1;
-        if (!self.winWrap(w)) return if (up) row -| n else @min(row + n, last);
+        const virt: ?*const git.LineDiff = if (display) (if (w.doc.line_diff) |*x| x else null) else null;
+        const pair = if (display) self.diffPairOf(w) else null;
+        if (!self.winWrap(w) and virt == null and pair == null)
+            return if (up) row -| n else @min(row + n, last);
         var r = row;
         var used: usize = 0;
         while (used < n) {
@@ -7514,9 +7628,26 @@ pub const Editor = struct {
                 if (r >= last) break;
                 r += 1;
             }
-            used += self.winLineRows(w, r);
+            used += self.winRowsForLine(w, r, virt, pair);
         }
         return r;
+    }
+
+    /// Screen rows buffer line `row` is worth in this window: its own wrapped
+    /// rows plus the virtual rows drawn immediately above it (woven old lines,
+    /// or a diff pair's fillers), which the renderer emits before the line.
+    fn winRowsForLine(self: *Editor, w: *Win, row: usize, virt: ?*const git.LineDiff, pair: ?DiffPair) usize {
+        var rows = self.winLineRows(w, row);
+        if (virt) |x| rows += x.above(row).len;
+        if (pair) |p| {
+            // The gap between this line's display row and the previous line's
+            // is the fillers the alignment inserts between them.
+            const new_side = w.doc.diff_of == null;
+            const here = git.displayRow(p.hunks, new_side, row);
+            const prev = git.displayRow(p.hunks, new_side, row -| 1);
+            if (row > 0 and here > prev) rows += here - prev - 1;
+        }
+        return rows;
     }
 
     fn lineAfterRows(self: *Editor, row: usize, n: usize, up: bool) usize {
@@ -8212,6 +8343,10 @@ pub const Editor = struct {
             .escape => self.sb_focus = false, // keep it open, focus the buffer
             .down => self.sbMove(1),
             .up => self.sbMove(-1),
+            // VS Code's tree keys: Right expands (or opens a file), Left
+            // collapses — the same pair `l`/`h` bind to.
+            .right => try self.sbActivate(),
+            .left => self.sbCollapse(),
             .enter => try self.sbActivate(),
             .char => |c| switch (c) {
                 'j' => self.sbMove(1),
@@ -8220,6 +8355,8 @@ pub const Editor = struct {
                 'G' => self.sb_sel = if (n > 0) n - 1 else 0,
                 'l' => try self.sbActivate(),
                 'h' => self.sbCollapse(),
+                'a' => self.enterNewEntry(false), // new file (neo-tree's key)
+                'A' => self.enterNewEntry(true), // new folder
                 'R' => self.sbRebuild(),
                 ' ' => self.await_arg = .space_leader, // the leader menu works here too
                 'q' => {
@@ -8272,6 +8409,75 @@ pub const Editor = struct {
                 self.sb_sel = i - 1;
                 return;
             }
+        }
+    }
+
+    /// `a` / `A` in the tree — prompt for a new file or folder, pre-filled with
+    /// the selected row's directory so typing the leaf name is enough (VS
+    /// Code's rule; the prompt is editable, so a deeper path works too).
+    fn enterNewEntry(self: *Editor, is_dir: bool) void {
+        self.mode = .command;
+        self.cmd_kind = if (is_dir) .new_dir else .new_file;
+        self.cmd.clearRetainingCapacity();
+        self.cmd.appendSlice(self.gpa, self.sbTargetDir()) catch {};
+        self.cmd_cur = self.cmd.items.len;
+        self.cmd_reg = false;
+        self.ghostUpdate(); // no history here either: clear any stale `:` ghost
+    }
+
+    /// Where a new entry goes: inside the selected row when it is an expanded
+    /// directory, else beside it. Returned with a trailing `/`, or empty for
+    /// the project root.
+    fn sbTargetDir(self: *Editor) []const u8 {
+        if (self.sb_sel >= self.sb_entries.items.len) return "";
+        const e = self.sb_entries.items[self.sb_sel];
+        if (e.is_dir and e.expanded) {
+            self.sb_prefill.clearRetainingCapacity();
+            self.sb_prefill.appendSlice(self.gpa, e.path) catch return "";
+            self.sb_prefill.append(self.gpa, '/') catch return "";
+            return self.sb_prefill.items;
+        }
+        const parent = std.fs.path.dirname(e.path) orelse return "";
+        self.sb_prefill.clearRetainingCapacity();
+        self.sb_prefill.appendSlice(self.gpa, parent) catch return "";
+        self.sb_prefill.append(self.gpa, '/') catch return "";
+        return self.sb_prefill.items;
+    }
+
+    /// Create what the prompt names. Intermediate directories are created too
+    /// (`a` then `src/new/mod.zig` works with no `src/new` in the tree), the
+    /// tree is rebuilt with the new entry revealed, and a new *file* is opened
+    /// so it can be typed into straight away.
+    fn createEntry(self: *Editor, is_dir: bool) void {
+        const raw = std.mem.trim(u8, self.cmd.items, " \t/");
+        if (raw.len == 0) return self.setStatus("no name given", .{});
+        const path = self.gpa.dupe(u8, raw) catch return self.setStatus("out of memory", .{});
+        defer self.gpa.free(path);
+        const cwd = std.Io.Dir.cwd();
+        if (cwd.access(self.io, path, .{})) |_| {
+            return self.setStatus("already exists: {s}", .{path});
+        } else |_| {}
+        const dir = if (is_dir) path else (std.fs.path.dirname(path) orelse "");
+        if (dir.len > 0) cwd.createDirPath(self.io, dir) catch |err|
+            return self.setStatus("could not create {s}: {s}", .{ dir, @errorName(err) });
+        if (!is_dir) cwd.writeFile(self.io, .{ .sub_path = path, .data = "" }) catch |err|
+            return self.setStatus("could not create {s}: {s}", .{ path, @errorName(err) });
+        // Every ancestor must be expanded for the new row to be visible.
+        var i: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, path, i, '/')) |slash| : (i = slash + 1) {
+            self.sbExpand(path[0..slash]);
+        }
+        if (is_dir) self.sbExpand(path);
+        self.sbRebuild();
+        for (self.sb_entries.items, 0..) |e, idx| {
+            if (std.mem.eql(u8, e.path, path)) self.sb_sel = idx;
+        }
+        if (is_dir) {
+            self.setStatus("created {s}/", .{path});
+        } else {
+            self.openFile(path, 0);
+            self.sb_focus = false;
+            self.setStatus("created {s}", .{path});
         }
     }
 
@@ -8333,14 +8539,15 @@ pub const Editor = struct {
     fn sbToggleDir(self: *Editor, path: []const u8) void {
         if (self.sb_expanded.fetchRemove(path)) |kv| {
             self.gpa.free(kv.key);
-        } else {
-            const owned = self.gpa.dupe(u8, path) catch return;
-            self.sb_expanded.put(owned, {}) catch {
-                self.gpa.free(owned);
-                return;
-            };
-        }
+        } else self.sbExpand(path);
         self.sbRebuild();
+    }
+
+    /// Mark directory `path` (cwd-relative) expanded; the caller rebuilds.
+    fn sbExpand(self: *Editor, path: []const u8) void {
+        if (self.sb_expanded.contains(path)) return;
+        const owned = self.gpa.dupe(u8, path) catch return;
+        self.sb_expanded.put(owned, {}) catch self.gpa.free(owned);
     }
 
     /// The sidebar's 1-based screen x origin (its width is `sbWidth`).
@@ -9085,12 +9292,9 @@ pub const Editor = struct {
             try self.renderWildMenu();
             overlay = true;
         }
-        switch (self.await_arg) {
-            .space_leader, .space_find, .space_lang, .space_git, .space_buffer => {
-                try self.renderWhichKey();
-                overlay = true;
-            },
-            else => {},
+        if (self.whichKeyMenu() != null) {
+            try self.renderWhichKey();
+            overlay = true;
         }
         if (self.sig_open) try self.renderSignature(gutter);
         if (self.comp_open) try self.renderCompletion(gutter);
@@ -9108,16 +9312,30 @@ pub const Editor = struct {
         .{ .key = "f", .desc = "Find \u{2026}" },
         .{ .key = "l", .desc = "Language tools \u{2026}" },
         .{ .key = "g", .desc = "Git \u{2026}" },
+        .{ .key = "u", .desc = "UI toggles \u{2026}" },
         .{ .key = "e", .desc = "explorer" },
         .{ .key = "c", .desc = "close buffer" },
         .{ .key = "w", .desc = "write (save)" },
         .{ .key = "q", .desc = "quit" },
     };
+    /// `Space u` — the settings a user flips while working. Each is the config
+    /// key of the same name, read afresh every frame, so flipping it needs no
+    /// reload and does not touch the config file.
+    const ui_keys = [_]WhichKey{
+        .{ .key = "n", .desc = "relative numbers" },
+        .{ .key = "w", .desc = "soft wrap" },
+        .{ .key = "d", .desc = "inline diagnostics" },
+        .{ .key = "t", .desc = "buffer tabs" },
+        .{ .key = "i", .desc = "autoindent" },
+        .{ .key = "c", .desc = "auto completion" },
+        .{ .key = "f", .desc = "format on save" },
+        .{ .key = "m", .desc = "mouse reporting" },
+    };
     const buffer_keys = [_]WhichKey{
         .{ .key = "b", .desc = "find buffers" },
         .{ .key = "n", .desc = "next buffer" },
         .{ .key = "p", .desc = "previous buffer" },
-        .{ .key = "c", .desc = "close buffer" },
+        .{ .key = "c", .desc = "close others" },
     };
     const find_keys = [_]WhichKey{
         .{ .key = "f", .desc = "find files" },
@@ -9560,26 +9778,30 @@ pub const Editor = struct {
         }
     }
 
-    /// Draw the which-key popup for the pending leader menu (`Space`, `Space f`
-    /// or `Space l`), anchored above the status bar.
+    /// The popup's title and contents for the pending leader state, or null
+    /// when no leader menu is up. The single source of truth: the render gate
+    /// and the popup both read it, so a new group added to the key dispatch
+    /// cannot be forgotten in the renderer — which is exactly what happened to
+    /// `Space g`, and would have happened again to `Space u`.
+    fn whichKeyMenu(self: *Editor) ?struct { title: []const u8, keys: []const WhichKey } {
+        return switch (self.await_arg) {
+            .space_leader => .{ .title = " SPACE", .keys = &leader_keys },
+            .space_find => .{ .title = " SPACE f", .keys = &find_keys },
+            .space_lang => .{ .title = " SPACE l", .keys = &lang_keys },
+            .space_git => .{ .title = " SPACE g", .keys = &git_keys },
+            .space_buffer => .{ .title = " SPACE b", .keys = &buffer_keys },
+            .space_ui => .{ .title = " SPACE u", .keys = &ui_keys },
+            else => null,
+        };
+    }
+
+    /// Draw the which-key popup for the pending leader menu, anchored above the
+    /// status bar.
     fn renderWhichKey(self: *Editor) !void {
         const th = theme.current;
-        const menu: []const WhichKey = switch (self.await_arg) {
-            .space_leader => &leader_keys,
-            .space_find => &find_keys,
-            .space_lang => &lang_keys,
-            .space_git => &git_keys,
-            .space_buffer => &buffer_keys,
-            else => return,
-        };
-        const title: []const u8 = switch (self.await_arg) {
-            .space_leader => " SPACE",
-            .space_find => " SPACE f",
-            .space_lang => " SPACE l",
-            .space_git => " SPACE g",
-            .space_buffer => " SPACE b",
-            else => unreachable,
-        };
+        const m = self.whichKeyMenu() orelse return;
+        const menu = m.keys;
+        const title = m.title;
         const width: usize = 26;
         const rows: usize = self.win.rows;
         const height = menu.len + 1;

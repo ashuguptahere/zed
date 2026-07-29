@@ -32,13 +32,25 @@ const scenarios = .{
     .{ "undotree", @import("scenarios/undotree.zig") },
 };
 
+/// Whether suite `name` was asked for: everything when no filter was given.
+fn wanted(only: []const []const u8, name: []const u8) bool {
+    if (only.len == 0) return true;
+    for (only) |o| {
+        if (std.mem.eql(u8, o, name)) return true;
+    }
+    return false;
+}
+
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const argv = try init.minimal.args.toSlice(arena);
     if (argv.len < 3) {
-        std.debug.print("usage: itest <zedit-binary> <mock_lsp-binary>\n", .{});
+        std.debug.print("usage: itest <zedit-binary> <mock_lsp-binary> [suite...]\n", .{});
         std.process.exit(2);
     }
+    // `zig build itest -- sidebar git` runs just those suites: the full run is
+    // over ten minutes, which is too slow a loop for one scenario under repair.
+    const only = argv[3..];
     // The build passes relative artifact paths; make them absolute so scenarios
     // that chdir into a temp dir can still exec the binaries.
     const cwd = try std.process.currentPathAlloc(init.io, arena);
@@ -50,10 +62,20 @@ pub fn main(init: std.process.Init) !void {
     };
 
     inline for (scenarios) |s| {
-        std.debug.print("=== {s} ===\n", .{s[0]});
-        try s[1].run(&ctx);
+        if (wanted(only, s[0])) {
+            std.debug.print("=== {s} ===\n", .{s[0]});
+            ctx.suite = s[0];
+            try s[1].run(&ctx);
+        }
     }
 
     std.debug.print("\n{d} passed, {d} failed\n", .{ ctx.passed, ctx.failed });
-    if (ctx.failed > 0) std.process.exit(1);
+    if (ctx.failed > 0) {
+        // Name them again at the tail: a CI log is read from the bottom, and
+        // "1 failed" without a name is a bug report nobody can act on.
+        std.debug.print("failed checks:\n", .{});
+        for (ctx.failures.items) |f| std.debug.print("  - {s}\n", .{f});
+        std.process.exit(1);
+    }
+    ctx.deinit();
 }

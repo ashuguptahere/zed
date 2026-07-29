@@ -726,16 +726,42 @@ tree is open, switching buffers reveals the active file in it (ancestor
 directories expand and its row is selected). Inside it:
 .B j k
 move,
-.B Enter\fR/\fPl
+.B Enter\fR/\fPl\fR/\fPRight
 expand a directory or open the file,
-.B h
+.B h\fR/\fPLeft
 collapse / go to parent,
+.B a
+new file,
+.B A
+new folder (both prompt on the command line, pre-filled with the selected
+row's directory; any missing directories in the name are created, as
+.B :w
+to such a path does),
 .B R
 refresh,
 .B Esc
 return focus to the buffer,
 .B q
 close.
+.TP
+.B Space u
+UI toggles for this session (the config file is not touched):
+.B n
+relative numbers,
+.B w
+soft wrap,
+.B d
+inline diagnostics,
+.B t
+buffer tabs,
+.B i
+autoindent,
+.B c
+auto completion,
+.B f
+format on save,
+.B m
+mouse reporting.
 .TP
 .B Space b b\fR, \fPSpace b n\fR, \fPSpace b p\fR, \fPSpace b c
 Buffers: the open\-buffer picker (same as

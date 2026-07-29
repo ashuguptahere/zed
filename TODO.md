@@ -11,9 +11,39 @@ behind the roadmap items.
 
 ## Next (in order)
 
+1. [ ] **The CI-only test failure.** `zig build itest` is green locally
+       (including pinned to two cores with `taskset`, to rule out a load
+       race), but CI reports `1093 passed, 1 failed`. The run now reprints
+       every failed check as `suite: name` at the tail (0.28.0), so the next
+       CI log names it — that is the blocker, not the fix.
+2. [ ] **The terminal's own colour at the far right / far bottom.** Traced as
+       far as the code allows: every render branch pads to its window's width
+       (`emitFillerRow`, `emitDeletedRow`, `past_eof`, `emitLine`), the
+       tiling's last window absorbs the division remainder in both
+       orientations (`layout`), and all three `\x1b[K` sites set the theme
+       background first — so no *cell* is left unpainted. What is left is the
+       sub-cell strip gnome-terminal keeps when the window size is not an
+       exact multiple of the cell size; no TUI can paint it, and nvim shows
+       it too. The one real fix is OSC 11 (set the terminal's default
+       background to the theme's on entry, OSC 111 to restore on exit,
+       including the panic/signal paths) — invasive enough to want the owner's
+       say-so first, and worth confirming against a screenshot that the strip
+       is thinner than one character cell.
+3. [ ] **Which-key coverage of what already exists.** The undo tree
+       (`:undolist`, `g-`/`g+`, `:earlier`), windows/splits, and the diff
+       views' commands have no leader entry. `whichKeyMenu` is now one table,
+       so adding a group is a table entry plus a dispatch arm.
+4. [ ] **A verified AstroNvim/Helix keymap gap analysis**, updating
+       `doc/COMPARISON.md` — key by key, not from memory.
+5. [ ] **Session / workspace save + restore** (open buffers, windows,
+       cursors, the tree's expanded set).
+6. [ ] **Embedded terminal** — a VT emulator in a window. Large, multi-batch.
+7. [ ] **Debugger** — a DAP client (breakpoints, stepping, variables).
+       Large, multi-batch. No package management (agreed with the owner).
 
-The shortlist is done; these are the next-highest gaps from
-`doc/COMPARISON.md`, in rough priority order.
+Local builds are host-only already (`b.standardTargetOptions`); the release
+workflow's matrix passes `-Dtarget=` for the cross-compiled artifacts, so
+there is nothing to change there.
 
 
 ## Recurring (every feature / significant change)
@@ -106,6 +136,13 @@ The shortlist is done; these are the next-highest gaps from
       above; operator-pending `gj`/`gk`; sentence objects).
 
 ## Done (chronological)
+
+- [x] `Space u` UI toggles, explorer `a`/`A` new file/folder with missing
+      directories created, `:w` doing the same, VS Code's tree arrows,
+      `Space b c` = close others, showcmd naming special keys, the wheel
+      counting virtual rows over a diff (the scroll jumping), one table
+      behind every which-key group, and an itest runner that names its
+      failures and takes suite filters. (0.28.0)
 
 - [x] Modal editor core: event-driven zero-idle-CPU loop, single-syscall
       frames, UTF-8-correct movement/rendering, friendly CLI. (0.1.0)

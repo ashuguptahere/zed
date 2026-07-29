@@ -99,7 +99,105 @@ fn capture(
     s.drain(300);
 }
 
+/// The wheel scrolls the *viewport*, so its step must count every screen row
+/// the renderer draws — a woven old line and a diff pair's filler included.
+/// Counting buffer lines instead made a notch that crossed a hunk travel a
+/// different distance than one that did not: the view leapt, which is what
+/// "jumping around lines when scrolling past a change" was.
+fn wheelOverVirtualRows(ctx: *h.Ctx) !void {
+    const dir = try h.tempDir(ctx.gpa);
+    defer ctx.gpa.free(dir);
+    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const f = try std.fmt.allocPrint(ctx.gpa, "{s}/f.txt", .{dir});
+    defer ctx.gpa.free(f);
+
+    // L01..L40 committed, then L05..L08 deleted: a 4-row block of woven old
+    // lines sits above L09, near the top of the screen.
+    var orig: std.ArrayList(u8) = .empty;
+    defer orig.deinit(ctx.gpa);
+    var edited: std.ArrayList(u8) = .empty;
+    defer edited.deinit(ctx.gpa);
+    var i: usize = 1;
+    while (i <= 40) : (i += 1) {
+        var b: [16]u8 = undefined;
+        const line = std.fmt.bufPrint(&b, "L{d:0>2}\n", .{i}) catch break;
+        try orig.appendSlice(ctx.gpa, line);
+        if (i < 5 or i > 8) try edited.appendSlice(ctx.gpa, line);
+    }
+    h.writeFile(ctx.io, f, orig.items);
+    h.runQuiet(ctx.gpa, ctx.io, &.{ "git", "-C", dir, "init", "-q" });
+    h.runQuiet(ctx.gpa, ctx.io, &.{ "git", "-C", dir, "add", "f.txt" });
+    h.runQuiet(ctx.gpa, ctx.io, &.{ "git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@t.t", "commit", "-q", "-m", "init" });
+    h.writeFile(ctx.io, f, edited.items);
+
+    const wheel_down = "\x1b[<65;40;10M";
+    // --- the line-by-line weave (one window, virtual rows above L09) --------
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "f.txt" }, .cwd = dir, .term = "xterm-256color" });
+        defer s.finish();
+        s.drain(800);
+        s.send(" gl");
+        s.drain(800);
+        // Notch 1 clears the three rows above the block; notch 2 must step
+        // *through* the block (top = L09, five screen rows) rather than over it
+        // (top = L11, seven rows — the leap).
+        s.send(wheel_down);
+        s.drain(350);
+        var scr = try snapshot(ctx, &s);
+        var top = try scr.rowText(ctx.gpa, 2);
+        ctx.check("one wheel notch moves three rows", std.mem.indexOf(u8, top, "L04") != null);
+        ctx.gpa.free(top);
+        scr.deinit();
+
+        s.send(wheel_down);
+        s.drain(350);
+        scr = try snapshot(ctx, &s);
+        top = try scr.rowText(ctx.gpa, 2);
+        ctx.check("a notch crossing a woven block counts its rows", std.mem.indexOf(u8, top, "L09") != null);
+        ctx.gpa.free(top);
+        scr.deinit();
+
+        s.send(wheel_down);
+        s.drain(350);
+        scr = try snapshot(ctx, &s);
+        top = try scr.rowText(ctx.gpa, 2);
+        ctx.check("and the notch after it is three rows again", std.mem.indexOf(u8, top, "L12") != null);
+        ctx.gpa.free(top);
+        scr.deinit();
+        s.send(":q!" ++ "\r");
+        s.drain(300);
+    }
+
+    // --- the side-by-side pair (fillers in the worktree pane) ---------------
+    // The invariant there is levelness: the pair is row-aligned, so after any
+    // amount of wheeling a line present on both sides sits on the same row.
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "f.txt" }, .cwd = dir, .term = "xterm-256color" });
+        defer s.finish();
+        s.drain(800);
+        s.send(" gs");
+        s.drain(900);
+        var n: usize = 0;
+        while (n < 2) : (n += 1) {
+            s.send(wheel_down);
+            s.drain(350);
+        }
+        var scr = try snapshot(ctx, &s);
+        defer scr.deinit();
+        const top = try scr.rowText(ctx.gpa, 2);
+        defer ctx.gpa.free(top);
+        // Levelness alone proves nothing here — `syncDiffPanes` derives the
+        // other pane's top from this one every frame, so the pair stays aligned
+        // whatever the step was. What the notch must get right is the distance:
+        // the worktree pane's four filler rows count, so two notches reach L09.
+        ctx.check("a notch crossing a pair's fillers counts them", std.mem.indexOf(u8, top, "L09") != null);
+        s.send(":qa!" ++ "\r");
+        s.drain(300);
+    }
+}
+
 pub fn run(ctx: *h.Ctx) !void {
+    try wheelOverVirtualRows(ctx);
     try paintBeforeDecorating(ctx);
 
     // changed + added line

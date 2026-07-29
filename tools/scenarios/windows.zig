@@ -296,6 +296,57 @@ fn bufferClose(ctx: *h.Ctx) !void {
         ctx.check("the survivor is clean and :q exits", s.contains(LEAVE_ALT));
     }
 
+    // 3b. `Space b c` is AstroNvim's "close all buffers except this one" — the
+    //     distinct meaning `b c` used to lack (it duplicated `Space c`). It
+    //     refuses while any of the others is unsaved, naming it.
+    {
+        h.writeFile(ctx.io, one, "aaa\n");
+        h.writeFile(ctx.io, two, "bbb\n");
+        const three = h.join(ctx, dir, "three.txt");
+        defer ctx.gpa.free(three);
+        h.writeFile(ctx.io, three, "ccc\n");
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "one.txt" }, .cwd = dir, .cols = 100 });
+        defer s.finish();
+        s.drain(400);
+        s.send(":e two.txt\r");
+        s.drain(300);
+        s.send("x"); // dirty two.txt
+        s.drain(200);
+        s.send(":e three.txt\r");
+        s.drain(300);
+        var m = s.mark();
+        s.send(" bc");
+        s.drain(400);
+        ctx.check("Space b c refuses while another buffer is dirty", s.containsPlainSince(ctx.gpa, m, "no write since last change"));
+        m = s.mark();
+        s.send(":ls\r");
+        s.drain(300);
+        ctx.check("the refusal keeps every buffer", s.containsPlainSince(ctx.gpa, m, "one.txt") and
+            s.containsPlainSince(ctx.gpa, m, "two.txt"));
+        s.send(":bp\r"); // onto two.txt
+        s.drain(300);
+        s.send("u:w\r"); // undo the edit and save it
+        s.drain(400);
+        s.send(":e three.txt\r");
+        s.drain(300);
+        m = s.mark();
+        s.send(" bc");
+        s.drain(400);
+        ctx.check("Space b c closes the others", s.containsPlainSince(ctx.gpa, m, "closed 2 buffers"));
+        m = s.mark();
+        s.send(":ls\r");
+        s.drain(300);
+        ctx.check("only the active buffer is left", s.containsPlainSince(ctx.gpa, m, "1*:three.txt") and
+            !s.containsPlainSince(ctx.gpa, m, "one.txt") and !s.containsPlainSince(ctx.gpa, m, "two.txt"));
+        m = s.mark();
+        s.send("ix\x1b");
+        s.drain(300);
+        ctx.check("the surviving buffer is still editable", s.containsPlainSince(ctx.gpa, m, "xccc"));
+        s.send(":q!\r");
+        s.drain(400);
+        ctx.check("the editor exits cleanly after close-others", s.contains(LEAVE_ALT));
+    }
+
     // 4. Adoption chain: the fresh [No Name] satisfies openFile's adopt rule,
     //    so a later :e replaces it — vim's full cycle, no phantom buffer.
     {

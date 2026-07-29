@@ -2,6 +2,70 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.28.0 - 2026-07-30
+
+### Added
+
+- **`Space u` — UI toggles.** The AstroNvim leader group that was missing:
+  `u n` relative numbers, `u w` soft wrap, `u d` inline diagnostics, `u t`
+  buffer tabs, `u i` autoindent, `u c` auto completion, `u f` format on save,
+  `u m` mouse reporting. Each flips the config field of that name for the
+  session and reports the new state; the config file is never written, and
+  the mouse toggle also tells the terminal, so turning it off hands the
+  pointer back for the terminal's own text selection.
+- **New file and folder from the explorer.** `a` creates a file, `A` a
+  folder, prompting on the command line pre-filled with the selected row's
+  directory (inside it when that row is an expanded directory, beside it
+  otherwise). Every missing directory in the name is created on the way —
+  `src/new/mod.zig` with no `src/new` yet — then the tree expands to reveal
+  the new row, and a new file opens for editing.
+- **`:w` creates missing parent directories**, the way VS Code's save does:
+  `:w notes/2026/today.md` under no `notes/` writes the file and both
+  directories. Only after the write has actually failed with `FileNotFound`,
+  so an ordinary save still costs one syscall and a typo inside an existing
+  directory is still an error.
+- **VS Code's tree arrows.** Right expands a directory (or opens a file),
+  Left collapses it — the pair `l`/`h` already bound.
+- **The itest runner takes suite names** (`zig build itest -- git sidebar`):
+  the full run is over ten minutes, too slow a loop for one scenario under
+  repair.
+
+### Changed
+
+- **`Space b c` is now "close all buffers except this one"** — AstroNvim's
+  own meaning for `bc`. It used to be a second way to spell `Space c`, which
+  is the redundancy that prompted this. It refuses while any of the other
+  buffers is unsaved, naming it, rather than discarding work.
+- **The showcmd indicator names special keys.** An arrow, Esc or a paging key
+  now renders as `<Down>`, `<Esc>`, `<PageDown>`, `<BS>` and holds until the
+  next key, where nvim shows nothing at all. A deliberate divergence: a press
+  that leaves no trace is indistinguishable from one the terminal dropped.
+  What nvim's rule really forbids is the *raw bytes*, and the guard that
+  `^[[B` can never reach the indicator stays pinned.
+
+### Fixed
+
+- **Scrolling past a change no longer jumps.** The wheel moves the viewport
+  three *screen* rows, so its step now counts the rows that belong to no
+  buffer line — a diff pair's filler rows and the line view's woven old
+  lines. Counting buffer lines made a notch that crossed a hunk travel
+  further than one that did not (measured: seven rows against three over a
+  four-line deletion), which is the jumping. Cursor motions (`Ctrl-d/u/f/b`,
+  `H`/`M`/`L`) keep vim's line-based meaning, which is what the first attempt
+  at this got wrong.
+- **A new which-key group can no longer be added and left invisible.** The
+  key dispatch, the popup and its title read one table (`whichKeyMenu`); the
+  render gate listing the leader states separately is what once hid
+  `Space g`, and it hid `Space u` for exactly as long as it took to run the
+  test.
+
+### Changed (internal)
+
+- A failing `zig build itest` reprints every failed check as `suite: name` at
+  the tail of the run. A CI log is read — and pasted — from the bottom, where
+  the per-check `[FAIL]` line has long scrolled away, so `1 failed` on its own
+  was a bug report nobody could act on.
+
 ## 0.27.0 - 2026-07-29
 
 ### Added

@@ -344,7 +344,16 @@ pub const Buffer = struct {
         if (remote.parse(path)) |target| {
             try remote.write(self.gpa, io, target, data);
         } else {
-            try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = data });
+            std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = data }) catch |err| {
+                // VS Code's rule: saving `a/b/c.txt` under directories that do
+                // not exist creates them. Only after the write has actually
+                // failed for that reason, so the ordinary save still costs one
+                // syscall and a typo in an existing directory is still an error.
+                if (err != error.FileNotFound) return err;
+                const dir = std.fs.path.dirname(path) orelse return err;
+                try std.Io.Dir.cwd().createDirPath(io, dir);
+                try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = data });
+            };
         }
         self.dirty = false;
     }

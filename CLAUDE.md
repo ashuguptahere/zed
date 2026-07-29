@@ -209,6 +209,7 @@ zig build -Doptimize=ReleaseFast
 zig build run -- [file]         # run the editor
 zig build test                  # unit tests (pure logic; no tty needed)
 zig build itest                 # pty integration tests (drives the built editor)
+zig build itest -- git sidebar  # ... just those suites (the full run is 10+ min)
 zig build bench -Doptimize=ReleaseFast   # benchmark vs helix/nvim (if installed)
 ```
 
@@ -257,7 +258,10 @@ itest` builds `zedit` plus a `mock_lsp` server, then runs the `itest` harness:
 - `tools/harness.zig` — the pty harness (`Session.spawn`/`drain`/`send`, output
   capture + ANSI stripping, temp dirs, file helpers, `/proc` CPU sampling).
 - `tools/mock_lsp.zig` — a stub language server for the LSP scenario.
-- `tools/itest.zig` — the runner; `tools/scenarios/*.zig` are the suites (vim,
+- `tools/itest.zig` — the runner (argv[3..] filters suites by name; a failing
+  run reprints every failed check as `suite: name` at the **tail**, because a
+  CI log is read and pasted from the bottom, where the per-check `[FAIL]` line
+  has long scrolled away); `tools/scenarios/*.zig` are the suites (vim,
   vim_compat, feature, multicursor, extra, search, treesitter, indent, picker,
   git, windows, sidebar, mouse, titlebar, config, cmdline, robust, remote, ssh,
   lsp, bufcomplete, cpu, wrap, undotree), each a
@@ -295,8 +299,13 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   window a status line belongs to even when the focus is elsewhere, probed);
   cells no window owns at all (the explorer, the title bar, the command line)
   scroll the focused one, where nvim picks its bottom-most window. It moves that
-  window's viewport 3 lines and carries its cursor with it, keeping its
-  screen row (owner's choice over nvim's drag-at-the-edge rule, which stranded
+  window's viewport 3 **screen rows** and carries its cursor with it, keeping
+  its screen row. Screen rows, not buffer lines: `winStepRows(…, display =
+  true)` counts the rows that belong to no buffer line — a diff pair's fillers
+  and the line view's woven old lines — because a viewport step that ignored
+  them travelled a different distance whenever it crossed a hunk, which is the
+  jumping a scroll past a change showed. Cursor motions (`Ctrl-d/u/f/b`,
+  `H`/`M`/`L`) keep `display = false` and vim's line-based meaning (owner's choice over nvim's drag-at-the-edge rule, which stranded
   the cursor at the bottom of the page; at the top or bottom of the file
   nothing moves at all). The scroll runs on the `Win` (`mouseScroll` saves the
   active window's mirrored viewport out and loads it back, and
@@ -493,7 +502,8 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 - **Pickers (AstroNvim-style leader tree, leader = `Space`):** pressing `Space`
   shows a which-key popup with nested groups (submenus get their own popup):
   `Space b` = Buffers (`b b` the buffer picker — same as `f b` — `b n`/`b p`
-  next/previous, `b c` close — same as `Space c`);
+  next/previous, `b c` **close others** — AstroNvim's `bc`, which refuses
+  while any of them is unsaved and names it; it used to duplicate `Space c`);
   `Space f` = Find (`f f` files, `f w` words/grep, `f b` buffers, `f t`
   themes); `Space l` = Language tools (`l a` code action, `l r` rename, `l R`
   references, `l s` document symbols, `l S` workspace symbols, `l d` line
@@ -753,8 +763,8 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   empty `[No Name]` and the window stays (vim's rule, nvim-verified — and
   that fresh buffer is adopted by the next `:e`, closing the cycle); a dirty
   buffer refuses with "no write since last change" (nvim's E89) unless
-  forced with `:bd!`, which discards. `Space c` / `Space b c` route through
-  the same close. Split the view with `:split`/`:vsplit` (or `Ctrl-w s`/
+  forced with `:bd!`, which discards. `Space c` routes through the same close
+  (`Space b c` closes every *other* buffer instead). Split the view with `:split`/`:vsplit` (or `Ctrl-w s`/
   `Ctrl-w v`), move focus with `Ctrl-w w`/`h`/`j`/`k`/`l`, and `:close`/`Ctrl-w
   c` / `:only` manage them. Splits tile evenly in one orientation; each window
   shows any buffer (the same buffer can be open in two windows). Per-window
@@ -838,8 +848,11 @@ powerline title bar (EXPLORER segment + buffer tabs, see above) and statusline
 (coloured mode block, separators, the command as typed
 right-aligned beside the position — vim's 'showcmd', capturing the *decoded*
 key, never raw bytes: characters and control keys read back as text (`^W`),
-while special keys (arrows, Esc, paging) execute at once and render nothing,
-nvim's rule pty-probed — an arrow used to smear `^[[B` across the indicator;
+and special keys render their **name** (`<Down>`, `<Esc>`, `<PageDown>`,
+`<BS>`) and hold it until the next key — a deliberate divergence from nvim,
+which shows nothing for them, made because the user could not tell an arrow
+press from a dropped one; what nvim's rule really forbids is the *raw bytes*,
+and an arrow used to smear `^[[B` across the indicator;
 the finished command
 stays readable until the next one starts, and yields its width to a status
 message — plus filetype/position/percent segments; the filename+dirty segment
