@@ -291,6 +291,19 @@ pub const Editor = struct {
     // are freed by `:close`/`:only`/a diff teardown, all reachable mid-drag,
     // and a stored pointer would dangle.
     dragging: bool = false,
+    // The gesture the pointer is in the middle of. `click_count` is derived
+    // when a press arrives, from the previous press's time and cell (vim's
+    // `mousetime`) — no timer is armed for it. A double-click also records the
+    // word it took, because the drag that may follow extends by whole words.
+    click_ms: i64 = 0,
+    click_row: u16 = 0,
+    click_col: u16 = 0,
+    click_count: u32 = 0,
+    drag_word: ?motion.Span = null,
+    // nvim's Insert Visual: a selection begun from insert mode with the mouse.
+    // Only ever set while a visual mode is active (`enterVisual` clears it),
+    // and whatever ends the selection lands back in insert.
+    ins_visual: bool = false,
 
     // multiple cursors (one per line; primary stays cy/cx). Empty = single cursor.
     extra: std.ArrayList(Pos) = .empty,
@@ -919,6 +932,18 @@ pub const Editor = struct {
         if (self.replay_depth > 64) return; // runaway-recursion guard
         self.replay_depth += 1;
         defer self.replay_depth -= 1;
+        // A replayed press must not chain with the one that recorded it, nor a
+        // later real click with the last replayed one: the click count is
+        // derived from wall-clock time, and a macro is not a person clicking
+        // again. Clicks *within* the replay still chain, since the recorded
+        // bytes arrive back to back — which is how `@a` reproduces a recorded
+        // double-click, exactly as nvim's stored `<2-LeftMouse>` does.
+        self.click_ms = 0;
+        self.click_count = 0;
+        defer {
+            self.click_ms = 0;
+            self.click_count = 0;
+        }
         var i: usize = 0;
         while (i < bytes.len) {
             const d = key.decode(bytes[i..]);
@@ -981,10 +1006,11 @@ pub const Editor = struct {
                 self.dragging = false;
                 return;
             },
-            .scroll_up, .scroll_down => {
+            .scroll_up, .scroll_down => |m, tag| {
+                const up = tag == .scroll_up;
                 switch (self.mode) {
-                    .normal, .insert, .visual, .visual_line, .visual_block => self.mouseScroll(k == .scroll_up),
-                    .picker => self.scrollPreview(if (k == .scroll_up) -3 else 3),
+                    .normal, .insert, .visual, .visual_line, .visual_block => self.mouseScroll(self.wheelWin(m), up),
+                    .picker => self.scrollPreview(if (up) -3 else 3),
                     .command => {},
                 }
                 return;
@@ -1083,6 +1109,14 @@ pub const Editor = struct {
     /// click cannot activate a tree row under a live selection.
     fn mouseClick(self: *Editor, m: key.Mouse) !void {
         self.dragging = false;
+        // Every press advances the chain, wherever it lands: vim decides the
+        // count in the input layer, before anything routes the click, so a
+        // press on chrome (a status line, the command line, another window)
+        // breaks a double click in two — nvim-probed. Deriving it only for
+        // presses that reach a window let a click on the explorer or the
+        // command row *pass through* the chain, and the click after it
+        // selected a word.
+        const count = self.clickCount(m);
         if (self.mode == .picker) return self.pickerClick(m);
         if (self.mode == .command) return;
         if (self.dashboard) return; // the startup screen owns the keyboard
@@ -1102,13 +1136,32 @@ pub const Editor = struct {
             if (self.inSidebar(m.col)) return self.sbClick(m.row, m.col);
         }
         const w = self.winAt(m.row, m.col) orelse return; // status rows, cmdline: inert
-        try self.clickTo(w, self.winHit(w, m.row, m.col));
+        try self.clickTo(w, self.winHit(w, m.row, m.col), count);
     }
 
-    /// Move the cursor to a clicked position. `focusWin` must run first: it
+    /// How many times in a row this cell has been clicked, 1-4 (vim's
+    /// multi-click, nvim-probed): the chain continues while each press lands
+    /// on the *same* cell within `mousetime` of the one before it — one column
+    /// off, or one millisecond late, and it starts again at 1. The count is
+    /// computed here, when the press arrives, so no timer is ever armed. Four
+    /// is the top of the cycle: a fifth click is a plain one again.
+    fn clickCount(self: *Editor, m: key.Mouse) u32 {
+        const now = log.nowMs();
+        const chained = m.row == self.click_row and m.col == self.click_col and
+            now -| self.click_ms < @as(i64, @intCast(config.settings.mousetime));
+        self.click_count = if (chained and self.click_count < 4) self.click_count + 1 else 1;
+        self.click_ms = now;
+        self.click_row = m.row;
+        self.click_col = m.col;
+        return self.click_count;
+    }
+
+    /// Move the cursor to a clicked position and apply the gesture `count`
+    /// stands for (1 = move, 2 = the word, 3 = the line, 4 = one blockwise
+    /// cell — vim's cycle, nvim-probed). `focusWin` must run first: it
     /// realigns the cursor when the click crosses a diff pair, and the click's
     /// own position has to win over that.
-    fn clickTo(self: *Editor, w: *Win, hit: Hit) !void {
+    fn clickTo(self: *Editor, w: *Win, hit: Hit, count: u32) !void {
         self.sb_focus = false; // keys follow the click, not the tree
         if (w != self.cur) {
             self.resetPending(); // an operator never crosses windows
@@ -1125,7 +1178,13 @@ pub const Editor = struct {
             return; // the operator consumed the click: no drag to start from it
         }
         switch (self.mode) {
-            .visual, .visual_line, .visual_block => self.mode = .normal, // a click ends the selection
+            // A click ends the selection — back to insert when the gesture that
+            // started it did (nvim's Insert Visual, probed: a click inside one
+            // moves the caret and keeps typing).
+            .visual, .visual_line, .visual_block => {
+                self.mode = if (self.ins_visual) .insert else .normal;
+                self.ins_visual = false;
+            },
             .insert => {
                 self.endSnippet(); // the cursor left the placeholder for good
                 self.comp_open = false;
@@ -1133,6 +1192,7 @@ pub const Editor = struct {
             },
             else => {},
         }
+        const from_insert = self.mode == .insert;
         self.resetPending();
         self.clearExtra(); // a click collapses to one caret
         self.cy = hit.row;
@@ -1143,6 +1203,23 @@ pub const Editor = struct {
         self.goal_col = hit.dcol;
         self.clampCursor();
         self.dragging = true; // motion from here extends a selection
+        self.drag_word = null;
+        switch (count) {
+            2 => { // the word under the pointer, charwise, anchored at its start
+                const sp = motion.mouseWord(self.buf, .{ .row = self.cy, .col = self.cx });
+                self.cy = sp.start.row;
+                self.cx = sp.start.col;
+                self.enterVisual(.visual); // anchors at the cursor
+                self.cy = sp.end.row;
+                self.cx = sp.end.col;
+                self.updateGoal();
+                self.drag_word = sp; // a drag from here extends by whole words
+            },
+            3 => self.enterVisual(.visual_line), // the whole line, newline included
+            4 => self.enterVisual(.visual_block), // one cell, blockwise
+            else => {},
+        }
+        if (count > 1) self.ins_visual = from_insert;
     }
 
     /// Motion while the left button is held: extend the selection to here,
@@ -1165,19 +1242,43 @@ pub const Editor = struct {
         // short line would otherwise look like a move on its own release.
         const trow = @min(hit.row, self.buf.lineCount() - 1);
         const tcol = @min(hit.col, self.columnLimit(self.buf.line(trow)));
-        if (trow == self.cy and tcol == self.cx) return;
+        // A drag after a double-click extends by whole words, so it must run
+        // even when the pointer has not left the cell it was pressed in — the
+        // release alone would otherwise collapse the selected word to a caret.
+        if (trow == self.cy and tcol == self.cx and self.drag_word == null) return;
+        const from_insert = self.mode == .insert;
         switch (self.mode) {
             // `enterVisual` anchors at the cursor, which is still where the
             // press left it. From insert that can be the column one past the
             // last character, and nvim keeps it there (probed: `getpos("v")`
             // reports column 4 on a 3-character line) rather than clamping.
-            .normal, .insert => self.enterVisual(.visual),
+            .normal, .insert => {
+                self.enterVisual(.visual);
+                self.ins_visual = from_insert; // nvim's Insert Visual
+            },
             .visual, .visual_line, .visual_block => {}, // already selecting: extend
             .command, .picker => return,
         }
+        if (self.drag_word) |anchor| return self.dragWord(anchor, .{ .row = trow, .col = tcol });
         self.cy = hit.row;
         self.cx = hit.col;
         self.goal_col = hit.dcol;
+        self.clampCursor();
+    }
+
+    /// Extend a double-click's selection by whole words (nvim-probed): the
+    /// clicked word always stays selected whole, and the far end snaps to the
+    /// start or end of the word under the pointer — a run of blanks included,
+    /// so dragging onto the space after a word takes the space with it.
+    fn dragWord(self: *Editor, anchor: motion.Span, to: Pos) void {
+        const sp = motion.mouseWord(self.buf, to);
+        const back = cmpPos(to, anchor.start) < 0;
+        const far = if (back) sp.start else if (cmpPos(anchor.end, to) < 0) sp.end else anchor.end;
+        const near = if (back) anchor.end else anchor.start;
+        self.vstart = near;
+        self.cy = far.row;
+        self.cx = far.col;
+        self.updateGoal();
         self.clampCursor();
     }
 
@@ -1217,21 +1318,47 @@ pub const Editor = struct {
         self.picker_sel = fi;
     }
 
-    /// Wheel scrolling: move the viewport three lines (nvim's step) and carry
-    /// the cursor with it, so it keeps its row on screen. Scrolling to the top
+    /// The window a wheel notch scrolls: the one under the pointer, whether or
+    /// not it has focus (nvim's rule, pty-probed — the wheel never moves
+    /// focus), falling back to the focused window for cells no window owns at
+    /// all (the sidebar, the title bar, the command line). Inside a visible
+    /// side-by-side pair the notch goes to the pane that *drives* the
+    /// lockstep, because `syncDiffPanes` derives the other pane's top from it
+    /// every frame and would overwrite anything written there directly.
+    fn wheelWin(self: *Editor, m: key.Mouse) *Win {
+        const w = self.winUnder(m.row, m.col) orelse return self.cur;
+        const p = self.diffPairOf(w) orelse return w;
+        if (self.cur == p.wt or self.cur == p.ix) return self.cur;
+        return p.wt;
+    }
+
+    /// Wheel scrolling: move `w`'s viewport three lines (nvim's step) and carry
+    /// its cursor with it, so it keeps its row on screen. Scrolling to the top
     /// of the file therefore leaves the cursor near the top, not pinned to the
     /// bottom of the first page (owner's choice over nvim's drag-at-the-edge
     /// rule, which left it stranded).
-    fn mouseScroll(self: *Editor, up: bool) void {
+    ///
+    /// The scroll runs on the `Win` — the active window's viewport is saved
+    /// out first and loaded back after — so one path serves every window: the
+    /// Editor's mirror of the active window cannot go stale, and writing an
+    /// inactive window's fields cannot be undone by the next `saveViewport`.
+    fn mouseScroll(self: *Editor, w: *Win, up: bool) void {
         const step = 3;
-        const last_line = self.buf.lineCount() - 1;
-        const before = self.top;
-        self.top = self.lineAfterRows(self.top, step, up); // three *screen* rows
-        const moved = if (self.top > before) self.top - before else before - self.top;
+        self.saveViewport();
+        defer self.loadViewport();
+        const buf = &w.doc.buf;
+        const last_line = buf.lineCount() - 1;
+        const before = w.top;
+        w.top = self.winLineAfterRows(w, w.top, step, up); // three *screen* rows
+        const moved = if (w.top > before) w.top - before else before - w.top;
         if (moved == 0) return; // already at an end: nothing moves, cursor included
-        self.cy = if (self.top > before) @min(self.cy + moved, last_line) else self.cy -| moved;
-        self.cx = @min(self.cx, lastColumn(self.curLine()));
-        self.updateGoal();
+        // Clamped in both directions: an inactive window's bookmarked cursor
+        // can outlive the lines it pointed at (another window shortened the
+        // buffer), and `buf.line` below must not be handed a stale row.
+        w.cy = @min(if (w.top > before) w.cy + moved else w.cy -| moved, last_line);
+        const line = buf.line(w.cy);
+        w.cx = @min(w.cx, lastColumn(line));
+        w.goal_col = displayCol(line, w.cx);
     }
 
     fn dotCapturePre(self: *Editor, raw: []const u8) void {
@@ -1272,7 +1399,21 @@ pub const Editor = struct {
         switch (self.mode) {
             .normal => try self.normalKey(k),
             .insert => try self.insertKey(k),
-            .visual, .visual_line, .visual_block => try self.visualKey(k),
+            .visual, .visual_line, .visual_block => {
+                const iv = self.ins_visual;
+                try self.visualKey(k);
+                // nvim's Insert Visual: whatever ends the selection — Esc, `v`,
+                // an operator — puts you back in insert where it left the
+                // cursor, so typing continues (probed: `d` then "XX" inserts
+                // XX, where plain visual would run them as commands).
+                switch (self.mode) {
+                    .visual, .visual_line, .visual_block => {},
+                    else => if (iv) {
+                        self.ins_visual = false;
+                        if (self.mode == .normal) self.mode = .insert;
+                    },
+                }
+            },
             .command => try self.commandKey(k),
             .picker => try self.pickerKey(k),
         }
@@ -2836,6 +2977,9 @@ pub const Editor = struct {
         self.mode = m;
         self.vstart = self.cursor();
         self.resetPending();
+        // Plain visual by default; the mouse re-sets this for a gesture that
+        // started in insert mode, so the flag can never outlive its selection.
+        self.ins_visual = false;
     }
 
     fn visualKey(self: *Editor, k: key.Key) !void {
@@ -6875,13 +7019,13 @@ pub const Editor = struct {
         self.goal_col = displayCol(self.curLine(), self.cx);
     }
 
-    /// The buffer line `n` screen rows away from `row`. With soft wrap a tall
-    /// line is worth several rows, so a page covers fewer lines than there are
-    /// rows on screen — which is what makes `Ctrl-f` land where it looks like
-    /// it should.
-    fn lineAfterRows(self: *Editor, row: usize, n: usize, up: bool) usize {
-        const last = self.buf.lineCount() - 1;
-        if (!self.wrapping()) return if (up) row -| n else @min(row + n, last);
+    /// The buffer line `n` screen rows away from `row` in window `w`. With soft
+    /// wrap a tall line is worth several rows, so a page covers fewer lines
+    /// than there are rows on screen — which is what makes `Ctrl-f` land where
+    /// it looks like it should.
+    fn winLineAfterRows(self: *Editor, w: *Win, row: usize, n: usize, up: bool) usize {
+        const last = w.doc.buf.lineCount() - 1;
+        if (!self.winWrap(w)) return if (up) row -| n else @min(row + n, last);
         var r = row;
         var used: usize = 0;
         while (used < n) {
@@ -6892,9 +7036,13 @@ pub const Editor = struct {
                 if (r >= last) break;
                 r += 1;
             }
-            used += self.lineRows(r);
+            used += self.winLineRows(w, r);
         }
         return r;
+    }
+
+    fn lineAfterRows(self: *Editor, row: usize, n: usize, up: bool) usize {
+        return self.winLineAfterRows(self.cur, row, n, up);
     }
 
     fn pageMove(self: *Editor, up: bool) void {
@@ -6947,8 +7095,15 @@ pub const Editor = struct {
     }
 
     fn textCols(self: *Editor) usize {
-        const g = self.gutterWidth();
-        return if (self.cur.gw > g) self.cur.gw - g else 1;
+        return winTextCols(self.cur);
+    }
+
+    /// Columns of `w` left for text once its gutter is taken off. Per window:
+    /// the gutter is sized from that window's own line count, so two splits
+    /// over files of different lengths have different text widths.
+    fn winTextCols(w: *Win) usize {
+        const g = gutterFor(w.doc.buf.lineCount());
+        return if (w.gw > g) w.gw - g else 1;
     }
 
     fn gutterWidth(self: *Editor) usize {
@@ -7041,22 +7196,34 @@ pub const Editor = struct {
         return upto; // one word wider than the row: break it
     }
 
-    /// The layout of buffer line `row` in the active window.
-    fn lineLayout(self: *Editor, row: usize) WrapLayout {
-        if (row >= self.buf.lineCount()) return .{ .starts = .{0} ** max_wrap_rows, .n = 1, .indent = 0 };
+    /// The layout of buffer line `row` in window `w`. Only the active window
+    /// knows where the cursor is (the Editor mirrors its viewport), so only it
+    /// gives the caret a continuation row of its own — the same split
+    /// `buildView`/`nextRow` make when they render an inactive window.
+    fn winLineLayout(self: *Editor, w: *Win, row: usize) WrapLayout {
+        if (row >= w.doc.buf.lineCount()) return .{ .starts = .{0} ** max_wrap_rows, .n = 1, .indent = 0 };
+        const active = w == self.cur;
         return layoutLine(
-            self.buf.line(row),
-            self.textCols(),
-            if (row == self.cy) self.cursorDisplayCol() else null,
-            self.wrapping(),
-            @max(1, self.textRows()),
+            w.doc.buf.line(row),
+            winTextCols(w),
+            if (active and row == self.cy) self.cursorDisplayCol() else null,
+            self.winWrap(w),
+            @max(1, self.winTextRows(w)),
         );
     }
 
-    /// Rows the active window spends on buffer line `row`.
+    /// Rows window `w` spends on buffer line `row`.
+    fn winLineRows(self: *Editor, w: *Win, row: usize) usize {
+        if (!self.winWrap(w)) return 1;
+        return self.winLineLayout(w, row).n;
+    }
+
+    fn lineLayout(self: *Editor, row: usize) WrapLayout {
+        return self.winLineLayout(self.cur, row);
+    }
+
     fn lineRows(self: *Editor, row: usize) usize {
-        if (!self.wrapping()) return 1;
-        return self.lineLayout(row).n;
+        return self.winLineRows(self.cur, row);
     }
 
     fn cursorDisplayCol(self: *Editor) usize {
@@ -7848,7 +8015,7 @@ pub const Editor = struct {
     fn buildView(self: *Editor, w: *Win) View {
         const doc = w.doc;
         const g = gutterFor(doc.buf.lineCount());
-        const cols = if (w.gw > g) w.gw - g else 1;
+        const cols = winTextCols(w);
         const large = docIsLarge(doc);
         const wrap = self.winWrap(w);
         if (w == self.cur) return .{
@@ -8084,16 +8251,25 @@ pub const Editor = struct {
     /// it may sit past the end of a short line).
     const Hit = struct { row: usize, col: usize, dcol: usize };
 
-    /// The window whose *text* area covers this cell. Its bottom row is a
-    /// status line whenever more than one window is open, and the sidebar's
-    /// columns belong to no window at all, so both fall outside every window.
-    fn winAt(self: *Editor, row: usize, col: usize) ?*Win {
+    /// The window whose box covers this cell, status row included. The
+    /// sidebar's columns, the title bar and the command line belong to no
+    /// window, so they fall outside every one.
+    fn winUnder(self: *Editor, row: usize, col: usize) ?*Win {
         for (self.wins.items) |w| {
-            if (row < w.gy or row >= w.gy + self.winTextRows(w)) continue;
+            if (row < w.gy or row >= w.gy + w.gh) continue;
             if (col < w.gx or col >= w.gx + w.gw) continue;
             return w;
         }
         return null;
+    }
+
+    /// The window whose *text* area covers this cell — `winUnder` without the
+    /// status line it wears when more than one window is open. Clicks use this
+    /// one: a click on a status row is inert (nvim resizes with it; zedit does
+    /// not), while a wheel notch there scrolls the window it belongs to.
+    fn winAt(self: *Editor, row: usize, col: usize) ?*Win {
+        const w = self.winUnder(row, col) orelse return null;
+        return if (row < w.gy + self.winTextRows(w)) w else null;
     }
 
     /// The buffer position under a screen cell of `w` — the inverse of
@@ -9394,7 +9570,7 @@ pub const Editor = struct {
         }
 
         const accent = self.modeColor();
-        const label = self.mode.label();
+        const label = self.modeLabel();
 
         // Left: [ MODE ] file — but the file (and its dirty dot) lives in the
         // title bar's tab when that row is shown, so it leaves the statusline.
@@ -9510,6 +9686,19 @@ pub const Editor = struct {
             return std.fmt.bufPrint(buf, "E:{d} W:{d}", .{ c.errors, c.warnings }) catch null;
         }
         return null;
+    }
+
+    /// The mode as the statusline shows it. A selection the mouse began in
+    /// insert mode is nvim's Insert Visual, which it writes as
+    /// `-- (insert) VISUAL --`; leaving it returns to insert.
+    fn modeLabel(self: *Editor) []const u8 {
+        if (!self.ins_visual) return self.mode.label();
+        return switch (self.mode) {
+            .visual => "(insert) VISUAL",
+            .visual_line => "(insert) V-LINE",
+            .visual_block => "(insert) V-BLOCK",
+            else => self.mode.label(),
+        };
     }
 
     fn modeColor(self: *Editor) Color {

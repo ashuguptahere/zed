@@ -405,11 +405,16 @@
    - Multiple cursors:  Ctrl-n / Ctrl-p  add a caret on the line below
      or above; typing edits every line at once; Esc collapses them.
    - Scrolling:  Ctrl-d / Ctrl-u  move by half a page, and the mouse
-     wheel scrolls three lines at a time.
+     wheel scrolls three lines at a time — the window under the
+     pointer, without moving the focus off the one you are editing.
    - The mouse edits too:  click in the text to put the cursor there
      (in another split, that focuses it first), and hold the button
      down and move to select — you end up in VISUAL, so  d  y  c  and
-     the rest work on it.  To select text for your *terminal's* own
+     the rest work on it.  Double-click selects the word under the
+     pointer, triple-click the whole line; keep the button down on
+     that last click and the drag extends by whole words or lines.
+     Do it while you are inserting and you land back in insert when
+     the selection ends.  To select text for your *terminal's* own
      clipboard, hold Shift while you drag; put  mouse = false  in your
      config to hand the mouse back to the terminal completely.
    - Undo is a tree:  u  and  Ctrl-r  step back and forward as usual, but

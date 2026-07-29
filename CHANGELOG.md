@@ -2,6 +2,54 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.24.0 - 2026-07-29
+
+### Added
+
+- **Double click selects the word, triple click the line** (quadruple one
+  blockwise cell, and the fifth click starts the cycle again — vim's period-4
+  cycle, not the usual three). The click count is derived when a press
+  arrives, from the previous press's timestamp and screen cell: the chain
+  continues only while each click lands on the *same* cell inside `mousetime`
+  of the one before it, so **no timer is armed** and an idle editor still
+  blocks in `poll(2)` at zero CPU. Every press counts, wherever it lands (vim
+  decides the count in the input layer), so a click on a status row, the
+  command line, the title bar or the explorer breaks a chain in two rather
+  than passing through it. The double click takes vim's *mouse* word,
+  which is not `iw`: blanks and keyword characters take their run, punctuation
+  first tries `%` — when there is a bracket at or after the click on that line
+  the selection runs from the click to its match, backwards or across lines —
+  and otherwise groups only with its own class, so `->` and `*=` select as one
+  while `.,;` selects one character at a time. Multibyte text follows vim's
+  `utf_class` ranges: `你好world` selects `你好`, `naïve` selects whole. A
+  click past the end of a line clamps to its last word; a triple click takes
+  the whole line (newline included) whatever column it lands in. Dragging
+  after a multi-click extends by whole words, whole lines or a real rectangle,
+  in both directions, with the clicked word always kept whole.
+- **Insert Visual**: a mouse gesture begun in insert mode now behaves as it
+  does in nvim. The statusline reads `(insert) VISUAL`, and whatever ends the
+  selection — `Esc`, `v`, an operator, or a plain click — lands back in insert
+  where it left the cursor, so typing simply continues. A second `Esc` leaves
+  insert as usual.
+- Config `mousetime` (default `500`, milliseconds — vim's name and value): how
+  far apart two clicks at one cell may be and still chain. `0` turns
+  multi-clicks off entirely.
+
+### Changed
+
+- **The wheel scrolls the window under the pointer**, not the focused one, and
+  never moves focus (nvim's rule, pty-probed; the hovered window's cursor
+  travels with its viewport, as zedit's wheel has always done). The scroll
+  runs on the `Win` — the active window's mirrored viewport is saved out first
+  and loaded back after — so one path serves every window and the mirror
+  cannot go stale. Inside a visible side-by-side diff pair the notch is routed
+  to the pane that drives the lockstep, so the partner still follows through
+  the alignment map. A window's status row counts as part of it (`winUnder`),
+  as in nvim; cells no window owns at all (the explorer, the title bar, the
+  command line) still scroll the focused window. `lineAfterRows`, `lineRows`,
+  `lineLayout` and `textCols` gained `*Win` variants for this, with the
+  active-window wrappers kept for their existing callers.
+
 ## 0.23.1 - 2026-07-29
 
 ### Fixed

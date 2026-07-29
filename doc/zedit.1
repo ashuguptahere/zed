@@ -216,6 +216,16 @@ selects. Set
 to leave the mouse entirely to your terminal \(em including its own click\-drag
 selection, which any reporting mode takes over. See
 .BR MOUSE .
+.TP
+.B mousetime
+.I milliseconds
+(default 500). How far apart two clicks at the same cell may be and still
+count as a double click \(em then triple, then quadruple \(em as in vim's
+.BR 'mousetime' .
+The count is worked out from the previous click when the next one arrives, so
+no timer runs.
+.B 0
+turns multi\-clicks off.
 .SH SNIPPETS
 A completion item the server marks as a snippet expands its placeholders and
 starts a tabstop session:
@@ -371,13 +381,66 @@ selection that
 .B c
 and the rest act on. A drag that leaves the window keeps extending inside it,
 clamped to what is on screen. A drag that never leaves its cell stays a plain
-click. Double-click-for-word, triple-click-for-line and Alt+drag blockwise are
-not implemented; so are modified clicks generally, which stay inert rather
-than pretending to be plain ones.
+click. Alt+drag blockwise is not implemented; nor are modified clicks
+generally, which stay inert rather than pretending to be plain ones.
 .PP
-The wheel scrolls the focused window three lines per notch and moves the
-cursor with it, so the cursor keeps its position on screen. At the very top or
-bottom of the file nothing moves. In a picker the wheel scrolls the preview
+Clicking the same cell again inside
+.B mousetime
+(500 ms by default) counts up, as in vim: two clicks select the
+.IR word ,
+three the whole
+.I line
+(linewise, newline included, whatever column you hit), four one blockwise
+cell, and the fifth starts the cycle over. The count is derived from the
+previous click's time and cell when the next press arrives, so no timer runs
+and an idle editor still costs nothing; one column off, or one millisecond
+late, and the chain restarts. Every press counts, wherever it lands, so a
+click on a status line, the command line, the title bar or the file tree
+between two clicks leaves the second one a plain click.
+.PP
+The word a double click takes is vim's
+.I mouse
+word, not
+.BR iw .
+Blanks and keyword characters take their run. On punctuation, vim first tries
+.BR % :
+if there is a bracket at or after the click on that line, the selection runs
+from the click to its match \(em backwards, or onto another line, if that is
+where the match is. Otherwise punctuation groups only with its own class, so
+.B \->
+and
+.B *=
+select as one while
+.B .,;
+selects one character at a time. Multibyte text follows vim's character
+classes: CJK does not group with the Latin word beside it, accented letters
+do. A click past the end of a line clamps to its last word.
+.PP
+Holding the button down after a multi\-click drags in the same units: whole
+words, whole lines, or a real rectangle, in either direction, with the word
+you clicked always kept whole.
+.PP
+A gesture begun in insert mode is Neovim's
+.IR "Insert Visual" :
+the statusline reads
+.BR "(insert) VISUAL" ,
+and whatever ends the selection \(em
+.BR Esc ,
+.BR v ,
+an operator, or a plain click \(em returns to insert where it left the cursor,
+so typing simply continues. A second
+.B Esc
+leaves insert.
+.PP
+The wheel scrolls the window
+.I under the pointer
+\(em focused or not, and it never moves focus \(em three lines per notch,
+moving that window's cursor with it so it keeps its position on screen. At the
+very top or bottom of the file nothing moves. A window's status line counts as
+part of that window, so a notch there scrolls it even when the focus is
+elsewhere; over the file tree, the title bar or the command line \(em which
+belong to no window \(em the focused window scrolls. In a picker the
+wheel scrolls the preview
 pane. Clicking a buffer tab in the title bar switches to it. In the file-tree
 sidebar a single click on a row selects it and acts as Enter does: a
 directory expands or collapses, a file opens with focus back in the buffer;

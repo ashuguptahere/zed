@@ -99,8 +99,16 @@
   another split, which it focuses first — and **drag to select** (the press
   anchors, motion extends, release finishes, leaving an ordinary visual
   selection for `d`/`y`/`c`); a click with an operator pending applies it over
-  the clicked range, all pinned to real nvim's `mouse=a`. Plus wheel
-  scrolling, tab clicks and explorer clicks — in the pickers too (`zedit .`
+  the clicked range, all pinned to real nvim's `mouse=a`. **Double click
+  selects the word, triple click the line**, quadruple one blockwise cell, and
+  the fifth click starts over — vim's cycle, its *mouse* word (punctuation
+  goes through `%`, so double-clicking a bracket takes the whole pair) and its
+  `mousetime` window, derived from the previous click rather than from any
+  timer. Dragging on from a multi-click extends by whole words, lines or a
+  rectangle. A gesture begun in insert mode is nvim's **Insert Visual**:
+  `(insert) VISUAL` on the statusline, and whatever ends the selection returns
+  to insert. The **wheel scrolls the window under the pointer** without moving
+  focus. Plus tab clicks and explorer clicks — in the pickers too (`zedit .`
   starts in one): click a result row to select it, click it again to open, so
   a double-click opens from anywhere. Clicks land correctly through soft wrap,
   tabs, wide CJK cells, inlay hints and the diff views. **Shift+drag** is your
@@ -212,7 +220,7 @@ missing file just means defaults. Settings today: `theme`, `tab_width`,
 `buffer_tabs`, `auto_completion`, `completion_delay_ms`,
 `buffer_completion`, `inline_diagnostics`, `soft_wrap`, `wrap_indent`,
 `wrap_column`, `persistent_undo`, `format_on_save`, `cmdline_suggestions`,
-`mouse`.
+`mouse`, `mousetime`.
 
 Every CLI option has a short and a long form (`-h/--help`, `-v/--version`,
 `-l/--log`, `-s/--lsp`, `-c/--config`, `-t/--tutor`, `-b/--benchmark`,

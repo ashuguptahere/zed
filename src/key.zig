@@ -26,8 +26,8 @@ pub const Key = union(enum) {
     escape,
     up,
     down,
-    scroll_up,
-    scroll_down,
+    scroll_up: Mouse, // wheel up, at the cell the pointer was over
+    scroll_down: Mouse,
     left,
     right,
     home,
@@ -130,18 +130,17 @@ fn decodeSgrMouse(bytes: []const u8) Decoded {
     var it = std.mem.splitScalar(u8, bytes[3..i], ';');
     const b = std.fmt.parseInt(u16, it.next() orelse "", 10) catch return .{ .key = .mouse_other, .consumed = consumed };
     if (b & 128 != 0 or b & 28 != 0) return .{ .key = .mouse_other, .consumed = consumed }; // extra buttons, modifiers
-    if (b & 64 != 0) {
+    const wheel = b & 64 != 0;
+    if (wheel) {
         if (final != 'M') return .{ .key = .mouse_other, .consumed = consumed }; // a tilt release
-        return switch (b & 3) {
-            0 => .{ .key = .scroll_up, .consumed = consumed },
-            1 => .{ .key = .scroll_down, .consumed = consumed },
-            else => .{ .key = .mouse_other, .consumed = consumed }, // horizontal tilt
-        };
-    }
-    if (b & 3 != 0) return .{ .key = .mouse_other, .consumed = consumed }; // middle/right/"no button"
+        if (b & 2 != 0) return .{ .key = .mouse_other, .consumed = consumed }; // horizontal tilt
+    } else if (b & 3 != 0) return .{ .key = .mouse_other, .consumed = consumed }; // middle/right/"no button"
+    // The wheel carries coordinates too: the notch scrolls the window under
+    // the pointer, so they have to survive the decode.
     const col = std.fmt.parseInt(u16, it.next() orelse "", 10) catch return .{ .key = .mouse_other, .consumed = consumed };
     const row = std.fmt.parseInt(u16, it.next() orelse "", 10) catch return .{ .key = .mouse_other, .consumed = consumed };
     const m: Mouse = .{ .row = row, .col = col };
+    if (wheel) return .{ .key = if (b & 1 != 0) .{ .scroll_down = m } else .{ .scroll_up = m }, .consumed = consumed };
     if (final == 'm') return .{ .key = .{ .mouse_release = m }, .consumed = consumed };
     return .{ .key = if (b & 32 != 0) .{ .mouse_drag = m } else .{ .mouse_press = m }, .consumed = consumed };
 }
@@ -197,15 +196,22 @@ test "decode shift-tab" {
 }
 
 test "decode SGR mouse wheel" {
+    // The notch's cell decides which window scrolls, so the coordinates must
+    // survive the wheel branch — they used to be parsed below it.
     const up = decode("\x1b[<64;10;5M");
-    try std.testing.expectEqual(Key.scroll_up, up.key);
+    try std.testing.expectEqual(@as(u16, 10), up.key.scroll_up.col);
+    try std.testing.expectEqual(@as(u16, 5), up.key.scroll_up.row);
     try std.testing.expectEqual(@as(usize, 11), up.consumed);
-    try std.testing.expectEqual(Key.scroll_down, decode("\x1b[<65;1;1M").key);
+    const down = decode("\x1b[<65;1;1M");
+    try std.testing.expectEqual(@as(u16, 1), down.key.scroll_down.col);
+    try std.testing.expectEqual(@as(u16, 1), down.key.scroll_down.row);
     // The wheel sends no release, but the horizontal tilt axis does — a
     // wheel branch keyed on bit 6 alone would scroll vertically, twice.
     try std.testing.expectEqual(Key.mouse_other, decode("\x1b[<64;5;5m").key);
     try std.testing.expectEqual(Key.mouse_other, decode("\x1b[<66;5;5M").key); // tilt left
     try std.testing.expectEqual(Key.mouse_other, decode("\x1b[<67;5;5m").key); // tilt right release
+    // A wheel report with no coordinates cannot say which window to scroll.
+    try std.testing.expectEqual(Key.mouse_other, decode("\x1b[<64;5M").key);
 }
 
 test "decode SGR mouse press, drag and release" {

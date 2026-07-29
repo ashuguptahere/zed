@@ -32,6 +32,20 @@ fn drag(comptime l: usize, comptime b: usize) []const u8 {
 fn click(comptime l: usize, comptime b: usize) []const u8 {
     return std.fmt.comptimePrint("\x1b[<0;{d};{d}M\x1b[<0;{d};{d}m", .{ b + 6, l + 1, b + 6, l + 1 });
 }
+/// `n` clicks at one cell, sent in a single write so they land well inside
+/// `mousetime` — vim's multi-click, which is derived from the previous press's
+/// time and cell rather than from any timer.
+fn multi(comptime n: usize, comptime l: usize, comptime b: usize) []const u8 {
+    const one = comptime click(l, b);
+    return one ** n;
+}
+/// The same, with the last press still held down: the drag that follows
+/// extends by whole words / lines / the block, depending on `n`.
+fn multiHold(comptime n: usize, comptime l: usize, comptime b: usize) []const u8 {
+    const head = comptime multi(n - 1, l, b);
+    const tail = comptime press(l, b);
+    return head ++ tail;
+}
 
 pub fn run(ctx: *h.Ctx) !void {
     h.case(ctx, target, "nvim#1 dw deletes word + trailing space", &.{ "dw", ":wq", CR }, "foo bar baz\n", "bar baz\n");
@@ -259,6 +273,51 @@ pub fn run(ctx: *h.Ctx) !void {
     h.case(ctx, target, "nvim#m27 d} stops at its own line's end", &.{ "jl", "d}", ":wq", CR }, "ab\nlonglongline\n\nx\n", "ab\nl\n\nx\n");
     // A click recorded in a macro replays as a click.
     h.case(ctx, target, "nvim#m28 a macro replays a click", &.{ "qa", click(3, 3), "x", "q", "@a", ":wq", CR }, M, "abcdefghij\nklmnopqrst\nuvwz1234\n");
+
+    // Multi-click gestures: 2 = the word, 3 = the line (linewise), 4 = one
+    // blockwise cell, and the fifth click starts the cycle again. The word is
+    // vim's *mouse* word, which is not `iw`: punctuation goes through `%` when
+    // there is an item at or after the click on that line, and otherwise
+    // groups only with its own class.
+    const W = "hello, world foo\n  indented text here\nfoo.bar(baz) end\n";
+    const P = "abc..def(g)\na(b)cd.ef\na->b(c)\nabc<def>ghi\n";
+    const G = "alpha beta gamma delta epsilon\nsecond line here now\nthird line here now\n";
+    h.case(ctx, target, "nvim#m29 double click selects the word", &.{ multi(2, 1, 8), "d", ":wq", CR }, W, "hello,  foo\n  indented text here\nfoo.bar(baz) end\n");
+    h.case(ctx, target, "nvim#m30 double click at column 0", &.{ multi(2, 1, 0), "d", ":wq", CR }, W, ", world foo\n  indented text here\nfoo.bar(baz) end\n");
+    h.case(ctx, target, "nvim#m31 double click past EOL takes the last word", &.{ multi(2, 1, 39), "d", ":wq", CR }, W, "hello, world \n  indented text here\nfoo.bar(baz) end\n");
+    h.case(ctx, target, "nvim#m32 double click on punctuation is not iw", &.{ multi(2, 1, 5), "d", ":wq", CR }, W, "hello world foo\n  indented text here\nfoo.bar(baz) end\n");
+    h.case(ctx, target, "nvim#m33 double click takes a whole blank run", &.{ multi(2, 2, 0), "d", ":wq", CR }, W, "hello, world foo\nindented text here\nfoo.bar(baz) end\n");
+    h.case(ctx, target, "nvim#m34 double click runs % from the click", &.{ multi(2, 1, 3), "d", ":wq", CR }, P, "abc\na(b)cd.ef\na->b(c)\nabc<def>ghi\n");
+    h.case(ctx, target, "nvim#m35 % only looks forward", &.{ multi(2, 2, 6), "d", ":wq", CR }, P, "abc..def(g)\na(b)cdef\na->b(c)\nabc<def>ghi\n");
+    h.case(ctx, target, "nvim#m36 -> reaches the pair behind it", &.{ multi(2, 3, 1), "d", ":wq", CR }, P, "abc..def(g)\na(b)cd.ef\na\nabc<def>ghi\n");
+    h.case(ctx, target, "nvim#m37 <> is not a matchpair", &.{ multi(2, 4, 3), "d", ":wq", CR }, P, "abc..def(g)\na(b)cd.ef\na->b(c)\nabcdef>ghi\n");
+    h.case(ctx, target, "nvim#m38 triple click selects the line", &.{ multi(3, 2, 4), "d", ":wq", CR }, M, "abcdefghij\nuvwxyz1234\n");
+    h.case(ctx, target, "nvim#m39 triple click past EOL is the same line", &.{ multi(3, 2, 39), "d", ":wq", CR }, M, "abcdefghij\nuvwxyz1234\n");
+    h.case(ctx, target, "nvim#m40 quadruple click selects one cell", &.{ multi(4, 2, 4), "d", ":wq", CR }, M, "abcdefghij\nklmnpqrst\nuvwxyz1234\n");
+    h.case(ctx, target, "nvim#m41 a fifth click is a plain click", &.{ multi(5, 1, 8), "x", ":wq", CR }, W, "hello, wrld foo\n  indented text here\nfoo.bar(baz) end\n");
+    h.case(ctx, target, "nvim#m42 a click one cell over does not chain", &.{ comptime click(1, 8) ++ click(1, 9), "x", ":wq", CR }, W, "hello, wold foo\n  indented text here\nfoo.bar(baz) end\n");
+    // Dragging after a multi-click extends by whole words / lines / a block,
+    // in both directions, with the clicked word always kept whole.
+    h.case(ctx, target, "nvim#m43 a drag after a double click extends by words", &.{ multiHold(2, 1, 7), drag(1, 13), release(1, 13), "d", ":wq", CR }, G, "alpha  delta epsilon\nsecond line here now\nthird line here now\n");
+    h.case(ctx, target, "nvim#m44 …backwards too", &.{ multiHold(2, 1, 7), drag(1, 2), release(1, 2), "d", ":wq", CR }, G, " gamma delta epsilon\nsecond line here now\nthird line here now\n");
+    h.case(ctx, target, "nvim#m45 …snapping to a blank run", &.{ multiHold(2, 1, 7), drag(1, 10), release(1, 10), "d", ":wq", CR }, G, "alpha gamma delta epsilon\nsecond line here now\nthird line here now\n");
+    h.case(ctx, target, "nvim#m46 a release at the press keeps the word", &.{ multiHold(2, 1, 7), release(1, 7), "d", ":wq", CR }, G, "alpha  gamma delta epsilon\nsecond line here now\nthird line here now\n");
+    h.case(ctx, target, "nvim#m47 a drag after a triple click is linewise", &.{ multiHold(3, 1, 7), drag(2, 5), release(2, 5), "d", ":wq", CR }, G, "third line here now\n");
+    h.case(ctx, target, "nvim#m48 a drag after a quadruple click is a block", &.{ multiHold(4, 1, 7), drag(3, 13), release(3, 13), "d", ":wq", CR }, G, "alpha bma delta epsilon\nsecond re now\nthird le now\n");
+    // Insert Visual: a gesture begun in insert mode returns to insert —
+    // whether it ends with Esc, with an operator, or with a plain click.
+    h.case(ctx, target, "nvim#m49 insert + double click, Esc resumes insert", &.{ "i", multi(2, 1, 7), ESC, "QQ", ESC, ":wq", CR }, G, "alpha betQQa gamma delta epsilon\nsecond line here now\nthird line here now\n");
+    h.case(ctx, target, "nvim#m50 insert + drag, d resumes insert", &.{ "i", press(1, 2), drag(1, 8), release(1, 8), "d", "QQ", ESC, ":wq", CR }, G, "alQQa gamma delta epsilon\nsecond line here now\nthird line here now\n");
+    h.case(ctx, target, "nvim#m51 insert + triple click keeps the clicked column", &.{ "i", multi(3, 1, 7), ESC, "QQ", ESC, ":wq", CR }, G, "alpha bQQeta gamma delta epsilon\nsecond line here now\nthird line here now\n");
+    h.case(ctx, target, "nvim#m52 a macro replays a double click", &.{ "qa", multi(2, 1, 7), "x", "q", "@a", ":wq", CR }, G, "alpha   delta epsilon\nsecond line here now\nthird line here now\n");
+    h.case(ctx, target, "nvim#m53 a click inside Insert Visual keeps typing", &.{ "i", multi(2, 1, 7), click(2, 3), "QQ", ESC, ":wq", CR }, G, "alpha beta gamma delta epsilon\nsecQQond line here now\nthird line here now\n");
+    // Every press decides the click count, wherever it lands — vim works it
+    // out in the input layer, before the click is routed anywhere — so a press
+    // on chrome breaks a chain in two. The command line is the last screen row
+    // in both editors (24), and a press there is inert in both.
+    const cmdrow = "\x1b[<0;40;24M\x1b[<0;40;24m";
+    h.case(ctx, target, "nvim#m54 a press on the command line breaks the chain", &.{ comptime click(1, 7) ++ cmdrow ++ click(1, 7), "x", ":wq", CR }, G, "alpha bta gamma delta epsilon\nsecond line here now\nthird line here now\n");
+    h.case(ctx, target, "nvim#m55 …and does not just delay it", &.{ comptime click(1, 7) ++ click(1, 7) ++ cmdrow ++ click(1, 7), "x", ":wq", CR }, G, "alpha bta gamma delta epsilon\nsecond line here now\nthird line here now\n");
 
     // Regex `/` search: the pattern jumps, then x edits at the match.
     h.case(ctx, target, "regex / search jumps to match", &.{ "/b.d\r", "x", ":wq", CR }, "xxx\nbad\n", "xxx\nad\n");

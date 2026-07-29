@@ -1,11 +1,14 @@
 //! Mouse: the input-boundary carry that makes drag bursts safe, mouse mode
-//! 1002 (button + motion-while-pressed), click-to-move-the-cursor and
-//! drag-to-select, and the `mouse` config key that turns the lot off.
+//! 1002 (button + motion-while-pressed), click-to-move-the-cursor,
+//! drag-to-select, the multi-click gestures and the wheel, plus the `mouse`
+//! and `mousetime` config keys.
 //!
 //! The vim-shaped semantics (operator-pending, counts, visual, curswant, the
-//! jumplist) are pinned against real nvim in `vim_compat`; what lives here is
-//! everything nvim has no equivalent for — zedit's gutter, wrapped rows, diff
-//! panes, splits, the explorer, the picker — plus the protocol itself.
+//! jumplist, what a double click selects, Insert Visual) are pinned against
+//! real nvim in `vim_compat`; what lives here is everything nvim has no
+//! equivalent for — zedit's gutter, wrapped rows, diff panes, splits, the
+//! explorer, the picker, the statusline label — plus the protocol itself and
+//! the timing window, which a keystroke-driven suite cannot express.
 //!
 //! Clicks are sent as press+release pairs, the way a real terminal reports
 //! them. In an 80-column window the title bar takes screen row 1 and the
@@ -33,6 +36,12 @@ fn drag(comptime row: usize, comptime col: usize) []const u8 {
 }
 fn release(comptime row: usize, comptime col: usize) []const u8 {
     return std.fmt.comptimePrint("\x1b[<0;{d};{d}m", .{ col, row });
+}
+/// `n` clicks at one cell in a single write, so they land well inside
+/// `mousetime` however loaded the machine is.
+fn multi(comptime n: usize, comptime row: usize, comptime col: usize) []const u8 {
+    const one = comptime click(row, col);
+    return one ** n;
 }
 
 pub fn run(ctx: *h.Ctx) !void {
@@ -278,6 +287,151 @@ pub fn run(ctx: *h.Ctx) !void {
         }
     }
 
+    // ---- multi-click gestures ----------------------------------------------
+    // The gestures themselves (what a double click selects, the 4-click cycle,
+    // Insert Visual) are pinned against real nvim in `vim_compat`. What lives
+    // here is everything nvim has no equivalent for: the timing window and its
+    // config key, the statusline label, and zedit's own geometry — the gutter,
+    // wrapped rows, splits, the `~` rows past EOF.
+    {
+        const G = "alpha beta gamma\nsecond line here\n";
+        // Two clicks at one cell chain only while they are inside `mousetime`
+        // of each other (500 ms by default, nvim's value): the count is derived
+        // from the previous press, so a slow second click is a plain one.
+        h.writeFile(ctx.io, path, G);
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "m.txt" }, .cwd = dir });
+        defer s.finish();
+        s.drain(400);
+        s.send(click(2, 13));
+        s.drain(200); // well inside the window
+        s.send(click(2, 13));
+        s.drain(300);
+        {
+            var scr = try screen(ctx, &s);
+            defer scr.deinit();
+            const st = try scr.rowText(ctx.gpa, 24);
+            defer ctx.gpa.free(st);
+            ctx.check("a second click inside mousetime selects the word", std.mem.indexOf(u8, st, "VISUAL") != null);
+        }
+        // A different cell breaks the chain, so the slow pair below starts
+        // fresh: two clicks 800 ms apart, which is past the default window.
+        s.send("\x1b");
+        s.drain(200);
+        s.send(click(2, 14));
+        s.drain(800);
+        s.send(click(2, 14));
+        s.drain(300);
+        {
+            var scr = try screen(ctx, &s);
+            defer scr.deinit();
+            const st = try scr.rowText(ctx.gpa, 24);
+            defer ctx.gpa.free(st);
+            ctx.check("a second click past mousetime does not", std.mem.indexOf(u8, st, "VISUAL") == null);
+        }
+        s.send(":q!\r");
+        s.drain(300);
+    }
+    // The config key is read, both ways: 0 turns multi-clicks off entirely,
+    // and a longer window makes a click chain that the default would not.
+    {
+        const G = "alpha beta gamma\n";
+        h.writeFile(ctx.io, cfg, "mousetime = 0\n");
+        h.writeFile(ctx.io, path, G);
+        {
+            var s = try h.Session.spawn(ctx.gpa, .{
+                .argv = &.{ ctx.zedit, "--config", cfg, "m.txt" },
+                .cwd = dir,
+            });
+            defer s.finish();
+            s.drain(400);
+            s.send(multi(2, 2, 13)); // back to back, and still not a double click
+            s.drain(300);
+            s.send("x:wq\r");
+            s.drain(500);
+            const got = h.readFile(ctx.gpa, ctx.io, path);
+            defer ctx.gpa.free(got);
+            ctx.check("mousetime = 0 leaves every click a single click", std.mem.eql(u8, got, "alpha bta gamma\n"));
+        }
+        h.writeFile(ctx.io, cfg, "mousetime = 2000\n");
+        h.writeFile(ctx.io, path, G);
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ ctx.zedit, "--config", cfg, "m.txt" },
+            .cwd = dir,
+        });
+        defer s.finish();
+        s.drain(400);
+        s.send(click(2, 13));
+        s.drain(800); // past the default 500, inside 2000
+        s.send(click(2, 13));
+        s.drain(300);
+        s.send("d:wq\r");
+        s.drain(500);
+        const got = h.readFile(ctx.gpa, ctx.io, path);
+        defer ctx.gpa.free(got);
+        ctx.check("a longer mousetime chains a slower click", std.mem.eql(u8, got, "alpha  gamma\n"));
+    }
+    // The statusline says which visual mode is up — and says so nvim's way for
+    // a selection begun in insert mode, which returns to insert when it ends.
+    {
+        const Case = struct { name: []const u8, keys: []const []const u8, want: []const u8 };
+        const cases = [_]Case{
+            .{ .name = "a double click shows VISUAL", .keys = &.{multi(2, 2, 13)}, .want = " VISUAL " },
+            .{ .name = "a triple click shows V-LINE", .keys = &.{multi(3, 2, 13)}, .want = " V-LINE " },
+            .{ .name = "a quadruple click shows V-BLOCK", .keys = &.{multi(4, 2, 13)}, .want = " V-BLOCK " },
+            .{ .name = "a drag out of insert shows (insert) VISUAL", .keys = &.{ "i", press(2, 8), drag(2, 13), release(2, 13) }, .want = " (insert) VISUAL " },
+            .{ .name = "a triple click in insert shows (insert) V-LINE", .keys = &.{ "i", multi(3, 2, 13) }, .want = " (insert) V-LINE " },
+            .{ .name = "Esc out of Insert Visual returns to insert", .keys = &.{ "i", multi(2, 2, 13), "\x1b" }, .want = " INSERT " },
+            .{ .name = "a second Esc leaves insert", .keys = &.{ "i", multi(2, 2, 13), "\x1b", "\x1b" }, .want = " NORMAL " },
+        };
+        for (cases) |c| {
+            h.writeFile(ctx.io, path, "alpha beta gamma\nsecond line here\n");
+            var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "m.txt" }, .cwd = dir });
+            defer s.finish();
+            s.drain(400);
+            s.sendKeys(c.keys);
+            s.drain(300);
+            var scr = try screen(ctx, &s);
+            defer scr.deinit();
+            const st = try scr.rowText(ctx.gpa, 24);
+            defer ctx.gpa.free(st);
+            const ok = std.mem.indexOf(u8, st, c.want) != null;
+            if (!ok) std.debug.print("       looked for \"{s}\" in \"{s}\"\n", .{ c.want, st });
+            ctx.check(c.name, ok);
+            s.send("\x1b\x1b:q!\r");
+            s.drain(200);
+        }
+    }
+    // zedit's own geometry: nvim has no gutter, no `~` rows under a click and
+    // no window to focus, so these have no vim_compat counterpart.
+    {
+        // The gutter resolves to column 0, so a double click there takes the
+        // line's first word.
+        h.case(ctx, path, "a double click in the gutter takes the first word", &.{
+            multi(2, 2, 2), "d", ":wq", "\r",
+        }, "alpha beta gamma\n", " beta gamma\n");
+        // A `~` row past the end of the file snaps to the last line.
+        h.case(ctx, path, "a double click past EOF takes the last line's word", &.{
+            multi(2, 20, 8), "d", ":wq", "\r",
+        }, "alpha beta\nsecond line\n", "alpha beta\n line\n");
+        // On a wrapped line the word under the pointer is found on the
+        // continuation row, not on the line's first row.
+        h.case(ctx, path, "a double click on a continuation row takes its word", &.{
+            multi(2, 3, 12), "d", ":wq", "\r",
+        }, "    indented alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november\n", "    indented alpha bravo charlie delta echo foxtrot golf hotel india  kilo lima mike november\n");
+        // A press on chrome breaks the chain, wherever it lands: the count is
+        // derived for *every* press, before the click is routed anywhere
+        // (vim's rule, pinned for the command row in `vim_compat`). zedit's
+        // title bar has no nvim counterpart, so it is checked here — column 70
+        // is past the single tab, so the press does nothing at all, and the
+        // click after it must still be a plain one.
+        h.case(ctx, path, "two clicks at one cell chain", &.{
+            comptime click(2, 13) ++ click(2, 13), "x", ":wq", "\r",
+        }, "alpha beta gamma\n", "alpha  gamma\n");
+        h.case(ctx, path, "a press on the title bar breaks the click chain", &.{
+            comptime click(2, 13) ++ click(1, 70) ++ click(2, 13), "x", ":wq", "\r",
+        }, "alpha beta gamma\n", "alpha bta gamma\n");
+    }
+
     // ---- drag ---------------------------------------------------------------
     {
         // The selection is anchored at the *press*, not at the first motion —
@@ -294,13 +448,12 @@ pub fn run(ctx: *h.Ctx) !void {
         // A motion with no press behind it invents no anchor.
         h.case(ctx, path, "a drag with no press is inert", &.{ drag(3, 8), release(3, 8), "x", ":wq", "\r" }, "aaa\nbbb\n", "aa\nbbb\n");
         // A drag begun in insert mode anchors at the insert cursor, which may
-        // sit one past the last character. nvim keeps it there — probed out of
-        // band, since it returns to insert after the operator (Insert Visual)
-        // and so cannot be pinned through a saved file: after `i`, a press at
-        // column 20 of "abc" and a drag to line 2, `getpos("v")` reported
-        // column 4 and `d` left `['abcf']`.
+        // sit one past the last character; nvim keeps it there rather than
+        // clamping. The `d` lands back in insert (Insert Visual), so the Esc
+        // before `:wq` is part of the ground truth: nvim run with the same
+        // gesture saves `abcf` only with it.
         h.case(ctx, path, "a drag out of insert keeps the insert anchor", &.{
-            "i", press(2, 20), drag(3, 7), release(3, 7), "d", ":wq", "\r",
+            "i", press(2, 20), drag(3, 7), release(3, 7), "d", "\x1b", ":wq", "\r",
         }, "abc\ndef\n", "abcf\n");
     }
 
@@ -345,6 +498,92 @@ pub fn run(ctx: *h.Ctx) !void {
             var scr = try screen(ctx, &s);
             defer scr.deinit();
             ctx.check("a click on a window status row moves nothing", scr.cur_row == 4 and scr.cur_col == 8);
+        }
+        s.send(":qa!\r");
+        s.drain(300);
+    }
+
+    // ---- the wheel ---------------------------------------------------------
+    // The notch scrolls the window *under the pointer*, focused or not, and
+    // never moves focus — nvim's rule, probed. With `:split` the top window
+    // has rows 2-11 (status row 12) and the bottom one rows 13-22 (status
+    // row 23), so the two are addressable by row alone.
+    {
+        const long = "L001 line\nL002 line\nL003 line\nL004 line\nL005 line\nL006 line\nL007 line\nL008 line\nL009 line\nL010 line\nL011 line\nL012 line\nL013 line\nL014 line\nL015 line\nL016 line\nL017 line\nL018 line\nL019 line\nL020 line\n";
+        const other = h.join(ctx, dir, "o.txt");
+        defer ctx.gpa.free(other);
+        h.writeFile(ctx.io, path, long);
+        h.writeFile(ctx.io, other, "S1\nS2\nS3\nS4\nS5\n");
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "m.txt" }, .cwd = dir });
+        defer s.finish();
+        s.drain(400);
+        s.sendKeys(&.{ ":split", "\r", ":e o.txt", "\r" }); // focus = the bottom window
+        s.drain(400);
+        s.send("\x1b[<65;10;5M"); // wheel down over the *top* window
+        s.drain(400);
+        {
+            var scr = try screen(ctx, &s);
+            defer scr.deinit();
+            const top = try scr.rowText(ctx.gpa, 2);
+            defer ctx.gpa.free(top);
+            const st1 = try scr.rowText(ctx.gpa, 12);
+            defer ctx.gpa.free(st1);
+            const st2 = try scr.rowText(ctx.gpa, 23);
+            defer ctx.gpa.free(st2);
+            ctx.check("the wheel scrolls the window under the pointer", std.mem.indexOf(u8, top, "L004") != null);
+            ctx.check("…carrying that window's cursor with it", std.mem.indexOf(u8, st1, "m.txt  4:1") != null);
+            ctx.check("…leaving the focused window alone", std.mem.indexOf(u8, st2, "o.txt  1:1") != null);
+            ctx.check("…and never moving focus", scr.cur_row >= 13 and scr.cur_row <= 22);
+        }
+        // Over the focused window it still scrolls that one.
+        s.send("\x1b[<65;10;15M");
+        s.drain(400);
+        {
+            var scr = try screen(ctx, &s);
+            defer scr.deinit();
+            const st1 = try scr.rowText(ctx.gpa, 12);
+            defer ctx.gpa.free(st1);
+            const st2 = try scr.rowText(ctx.gpa, 23);
+            defer ctx.gpa.free(st2);
+            ctx.check("a notch over the focused window scrolls it", std.mem.indexOf(u8, st2, "o.txt  4:1") != null);
+            ctx.check("…and leaves the other one where it was", std.mem.indexOf(u8, st1, "m.txt  4:1") != null);
+        }
+        // A status row belongs to the window above it, so a notch there
+        // scrolls *that* window — not the focused one (nvim-probed: with the
+        // focus on the other window it is still the hovered one that moves).
+        s.send("\x1b[<64;10;12M"); // wheel up on the top window's status row
+        s.drain(400);
+        {
+            var scr = try screen(ctx, &s);
+            defer scr.deinit();
+            const st1 = try scr.rowText(ctx.gpa, 12);
+            defer ctx.gpa.free(st1);
+            const st2 = try scr.rowText(ctx.gpa, 23);
+            defer ctx.gpa.free(st2);
+            ctx.check("a notch on a status row scrolls the window it belongs to", std.mem.indexOf(u8, st1, "m.txt  1:1") != null);
+            ctx.check("…not the focused one", std.mem.indexOf(u8, st2, "o.txt  4:1") != null);
+        }
+        // Cells no window owns at all (the title bar, the explorer) fall back
+        // to the focused window rather than doing nothing.
+        s.send("\x1b[<64;10;1M"); // wheel up on the title bar
+        s.drain(400);
+        {
+            var scr = try screen(ctx, &s);
+            defer scr.deinit();
+            const st2 = try scr.rowText(ctx.gpa, 23);
+            defer ctx.gpa.free(st2);
+            ctx.check("a notch on the title bar scrolls the focused window", std.mem.indexOf(u8, st2, "o.txt  1:1") != null);
+        }
+        s.sendKeys(&.{ " e", "\x1b" }); // explorer open, focus back on the buffer
+        s.drain(400);
+        s.send("\x1b[<65;5;15M"); // wheel down inside the tree's columns
+        s.drain(400);
+        {
+            var scr = try screen(ctx, &s);
+            defer scr.deinit();
+            const st2 = try scr.rowText(ctx.gpa, 23);
+            defer ctx.gpa.free(st2);
+            ctx.check("a notch over the explorer scrolls the focused window", std.mem.indexOf(u8, st2, "o.txt  4:1") != null);
         }
         s.send(":qa!\r");
         s.drain(300);
@@ -421,6 +660,39 @@ pub fn run(ctx: *h.Ctx) !void {
             defer ctx.gpa.free(status);
             ctx.check("a click focuses the index pane", scr2.cur_row == 6 and scr2.cur_col > 40);
             ctx.check("the index pane stays read-only", std.mem.indexOf(u8, status, "read-only") != null);
+            s.send(":qa!\r");
+            s.drain(300);
+        }
+
+        // The panes scroll in lockstep, and that lockstep is derived from the
+        // *focused* pane every frame — so a wheel notch over the unfocused one
+        // has to be routed to its partner. Writing the hovered pane's own top
+        // instead would be undone by `syncDiffPanes` before the frame, and
+        // nothing at all would move.
+        {
+            const long = h.join(ctx, repo, "long.txt");
+            defer ctx.gpa.free(long);
+            h.writeFile(ctx.io, long, "line01\nline02\nline03\nline04\nline05\nline06\nline07\nline08\nline09\nline10\nline11\nline12\nline13\nline14\nline15\n");
+            h.runQuiet(ctx.gpa, ctx.io, &.{ "git", "-C", repo, "add", "long.txt" });
+            h.runQuiet(ctx.gpa, ctx.io, &.{ "git", "-C", repo, "commit", "-qm", "y" });
+            h.writeFile(ctx.io, long, "line01\nline02\nline03\nline04\nline05\nline06\nline07\nCHANGED\nline09\nline10\nline11\nline12\nline13\nline14\nline15\n");
+            var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "long.txt" }, .cwd = repo });
+            defer s.finish();
+            s.drain(600);
+            s.sendKeys(&.{" gs"}); // focus stays on the worktree (left) pane
+            s.drain(500);
+            s.send("\x1b[<65;60;10M"); // wheel down over the index (right) pane
+            s.drain(500);
+            var scr = try screen(ctx, &s);
+            defer scr.deinit();
+            const row2 = try scr.rowText(ctx.gpa, 2);
+            defer ctx.gpa.free(row2);
+            const st = try scr.rowText(ctx.gpa, 23);
+            defer ctx.gpa.free(st);
+            ctx.check("a notch over the index pane still scrolls the pair", std.mem.indexOf(u8, row2, "line04") != null and
+                std.mem.lastIndexOf(u8, row2, "line04") != std.mem.indexOf(u8, row2, "line04"));
+            ctx.check("…through the pane that drives the lockstep", std.mem.indexOf(u8, st, "long.txt  4:1") != null);
+            ctx.check("…without moving focus off the worktree pane", scr.cur_col < 40);
             s.send(":qa!\r");
             s.drain(300);
         }

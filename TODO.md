@@ -50,17 +50,20 @@ The shortlist is done; these are the next-highest gaps from
       longer than the row (they clip; the cursor pins to the last cell).
 - [ ] Remote: remote git signs/sidebar, partial transfers for huge remote
       files.
-- [ ] Mouse gestures beyond click+drag: double-click word / triple-click line
-      (SGR carries no click count, so each needs a `mousetime` window and the
-      config knob for it), Alt+drag blockwise (a different anchor rule — the
-      pre-click cursor — and many terminals eat Alt), edge auto-scroll while
-      dragging (needs a repeat timer; the completion debounce is the only
-      timer zedit arms), drag-to-resize splits, and Insert Visual (a drag out
-      of insert returns to normal here, to insert in nvim).
-- [ ] Wheel scrolls the focused window, not the one under the pointer.
-      `winAt` is the easy half and now exists; the rest is parameterising
-      `lineAfterRows`/`lineRows`/`lineLayout`/`textCols` on `*Win` instead of
-      the Editor's active-window mirror.
+- [ ] Mouse gestures beyond the four-click cycle: Alt+drag blockwise (a
+      different anchor rule — the pre-click cursor — and many terminals eat
+      Alt), edge auto-scroll while dragging (needs a repeat timer; the
+      completion debounce is the only timer zedit arms), drag-to-resize
+      splits.
+- [ ] The wheel's step counts buffer lines inside the diff views (as
+      `Ctrl-d/u/f/b` do): `winLineAfterRows` branches only on soft wrap, not
+      on a pair's fillers or the line diff's woven rows.
+- [ ] A linewise visual operator leaves the cursor in the wrong column
+      (found while reviewing the mouse work, pre-dates it, reproduces without
+      the mouse): nvim keeps the column across `Vd` and moves it to 0 across
+      `Vy`; zedit does the opposite for both. Needs its own nvim-pinned
+      tranche in `vim_compat`, since `dd`/`cc`/`>` and the operator-pending
+      path share the rule.
 - [ ] More nvim ground-truth test tranches (dot-repeat/macro edge cases).
 
 ## Done (chronological)
@@ -598,6 +601,47 @@ The shortlist is done; these are the next-highest gaps from
       mid-drag; a drag into the explorer with the release outside the text
       area; and `Session.resize` in the harness to drive real SIGWINCH.
       811 → 834 itest checks, all green.
+
+- [x] Mouse gestures + a pointer-aware wheel (owner request, two empirical
+      nvim probes as input). **Double click selects the word, triple click the
+      line**, quadruple one blockwise cell, fifth starts over — vim's period-4
+      cycle, derived from the previous press's timestamp and cell (`mousetime`
+      config, 500 ms) so **no timer is armed**. The word is vim's *mouse* word
+      (`motion.mouseWord`/`mouseClass`), not `iw`: `%` first on punctuation
+      (from the click to the match, backwards or across lines), else the
+      same-class run, with the C-operator group set and vim's `utf_class`
+      ranges for multibyte. Dragging on extends by whole words / lines / a
+      rectangle — which is also what keeps a release from collapsing the
+      selection. **Insert Visual**: a gesture begun in insert reads
+      `(insert) VISUAL` and returns to insert when it ends (Esc, `v`, an
+      operator, a click). **The wheel scrolls the window under the pointer**
+      without moving focus: the wheel keys carry coordinates now, the scroll
+      runs on the `Win` (mirror saved out and loaded back) through new
+      `winLineAfterRows`/`winLineRows`/`winLineLayout`/`winTextCols`, and
+      inside a diff pair the notch is routed to the pane that drives the
+      lockstep (a naive `ix.top` write is erased by `syncDiffPanes` — probed).
+      A replayed press starts its own click chain, so a macro reproduces what
+      it recorded instead of chaining with it.
+      Two defects caught in adversarial review and fixed in the same change,
+      both re-probed against nvim: *every* press decides the click count (it
+      was derived only for presses that reached a window, so a click on the
+      explorer or the command row passed straight through a chain and the next
+      click selected a word), and a window's status row belongs to that window
+      for the wheel (`winUnder`; nvim scrolls the window a status line belongs
+      to, zedit scrolled the focused one).
+      27 new nvim-pinned `vim_compat` cases (every extent, the cycle, the
+      punctuation/`%`/multibyte rules, word-wise drags, Insert Visual, macro
+      replay, the chain broken by a press on chrome), 28 pty checks in
+      `mouse.zig` (timing window both ways, the config key both ways,
+      statusline labels, gutter/`~`/wrapped-row geometry, the wheel over each
+      window, over a status row and over unowned cells, the diff pair) and 4
+      `motion.zig` unit tests. Each behavioural piece proven to fail with the
+      old behaviour planted back (18 plants, 0 unexplained failures). Suites
+      green: unit + 893 itest.
+      Known gaps recorded: no Alt+drag blockwise, no edge auto-scroll, no
+      drag-to-resize; the double click's `%` matches brackets only (nvim also
+      matches C comment items); `utf_class` is approximated above Latin-1.
+      (UNRELEASED)
 
 - [ ] Found while reviewing, left alone as unrelated to the mouse work: a
       window narrowed to zero columns aborts in `renderWindow`

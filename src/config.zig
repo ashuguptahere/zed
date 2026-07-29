@@ -79,6 +79,11 @@ pub const Settings = struct {
     /// the mouse stays entirely the terminal's — including its own click-drag
     /// selection, which any tracking mode takes over.
     mouse: bool = true,
+    /// How long two clicks at the same cell may be apart and still count as a
+    /// double (then triple, then quadruple) click, in milliseconds — vim's
+    /// `mousetime`. The count is derived from the previous click's timestamp
+    /// when the next one arrives, so no timer is ever armed.
+    mousetime: usize = 500,
 };
 
 /// The live settings, read by the editor/renderer. Defaults apply when there
@@ -187,6 +192,11 @@ pub const default_text =
     \\# Shift+drag is the terminal's own selection either way.
     \\mouse = true
     \\
+    \\# How long (milliseconds) two clicks at the same cell may be apart and
+    \\# still count as a double click — then triple (the line), then quadruple
+    \\# (one blockwise cell), as in vim's 'mousetime'. 0 turns multi-clicks off.
+    \\mousetime = 500
+    \\
 ;
 
 /// "true"/"false" → the bool; anything else is null (setting left untouched).
@@ -251,6 +261,9 @@ pub fn apply(text: []const u8) void {
             if (parseBool(value)) |b| settings.cmdline_suggestions = b;
         } else if (std.mem.eql(u8, key, "mouse")) {
             if (parseBool(value)) |b| settings.mouse = b;
+        } else if (std.mem.eql(u8, key, "mousetime")) {
+            const n = std.fmt.parseInt(usize, value, 10) catch continue;
+            if (n <= 10_000) settings.mousetime = n;
         }
     }
 }

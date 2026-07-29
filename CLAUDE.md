@@ -165,7 +165,7 @@ Source is `src/`, one responsibility per module:
 | `key.zig`     | Decoding raw input bytes into `Key` events (text, arrows, navigation). |
 | `unicode.zig` | UTF-8 decoding, codepoint boundaries, display width. |
 | `buffer.zig`  | The document: two-phase zero-copy load (`loadPartial` indexes a head so the screen can paint, `loadRest` fills the tail), a lazy `u32` line index over one shared buffer, per-line storage materialised on the first edit, save, UTF-8-aware edits. |
-| `motion.zig`  | Pure cursor motions, word/WORD rules, find-char, `%`, text objects. |
+| `motion.zig`  | Pure cursor motions, word/WORD rules, find-char, `%`, text objects, the double-click mouse word. |
 | `register.zig`| Vim registers (named/unnamed, linewise flag) for yank/delete/paste. |
 | `undo.zig`    | Undo history as a tree of edits — each state the diff from its parent (branches, `g-`/`g+`, `:earlier`/`:later`), optionally kept on disk. |
 | `regex.zig`   | Regex engine: Pike VM (Thompson NFA), linear time, captures; modern "very magic" syntax. |
@@ -284,10 +284,22 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   more than half a window away redraws with the cursor **centred** (vim's rule,
   nvim-verified) — so it is not glued to the bottom row where every wheel notch
   would drag it along. The mouse wheel
-  scrolls the viewport 3 lines and carries the cursor with it, keeping its
+  scrolls the window **under the pointer** — focused or not, and it never
+  moves focus (nvim's rule, pty-probed). A window's *status row* counts as
+  part of it (`winUnder`, which is `winAt` plus that row — nvim scrolls the
+  window a status line belongs to even when the focus is elsewhere, probed);
+  cells no window owns at all (the explorer, the title bar, the command line)
+  scroll the focused one, where nvim picks its bottom-most window. It moves that
+  window's viewport 3 lines and carries its cursor with it, keeping its
   screen row (owner's choice over nvim's drag-at-the-edge rule, which stranded
   the cursor at the bottom of the page; at the top or bottom of the file
-  nothing moves at all). SGR mouse reporting (modes 1002 + 1006, config
+  nothing moves at all). The scroll runs on the `Win` (`mouseScroll` saves the
+  active window's mirrored viewport out and loads it back, and
+  `winLineAfterRows`/`winLineRows`/`winLineLayout`/`winTextCols` take the
+  window rather than reading the Editor mirror), so no window's state can go
+  stale; inside a visible diff pair the notch is routed to the pane that
+  drives the lockstep (`wheelWin`), because `syncDiffPanes` derives the other
+  pane's top from it every frame. SGR mouse reporting (modes 1002 + 1006, config
   `mouse`, on by default — `false` never emits the enable sequence and makes
   even a stray report inert): the wheel, tab clicks, explorer clicks and
   picker result rows act (see Pickers), and so do the three left-button
@@ -318,6 +330,33 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   for the gutter (which reads as column 0, as in nvim), tabs, wide cells and
   inlay hints. `goal_col` keeps the *clicked* column, not the clamped one, so
   clicking past a short line and pressing `j` lands where the pointer was.
+- **Multi-click gestures (nvim-pinned, `vim_compat`):** clicking the same cell
+  again within `mousetime` (config, 500 ms, vim's name and value) counts up
+  through vim's **period-4** cycle — 2 = the word (charwise), 3 = the whole
+  line (linewise, newline included, whatever column), 4 = one blockwise cell —
+  and the fifth click is a plain one again. The count is derived from the
+  previous press's timestamp and cell when the next arrives (`clickCount`), so
+  **no timer is armed**; one column off or one millisecond late restarts the
+  chain, and a replay (macro, dot-repeat) starts its own chain rather than
+  chaining with the press that recorded it. *Every* press counts, wherever it
+  lands — vim decides the count in the input layer, before the click is routed
+  — so a press on chrome (a status row, the command line, the title bar, the
+  explorer) breaks a chain in two rather than passing through it
+  (nvim-probed). The word is vim's *mouse* word
+  (`motion.mouseWord`), not `iw`: blanks and keyword characters take their
+  run, punctuation first tries `%` (an item at or after the click on that
+  line wins, and the selection runs from the click to its match — backwards or
+  across lines), and otherwise groups only with its own class, so `->`/`*=`
+  are one and `.,;` is three (`motion.mouseClass`, with vim's `utf_class`
+  ranges for multibyte, so CJK does not group with an adjacent Latin word).
+  Dragging on from a multi-click extends by whole words / lines / a rectangle
+  in either direction, the clicked word always kept whole (`dragWord`) — which
+  is also what stops the release collapsing a double click's selection.
+- **Insert Visual:** a gesture begun in insert mode is nvim's Insert Visual —
+  `(insert) VISUAL` on the statusline, and whatever ends the selection (`Esc`,
+  `v`, an operator, a plain click) returns to **insert** where it left the
+  cursor, so typing continues (`ins_visual`, cleared by `enterVisual` so it
+  can never outlive its selection).
 - **Operators:** `d` `c` `y`, `> <` (indent), doubled `dd cc yy >> <<`; `D C Y`,
   `x X s S`, `r` `~` `J`. `cw`/`cW` act like `ce`/`cE`.
 - **Structural objects (tree-sitter):** `af`/`if` select a function (whole, or
@@ -439,8 +478,9 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   too (`pickerClick`, sharing the renderer's geometry via `pickerLayout` —
   the tabline's draw-here-click-here invariant): a click on a result row
   selects it (the preview follows), a click on the already-selected row
-  opens it — so a double-click opens from anywhere, with no double-click
-  timer — while explorer rows toggle/open exactly as in normal mode (a
+  opens it — so a double-click opens from anywhere, without going near the
+  click counter (a picker click never touches it) — while explorer rows
+  toggle/open exactly as in normal mode (a
   file-open closes the picker first) and a tab click closes the picker and
   lands on that buffer; the prompt row and the preview stay inert, so
   terminal text selection keeps working there. `zedit <dir>` opens
@@ -752,7 +792,7 @@ Runtime configuration is one documented file (see `config.zig`): theme,
 `large_file_mb`, `autoindent`, `buffer_tabs`, `auto_completion`,
 `completion_delay_ms`, `inline_diagnostics`, `soft_wrap`, `wrap_indent`,
 `wrap_column`, `persistent_undo`, `format_on_save`, `cmdline_suggestions`,
-`buffer_completion`, `mouse`;
+`buffer_completion`, `mouse`, `mousetime`;
 `zedit --init-config` writes the annotated default.
 `zedit --tutor` opens the embedded interactive tutorial (`doc/tutor.txt`,
 embedded via `build.zig`).
@@ -827,7 +867,12 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   no `c_CTRL-R` register insertion; Tab mid-line completes the whole line
   (nvim, probed, completes only the text before the cursor and keeps the
   tail), and a cmdline longer than the row is clipped with the cursor pinned
-  to the last cell (nvim scrolls it horizontally). In-buffer search/`:s` are regex, but the syntax is
+  to the last cell (nvim scrolls it horizontally). A **linewise** visual
+  operator leaves the cursor in the wrong column (measured, pre-dates the
+  mouse work and visible without it — `9lVd`): `Vd` puts it at column 0 where
+  nvim keeps the column it had, and `Vy` keeps the column where nvim moves it
+  to 0. Insert Visual inherits both, so a `V`+operator gesture begun in insert
+  resumes typing at zedit's column, not nvim's. In-buffer search/`:s` are regex, but the syntax is
   modern ("very magic"-like), not vim's magic mode — `\(` groups etc. differ.
 - Highlighting is a per-line lexer (no cross-line block comments; a handful of
   languages). Tree-sitter is the upgrade path now that deps are allowed.
@@ -930,17 +975,29 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   remote entries. The parse happens *after* the picker's first frame, so
   opening it stays fast; previewing a language whose grammar has not been
   compiled yet costs a one-off 3–14 ms on the following frame. The title bar
-  lists buffers in open order with no reordering. Mouse gestures stop at
-  single click and drag: no double-click-for-word, triple-click-for-line or
-  Alt+drag blockwise (SGR carries no click count, so those need a `mousetime`
-  window and a config knob for it), no edge auto-scroll while dragging (1002
-  reports nothing while the pointer is stationary, so it would need a repeat
-  timer — and the completion debounce is the only timer zedit arms), and no
-  drag-to-resize splits. A drag begun in *insert* mode leaves plain visual
-  mode; nvim returns to insert after the operator (its Insert Visual mode),
-  which zedit has no concept of. A click *is* dot-repeatable when it consumed
-  a pending operator (`d`+click then `.`), the way vim's redo stores the
-  screen position — see the counted-repeat gap under Vim gaps above.
+  lists buffers in open order with no reordering. Mouse gestures stop after
+  the four-click cycle and its drags: no Alt+drag blockwise (nvim gives it a
+  different anchor rule, and many terminals eat Alt), no edge auto-scroll
+  while dragging (1002 reports nothing while the pointer is stationary, so it
+  would need a repeat timer — and the completion debounce is the only timer
+  zedit arms), and no drag-to-resize splits. The double click's `%` step uses
+  zedit's own `%`, which matches `([{` only: nvim also matches C comment
+  items (`/* */`) and preprocessor conditionals, so double-clicking the `/` of
+  a comment takes `/*` here and the whole comment there. `motion.mouseClass`
+  carries vim's `utf_class` ranges only where they change an outcome
+  (punctuation blocks, kana, CJK, Hangul); everything else above Latin-1 is a
+  keyword character, where vim's table is finer. Multi-clicks apply in normal
+  and insert mode (vim's gate); with an *operator* pending the press is the
+  operator's motion whatever the count, and in a picker a click keeps the
+  picker's own select-then-open rule. A click *is* dot-repeatable when it
+  consumed a pending operator (`d`+click then `.`), the way vim's redo stores
+  the screen position — see the counted-repeat gap under Vim gaps above. One
+  deliberate disagreement with nvim, measured: when a multi-click press and
+  the drag after it arrive in the *same* read, nvim loses the gesture's anchor
+  and acts on the word/line under the drag alone, while zedit keeps it — the
+  answer nvim itself gives for the same gesture delivered in separate reads,
+  which is what a terminal sends for a human drag. zedit processes every event
+  in a burst (the input-boundary carry), so the two agree except in that race.
 - The sidebar tree is flat-file only (no rename/create/delete operations from
   the tree), rebuilt on open/expand rather than watched (reveal-on-switch
   rebuilds only when it has to expand an ancestor, and `Space e` refocusing an
@@ -969,12 +1026,12 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   further than it looks. A click in either view resolves through the same row
   walk the renderer used, so it lands on the line it looks like — but a click
   on a virtual row (a pair's filler, a woven old line) snaps to the nearest
-  real line, since those rows live in no buffer. The wheel still scrolls the
-  focused window, not the one under the pointer: `scroll_up`/`scroll_down`
-  carry no coordinates and `mouseScroll` drives the Editor's active-window
-  mirror, so fixing it means parameterising the whole wrap/viewport helper
-  family on `*Win` — unrelated to the hit test, which `winAt` already
-  provides.
+  real line, since those rows live in no buffer. The wheel scrolls the window
+  under the pointer, but its step is still counted in *buffer* lines there:
+  `winLineAfterRows` branches only on soft wrap, so a notch that crosses a
+  woven block or a pair's fillers moves the view further than three rows —
+  the same gap `Ctrl-d/u/f/b` has, and the same fix (`lineAtScreenRow`'s
+  hunk-aware walk).
 - Remote editing is whole-file over ssh: every read/write moves the entire file
   (no partial or incremental transfer), there is no remote LSP/tree-sitter
   beyond what the local process computes on the fetched text, no remote git
