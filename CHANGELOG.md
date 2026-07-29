@@ -2,6 +2,23 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.29.0 - 2026-07-30
+
+### Added
+
+- **`Space f u` opens the undo tree** and **`Space n` a new empty buffer**
+  (AstroNvim's `<leader>n`; the buffer it replaces stays open). Both were
+  already implemented — `:undolist` and the empty-buffer machinery `:bd` uses
+  on the last buffer — and simply had no key, which is the discoverability
+  gap the leader tree is supposed to close.
+
+### Changed
+
+- A local `zig build` targets the host and nothing else, as it already did
+  (`b.standardTargetOptions`); only the release workflow's matrix passes
+  `-Dtarget=` for the four published platforms. Written down in `CLAUDE.md`
+  so it is not re-litigated.
+
 ## 0.28.0 - 2026-07-30
 
 ### Added

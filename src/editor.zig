@@ -1768,6 +1768,7 @@ pub const Editor = struct {
                     'l' => self.await_arg = .space_lang,
                     'g' => self.await_arg = .space_git,
                     'u' => self.await_arg = .space_ui,
+                    'n' => self.newBuffer(), // AstroNvim's <leader>n
                     'e' => self.sidebarToggle(), // file explorer (AstroNvim <leader>e)
                     'w' => _ = try self.write(""),
                     'q' => self.doQuit(),
@@ -1806,6 +1807,7 @@ pub const Editor = struct {
                     'w' => self.openGrepPicker(), // find words
                     'b' => self.openBufferPicker(), // find buffers
                     't' => self.openThemePicker(), // find themes
+                    'u' => self.openUndoPicker(), // the undo tree (:undolist)
                     else => {},
                 };
             },
@@ -6121,21 +6123,9 @@ pub const Editor = struct {
         const victim = self.d;
         if (victim.buf.dirty and !force)
             return self.setStatus("no write since last change — :bd! to override", .{});
-        const repl: *Doc = if (self.docs.items.len == 1) blk: {
-            const b = buffer.Buffer.initEmpty(self.gpa) catch return self.setStatus("out of memory", .{});
-            const doc = makeDoc(self.gpa, b) catch {
-                var bb = b;
-                bb.deinit();
-                return self.setStatus("out of memory", .{});
-            };
-            self.docs.append(self.gpa, doc) catch { // same teardown as openFile's
-                doc.buf.deinit();
-                freeDocState(doc, self.gpa);
-                self.gpa.destroy(doc);
-                return self.setStatus("out of memory", .{});
-            };
-            break :blk doc;
-        } else blk: {
+        const repl: *Doc = if (self.docs.items.len == 1)
+            (self.makeEmptyDoc() orelse return self.setStatus("out of memory", .{}))
+        else blk: {
             for (self.docs.items) |doc| if (doc != victim) break :blk doc;
             unreachable;
         };
@@ -6147,6 +6137,37 @@ pub const Editor = struct {
         self.clearExtra();
         self.placeAt(self.cy);
         self.setStatus("{s}", .{docLabel(self.d)});
+    }
+
+    /// A fresh, unnamed, empty document, appended to the open list. Null on
+    /// allocation failure (the caller reports it). Shared by `:bd` on the last
+    /// buffer and `Space n`.
+    fn makeEmptyDoc(self: *Editor) ?*Doc {
+        const b = buffer.Buffer.initEmpty(self.gpa) catch return null;
+        const doc = makeDoc(self.gpa, b) catch {
+            var bb = b;
+            bb.deinit();
+            return null;
+        };
+        self.docs.append(self.gpa, doc) catch { // same teardown as openFile's
+            doc.buf.deinit();
+            freeDocState(doc, self.gpa);
+            self.gpa.destroy(doc);
+            return null;
+        };
+        return doc;
+    }
+
+    /// `Space n` — AstroNvim's <leader>n: an empty unnamed buffer in the
+    /// active window. The buffer it replaces stays open (this is not a close),
+    /// and `:w <name>` names it, detecting its filetype on the spot.
+    fn newBuffer(self: *Editor) void {
+        const doc = self.makeEmptyDoc() orelse return self.setStatus("out of memory", .{});
+        self.loadDoc(doc);
+        self.cur.doc = doc;
+        self.clearExtra();
+        self.placeAt(0);
+        self.setStatus("{s}", .{docLabel(doc)});
     }
 
     /// Remove `victim` from the open documents and free it. Every window (and
@@ -9313,6 +9334,7 @@ pub const Editor = struct {
         .{ .key = "l", .desc = "Language tools \u{2026}" },
         .{ .key = "g", .desc = "Git \u{2026}" },
         .{ .key = "u", .desc = "UI toggles \u{2026}" },
+        .{ .key = "n", .desc = "new buffer" },
         .{ .key = "e", .desc = "explorer" },
         .{ .key = "c", .desc = "close buffer" },
         .{ .key = "w", .desc = "write (save)" },
@@ -9342,6 +9364,7 @@ pub const Editor = struct {
         .{ .key = "w", .desc = "find words" },
         .{ .key = "b", .desc = "find buffers" },
         .{ .key = "t", .desc = "find themes" },
+        .{ .key = "u", .desc = "undo history" },
     };
     const lang_keys = [_]WhichKey{
         .{ .key = "a", .desc = "code action" },

@@ -744,6 +744,18 @@ return focus to the buffer,
 .B q
 close.
 .TP
+.B Space f u
+The undo tree in a picker (what
+.B :undolist
+opens): every state, the current one marked, Enter jumps to it.
+.TP
+.B Space n
+A new empty unnamed buffer in the active window (AstroNvim's
+.BR <leader>n ).
+The buffer it replaces stays open;
+.B :w <name>
+names it and starts highlighting and the language server.
+.TP
 .B Space u
 UI toggles for this session (the config file is not touched):
 .B n

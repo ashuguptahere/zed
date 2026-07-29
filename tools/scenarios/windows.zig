@@ -347,6 +347,45 @@ fn bufferClose(ctx: *h.Ctx) !void {
         ctx.check("the editor exits cleanly after close-others", s.contains(LEAVE_ALT));
     }
 
+    // 3c. `Space n` (AstroNvim's <leader>n) opens an empty unnamed buffer in
+    //     the active window, leaving the one it replaced open; `Space f u` is
+    //     the undo history, which `:undolist` already had but no key did.
+    {
+        h.writeFile(ctx.io, one, "aaa\n");
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "one.txt" }, .cwd = dir, .cols = 100 });
+        defer s.finish();
+        s.drain(400);
+        var m = s.mark();
+        s.send(" ");
+        s.drain(300);
+        ctx.check("Space lists the new-buffer key", s.containsPlainSince(ctx.gpa, m, "new buffer"));
+        s.send("n");
+        s.drain(400);
+        m = s.mark();
+        s.send(":ls\r");
+        s.drain(300);
+        ctx.check("Space n opens an empty buffer", s.containsPlainSince(ctx.gpa, m, "[No Name]") and
+            s.containsPlainSince(ctx.gpa, m, "one.txt"));
+        m = s.mark();
+        s.send("inew text\x1b");
+        s.drain(300);
+        ctx.check("the new buffer is editable", s.containsPlainSince(ctx.gpa, m, "new text"));
+        s.send(":bp\r");
+        s.drain(300);
+        ctx.check("the replaced buffer is still open", s.containsPlain(ctx.gpa, "aaa"));
+        // The undo picker: two edits, then the history listed under Space f u.
+        s.send("ix\x1bib\x1b");
+        s.drain(300);
+        m = s.mark();
+        s.send(" fu");
+        s.drain(500);
+        ctx.check("Space f u opens the undo history", s.containsPlainSince(ctx.gpa, m, "UNDO TREE"));
+        s.send("\x1b");
+        s.drain(200);
+        s.send(":qa!\r");
+        s.drain(400);
+    }
+
     // 4. Adoption chain: the fresh [No Name] satisfies openFile's adopt rule,
     //    so a later :e replaces it — vim's full cycle, no phantom buffer.
     {

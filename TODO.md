@@ -29,10 +29,11 @@ behind the roadmap items.
        including the panic/signal paths) — invasive enough to want the owner's
        say-so first, and worth confirming against a screenshot that the strip
        is thinner than one character cell.
-3. [ ] **Which-key coverage of what already exists.** The undo tree
-       (`:undolist`, `g-`/`g+`, `:earlier`), windows/splits, and the diff
-       views' commands have no leader entry. `whichKeyMenu` is now one table,
-       so adding a group is a table entry plus a dispatch arm.
+3. [ ] **Which-key coverage of what already exists.** Done for the undo tree
+       (`Space f u`) and a new buffer (`Space n`) in 0.29.0. Still unbound:
+       `g-`/`g+` and `:earlier` (time travel), and window/split management,
+       which `Ctrl-w` covers the vim way — decide whether a leader group is
+       wanted at all before adding one.
 4. [ ] **A verified AstroNvim/Helix keymap gap analysis**, updating
        `doc/COMPARISON.md` — key by key, not from memory.
 5. [ ] **Session / workspace save + restore** (open buffers, windows,
@@ -143,6 +144,8 @@ there is nothing to change there.
       counting virtual rows over a diff (the scroll jumping), one table
       behind every which-key group, and an itest runner that names its
       failures and takes suite filters. (0.28.0)
+- [x] `Space f u` (undo tree) and `Space n` (new buffer): two features that
+      existed with no key. (0.29.0)
 
 - [x] Modal editor core: event-driven zero-idle-CPU loop, single-syscall
       frames, UTF-8-correct movement/rendering, friendly CLI. (0.1.0)

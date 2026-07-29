@@ -281,6 +281,8 @@
                 and  foo.*bar  asks for order)
      Space f b  switch between the open buffers
      Space b    Buffers menu: picker, next/previous, close others
+     Space f u  the undo tree, as a picker you can jump around in
+     Space n    a new empty buffer
      Space u    UI toggles: wrap, numbers, tabs, diagnostics, mouse ...
      Space e    file explorer: a tree of this directory on the side
 

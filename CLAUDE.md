@@ -204,7 +204,7 @@ and renders a frame back through `term`. `unicode` is shared by `buffer` and
 ## Build, test, run
 
 ```sh
-zig build                       # debug build -> zig-out/bin/zedit
+zig build                       # debug build -> zig-out/bin/zedit (host only)
 zig build -Doptimize=ReleaseFast
 zig build run -- [file]         # run the editor
 zig build test                  # unit tests (pure logic; no tty needed)
@@ -223,6 +223,10 @@ something.
 `zig-out/bin/zedit` as a *Debug* build, which is ~6x slower — rebuild with
 `zig build -Doptimize=ReleaseFast` before any ad-hoc timing, or the numbers
 are meaningless. (`zig build bench` builds its own ReleaseFast artifacts.)
+
+A local build targets the host and nothing else (`b.standardTargetOptions`),
+so no developer pays for cross-compilation; only the release workflow's matrix
+passes `-Dtarget=`, producing the four published platforms.
 
 CI runs `zig build test` + `zig build itest` on every push
 (`.github/workflows/ci.yml`); pushing a `v*` tag cross-compiles stripped
@@ -505,11 +509,13 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   next/previous, `b c` **close others** — AstroNvim's `bc`, which refuses
   while any of them is unsaved and names it; it used to duplicate `Space c`);
   `Space f` = Find (`f f` files, `f w` words/grep, `f b` buffers, `f t`
-  themes); `Space l` = Language tools (`l a` code action, `l r` rename, `l R`
+  themes, `f u` the undo tree — `:undolist`'s picker, which had no key); `Space l` = Language tools (`l a` code action, `l r` rename, `l R`
   references, `l s` document symbols, `l S` workspace symbols, `l d` line
   diagnostic, `l D` all diagnostics, `l f` format);
   `Space g` = Git (`g d` inline diff,
-  `g s` side-by-side, `g l` line diff); `Space e` file explorer, `Space c` close buffer,
+  `g s` side-by-side, `g l` line diff); `Space e` file explorer, `Space n` a new empty
+  buffer (AstroNvim's `<leader>n`; the buffer it replaces stays open),
+  `Space c` close buffer,
   `Space w` write, `Space q` quit. In a picker: type to filter, `Ctrl-n`/`Ctrl-p` or
   arrows to move, `Enter` to open, `Esc` to cancel, and `Ctrl-r` re-walks the
   project. Fuzzy queries are multi-term, helix-style (`fuzzy.scoreTerms`):
