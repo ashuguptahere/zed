@@ -379,7 +379,12 @@
 
   You can edit anywhere in the line: Left and Right move the cursor,
   Home and End jump, typing inserts and backspace deletes before the
-  cursor, just like vim.
+  cursor, just like vim.  Delete removes the character under the cursor
+  (at the end of the line, the one before it), Ctrl-w erases the word
+  in front of it, Ctrl-u everything back to the start, and Ctrl-r
+  followed by a register name — a-z, " or + — pastes that register in.
+  Completion follows the cursor too: only the text before it is
+  completed, and whatever comes after stays put.
 
   And it suggests as you type, like the fish shell: the rest of the
   newest matching earlier command (or a command name) appears as dim

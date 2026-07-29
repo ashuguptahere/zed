@@ -44,10 +44,6 @@ The shortlist is done; these are the next-highest gaps from
 - [ ] True rectangular block paste; block `A` padding on short lines.
 - [ ] Tree-sitter injections (Markdown uses two layers; HTML JS/CSS plain),
       query predicates (`#match?`/`#eq?`), tree-sitter indent queries.
-- [ ] Cmdline: `Delete` under the cursor, `Ctrl-w`/`Ctrl-u` word/line erase,
-      `c_CTRL-R` register insertion, Tab completing only the text before the
-      cursor (nvim keeps the tail — probed), horizontal scroll for lines
-      longer than the row (they clip; the cursor pins to the last cell).
 - [ ] Remote: remote git signs/sidebar, partial transfers for huge remote
       files.
 - [ ] Mouse gestures beyond the four-click cycle: Alt+drag blockwise (a
@@ -641,6 +637,41 @@ The shortlist is done; these are the next-highest gaps from
       Known gaps recorded: no Alt+drag blockwise, no edge auto-scroll, no
       drag-to-resize; the double click's `%` matches brackets only (nvim also
       matches C comment items); `utf_class` is approximated above Latin-1.
+      (UNRELEASED)
+
+- [x] The last command-line gaps, every rule probed from real nvim through a
+      tmux pty first: `Delete` (under the cursor; at end-of-line the character
+      *before* it; on an empty line it cancels like backspace), `Ctrl-w`
+      (erases the word before the cursor plus the whitespace it skipped, by
+      vim's character classes — punctuation runs alone, kana/kanji/ASCII never
+      merge), `Ctrl-u` (erases to the start of the line, keeps the tail, never
+      cancels), `c_CTRL-R{reg}` (registers `a`-`z`, `"`, `+`/`*` inserted at
+      the cursor, vim's `"` drawn while the name is awaited, Esc abandons,
+      unknown/empty inserts nothing, a multi-line register inserts one CR per
+      interior break and drops the trailing one), Tab completing only the text
+      *before* the cursor with the tail kept across the ring, the stem restore
+      and the directory keys, and — the probe that overturned the plan — a
+      line wider than the row **wrapping upward** over the window, which is
+      what nvim does instead of scrolling the command line sideways.
+      23 new nvim-pinned `vim_compat` cases, 33 pty checks in `cmdline.zig`
+      (wrap geometry and shrink repaint, popup above the block, ghost on the
+      cursor's row, sanitized register text, the pending-register prompt, the
+      mid-line completion rows) and a `wordEraseStart` unit test carrying the
+      nvim transcripts. Each behaviour proven to fail with the old code
+      planted back. Suites green: unit + itest.
+      Known gaps recorded: no `q:` cmdline window, no `c_CTRL-R c_CTRL-R`
+      literal variants or `=` register, `Ctrl-w`'s classes approximate
+      `utf_class` above the CJK blocks, and a wrapped line taller than the
+      screen shows the rows around the cursor.
+      Adversarial review (nvim re-probed independently) found two defects in
+      the wrapping, both fixed here: the cell a straddling double-width char
+      leaves over must carry vim's `>` (nvim paints
+      ":日本語のファイル名>", zedit padded a space), and a row that could
+      only ever take what *fits* never advanced on a terminal narrower than
+      a wide char — a one-column pane spun at 100% CPU and stopped answering
+      keys, `:q!` included (measured: 213 CPU ticks in 2 s, state R; now 0
+      ticks, state S). Both proven to fail with the old code planted back;
+      `cmdRowSplit` carries the rule with a unit test and three pty checks.
       (UNRELEASED)
 
 - [ ] Found while reviewing, left alone as unrelated to the mouse work: a

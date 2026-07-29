@@ -11,7 +11,15 @@
 //! unaccepted, hidden while the wildmenu is open, sanitized, and
 //! `cmdline_suggestions` turning it off. Mid-line editing itself (cursor
 //! column, insert-at-cursor, the hardware cursor) is checked here through the
-//! Screen model; the nvim-pinned file-effect cases live in vim_compat.
+//! Screen model; the nvim-pinned file-effect cases live in vim_compat. Same
+//! split for the rest of the vim command-line keys: `Delete`, `Ctrl-w`,
+//! `Ctrl-u` and `c_CTRL-R` are pinned to nvim by their file effect there and
+//! checked here for what they render (the erase rows, the pending `"`, a
+//! register's untrusted bytes going through the sanitizer, the ghost being
+//! recomputed) — plus the command line's wrapping when it outgrows the row,
+//! which is what nvim does instead of scrolling sideways: the block geometry,
+//! the cursor on the wrapped row, the repaint when it shrinks back, and the
+//! wildmenu popup moving above it.
 
 const std = @import("std");
 const h = @import("../harness.zig");
@@ -22,6 +30,11 @@ const RIGHT = "\x1b[C";
 const END = "\x1b[F";
 const UP = "\x1b[A";
 const DOWN = "\x1b[B";
+const DEL = "\x1b[3~";
+const BS = "\x7f";
+const CTRLW = "\x17";
+const CTRLU = "\x15";
+const CTRLR = "\x12";
 const GRUVBOX_BG = "\x1b[48;2;40;40;40m"; // #282828
 const NORD_BG = "\x1b[48;2;46;52;64m"; // #2e3440
 
@@ -531,10 +544,14 @@ pub fn run(ctx: *h.Ctx) !void {
         s.drain(200);
     }
 
-    // The typed text itself is clipped by display cells, not bytes: on a
-    // 20-column pty a CJK command line fills the row exactly — nine wide
-    // chars (18 cells) after the prompt, then one pad space; the tenth char
-    // (2 cells into 1) never renders and no codepoint is ever torn into '?'.
+    // Each row of the line is filled by display cells, not bytes: on a
+    // 20-column pty nine wide chars (18 cells) follow the prompt, the tenth
+    // (2 cells into 1) starts the next row instead, and vim marks the cell it
+    // left over with '>'. Probe (real nvim, 20 columns, tmux pty):
+    //   ":日本語のファイル名がとても長い" painted ':日本語のファイル名>'
+    //   then 'がとても長い', cursor x=12 — and ":012345678901234567日本"
+    //   painted ':012345678901234567>' then '日本'. A row that ends exactly
+    //   full gets no marker (probes H1/H6).
     {
         var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "alpha.txt" }, .cwd = dir, .term = "xterm-256color", .cols = 20 });
         defer s.finish();
@@ -542,11 +559,46 @@ pub fn run(ctx: *h.Ctx) !void {
         const m = s.mark();
         s.send(":日本語のファイル名がとても長い");
         s.drain(400);
-        ctx.check("CJK line fills the row exactly", s.containsPlainSince(ctx.gpa, m, ":日本語のファイル名 "));
-        ctx.check("no overflow past the row", !s.containsPlainSince(ctx.gpa, m, "が"));
+        ctx.check("a wide char that did not fit leaves vim's '>' marker", s.containsPlainSince(ctx.gpa, m, ":日本語のファイル名>"));
+        ctx.check("…and starts the next row", s.containsPlainSince(ctx.gpa, m, "がとても長い"));
         ctx.check("no codepoint torn by the clip", !s.containsPlainSince(ctx.gpa, m, "?"));
+        // A row filled exactly is not marked.
+        s.send("\x1b");
+        s.drain(200);
+        const m2 = s.mark();
+        s.send(":0123456789012345678901234");
+        s.drain(400);
+        ctx.check("an exactly-full row gets no marker", s.containsPlainSince(ctx.gpa, m2, ":0123456789012345678"));
+        ctx.check("…not even a stray one", !s.containsPlainSince(ctx.gpa, m2, ">"));
         s.send("\x1b:qa\r");
         s.drain(200);
+    }
+
+    // A terminal narrower than a wide character: no screen row can hold it,
+    // so a layout that only ever takes what *fits* consumes nothing and the
+    // row loop never advances. Measured with that layout: the editor spun at
+    // 100% CPU, drew nothing more and never saw `:q!` again. It must lay the
+    // line out, go back to sleep, and still answer keys.
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "alpha.txt" }, .cwd = dir, .term = "xterm-256color", .cols = 1 });
+        defer s.finish();
+        s.drain(400);
+        const m = s.mark();
+        s.send(":日本");
+        s.drain(400);
+        ctx.check("a wide char on a one-column terminal still draws", s.out.items.len > m);
+        const t0 = try s.cpuTicks(ctx.gpa, ctx.io);
+        s.drain(1500);
+        const t1 = try s.cpuTicks(ctx.gpa, ctx.io);
+        const busy_ms = @as(f64, @floatFromInt(t1 - t0)) /
+            @as(f64, @floatFromInt(h.clockTicksPerSec())) * 1000.0;
+        ctx.check("…and does not spin (idle CPU stays negligible)", busy_ms < 50.0);
+        const m2 = s.mark();
+        s.send("\x1b");
+        s.drain(400);
+        ctx.check("…and still answers keys", s.out.items.len > m2);
+        s.send(":qa!\r");
+        s.drain(300);
     }
 
     // Mid-line editing across wide chars: Left from the end of ":日本語"
@@ -576,10 +628,13 @@ pub fn run(ctx: *h.Ctx) !void {
         s.drain(200);
     }
 
-    // A line longer than the row: the text clips (no horizontal cmdline
-    // scroll — a documented gap) and the hardware cursor pins to the last
-    // cell instead of being sent past the terminal's edge; Home brings it
-    // back into the visible prefix.
+    // A line wider than the row wraps onto further screen rows, the
+    // command-line area growing upward over the window — nvim's behaviour, not
+    // a horizontal scroll. Probe (real nvim, 20 columns, tmux pty):
+    //   ":0123456789012345678901234" painted
+    //      row 23 ':0123456789012345678'
+    //      row 24 '901234'
+    //   with the cursor at x=6,y=23 (0-based) = row 24, column 7.
     {
         var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "alpha.txt" }, .cwd = dir, .term = "xterm-256color", .cols = 20 });
         defer s.finish();
@@ -589,15 +644,264 @@ pub fn run(ctx: *h.Ctx) !void {
         var scr = try h.Screen.init(ctx.gpa, 24, 20);
         defer scr.deinit();
         scr.apply(s.out.items);
-        ctx.check("overflowing line pins the cursor to the last cell", scr.cur_row == 24 and scr.cur_col == 20);
-        s.send("\x1b[H"); // Home
+        const top = try scr.rowText(ctx.gpa, 23);
+        defer ctx.gpa.free(top);
+        const bot = try scr.rowText(ctx.gpa, 24);
+        defer ctx.gpa.free(bot);
+        ctx.check("a long line wraps onto the row above", std.mem.eql(u8, top, ":0123456789012345678"));
+        ctx.check("…and continues on the last row", std.mem.eql(u8, bot, "901234"));
+        ctx.check("the cursor follows onto the wrapped row", scr.cur_row == 24 and scr.cur_col == 7);
+        // Home puts the cursor back on the first cell of the block's top row.
+        s.send("\x1b[H");
         s.drain(250);
         var scr2 = try h.Screen.init(ctx.gpa, 24, 20);
         defer scr2.deinit();
         scr2.apply(s.out.items);
-        ctx.check("Home returns the cursor on screen", scr2.cur_row == 24 and scr2.cur_col == 2);
+        ctx.check("Home returns to the start of the block", scr2.cur_row == 23 and scr2.cur_col == 2);
+        // Shrinking back under one row must repaint the window row the block
+        // covered — the overlay bookkeeping, not the frame diff.
+        s.send(END ++ BS ++ BS ++ BS ++ BS ++ BS ++ BS ++ BS ++ BS ++ BS ++ BS);
+        s.drain(350);
+        var scr3 = try h.Screen.init(ctx.gpa, 24, 20);
+        defer scr3.deinit();
+        scr3.apply(s.out.items);
+        const above = try scr3.rowText(ctx.gpa, 23);
+        defer ctx.gpa.free(above);
+        const line = try scr3.rowText(ctx.gpa, 24);
+        defer ctx.gpa.free(line);
+        ctx.check("the block shrinks back to one row", std.mem.eql(u8, line, ":012345678901234"));
+        ctx.check("the window row it covered is repainted", std.mem.eql(u8, above, "~"));
+        ctx.check("the cursor comes back with it", scr3.cur_row == 24 and scr3.cur_col == 17);
         s.send("\x1b:qa\r");
         s.drain(200);
+    }
+
+    // The wildmenu popup sits above the command line — which is two rows here,
+    // so the popup must move up with it rather than paint over the wrap.
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "alpha.txt" }, .cwd = dir, .term = "xterm-256color", .cols = 20 });
+        defer s.finish();
+        s.drain(400);
+        s.send(":e paXXXXXXXXXXXXXXXXXXX"); // 24 chars: wraps at 20 columns
+        s.drain(250);
+        s.send(LEFT ** 19); // back to just after "pa"
+        s.drain(250);
+        s.send(TAB);
+        s.drain(350);
+        var scr = try h.Screen.init(ctx.gpa, 24, 20);
+        defer scr.deinit();
+        scr.apply(s.out.items);
+        const r22 = try scr.rowText(ctx.gpa, 22);
+        defer ctx.gpa.free(r22);
+        const r23 = try scr.rowText(ctx.gpa, 23);
+        defer ctx.gpa.free(r23);
+        ctx.check("the popup sits above the wrapped line", std.mem.indexOf(u8, r22, "park/") != null);
+        ctx.check("the wrapped line keeps its top row", std.mem.startsWith(u8, r23, ":e pair/"));
+        s.send("\x1b\x1b:qa\r");
+        s.drain(300);
+    }
+
+    // The ghost is painted after the cursor — on the cursor's row when the
+    // line wraps, never back on the first one.
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "alpha.txt" }, .cwd = dir, .term = "xterm-256color", .cols = 20 });
+        defer s.finish();
+        s.drain(400);
+        s.send(":0123456789012345678901234\x1b"); // seed (abandoned, not run)
+        s.drain(250);
+        s.send(":01234567890123456789"); // 21 cells: one char onto the second row
+        s.drain(350);
+        var scr = try h.Screen.init(ctx.gpa, 24, 20);
+        defer scr.deinit();
+        scr.apply(s.out.items);
+        const bot = try scr.rowText(ctx.gpa, 24);
+        defer ctx.gpa.free(bot);
+        ctx.check("the ghost continues on the cursor's row", std.mem.eql(u8, bot, "901234"));
+        ctx.check("the cursor stays before the ghost", scr.cur_row == 24 and scr.cur_col == 2);
+        s.send("\x1b:qa\r");
+        s.drain(200);
+    }
+
+    // Delete, c_CTRL-W and c_CTRL-U on screen (their file effects are pinned
+    // to nvim in vim_compat; this is the rendered row and the hardware
+    // cursor). Probes, real nvim through a tmux pty, cmdline row read back:
+    //   ":foo bar" + Ctrl-W  -> ':foo'  cursor x=5   (the trailing space stays)
+    //   ":foo.bar" + Ctrl-W  -> ':foo.' cursor x=5
+    //   ":foo..."  + Ctrl-W  -> ':foo'  cursor x=4
+    //   ":abcdef" + 3 Lefts + Ctrl-U -> ':def' cursor x=1
+    //   ":s/a/XY"  + Del     -> ':s/a/X'
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "alpha.txt" }, .cwd = dir, .term = "xterm-256color" });
+        defer s.finish();
+        s.drain(400);
+        const Row = struct {
+            fn check(c: *h.Ctx, sess: *h.Session, name: []const u8, want: []const u8, col: usize) void {
+                var scr = h.Screen.init(c.gpa, 24, 80) catch return;
+                defer scr.deinit();
+                scr.apply(sess.out.items);
+                const row = scr.rowText(c.gpa, 24) catch return;
+                defer c.gpa.free(row);
+                c.check(name, std.mem.eql(u8, row, want) and scr.cur_row == 24 and scr.cur_col == col);
+            }
+        };
+        s.send(":foo bar" ++ CTRLW);
+        s.drain(300);
+        Row.check(ctx, &s, "Ctrl-W erases the word, keeping the space", ":foo", 6);
+        s.send("\x1b:foo.bar" ++ CTRLW);
+        s.drain(300);
+        Row.check(ctx, &s, "Ctrl-W stops at the punctuation", ":foo.", 6);
+        // A prefix of its own: ":foo…" is already in this session's history,
+        // which would ghost the row after the erase.
+        s.send("\x1b:qux..." ++ CTRLW);
+        s.drain(300);
+        Row.check(ctx, &s, "Ctrl-W takes a punctuation run whole", ":qux", 5);
+        s.send("\x1b:abcdef" ++ LEFT ++ LEFT ++ LEFT ++ CTRLU);
+        s.drain(300);
+        Row.check(ctx, &s, "Ctrl-U erases to the start, keeping the tail", ":def", 2);
+        s.send("\x1b:s/a/XY" ++ DEL);
+        s.drain(300);
+        Row.check(ctx, &s, "Delete at end-of-line takes the char before", ":s/a/X", 7);
+        s.send(LEFT ++ LEFT ++ DEL);
+        s.drain(300);
+        Row.check(ctx, &s, "Delete mid-line takes the char under the cursor", ":s/aX", 5);
+        s.send("\x1b:qa\r");
+        s.drain(200);
+    }
+
+    // Tab mid-line, rendered: the completion replaces only the text before the
+    // cursor, the tail is kept and the cursor lands between them. Probes (real
+    // nvim, 'wildmenu wildmode=full'): ":e alXY" + 2 Lefts + Tab left
+    // ':e alpha.txtXY' with the cursor at x=12; a second Tab
+    // ':e alpine.txtXY' x=13; a third restored ':e alXY' x=5. ("pa" here —
+    // "pair/" and "park/" — because an earlier case in this file leaves a
+    // third "al" candidate in the directory.)
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "alpha.txt" }, .cwd = dir, .term = "xterm-256color" });
+        defer s.finish();
+        s.drain(400);
+        s.send(":e paXY" ++ LEFT ++ LEFT ++ TAB);
+        s.drain(350);
+        var scr = try h.Screen.init(ctx.gpa, 24, 80);
+        defer scr.deinit();
+        scr.apply(s.out.items);
+        const row = try scr.rowText(ctx.gpa, 24);
+        defer ctx.gpa.free(row);
+        ctx.check("Tab completes before the cursor and keeps the tail", std.mem.eql(u8, row, ":e pair/XY"));
+        ctx.check("the cursor sits between them", scr.cur_row == 24 and scr.cur_col == 9);
+        s.send(TAB);
+        s.drain(300);
+        var scr2 = try h.Screen.init(ctx.gpa, 24, 80);
+        defer scr2.deinit();
+        scr2.apply(s.out.items);
+        const row2 = try scr2.rowText(ctx.gpa, 24);
+        defer ctx.gpa.free(row2);
+        ctx.check("cycling keeps the tail too", std.mem.eql(u8, row2, ":e park/XY"));
+        s.send(TAB); // past the last match: back to the typed stem
+        s.drain(300);
+        var scr3 = try h.Screen.init(ctx.gpa, 24, 80);
+        defer scr3.deinit();
+        scr3.apply(s.out.items);
+        const row3 = try scr3.rowText(ctx.gpa, 24);
+        defer ctx.gpa.free(row3);
+        ctx.check("the restored stem keeps the tail", std.mem.eql(u8, row3, ":e paXY"));
+        ctx.check("…with the cursor back before it", scr3.cur_row == 24 and scr3.cur_col == 6);
+        // Down descends into the selected directory with the tail intact.
+        s.send("\x1b:e paXY" ++ LEFT ++ LEFT ++ TAB);
+        s.drain(350);
+        s.send(DOWN);
+        s.drain(350);
+        var scr4 = try h.Screen.init(ctx.gpa, 24, 80);
+        defer scr4.deinit();
+        scr4.apply(s.out.items);
+        const row4 = try scr4.rowText(ctx.gpa, 24);
+        defer ctx.gpa.free(row4);
+        ctx.check("directory navigation keeps the tail", std.mem.eql(u8, row4, ":e pair/one.txtXY"));
+        s.send("\x1b\x1b:qa\r");
+        s.drain(300);
+    }
+
+    // c_CTRL-R: the pending prompt, register text going through the render
+    // sanitizer, and the newline rules. nvim probes: ":abc" + Ctrl-R rendered
+    // ':abc"' with the cursor on the quote (x=4); Esc there kept the line
+    // (':abcq' after typing q); a two-line register inserted
+    // ':xhello world^Msecond line' — the interior newline shown, the trailing
+    // one dropped. zedit renders that CR as '?' like any control byte.
+    {
+        const reg = h.join(ctx, dir, "reg.txt");
+        defer ctx.gpa.free(reg);
+        h.writeFile(ctx.io, reg, "heme\none\ntwo\nevil\x1b]0;pwned\x07tail\n");
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "reg.txt" }, .cwd = dir, .term = "xterm-256color" });
+        defer s.finish();
+        s.drain(400);
+        s.send(":abc" ++ CTRLR);
+        s.drain(300);
+        var scr = try h.Screen.init(ctx.gpa, 24, 80);
+        defer scr.deinit();
+        scr.apply(s.out.items);
+        const row = try scr.rowText(ctx.gpa, 24);
+        defer ctx.gpa.free(row);
+        ctx.check("a pending Ctrl-R shows a quote at the cursor", std.mem.eql(u8, row, ":abc\""));
+        ctx.check("…with the cursor on it", scr.cur_row == 24 and scr.cur_col == 5);
+        s.send("\x1b" ++ "q"); // Esc abandons the register prompt, not the line
+        s.drain(300);
+        var scr2 = try h.Screen.init(ctx.gpa, 24, 80);
+        defer scr2.deinit();
+        scr2.apply(s.out.items);
+        const row2 = try scr2.rowText(ctx.gpa, 24);
+        defer ctx.gpa.free(row2);
+        ctx.check("Esc at the register prompt keeps the line", std.mem.eql(u8, row2, ":abcq"));
+        // A two-line register: the interior newline renders, the trailing one
+        // is dropped.
+        s.send("\x1b" ++ "2G\"a2yy"); // register a = "one\ntwo\n"
+        s.drain(300);
+        s.send(":x" ++ CTRLR ++ "a");
+        s.drain(300);
+        var scr3 = try h.Screen.init(ctx.gpa, 24, 80);
+        defer scr3.deinit();
+        scr3.apply(s.out.items);
+        const row3 = try scr3.rowText(ctx.gpa, 24);
+        defer ctx.gpa.free(row3);
+        ctx.check("a multi-line register inserts one separator, no trailing one", std.mem.eql(u8, row3, ":xone?two"));
+        // The clipboard register works the same (its shadow copy — the OSC 52
+        // write goes out to the terminal, and comes back from nowhere).
+        s.send("\x1b" ++ "gg\"+yiw");
+        s.drain(300);
+        const mc = s.mark();
+        s.send(":x" ++ CTRLR ++ "+");
+        s.drain(300);
+        ctx.check("Ctrl-R + inserts the clipboard register", s.containsPlainSince(ctx.gpa, mc, ":xheme"));
+        // Register text is untrusted: an escape sequence in it must render as
+        // '?' and never reach the terminal live.
+        s.send("\x1b");
+        s.drain(150);
+        const m = s.mark();
+        s.send("\x1b" ++ "4G\"byy" ++ ":" ++ CTRLR ++ "b");
+        s.drain(350);
+        ctx.check("register text renders sanitized", s.containsPlainSince(ctx.gpa, m, ":evil?]0;pwned?tail"));
+        ctx.check("no raw escape reaches the terminal", !s.contains("\x1b]0;pwned"));
+        // An edit through Ctrl-R recomputes the inline suggestion, exactly as
+        // typing would: register a = "heme" turns ":t" into ":theme", which the
+        // seeded history then completes.
+        s.send("\x1b" ++ ":theme gruvbox\x1b"); // seed (abandoned, not applied)
+        s.drain(300);
+        s.send("gg\"cyiw"); // register c = "heme"
+        s.drain(300);
+        const m2 = s.mark();
+        s.send(":t" ++ CTRLR ++ "c");
+        s.drain(350);
+        ctx.check("Ctrl-R recomputes the ghost", s.containsPlainSince(ctx.gpa, m2, "theme gruvbox"));
+        // …and so does Delete. (Its own seed: the ":theme…" lines above are in
+        // this session's history, and the newest match is the one that ghosts.)
+        s.send("\x1b" ++ ":vsplit zzz9\x1b");
+        s.drain(300);
+        s.send(":vspQ");
+        s.drain(300);
+        const m3 = s.mark();
+        s.send(DEL); // at end-of-line: takes the 'Q', so ":vsp" ghosts again
+        s.drain(350);
+        ctx.check("Delete recomputes the ghost", s.containsPlainSince(ctx.gpa, m3, "vsplit zzz9"));
+        s.send("\x1b:qa!\r");
+        s.drain(300);
     }
 
     // While a popup is open, Left/Right select the previous/next match

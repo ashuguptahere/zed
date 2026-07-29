@@ -376,8 +376,10 @@ pub const Editor = struct {
     hist_stash: std.ArrayList(u8) = .empty, // the typed line: history filter + Down-restore
     wild: std.ArrayList(WildItem) = .empty,
     wild_idx: ?usize = null, // selected candidate; null = original text shown
-    wild_stem: std.ArrayList(u8) = .empty, // cmd content when completion started
+    wild_stem: std.ArrayList(u8) = .empty, // cmd text *before the cursor* when completion started
+    wild_tail: std.ArrayList(u8) = .empty, // cmd text after it: kept across the ring (nvim)
     wild_paths: bool = false, // the ring completes :e/:w paths (Up/Down navigate directories)
+    cmd_reg: bool = false, // c_CTRL-R typed: the next key names the register
     // Fish-style inline suggestion: what would complete `cmd` (dim ghost text
     // after the cursor; Right/End accepts). Recomputed on every edit of `cmd`.
     ghost: std.ArrayList(u8) = .empty,
@@ -603,6 +605,7 @@ pub const Editor = struct {
         self.wildClear();
         self.wild.deinit(self.gpa);
         self.wild_stem.deinit(self.gpa);
+        self.wild_tail.deinit(self.gpa);
         self.ghost.deinit(self.gpa);
         self.cmd.deinit(self.gpa);
         self.macro_buf.deinit(self.gpa);
@@ -890,13 +893,10 @@ pub const Editor = struct {
                 // A paste edits the line exactly like typing: it invalidates
                 // the wildmenu ring, updates the history filter and recomputes
                 // the inline suggestion.
-                self.wildClear();
                 const end = std.mem.indexOfAny(u8, bytes, "\r\n") orelse bytes.len;
                 try self.cmd.insertSlice(self.gpa, self.cmd_cur, bytes[0..end]);
                 self.cmd_cur += end;
-                self.histEdited();
-                if (self.searching()) self.searchLive();
-                self.ghostUpdate();
+                self.cmdEdited();
             },
             .picker => {
                 const end = std.mem.indexOfAny(u8, bytes, "\r\n") orelse bytes.len;
@@ -4823,6 +4823,7 @@ pub const Editor = struct {
         self.cmd.clearRetainingCapacity();
         self.cmd_cur = 0;
         self.hist_pos = null;
+        self.cmd_reg = false;
         self.wildClear();
         self.ghostUpdate(); // empty line: clears any suggestion left behind
         if (kind != .ex) {
@@ -4860,6 +4861,7 @@ pub const Editor = struct {
         self.cmd.clearRetainingCapacity();
         self.cmd.appendSlice(self.gpa, self.identUnderCursor()) catch {};
         self.cmd_cur = self.cmd.items.len;
+        self.cmd_reg = false;
         // The rename prompt never ghosts (it has no history, and command
         // names make no sense there); this clears any stale `:` suggestion.
         self.ghostUpdate();
@@ -4884,18 +4886,19 @@ pub const Editor = struct {
     }
 
     fn commandKey(self: *Editor, k: key.Key) !void {
+        // c_CTRL-R: the key after it names the register (nvim draws a `"` at
+        // the cursor while it waits — probe R8). Esc, or anything that is not
+        // a register name, abandons the prompt and keeps the line (probe R9).
+        if (self.cmd_reg) {
+            self.cmd_reg = false;
+            switch (k) {
+                .char => |c| self.cmdInsertRegister(c),
+                else => {},
+            }
+            return;
+        }
         switch (k) {
-            .escape => {
-                if (self.searching()) {
-                    // Cancel: restore the previous pattern and the original cursor.
-                    self.last_search.clearRetainingCapacity();
-                    self.last_search.appendSlice(self.gpa, self.prev_search.items) catch {};
-                    self.setCursor(self.search_origin);
-                }
-                self.pushHistory(); // an abandoned line is remembered too (vim)
-                self.wildClear();
-                self.mode = .normal;
-            },
+            .escape => self.cmdCancel(),
             .enter => {
                 const kind = self.cmd_kind;
                 self.pushHistory();
@@ -4910,20 +4913,18 @@ pub const Editor = struct {
                 }
             },
             .backspace => {
-                self.wildClear();
                 if (self.cmd.items.len == 0) {
-                    try self.commandKey(.escape);
+                    self.cmdCancel();
                 } else if (self.cmd_cur > 0) {
                     // Delete the codepoint before the cursor; at the start of
                     // a non-empty line this is a no-op (nvim, probe M8).
                     const p = unicode.prevBoundary(self.cmd.items, self.cmd_cur);
                     self.cmd.replaceRange(self.gpa, p, self.cmd_cur - p, "") catch {};
                     self.cmd_cur = p;
-                    self.histEdited();
-                    if (self.searching()) self.searchLive();
-                    self.ghostUpdate();
+                    self.cmdEdited();
                 }
             },
+            .delete => self.cmdDelete(),
             .tab => self.wildNext(true),
             .shift_tab => self.wildNext(false),
             // While a path-completion popup is open, Up/Down navigate
@@ -4939,17 +4940,18 @@ pub const Editor = struct {
                 // vim's c_CTRL-B/c_CTRL-E: line start / line end.
                 'b' => self.cmd_cur = 0,
                 'e' => self.cmdEnd(),
+                // vim's c_CTRL-W / c_CTRL-U / c_CTRL-R.
+                'w' => self.cmdEraseWord(),
+                'u' => self.cmdEraseToStart(),
+                'r' => self.cmd_reg = true,
                 else => {},
             },
             .char => |c| {
-                self.wildClear();
                 var enc: [4]u8 = undefined;
                 const len = std.unicode.utf8Encode(c, &enc) catch return;
                 try self.cmd.insertSlice(self.gpa, self.cmd_cur, enc[0..len]);
                 self.cmd_cur += len;
-                self.histEdited();
-                if (self.searching()) self.searchLive();
-                self.ghostUpdate();
+                self.cmdEdited();
             },
             // While the wildmenu popup is open, Left/Right select the
             // previous/next match (nvim, probes W3a-W3d); otherwise they move
@@ -4965,6 +4967,96 @@ pub const Editor = struct {
             .end => self.cmdEnd(),
             else => {},
         }
+    }
+
+    /// Leave the command line without running it (Esc, backspace or Delete on
+    /// an empty line): a search restores its previous pattern and cursor, and
+    /// the abandoned line is remembered in the history too (vim's rule).
+    fn cmdCancel(self: *Editor) void {
+        if (self.searching()) {
+            self.last_search.clearRetainingCapacity();
+            self.last_search.appendSlice(self.gpa, self.prev_search.items) catch {};
+            self.setCursor(self.search_origin);
+        }
+        self.pushHistory();
+        self.wildClear();
+        self.mode = .normal;
+    }
+
+    /// Everything an edit of the command line implies: the wildmenu ring no
+    /// longer describes the line (nvim, probes W26-W29), the history filter
+    /// follows the new text, a search previews live and the inline suggestion
+    /// is recomputed. Every path that changes `cmd` ends here.
+    fn cmdEdited(self: *Editor) void {
+        self.cmd_reg = false; // an edit (e.g. a paste) ends a pending c_CTRL-R
+        self.wildClear();
+        self.histEdited();
+        if (self.searching()) self.searchLive();
+        self.ghostUpdate();
+    }
+
+    /// c_<Del>: delete the character under the cursor — but at end-of-line the
+    /// one *before* it (nvim probe D3b: ":s/a/XY" + Del ran ":s/a/X"), and on
+    /// an empty line it cancels the command line exactly as backspace does
+    /// (probe D8: ':' + Del left normal mode, where the next 'q' showed as a
+    /// pending register in 'showcmd').
+    fn cmdDelete(self: *Editor) void {
+        if (self.cmd.items.len == 0) return self.cmdCancel();
+        if (self.cmd_cur < self.cmd.items.len) {
+            const n = unicode.nextBoundary(self.cmd.items, self.cmd_cur);
+            self.cmd.replaceRange(self.gpa, self.cmd_cur, n - self.cmd_cur, "") catch {};
+        } else {
+            const p = unicode.prevBoundary(self.cmd.items, self.cmd_cur);
+            self.cmd.replaceRange(self.gpa, p, self.cmd_cur - p, "") catch {};
+            self.cmd_cur = p;
+        }
+        self.cmdEdited();
+    }
+
+    /// c_CTRL-W: erase the word before the cursor — the whitespace in front of
+    /// it goes too (nvim probe W2: ":foo bar " -> ":foo "). A no-op at column
+    /// 0 (probe W9); it never cancels the line (probes W19/W20).
+    fn cmdEraseWord(self: *Editor) void {
+        if (self.cmd_cur == 0) return;
+        const start = wordEraseStart(self.cmd.items, self.cmd_cur);
+        self.cmd.replaceRange(self.gpa, start, self.cmd_cur - start, "") catch {};
+        self.cmd_cur = start;
+        self.cmdEdited();
+    }
+
+    /// c_CTRL-U: erase everything between the start of the line and the
+    /// cursor, keeping the tail (nvim probe U2: ":abcdef" + 3 Lefts + Ctrl-U
+    /// left ":def"). A no-op at column 0, and it never cancels the line —
+    /// unlike backspace, an empty line stays open (probes U3/U4).
+    fn cmdEraseToStart(self: *Editor) void {
+        if (self.cmd_cur == 0) return;
+        self.cmd.replaceRange(self.gpa, 0, self.cmd_cur, "") catch {};
+        self.cmd_cur = 0;
+        self.cmdEdited();
+    }
+
+    /// c_CTRL-R: insert a register's contents at the cursor — named `a`-`z`,
+    /// the unnamed `"`, and the clipboard `+`/`*` (its shadow copy). An
+    /// unknown or empty register inserts nothing and swallows the key, leaving
+    /// the line untouched (nvim probes R5/R6).
+    ///
+    /// A linewise register ends in a newline, which vim drops; an interior one
+    /// becomes a literal CR — nvim renders that "^M" (probe R3:
+    /// ":xhello world^Msecond line"), zedit '?', because register text is
+    /// untrusted and goes through the same sanitizer as the rest of the line.
+    fn cmdInsertRegister(self: *Editor, name: u21) void {
+        if (name > 0x7f) return;
+        const reg = self.registers.get(@intCast(name)) orelse return;
+        var text = reg.text;
+        if (text.len > 0 and text[text.len - 1] == '\n') text = text[0 .. text.len - 1];
+        if (text.len == 0) return;
+        const at = self.cmd_cur;
+        self.cmd.insertSlice(self.gpa, at, text) catch return;
+        for (self.cmd.items[at..][0..text.len]) |*b| {
+            if (b.* == '\n') b.* = '\r';
+        }
+        self.cmd_cur = at + text.len;
+        self.cmdEdited();
     }
 
     /// End / Ctrl-e: to end-of-line; already there, accept the ghost (fish).
@@ -4986,8 +5078,23 @@ pub const Editor = struct {
         self.ghostUpdate();
     }
 
-    /// Replace the command line's content (history recall / completion). The
-    /// cursor goes to end-of-line (vim's rule, probe M9).
+    /// Put a completion on the line: `head` replaces the text before the
+    /// cursor, the tail the completion started with follows it, and the cursor
+    /// sits between them. nvim completes only the text before the cursor and
+    /// keeps the rest (probe T1: ":e alXY" + Left Left + Tab left
+    /// ":e alpha.txtXY" with the cursor after ".txt"; probe T3: cycling past
+    /// the last match restored ":e alXY", tail included).
+    fn setCmdHead(self: *Editor, head: []const u8) void {
+        self.cmd.clearRetainingCapacity();
+        self.cmd.appendSlice(self.gpa, head) catch {};
+        self.cmd.appendSlice(self.gpa, self.wild_tail.items) catch {};
+        self.cmd_cur = head.len;
+        if (self.searching()) self.searchLive();
+        self.ghostUpdate();
+    }
+
+    /// Replace the command line's content (history recall). The cursor goes to
+    /// end-of-line (vim's rule, probe M9).
     fn setCmd(self: *Editor, text: []const u8) void {
         if (text.ptr != self.cmd.items.ptr) {
             self.cmd.clearRetainingCapacity();
@@ -5127,12 +5234,12 @@ pub const Editor = struct {
                 // A unique match completes silently — no popup, no cycle ring
                 // (nvim); the next Tab recomputes from the new text, which is
                 // what descends into a just-completed directory.
-                self.setCmd(self.wild.items[0].text);
+                self.setCmdHead(self.wild.items[0].text);
                 self.wildClear();
                 return;
             }
             self.wild_idx = if (forward) 0 else self.wild.items.len - 1;
-            self.setCmd(self.wild.items[self.wild_idx.?].text);
+            self.setCmdHead(self.wild.items[self.wild_idx.?].text);
             return;
         }
         const n = self.wild.items.len;
@@ -5145,7 +5252,7 @@ pub const Editor = struct {
         } else {
             self.wild_idx = if (forward) 0 else n - 1;
         }
-        if (self.wild_idx) |i| self.setCmd(self.wild.items[i].text) else self.setCmd(self.wild_stem.items);
+        if (self.wild_idx) |i| self.setCmdHead(self.wild.items[i].text) else self.setCmdHead(self.wild_stem.items);
     }
 
     /// Build the completion candidates for the current `:` line: command names
@@ -5154,8 +5261,12 @@ pub const Editor = struct {
     fn wildCompute(self: *Editor) void {
         self.wildClear();
         self.wild_paths = false;
+        // Only the text before the cursor is completed; the rest is put back
+        // after every candidate (nvim, probe T1).
         self.wild_stem.clearRetainingCapacity();
-        self.wild_stem.appendSlice(self.gpa, self.cmd.items) catch return;
+        self.wild_stem.appendSlice(self.gpa, self.cmd.items[0..self.cmd_cur]) catch return;
+        self.wild_tail.clearRetainingCapacity();
+        self.wild_tail.appendSlice(self.gpa, self.cmd.items[self.cmd_cur..]) catch return;
         const raw = self.wild_stem.items;
         if (std.mem.indexOfScalar(u8, raw, ' ')) |sp| {
             const cmd0 = raw[0..sp];
@@ -5184,7 +5295,7 @@ pub const Editor = struct {
     /// selected candidate is already on the line, so "is it a directory?"
     /// is its trailing '/'.
     fn wildDescend(self: *Editor) void {
-        const line = self.cmd.items;
+        const line = self.cmd.items[0..self.cmd_cur]; // the completion, not the kept tail
         const is_dir = line.len > 0 and line[line.len - 1] == '/';
         self.wildClear();
         if (is_dir) self.wildNext(true);
@@ -5209,7 +5320,7 @@ pub const Editor = struct {
             break :blk std.fmt.bufPrint(&buf, "{s}{s}", .{ head, parent });
         } catch return;
         self.wildClear();
-        self.setCmd(line);
+        self.setCmdHead(line);
         self.wildNext(true);
     }
 
@@ -8596,7 +8707,10 @@ pub const Editor = struct {
         self.closeSegs();
         // Overlays draw on top of already-emitted rows, so frames showing one
         // are written whole (and the next plain frame repaints beneath them).
-        var overlay = self.sig_open or self.comp_open;
+        // A command line wider than the row wraps upward over the windows
+        // (nvim), which is exactly such an overlay.
+        var overlay = self.sig_open or self.comp_open or
+            (self.mode == .command and self.cmdBlock().height > 1);
         if (self.mode == .command and self.wild.items.len > 0) {
             try self.renderWildMenu();
             overlay = true;
@@ -9038,7 +9152,8 @@ pub const Editor = struct {
     fn renderWildMenu(self: *Editor) !void {
         const th = theme.current;
         const items = self.wild.items;
-        const rows: usize = self.win.rows;
+        // Sit above the command line, which is more than one row when it wraps.
+        const rows: usize = self.cmdBlock().top;
         const height = @min(items.len, 8);
         if (rows < height + 2) return;
 
@@ -9538,36 +9653,131 @@ pub const Editor = struct {
         return .{ .lo = lo, .hi = hi };
     }
 
+    /// The command line's screen block. nvim never scrolls the command line
+    /// sideways: a line wider than the row wraps onto further rows and the
+    /// command-line area grows *upward* over the window. Probe H1 (20 columns,
+    /// ":0123456789012345678901234") painted ":0123456789012345678" on one row
+    /// and "901234" on the next, with the cursor at column 6 of it; probe H9
+    /// filled three rows. So the block is `height` rows ending at the last
+    /// screen row.
+    const CmdBlock = struct {
+        height: usize, // screen rows it covers
+        top: usize, // 1-based screen row it starts at
+        first: usize, // wrapped row drawn at `top` (non-zero only past the screen)
+        cur_row: usize, // wrapped row the cursor is on
+        cur_col: usize, // 0-based column within that row
+    };
+
+    fn cmdBlock(self: *Editor) CmdBlock {
+        const cols = @max(self.win.cols, 1);
+        const promptw = @min(self.cmdPrompt().len, cols - 1);
+        var off: usize = 0;
+        var row: usize = 0;
+        var cur_row: usize = 0;
+        var cur_col: usize = promptw;
+        // Each row takes as much as fits in its cells — `cmdRowSplit` is the
+        // same break the renderer makes, so a wide char that would straddle
+        // the edge starts the next row instead of being torn.
+        while (true) {
+            const budget = if (row == 0) cols - promptw else cols;
+            const seg = cmdRowSplit(self.cmd.items[off..], budget, budget == cols);
+            const end = off + seg.bytes;
+            if (self.cmd_cur >= off and self.cmd_cur <= end) {
+                const before = clipCells(self.cmd.items[off..self.cmd_cur], budget);
+                cur_row = row;
+                cur_col = (if (row == 0) promptw else 0) + before.cells;
+                // A cursor past the last cell of a full row belongs to the row
+                // below (probe H6: a line filling the row exactly left the
+                // cursor at column 0 of the next one).
+                if (cur_col >= cols) {
+                    cur_row += 1;
+                    cur_col = 0;
+                }
+            }
+            if (end >= self.cmd.items.len) break;
+            off = end;
+            row += 1;
+        }
+        const need = @max(row + 1, cur_row + 1);
+        const height = @min(need, self.win.rows);
+        var first = need - height; // bottom-anchored: the tail of a huge line
+        if (cur_row < first) first = cur_row; // …but never off the cursor's row
+        return .{
+            .height = height,
+            .top = self.win.rows + 1 - height,
+            .first = first,
+            .cur_row = cur_row,
+            .cur_col = cur_col,
+        };
+    }
+
+    /// Paint the command line over its block, bottom row last. The typed text
+    /// and the ghost are clipped to each row by display cells on codepoint
+    /// boundaries (a byte clip underfills the row on wide chars and can tear a
+    /// codepoint), and every byte goes through the render sanitizer.
+    fn renderCmdline(self: *Editor) !void {
+        const th = theme.current;
+        const cols = @max(self.win.cols, 1);
+        const blk = self.cmdBlock();
+        // The rows above the status line belong to the windows: mark them so
+        // the next frame repaints them instead of trusting the diff.
+        if (blk.height > 1) self.markOverlayRows(blk.top, self.win.rows - 1);
+        const prompt = self.cmdPrompt();
+        const promptw = @min(prompt.len, cols - 1);
+
+        var off: usize = 0;
+        var row: usize = 0;
+        while (row < blk.first + blk.height) : (row += 1) {
+            const budget = if (row == 0) cols - promptw else cols;
+            const seg = cmdRowSplit(self.cmd.items[off..], budget, budget == cols);
+            if (row >= blk.first) {
+                try self.emitFmt("\x1b[{d};1H", .{blk.top + row - blk.first});
+                try self.setBg(th.status_bg);
+                try self.setFg(th.fg);
+                if (row == 0) try self.emit(prompt[0..promptw]);
+                try self.emitSanitized(self.cmd.items[off..][0..seg.bytes]);
+                var pad = budget - seg.cells;
+                // A row cut short by a double-width char that did not fit
+                // keeps a spare cell, and vim marks it '>' (nvim probe, 20
+                // columns: ":012345678901234567日本" painted
+                // ":012345678901234567>" then "日本").
+                if (pad > 0 and off + seg.bytes < self.cmd.items.len) {
+                    try self.emit(">");
+                    pad -= 1;
+                }
+                // Inline suggestion: the rest of the best match, dim, painted
+                // after the terminal cursor — so on the cursor's row, only
+                // with the cursor at end-of-line (fish hides suggestions
+                // mid-line) and never while the wildmenu ring holds the line.
+                if (row == blk.cur_row and self.wild.items.len == 0 and
+                    self.ghost.items.len > 0 and self.cmd_cur == self.cmd.items.len)
+                {
+                    const g = clipCells(self.ghost.items, pad);
+                    try self.setFg(th.fg_dim);
+                    try self.emitSanitized(self.ghost.items[0..g.bytes]);
+                    pad -= g.cells;
+                }
+                try self.emitSpaces(pad);
+            }
+            off += seg.bytes;
+        }
+        // While c_CTRL-R waits for a register name, vim draws a `"` at the
+        // cursor (probe R8: ":abc" + Ctrl-R rendered ':abc"').
+        if (self.cmd_reg) {
+            try self.emitFmt("\x1b[{d};{d}H", .{ blk.top + blk.cur_row - blk.first, blk.cur_col + 1 });
+            try self.setBg(th.status_bg);
+            try self.setFg(th.fg);
+            try self.emit("\"");
+        }
+    }
+
     fn renderStatus(self: *Editor) !void {
         const th = theme.current;
         const cols: usize = self.win.cols;
 
-        // Command / search line: a simple prompt across the bar.
-        if (self.mode == .command) {
-            try self.setBg(th.status_bg);
-            try self.setFg(th.fg);
-            const prompt = self.cmdPrompt();
-            try self.emit(prompt);
-            const room = if (cols > prompt.len) cols - prompt.len else 0;
-            // Both the typed text and the ghost are clipped to the row by
-            // display cells on codepoint boundaries (a byte clip underfills
-            // the row on wide chars and can tear a codepoint).
-            const line = clipCells(self.cmd.items, room);
-            try self.emitSanitized(self.cmd.items[0..line.bytes]);
-            var pad = room - line.cells;
-            // Inline suggestion: the rest of the best match, dim, painted
-            // after the terminal cursor. Shown only with the cursor at
-            // end-of-line (fish hides suggestions mid-line) and hidden while
-            // the wildmenu ring holds the line.
-            if (self.wild.items.len == 0 and self.ghost.items.len > 0 and self.cmd_cur == self.cmd.items.len) {
-                const g = clipCells(self.ghost.items, pad);
-                try self.setFg(th.fg_dim);
-                try self.emitSanitized(self.ghost.items[0..g.bytes]);
-                pad -= g.cells;
-            }
-            try self.emitSpaces(pad);
-            return;
-        }
+        // Command / search line: the prompt across the bar — over several rows
+        // when the line is wider than one (see `renderCmdline`).
+        if (self.mode == .command) return try self.renderCmdline();
 
         const accent = self.modeColor();
         const label = self.modeLabel();
@@ -9728,11 +9938,12 @@ pub const Editor = struct {
         var row: usize = undefined;
         var col: usize = undefined;
         if (self.mode == .command) {
-            row = self.win.rows;
-            // A line longer than the row is clipped (no horizontal cmdline
-            // scroll), so pin the cursor to the last cell rather than sending
-            // the terminal a column past the edge.
-            col = @min(self.cmdPrompt().len + 1 + unicode.displayWidth(self.cmd.items[0..self.cmd_cur]), self.win.cols);
+            // Inside the (possibly wrapped) command-line block — the same
+            // layout the renderer painted, so the cursor is always on the cell
+            // the next character will take.
+            const blk = self.cmdBlock();
+            row = blk.top + blk.cur_row - blk.first;
+            col = blk.cur_col + 1;
         } else if (self.sb_focus) {
             // On the sidebar's selected row.
             row = sb_tree_top + (self.sb_sel -| self.sb_scroll);
@@ -9865,6 +10076,45 @@ fn markIndex(k: key.Key) ?usize {
 
 fn isIdentCp(cp: u21) bool {
     return cp == '_' or (cp >= '0' and cp <= '9') or (cp >= 'a' and cp <= 'z') or (cp >= 'A' and cp <= 'Z') or cp >= 0x80;
+}
+
+/// Character classes for the command line's word erase — vim's `mb_get_class`,
+/// with the buckets that occur in practice: whitespace, ASCII punctuation,
+/// word characters (ASCII identifiers plus Latin/Greek/Cyrillic letters, nvim
+/// probes W21/W22) and one class per CJK block, so kana and kanji never merge
+/// into one word (probes W23/W24).
+fn cmdWordClass(cp: u21) u8 {
+    if (cp == ' ' or cp == '\t') return 0;
+    if (cp < 0x80) return if (isIdentCp(cp)) 2 else 1;
+    return switch (cp) {
+        0x2000...0x206f => 1, // general punctuation
+        0x3040...0x309f => 3, // hiragana
+        0x30a0...0x30ff => 4, // katakana
+        0x4e00...0x9fff => 5, // CJK ideographs
+        else => 2,
+    };
+}
+
+/// Where c_CTRL-W erases back to from byte offset `at`: over the whitespace
+/// in front of the cursor, then over the whole run of one character class.
+/// nvim transcripts: ":foo bar" -> ":foo " (W1), ":foo bar  " -> ":foo " (W3),
+/// ":foo.bar" -> ":foo." (W4), ":foo..." -> ":foo" (W5), ":   " -> ":" (W15),
+/// ":foo ab日本" -> ":foo ab" (W17).
+fn wordEraseStart(text: []const u8, at: usize) usize {
+    var i = at;
+    while (i > 0) {
+        const p = unicode.prevBoundary(text, i);
+        if (cmdWordClass(unicode.decode(text[p..]).cp) != 0) break;
+        i = p;
+    }
+    if (i == 0) return 0;
+    const cls = cmdWordClass(unicode.decode(text[unicode.prevBoundary(text, i)..]).cp);
+    while (i > 0) {
+        const p = unicode.prevBoundary(text, i);
+        if (cmdWordClass(unicode.decode(text[p..]).cp) != cls) break;
+        i = p;
+    }
+    return i;
 }
 
 /// A short label for an LSP SymbolKind, shown before each symbol in the picker.
@@ -10199,6 +10449,18 @@ fn clipCells(text: []const u8, cells: usize) struct { bytes: usize, cells: usize
     return .{ .bytes = b, .cells = used };
 }
 
+/// How much of `text` one command-line row of `budget` cells takes. Normally
+/// the longest prefix that fits, so a double-width char that would straddle
+/// the edge starts the next row. `whole_row` says the budget is a full screen
+/// row: there, when even one codepoint does not fit (a terminal narrower than
+/// a wide char), it is taken anyway — the next row would be no wider, and a
+/// row that consumes nothing loops the layout and the renderer forever.
+fn cmdRowSplit(text: []const u8, budget: usize, whole_row: bool) struct { bytes: usize, cells: usize } {
+    const seg = clipCells(text, budget);
+    if (seg.bytes > 0 or text.len == 0 or !whole_row) return .{ .bytes = seg.bytes, .cells = seg.cells };
+    return .{ .bytes = unicode.nextBoundary(text, 0), .cells = 0 };
+}
+
 fn textEditAfter(_: void, a: lsp.TextEdit, b: lsp.TextEdit) bool {
     if (a.start_line != b.start_line) return a.start_line > b.start_line;
     return a.start_char > b.start_char;
@@ -10465,6 +10727,66 @@ test "byteAtDisplayCol round-trips with displayCol" {
     const off = byteAtDisplayCol(line, tabWidth());
     try std.testing.expectEqual(@as(usize, 2), off);
     try std.testing.expectEqual(@as(usize, tabWidth()), displayCol(line, off));
+}
+
+test "wordEraseStart follows nvim's c_CTRL-W word rule" {
+    const eq = std.testing.expectEqual;
+    // Ground truth: real nvim (`-u NONE -i NONE -n --noplugin`) driven through
+    // a tmux pty, the command line typed and its rendered row read back —
+    //   ":foo bar"      + Ctrl-W -> ":foo "       (probe W1)
+    //   ":foo bar  "    + Ctrl-W -> ":foo "       (W3: the skipped blanks go too)
+    //   ":foo.bar"      + Ctrl-W -> ":foo."       (W4: the word only)
+    //   ":foo..."       + Ctrl-W -> ":foo"        (W5: a punctuation run)
+    //   ":e /tmp/foo"   + Ctrl-W -> ":e /tmp/"    (W10)
+    //   ":   "          + Ctrl-W -> ":"           (W15: blanks alone)
+    //   ":foo ab日本"   + Ctrl-W -> ":foo ab"     (W17: CJK is its own class)
+    //   ":foo 日本ab"   + Ctrl-W -> ":foo 日本"   (W18)
+    //   ":foo あい日本" + Ctrl-W -> ":foo あい"   (W23: kana ≠ kanji)
+    //   ":foo bär"      + Ctrl-W -> ":foo "       (W21: Latin letters are word)
+    //   ":foo bar_baz42"+ Ctrl-W -> ":foo "       (W11: one identifier)
+    try eq(@as(usize, 4), wordEraseStart("foo bar", 7));
+    try eq(@as(usize, 4), wordEraseStart("foo bar  ", 9));
+    try eq(@as(usize, 4), wordEraseStart("foo.bar", 7));
+    try eq(@as(usize, 3), wordEraseStart("foo...", 6));
+    try eq(@as(usize, 7), wordEraseStart("e /tmp/foo", 10));
+    try eq(@as(usize, 0), wordEraseStart("   ", 3));
+    try eq(@as(usize, 6), wordEraseStart("foo ab日本", 12));
+    try eq(@as(usize, 10), wordEraseStart("foo 日本ab", 12));
+    try eq(@as(usize, 10), wordEraseStart("foo あい日本", 16));
+    try eq(@as(usize, 4), wordEraseStart("foo bär", 8));
+    try eq(@as(usize, 4), wordEraseStart("foo bar_baz42", 13));
+    // Mid-line: only the run before the cursor is taken (probe W8,
+    // ":abc def" + 2 Lefts -> ":abc ef").
+    try eq(@as(usize, 4), wordEraseStart("abc def", 5));
+    // Column 0 has nothing to erase (probe W9).
+    try eq(@as(usize, 0), wordEraseStart("abc def", 0));
+}
+
+test "cmdRowSplit breaks a command-line row where nvim does" {
+    const eq = std.testing.expectEqual;
+    // A row takes whole codepoints only, by display cells.
+    try eq(@as(usize, 3), cmdRowSplit("abcdef", 3, true).bytes);
+    try eq(@as(usize, 3), cmdRowSplit("abcdef", 3, true).cells);
+    // Ground truth: real nvim (`-u NONE -i NONE -n --noplugin`) in a
+    // 20-column tmux pty. ":012345678901234567日本" painted
+    // ":012345678901234567>" and "日本" — the wide char that would straddle
+    // the edge starts the next row and vim marks the leftover cell '>'. So
+    // the split stops one cell short and the caller has a cell to mark.
+    const straddle = cmdRowSplit("012345678901234567日本", 19, false);
+    try eq(@as(usize, 18), straddle.bytes);
+    try eq(@as(usize, 18), straddle.cells);
+    // The same char on a row that is not wide enough for it at all: the next
+    // row would be no wider, so it is consumed here. Without this the layout
+    // never advances and the editor spins at 100% CPU on a one-column
+    // terminal (it does not budge for `:q!` either).
+    const one_col = cmdRowSplit("日本", 1, true);
+    try eq(@as(usize, 3), one_col.bytes);
+    try eq(@as(usize, 0), one_col.cells);
+    // …but only on a whole row: with the prompt taking the first cell, the
+    // char still moves to the next row instead.
+    try eq(@as(usize, 0), cmdRowSplit("日本", 1, false).bytes);
+    // Nothing left to take is not a stall.
+    try eq(@as(usize, 0), cmdRowSplit("", 1, true).bytes);
 }
 
 test "completePrefixLen holds back a split escape sequence" {

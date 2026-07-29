@@ -187,6 +187,67 @@ pub fn run(ctx: *h.Ctx) !void {
     // line, never just the part before the cursor.
     h.case(ctx, target, "nvim#e10 Enter mid-line runs the whole line", &.{ ":s/a/XY/", "\x1b[D\x1b[D\x1b[D", "\r", ":wq", CR }, "ab\n", "XYb\n");
 
+    // Command-line editing keys: Delete, c_CTRL-W, c_CTRL-U, c_CTRL-R and Tab
+    // with the cursor mid-line. Every expectation below came out of real nvim
+    // (`-u NONE -i NONE -n --noplugin`) driven through a tmux pty with exactly
+    // these keys, reading back the file it saved.
+    const DEL = "\x1b[3~";
+    const LEFT = "\x1b[D";
+    const HOME = "\x1b[H";
+    const CTRLW = "\x17";
+    const CTRLU = "\x15";
+    const CTRLR = "\x12";
+
+    // <Del> takes the character *under* the cursor…
+    h.case(ctx, target, "nvim#d1 Delete under the cursor", &.{ ":s/aXb/Y/", LEFT ** 5, DEL, CR, ":wq", CR }, "ab\n", "Y\n");
+    h.case(ctx, target, "nvim#d2 two Deletes", &.{ ":s/aXYb/Q/", LEFT ** 6, DEL, DEL, CR, ":wq", CR }, "ab\n", "Q\n");
+    // …but at end-of-line the one *before* it (probe: ":s/a/XY" + Del ran
+    // ":s/a/X", so the Y went), and at column 0 the first character.
+    h.case(ctx, target, "nvim#d3 Delete at end-of-line deletes the char before", &.{ ":s/a/XY", DEL, CR, ":wq", CR }, "ab\n", "Xb\n");
+    h.case(ctx, target, "nvim#d4 Delete at column 0", &.{ ":s/a/X/", HOME, DEL, "s", CR, ":wq", CR }, "ab\n", "Xb\n");
+    // On an empty line it cancels the command line, exactly as backspace does:
+    // the following 'x' is a normal-mode key, so it deletes the 'a'.
+    h.case(ctx, target, "nvim#d5 Delete on an empty command line cancels", &.{ ":", DEL, "x", ":wq", CR }, "ab\n", "b\n");
+
+    // c_CTRL-W erases the word before the cursor; the whitespace in front of
+    // it goes too ("…/X/ foo  " -> "…/X/ "), a punctuation run is its own word
+    // ("…/g!!!" -> "…/g"), and mid-line the tail stays put.
+    h.case(ctx, target, "nvim#w1 Ctrl-W erases the word before the cursor", &.{ ":s/a/X/junk", CTRLW, CR, ":wq", CR }, "ab\n", "Xb\n");
+    h.case(ctx, target, "nvim#w2 Ctrl-W skips (and takes) trailing blanks", &.{ ":s/a/X/ foo  ", CTRLW, CR, ":wq", CR }, "ab\n", "Xb\n");
+    h.case(ctx, target, "nvim#w3 Ctrl-W twice", &.{ ":s/a/X/ one two", CTRLW, CTRLW, CR, ":wq", CR }, "ab\n", "Xb\n");
+    h.case(ctx, target, "nvim#w4 Ctrl-W takes a punctuation run alone", &.{ ":%s/a/X/g!!!", CTRLW, CR, ":wq", CR }, "aa\naa\n", "XX\nXX\n");
+    h.case(ctx, target, "nvim#w5 Ctrl-W mid-line keeps the tail", &.{ ":s/JUNKa/X/", LEFT ** 4, CTRLW, CR, ":wq", CR }, "ab\n", "Xb\n");
+    h.case(ctx, target, "nvim#w6 Ctrl-W at column 0 is a no-op", &.{ ":s/a/X/", HOME, CTRLW, CR, ":wq", CR }, "ab\n", "Xb\n");
+
+    // c_CTRL-U erases from the start of the line to the cursor — not the whole
+    // line: with the cursor after "JUNK" the rest still runs.
+    h.case(ctx, target, "nvim#u16 Ctrl-U erases the typed line", &.{ ":junk", CTRLU, "s/a/X/", CR, ":wq", CR }, "ab\n", "Xb\n");
+    h.case(ctx, target, "nvim#u17 Ctrl-U mid-line keeps the tail", &.{ ":JUNKs/a/X/", LEFT ** 6, CTRLU, CR, ":wq", CR }, "ab\n", "Xb\n");
+    h.case(ctx, target, "nvim#u18 Ctrl-U at column 0 is a no-op", &.{ ":s/a/X/", HOME, CTRLU, CR, ":wq", CR }, "ab\n", "Xb\n");
+
+    // c_CTRL-R inserts a register at the cursor; an unknown or empty register
+    // inserts nothing and swallows the key (the line runs as typed).
+    h.case(ctx, target, "nvim#r1 Ctrl-R inserts a named register", &.{ "\"ayiw", ":s/", CTRLR, "a", "/X/", CR, ":wq", CR }, "hello world\n", "X world\n");
+    h.case(ctx, target, "nvim#r2 Ctrl-R inserts the unnamed register", &.{ "yiw", ":s/", CTRLR, "\"", "/X/", CR, ":wq", CR }, "hello world\n", "X world\n");
+    h.case(ctx, target, "nvim#r3 Ctrl-R with an invalid register inserts nothing", &.{ ":s/hello/X/", CTRLR, "$", CR, ":wq", CR }, "hello world\n", "X world\n");
+    h.case(ctx, target, "nvim#r4 Ctrl-R with an empty register inserts nothing", &.{ ":s/hello/X/", CTRLR, "z", CR, ":wq", CR }, "hello world\n", "X world\n");
+    h.case(ctx, target, "nvim#r5 Ctrl-R mid-line inserts at the cursor", &.{ "\"ayiw", ":s//X/", LEFT ** 3, CTRLR, "a", CR, ":wq", CR }, "hello world\n", "X world\n");
+    h.case(ctx, target, "nvim#r6 the line stays editable after a register insert", &.{ "\"ayiw", ":s/", CTRLR, "a", "Q/X/", LEFT ** 4, DEL, CR, ":wq", CR }, "hello world\n", "X world\n");
+
+    // Tab completes only the text BEFORE the cursor and keeps the tail: with
+    // the cursor after "earlie" the count " 2" survives, so ":earlier 2" runs
+    // and both changes come off (probe T10). Completing with no tail after it
+    // is ":earlier" — one change (probe T12) — which is also what zedit does
+    // when a completion swallows the rest of the line.
+    h.case(ctx, target, "nvim#t1 Tab mid-line keeps the tail", &.{ "IA", ESC, "IB", ESC, ":earlie 2", LEFT ** 2, "\t", CR, ":wq", CR }, "one\n", "one\n");
+    h.case(ctx, target, "nvim#t2 …against Tab with no tail", &.{ "IA", ESC, "IB", ESC, ":earlie", "\t", CR, ":wq", CR }, "one\n", "Aone\n");
+
+    // A command line wider than the terminal row wraps onto further rows in
+    // both editors (nvim grows the command-line area upward, probe H1) and
+    // still runs as one command.
+    const long_rep = "0123456789" ** 9; // 90 characters: wider than the 80-column pty
+    h.case(ctx, target, "nvim#t3 a wrapped command line runs as one command", &.{ ":s/a/" ++ long_rep ++ "/", CR, ":wq", CR }, "ab\n", long_rep ++ "b\n");
+
     // Paragraph motions and text objects ({ } ip ap) — nvim-verified.
     const P2 = "aaa\nbbb\n\nccc\nddd\n";
     const P3 = "aaa\n\nbbb\n\nccc\n";

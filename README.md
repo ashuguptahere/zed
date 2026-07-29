@@ -119,12 +119,16 @@
   history or command-name match as dim ghost text; `Right`/`End` at the end
   of the line accepts, Enter always runs only what you typed — config
   `cmdline_suggestions`), mid-line editing (`Left`/`Right`, `Home`/`End`,
-  `Ctrl-b`/`Ctrl-e`; typing inserts at the cursor — nvim-pinned),
+  `Ctrl-b`/`Ctrl-e`, `Delete` under the cursor, `Ctrl-w` word erase,
+  `Ctrl-u` erase-to-start, `Ctrl-r{reg}` to insert a register; typing
+  inserts at the cursor — all nvim-pinned),
   Tab completion (command names, `:e`/`:w` paths, `:theme` names — nvim
-  wildmenu semantics, popup included: `Left`/`Right` select matches, and in
+  wildmenu semantics, popup included: only the text *before* the cursor is
+  completed and the tail is kept, `Left`/`Right` select matches, and in
   a path popup `Down` descends into the selected directory while `Up`
   re-completes in the parent) and per-kind history on Up/Down with
-  vim's prefix filtering
+  vim's prefix filtering. A line wider than the terminal wraps onto further
+  rows, the command-line area growing upward over the window, as nvim's does
 - **Multiple buffers and windows**: `:e`, `:bn`/`:bp`/`:bd`/`:ls`, `]b`/`[b`
   to cycle (counts work: `2]b`), a `Space b` Buffers menu;
   `:split`/`:vsplit` and `Ctrl-w` navigation; every buffer keeps its own

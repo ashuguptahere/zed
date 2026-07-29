@@ -2,6 +2,59 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.25.0 - 2026-07-29
+
+### Added
+
+- **The command line's last vim keys**, each rule probed from real nvim
+  (`-u NONE -i NONE -n --noplugin`) through a pty before it was written:
+  - `Delete` removes the character **under** the cursor — but at the end of
+    the line the one *before* it (nvim's `c_<Del>`: ":s/a/XY" + Del ran
+    ":s/a/X"), and on an empty line it cancels the command line exactly as
+    backspace does.
+  - `Ctrl-w` erases the word before the cursor, **including the whitespace it
+    skipped over** (":foo bar  " → ":foo "), by vim's character classes: a
+    punctuation run is a word of its own (":foo..." → ":foo", ":foo.bar" →
+    ":foo."), and hiragana, katakana, CJK and ASCII never merge into one word
+    (":foo ab日本" → ":foo ab"). A no-op at column 0; it never cancels the
+    line.
+  - `Ctrl-u` erases everything between the start of the line and the cursor,
+    **keeping the tail** (":abcdef" + 3 Lefts → ":def") — and, unlike
+    backspace, never cancels an empty line.
+  - `Ctrl-r{register}` inserts a register at the cursor: `a`-`z`, the unnamed
+    `"`, and the clipboard `+`/`*`. vim's `"` is drawn at the cursor while the
+    name is awaited, Esc there abandons the prompt and keeps the line, and an
+    unknown or empty register inserts nothing and swallows the key. A register
+    holding several lines inserts one separator per interior line break and
+    drops the trailing one, matching what nvim puts on the line; register text
+    is untrusted, so it renders through the same sanitizer as everything else
+    (nvim shows the separator as `^M`, zedit as `?`, and an escape sequence in
+    a yanked line can never reach the terminal live).
+
+### Changed
+
+- **Tab completes only the text before the cursor** and keeps the rest of the
+  line, with the cursor between the two — nvim's rule, and the one divergence
+  the earlier wildmenu work had recorded (":e alXY" + 2 Lefts + Tab now gives
+  ":e alpha.txtXY", not ":e alpha.txt"). The whole ring follows: cycling,
+  the restore of the typed stem, and the path popup's `Down`/`Up` directory
+  navigation all put the tail back.
+- **A command line wider than the row now wraps** onto further screen rows,
+  the command-line area growing upward over the window, instead of clipping
+  with the cursor pinned to the last cell. This is what nvim does — the probe
+  that was expected to show a horizontal scroll showed wrapping instead (a
+  20-column pane painted ":0123456789012345678" then "901234", the cursor on
+  the lower row). The block is bottom-anchored at the status row, the rows it
+  covers are treated as an overlay so the next frame repaints them, the
+  wildmenu popup moves above the whole block, and the inline suggestion
+  continues on the cursor's row. Each row still breaks on a codepoint
+  boundary by display cells, so a wide char that would straddle the edge
+  starts the next row rather than being torn — and the cell it leaves over
+  carries vim's `>` marker (probed: a 20-column pane painted
+  ":日本語のファイル名>" then "がとても長い"). On a terminal narrower than a
+  wide character, where no row could ever hold it, the char is taken anyway
+  rather than leaving the layout unable to advance.
+
 ## 0.24.0 - 2026-07-29
 
 ### Added

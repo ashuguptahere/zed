@@ -526,12 +526,36 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   descends into the selected directory (re-completing inside it; on a file it
   just closes the popup) and `Up` re-completes in the parent directory —
   nvim's wildmenu file-navigation keys, pty-probed; with any other popup, or
-  none, Up/Down stay history. **Mid-line editing** (nvim-pinned in
+  none, Up/Down stay history. Completion applies to the text **before the
+  cursor** and keeps whatever follows it — the ring, the stem restore and the
+  directory keys all put the tail back and leave the cursor between the two
+  (nvim, probed). **Mid-line editing** (nvim-pinned in
   `vim_compat`): the cmdline cursor moves with `Left`/`Right`,
   `Home`/`End` (vim's `Ctrl-b`/`Ctrl-e` too); typed and pasted text inserts
   at the cursor, backspace deletes before it (a no-op at column 0 of a
   non-empty line; an empty line still cancels), and history recall or wild
-  cycling puts the cursor at end-of-line (vim's rule). **History**
+  cycling puts the cursor at end-of-line (vim's rule). `Delete` takes the
+  character *under* the cursor — at end-of-line the one before it, and on an
+  empty line it cancels like backspace; `Ctrl-w` erases the word before the
+  cursor together with the whitespace it skipped over (vim's classes: a
+  punctuation run is a word of its own, and kana/kanji/ASCII never merge —
+  the pure rule is unit-tested as `wordEraseStart`); `Ctrl-u` erases from the
+  start of the line to the cursor, keeping the tail, and never cancels;
+  `Ctrl-r{reg}` inserts a register (`a`-`z`, `"`, `+`/`*`) at the cursor,
+  drawing vim's `"` at the cursor while it waits, with Esc abandoning the
+  prompt and an unknown or empty register inserting nothing. A multi-line
+  register inserts one CR per interior line break and drops the trailing one
+  (nvim shows `^M`; zedit's sanitizer shows `?`, since register text is
+  untrusted). A line **wider than the row wraps upward** over the window
+  rather than scrolling sideways (nvim's command-line area growing, probed):
+  the block is bottom-anchored at the status row, the rows above it are an
+  overlay the next frame repaints, the wildmenu popup sits above the whole
+  block, and the ghost continues on the cursor's row. Rows break on
+  codepoint boundaries by display cells, so a wide char that would straddle
+  the edge starts the next row and vim's `>` marks the cell it left over
+  (`cmdRowSplit`, unit-tested; on a terminal narrower than the char itself
+  it is taken anyway, since no row could hold it and a row that consumes
+  nothing would never let the layout advance). **History**
   (nvim-verified in
   `vim_compat`): `:` and `/ ?` keep separate 100-entry histories; Up/Down
   recall entries filtered by the typed prefix (edits keep the browse position,
@@ -862,12 +886,14 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   re-running them; autoindent is vim's 'autoindent' only (no smartindent/
   tree-sitter indent queries). Cmdline completion covers command names,
   `:e`/`:w` paths and `:theme` (not every command's arguments). The cmdline
-  cursor moves (Left/Right/Home/End/Ctrl-b/Ctrl-e, insert-at-cursor), but
-  there is no `Delete`-under-cursor, no `Ctrl-w`/`Ctrl-u` word/line erase and
-  no `c_CTRL-R` register insertion; Tab mid-line completes the whole line
-  (nvim, probed, completes only the text before the cursor and keeps the
-  tail), and a cmdline longer than the row is clipped with the cursor pinned
-  to the last cell (nvim scrolls it horizontally). A **linewise** visual
+  has vim's editing keys (cursor motion, `Delete`, `Ctrl-w`/`Ctrl-u`,
+  `c_CTRL-R`, completion of the text before the cursor, upward wrapping), but
+  not `q:`/`c_CTRL-F` (the cmdline window), `c_CTRL-R c_CTRL-R`'s literal
+  variants or the expression register `=`; `Ctrl-w`'s classes cover
+  whitespace/punctuation/word/hiragana/katakana/CJK rather than vim's whole
+  `utf_class` table; and a wrapped line taller than the whole screen shows
+  the rows around the cursor (nvim's own behaviour there is a full-screen
+  redraw that was not pinned). A **linewise** visual
   operator leaves the cursor in the wrong column (measured, pre-dates the
   mouse work and visible without it — `9lVd`): `Vd` puts it at column 0 where
   nvim keeps the column it had, and `Vy` keeps the column where nvim moves it

@@ -143,6 +143,7 @@ Per `/home/origo/Desktop/zed/CLAUDE.md`:
 - Buffer-word completion when no language server answers (vim's keyword completion, fuzzy-ranked across every open buffer) — Helix has no server-free completion at all
 - Structural text objects from the syntax tree (`af`/`if`, `ac`/`ic`, `aa`/`ia`, `aC`/`iC`, `]f`/`[f`) — Helix's tree-sitter object set is larger, but the mechanism is there
 - Fish-style inline suggestions on the command line (history/command-name ghost text, Right/End to accept) — neither Helix nor stock Neovim ships this
+- A vim-complete command line otherwise: mid-line editing, `Delete`, `Ctrl-w`/`Ctrl-u` erase, `Ctrl-r{reg}` register insertion, wildmenu completion of the text before the cursor, per-kind history, and nvim's upward-wrapping line when it outgrows the row (Helix's prompt has no register insertion and no wildmenu)
 - Mouse: click to move the cursor, drag to select, double/triple-click word/line selection with word-wise drag, wheel scrolling the window under the pointer; buffer tabs along the top; a recently-opened startup screen; `:update` against the release tags
 - Remote editing over plain SSH (`ssh://host/path`) with nothing installed on the far side — neither Helix nor stock Neovim does this
 

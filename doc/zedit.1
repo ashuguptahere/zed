@@ -766,7 +766,9 @@ paths for
 .B /
 and the next Tab descends into it) and
 .B :theme
-names. Multiple matches show a popup; Tab cycles matches then the text as
+names. Only the text \fBbefore the cursor\fR is completed \(em the rest of
+the line is put back after every candidate and the cursor lands between the
+two (nvim). Multiple matches show a popup; Tab cycles matches then the text as
 typed, Shift\-Tab cycles backward, and Left/Right select matches too (nvim's
 wildmenu). While a path popup is open, Down descends into the selected
 directory and re\-completes inside it, and Up re\-completes in the parent
@@ -785,7 +787,48 @@ the end of the line (vim).
 .B Left\fR/\fPRight\fR, \fPHome\fR/\fPEnd\fR, \fPCtrl\-b\fR/\fPCtrl\-e
 Move the cursor within the command line (vim's cmdline keys): typed and
 pasted text inserts at the cursor, backspace deletes before it (an empty
-line still cancels).
+line still cancels). A line wider than the terminal wraps onto further screen
+rows \(em the command\-line area grows upward over the window, as nvim's does
+\(em rather than scrolling sideways. A double\-width character that would
+straddle the edge starts the next row, and the cell it leaves over is marked
+.BR > ,
+as in vim.
+.TP
+.B Delete
+Delete the character under the cursor; at the end of the line the one before
+it, and on an empty line it cancels the command line (vim's
+.BR c_<Del> ).
+.TP
+.B Ctrl\-w
+Erase the word before the cursor, the whitespace in front of it included
+(vim's
+.BR c_CTRL\-W ).
+A run of punctuation counts as a word of its own, and CJK never merges with
+ASCII. A no\-op at column 0.
+.TP
+.B Ctrl\-u
+Erase everything between the start of the line and the cursor, keeping the
+tail (vim's
+.BR c_CTRL\-U ).
+Unlike backspace it never cancels the line.
+.TP
+.B Ctrl\-r {register}
+Insert a register's contents at the cursor (vim's
+.BR c_CTRL\-R ):
+.BR a \- z ,
+the unnamed
+.BR \(dq ,
+and the clipboard
+.BR + / * .
+A
+.B \(dq
+is drawn at the cursor while the register name is awaited; Esc there
+abandons the prompt and keeps the line, and an unknown or empty register
+inserts nothing. A register holding several lines inserts one separator per
+line break and drops the trailing one; the text is untrusted, so control
+bytes render as
+.B ?
+and never reach the terminal live.
 .TP
 .B Right\fR/\fPEnd\fR at end\-of\-line
 Accept the inline suggestion (fish\-style ghost text): while typing, the rest
