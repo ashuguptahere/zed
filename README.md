@@ -95,12 +95,16 @@
   remote directory opens the fuzzy picker over it and `:w` writes back
   atomically (temp file + rename, so a dropped connection never leaves a
   half-written file)
-- **Mouse support** (SGR): wheel scrolling, tab clicks and explorer clicks —
-  in the pickers too (`zedit .` starts in one): click a result row to select
-  it, click it again to open, so a double-click opens from anywhere
-  (Shift+drag still selects text in your terminal; plain clicks in the text
-  area are unbound), with vim's centring on long jumps so scrolling doesn't
-  drag the cursor around
+- **Mouse support** (SGR, config `mouse`): **click to move the cursor** — into
+  another split, which it focuses first — and **drag to select** (the press
+  anchors, motion extends, release finishes, leaving an ordinary visual
+  selection for `d`/`y`/`c`); a click with an operator pending applies it over
+  the clicked range, all pinned to real nvim's `mouse=a`. Plus wheel
+  scrolling, tab clicks and explorer clicks — in the pickers too (`zedit .`
+  starts in one): click a result row to select it, click it again to open, so
+  a double-click opens from anywhere. Clicks land correctly through soft wrap,
+  tabs, wide CJK cells, inlay hints and the diff views. **Shift+drag** is your
+  terminal's own selection, and `mouse = false` turns reporting off entirely
 - **Partial commands shown as you type them** (`d`, `di`, `2d`, `"ay`, `^W`) in
   the statusline, vim's `showcmd`
 - **Command line** with fish-style inline suggestions (the rest of the best
@@ -207,7 +211,8 @@ missing file just means defaults. Settings today: `theme`, `tab_width`,
 `nerd_font`, `sidebar`, `relative_numbers`, `large_file_mb`, `autoindent`,
 `buffer_tabs`, `auto_completion`, `completion_delay_ms`,
 `buffer_completion`, `inline_diagnostics`, `soft_wrap`, `wrap_indent`,
-`wrap_column`, `persistent_undo`, `format_on_save`, `cmdline_suggestions`.
+`wrap_column`, `persistent_undo`, `format_on_save`, `cmdline_suggestions`,
+`mouse`.
 
 Every CLI option has a short and a long form (`-h/--help`, `-v/--version`,
 `-l/--log`, `-s/--lsp`, `-c/--config`, `-t/--tutor`, `-b/--benchmark`,

@@ -406,6 +406,12 @@
      or above; typing edits every line at once; Esc collapses them.
    - Scrolling:  Ctrl-d / Ctrl-u  move by half a page, and the mouse
      wheel scrolls three lines at a time.
+   - The mouse edits too:  click in the text to put the cursor there
+     (in another split, that focuses it first), and hold the button
+     down and move to select — you end up in VISUAL, so  d  y  c  and
+     the rest work on it.  To select text for your *terminal's* own
+     clipboard, hold Shift while you drag; put  mouse = false  in your
+     config to hand the mouse back to the terminal completely.
    - Undo is a tree:  u  and  Ctrl-r  step back and forward as usual, but
      if you undo and then type something new, the old version is not
      lost.   g-  and  g+  walk every state in the order you made them,

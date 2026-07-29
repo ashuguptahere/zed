@@ -286,6 +286,11 @@ pub const Editor = struct {
 
     // visual
     vstart: Pos = .{ .row = 0, .col = 0 },
+    // A left button is down and its press landed in a window's text area, so
+    // motion reports extend a selection from there. No `*Win` is kept: windows
+    // are freed by `:close`/`:only`/a diff teardown, all reachable mid-drag,
+    // and a stored pointer would dangle.
+    dragging: bool = false,
 
     // multiple cursors (one per line; primary stays cy/cx). Empty = single cursor.
     extra: std.ArrayList(Pos) = .empty,
@@ -491,7 +496,14 @@ pub const Editor = struct {
     paste_carry_len: usize = 0,
 
     quit: bool = false,
-    inbuf: [256]u8 = undefined,
+    // One read's worth of raw input. Sized so a full-window mouse drag (mode
+    // 1002 reports one ~13-byte sequence per cell crossed, ~900 bytes across
+    // an 80-column window) arrives in a single read and costs a single frame.
+    inbuf: [1024]u8 = undefined,
+    // An escape sequence the last read could not finish, held back so it is
+    // never decoded as its fragments (see `readInput`/`completePrefixLen`).
+    carry: [32]u8 = undefined,
+    carry_len: usize = 0,
 
     /// Build a fresh, empty Doc holding `b`; its per-doc state is placeholder
     /// (the active doc's real state lives on the Editor and is swapped in here
@@ -628,7 +640,7 @@ pub const Editor = struct {
     pub fn run(self: *Editor) !void {
         try self.term.enableRaw();
         self.term.installResizeHandler();
-        try self.term.enterAltScreen();
+        try self.term.enterAltScreen(config.settings.mouse);
         self.win = self.term.size();
         // The greeting belongs to a buffer session: it must neither clobber a
         // status set before the loop starts (the `zedit <dir>` browser's
@@ -736,7 +748,11 @@ pub const Editor = struct {
     }
 
     fn readInput(self: *Editor) ![]u8 {
-        var n = (try self.term.read(self.inbuf[0..])).len;
+        // Whatever the last read held back leads this one, so a sequence split
+        // across the buffer boundary is decoded whole.
+        @memcpy(self.inbuf[0..self.carry_len], self.carry[0..self.carry_len]);
+        var n = self.carry_len + (try self.term.read(self.inbuf[self.carry_len..])).len;
+        self.carry_len = 0;
         // Complete a trailing escape sequence split across reads — over SSH,
         // input regularly arrives in small chunks, and decoding half a CSI
         // sequence would garble arrows, paste fences and friends. A genuine
@@ -745,6 +761,21 @@ pub const Editor = struct {
             incompleteEscapeTail(self.inbuf[0..n]) and self.term.waitMore(15))
         {
             n += (try self.term.read(self.inbuf[n..])).len;
+        }
+        // A read that fills the buffer *exactly* never enters that loop —
+        // there is nowhere left to put the rest — so the split has to be
+        // repaired the other way round: hold the unfinished tail back and
+        // prepend it to the next read. Mouse drags make this routine (one
+        // drag across a window is several buffers' worth of reports); before
+        // the carry, the fragment decoded as a bare Esc plus loose bytes that
+        // ran as commands or landed in the document.
+        if (n == self.inbuf.len and incompleteEscapeTail(self.inbuf[0..n])) {
+            const keep = completePrefixLen(self.inbuf[0..n], self.term.waitMore(0));
+            if (n - keep > 0 and n - keep <= self.carry.len) {
+                @memcpy(self.carry[0 .. n - keep], self.inbuf[keep..n]);
+                self.carry_len = n - keep;
+                return self.inbuf[0..keep];
+            }
         }
         return self.inbuf[0..n];
     }
@@ -900,17 +931,56 @@ pub const Editor = struct {
 
     /// One key through the dot-repeat capture wrapper and the mode dispatcher.
     fn feedKey(self: *Editor, k: key.Key, raw: []const u8) !void {
+        // `mouse = false` never asks the terminal to report at all; a stray
+        // report from a terminal some other program left in tracking mode
+        // stays inert too, rather than moving a cursor nobody pointed at.
+        if (!config.settings.mouse) switch (k) {
+            .mouse_press, .mouse_drag, .mouse_release, .mouse_other, .scroll_up, .scroll_down => return,
+            else => {},
+        };
         // Mouse wheel: scroll the viewport in the buffer modes; never part of
         // a command, so it bypasses dot-repeat/macro capture entirely.
         switch (k) {
             .mouse_press => |m| {
+                // A press acts at once, like an arrow key, so it clears the
+                // showcmd indicator instead of leaving the pending command on
+                // it — nvim blanks that cell for `d`+click and `3`+click alike
+                // (pty-probed). Leaving it set also made the *next* command
+                // append to the stale text ("d" then `3` showed `d3`).
+                self.showcmd_len = 0;
+                self.showcmd_done = false;
+                // A press that consumes a pending operator *makes a change*,
+                // so it joins the dot capture like any other motion: nvim's
+                // redo stores the screen position, which is exactly what
+                // replaying the raw report does. Without this, `.` silently
+                // repeated whatever change came before instead.
+                const change = self.mode == .normal and self.operator != .none and self.await_arg == .none;
+                if (change and !self.in_dot) self.dotCapturePre(raw);
                 try self.mouseClick(m);
+                if (change and !self.in_dot) self.dotCapturePost();
                 return;
             },
-            // Releases, drags and other buttons: inert, like the press that
+            .mouse_drag => |m| {
+                try self.mouseDrag(m);
+                return;
+            },
+            // nvim applies the release coordinates too, so a release away from
+            // the last motion is a final extend before the drag ends.
+            .mouse_release => |m| {
+                try self.mouseDrag(m);
+                self.dragging = false;
+                return;
+            },
+            // Other buttons, modified clicks, tilt: inert, like the press that
             // preceded them — never into showcmd, dot-repeat or pending state
             // (a release must not cancel an operator the wheel would keep).
-            .mouse_other => return,
+            // Clearing the drag here also self-heals a release a terminal
+            // encoded oddly (button 3, "no button"), which would otherwise
+            // leave the drag machine armed for ever.
+            .mouse_other => {
+                self.dragging = false;
+                return;
+            },
             .scroll_up, .scroll_down => {
                 switch (self.mode) {
                     .normal, .insert, .visual, .visual_line, .visual_block => self.mouseScroll(k == .scroll_up),
@@ -990,30 +1060,125 @@ pub const Editor = struct {
         }
     }
 
+    /// True when screen column `col` belongs to the open sidebar. Those columns
+    /// are carved off before the windows tile, so they belong to no `Win` and
+    /// the tree's hit-test has to run ahead of the text area's.
+    fn inSidebar(self: *Editor, col: usize) bool {
+        if (!self.sb_open) return false;
+        const x = self.sbX();
+        return col >= x and col < x + self.sbWidth();
+    }
+
     /// A left-click. The tabline switches buffers, the way every tabbed
     /// editor behaves, and the explorer acts on its rows: a single click
     /// toggles a directory or opens a file (VS Code's rule), while its
-    /// header or the empty space below the tree just focuses it. Clicks
-    /// anywhere else — the text area included — are ignored, so terminal
-    /// text selection keeps working. The picker view has its own route
-    /// (`pickerClick`); command/visual modes still swallow every click —
-    /// a click must not cancel an operator.
+    /// header or the empty space below the tree just focuses it. A click in
+    /// a window's text area moves the cursor there (focusing that window
+    /// first when it is not the active one) — nvim's `mouse=a`, pty-probed:
+    /// no jumplist entry, a pending count discarded, an existing selection
+    /// ended, insert mode continued, and a pending *operator* applied over
+    /// the clicked range as an exclusive charwise motion. The picker view has
+    /// its own route (`pickerClick`); the command line swallows clicks whole
+    /// (nvim-verified), and the chrome routes stay normal/insert-only so a
+    /// click cannot activate a tree row under a live selection.
     fn mouseClick(self: *Editor, m: key.Mouse) !void {
+        self.dragging = false;
         if (self.mode == .picker) return self.pickerClick(m);
-        if (self.mode != .normal and self.mode != .insert) return;
-        if (tabsVisible() and m.row == 1) {
-            if (self.tabAt(m.col)) |doc| {
-                if (doc == self.d) return;
-                self.addJump();
-                self.focusDoc(doc);
-                self.clampCursor();
-                self.setStatus("{s}", .{docLabel(doc)});
-                return;
+        if (self.mode == .command) return;
+        if (self.dashboard) return; // the startup screen owns the keyboard
+        if (self.mode == .normal or self.mode == .insert) {
+            if (tabsVisible() and m.row == 1) {
+                if (self.tabAt(m.col)) |doc| {
+                    if (doc == self.d) return;
+                    self.addJump();
+                    self.focusDoc(doc);
+                    self.clampCursor();
+                    self.setStatus("{s}", .{docLabel(doc)});
+                    return;
+                }
+                // Not a tab: the EXPLORER segment (or the filler) — fall
+                // through to the sidebar hit-test, which owns those columns.
             }
-            // Not a tab: the EXPLORER segment (or the filler) — fall through
-            // to the sidebar hit-test, which owns those columns.
+            if (self.inSidebar(m.col)) return self.sbClick(m.row, m.col);
         }
-        try self.sbClick(m.row, m.col);
+        const w = self.winAt(m.row, m.col) orelse return; // status rows, cmdline: inert
+        try self.clickTo(w, self.winHit(w, m.row, m.col));
+    }
+
+    /// Move the cursor to a clicked position. `focusWin` must run first: it
+    /// realigns the cursor when the click crosses a diff pair, and the click's
+    /// own position has to win over that.
+    fn clickTo(self: *Editor, w: *Win, hit: Hit) !void {
+        self.sb_focus = false; // keys follow the click, not the tree
+        if (w != self.cur) {
+            self.resetPending(); // an operator never crosses windows
+            self.focusWin(w);
+        }
+        if (self.mode == .normal and self.operator != .none and self.await_arg == .none) {
+            // nvim: the click is an exclusive charwise motion for the pending
+            // operator, and any count is ignored. `buildSpan` already applies
+            // vim's exclusive→previous-line-end→linewise rule.
+            self.count = 0;
+            self.count2 = 0;
+            self.doMotion(.{ .pos = .{ .row = hit.row, .col = hit.col }, .kind = .exclusive, .col_mode = .exact });
+            self.clampCursor();
+            return; // the operator consumed the click: no drag to start from it
+        }
+        switch (self.mode) {
+            .visual, .visual_line, .visual_block => self.mode = .normal, // a click ends the selection
+            .insert => {
+                self.endSnippet(); // the cursor left the placeholder for good
+                self.comp_open = false;
+                self.sig_open = false;
+            },
+            else => {},
+        }
+        self.resetPending();
+        self.clearExtra(); // a click collapses to one caret
+        self.cy = hit.row;
+        self.cx = hit.col;
+        // nvim keeps curswant at the *clicked* column, not the clamped one:
+        // clicking past a short line and then pressing `j` lands at the
+        // clicked column on the longer line below.
+        self.goal_col = hit.dcol;
+        self.clampCursor();
+        self.dragging = true; // motion from here extends a selection
+    }
+
+    /// Motion while the left button is held: extend the selection to here,
+    /// entering visual on the first move (nvim-verified — the press alone
+    /// stays in normal/insert, so a plain click is a pure cursor move).
+    fn mouseDrag(self: *Editor, m: key.Mouse) !void {
+        if (!self.dragging) return;
+        const w = self.cur;
+        // A drag that wanders off the window it started in keeps extending
+        // inside it, clamped to what is on screen. nvim extrapolates the row
+        // in the origin window's coordinate space instead; that needs a
+        // viewport model this hit-test does not have (see Known gaps).
+        const row = std.math.clamp(m.row, w.gy, w.gy + self.winTextRows(w) - 1);
+        const col = std.math.clamp(m.col, w.gx, w.gx + w.gw - 1);
+        const hit = self.winHit(w, row, col);
+        // Real mice report a motion for the cell they are already in; nvim
+        // stays in normal mode for those, so a click never becomes a
+        // selection. The comparison is against the *clamped* position, since
+        // that is where the press left the cursor — a click past the end of a
+        // short line would otherwise look like a move on its own release.
+        const trow = @min(hit.row, self.buf.lineCount() - 1);
+        const tcol = @min(hit.col, self.columnLimit(self.buf.line(trow)));
+        if (trow == self.cy and tcol == self.cx) return;
+        switch (self.mode) {
+            // `enterVisual` anchors at the cursor, which is still where the
+            // press left it. From insert that can be the column one past the
+            // last character, and nvim keeps it there (probed: `getpos("v")`
+            // reports column 4 on a 3-character line) rather than clamping.
+            .normal, .insert => self.enterVisual(.visual),
+            .visual, .visual_line, .visual_block => {}, // already selecting: extend
+            .command, .picker => return,
+        }
+        self.cy = hit.row;
+        self.cx = hit.col;
+        self.goal_col = hit.dcol;
+        self.clampCursor();
     }
 
     /// A left-click while the picker is up (the whole `zedit .` startup view).
@@ -1040,10 +1205,7 @@ pub const Editor = struct {
             // meaningless here (sidebar keys route only in normal mode).
             return;
         }
-        if (self.sb_open) {
-            const x = self.sbX();
-            if (m.col >= x and m.col < x + self.sbWidth()) return self.sbClick(m.row, m.col);
-        }
+        if (self.inSidebar(m.col)) return self.sbClick(m.row, m.col);
         const lay = self.pickerLayout();
         if (m.row <= lay.top) return; // the prompt row
         if (m.col < lay.body_x or m.col >= lay.body_x + lay.list_w) return; // the preview
@@ -1819,7 +1981,13 @@ pub const Editor = struct {
             // exclusive motion ending in column 0 stops at the end of the
             // previous line instead — and becomes linewise when the start was
             // at or before its line's first non-blank.
-            end = .{ .row = end.row - 1, .col = self.buf.line(end.row - 1).len };
+            // `end.row - 1` is bound first: `end = .{ ... }` writes through a
+            // result location that *is* `end`, so `.row` lands in `end.row`
+            // before `.col` is evaluated — reading `end.row - 1` there gave
+            // the line before the one wanted (a wrong-length span), and
+            // underflowed outright when the end sat on line 1.
+            const prev = end.row - 1;
+            end = .{ .row = prev, .col = self.buf.line(prev).len };
             if (start.col <= motion.firstNonBlank(self.buf.line(start.row))) {
                 return .{ .lines = true, .top = start.row, .bot = end.row };
             }
@@ -6759,12 +6927,16 @@ pub const Editor = struct {
     /// prompts legitimately use the one-past-end column.
     fn clampCursor(self: *Editor) void {
         if (self.cy >= self.buf.lineCount()) self.cy = self.buf.lineCount() - 1;
-        const line = self.curLine();
-        const limit = switch (self.mode) {
+        const limit = self.columnLimit(self.curLine());
+        if (self.cx > limit) self.cx = limit;
+    }
+
+    /// The furthest column the cursor may sit at on `line` in the current mode.
+    fn columnLimit(self: *Editor, line: []const u8) usize {
+        return switch (self.mode) {
             .normal, .visual, .visual_line, .visual_block => lastColumn(line),
             .insert, .command, .picker => line.len,
         };
-        if (self.cx > limit) self.cx = limit;
     }
 
     // === viewport ==========================================================
@@ -7799,98 +7971,233 @@ pub const Editor = struct {
         return config.settings.soft_wrap and self.diffPairOf(w) == null;
     }
 
-    fn renderWindow(self: *Editor, w: *Win) !void {
-        const th = theme.current;
-        const view = self.buildView(w);
-        const text_rows = self.winTextRows(w);
-        const tinted = self.diffTinted(w);
+    /// What one screen row of a window's text area shows. A window's rows are
+    /// consumed by four independent mechanisms — diff-pair fillers, line-diff
+    /// woven rows, soft-wrap segments and `~` rows past EOF — and only the
+    /// first two are hunk-driven, so there is no closed form for the inverse.
+    const RowSlot = union(enum) {
+        line: struct { row: usize, seg: usize },
+        filler, // a diff-pair virtual row: the other side has lines this one lacks
+        woven: []const u8, // a line-diff old line, drawn above the line that replaced it
+        past_eof, // a `~` row
+    };
+
+    /// The state `renderWindow` carries down a window's rows. `rowWalk` seeds
+    /// it and `nextRow` advances it, so the renderer and the click hit-test
+    /// (`winHit`) resolve every row through the very same code — a row can
+    /// never be drawn at one place and clicked at another (the tabline's
+    /// `tabArea` invariant, applied to the text area).
+    const RowWalk = struct {
+        // per-window constants
+        pair: ?DiffPair,
+        new_side: bool,
+        dtop: usize,
+        ld: ?*const git.LineDiff,
+        lskip: usize,
+        text_rows: usize,
+        // loop-carried state
+        vlines: []const []const u8 = &.{}, // the woven block above `file_row`
+        vi: usize = 0, // next woven line to draw from it
+        vrow: usize = std.math.maxInt(usize), // the row `vlines` was fetched for
+        r: usize = 0, // rows emitted so far
+        file_row: usize,
+        seg: usize = 0,
+        wl: WrapLayout = .{ .starts = .{0} ** max_wrap_rows, .n = 1, .indent = 0 },
+    };
+
+    fn rowWalk(self: *Editor, w: *Win, view: *const View) RowWalk {
         // A visible diff pair renders in aligned display rows: each screen row
         // resolves through the hunks to a buffer row or a virtual filler, so
         // matching text sits level across the panes (VS Code style).
         const pair = self.diffPairOf(w);
-        const new_side = if (pair) |p| w == p.wt else false;
-        const dtop = if (pair) |p| self.diffDisplayTop(p) else 0;
         // The line-diff view (`Space g l`): old lines woven in as virtual
         // rows above the lines that replaced them (exclusive with a pair).
         const ld: ?*const git.LineDiff = if (pair == null)
             (if (w.doc.line_diff) |*x| x else null)
         else
             null;
-        const lskip = if (ld) |x| (if (view.active) self.ldLeadingSkip(x) else 0) else 0;
-        var vlines: []const []const u8 = &.{}; // the block above `file_row`
-        var vi: usize = 0; // next woven line to draw from it
-        var vrow: usize = std.math.maxInt(usize); // the row `vlines` was fetched for
-        var r: usize = 0;
-        var file_row = view.top;
-        // With soft wrap one buffer line can fill several screen rows, so the
-        // walk is over (line, segment) pairs; without it every line is one row
-        // and `seg` never leaves 0.
-        var seg: usize = 0;
-        var wl: WrapLayout = .{ .starts = .{0} ** max_wrap_rows, .n = 1, .indent = 0 };
-        while (r < text_rows) : (r += 1) {
-            self.beginSeg(w.gy + r, w.gx);
-            try self.emitFmt("\x1b[{d};{d}H", .{ w.gy + r, w.gx });
-            if (pair) |p| switch (git.slotAt(p.hunks, new_side, dtop + r)) {
-                .filler => {
-                    try self.emitFillerRow(w, new_side);
-                    continue;
+        return .{
+            .pair = pair,
+            .new_side = if (pair) |p| w == p.wt else false,
+            .dtop = if (pair) |p| self.diffDisplayTop(p) else 0,
+            .ld = ld,
+            .lskip = if (ld) |x| (if (view.active) self.ldLeadingSkip(x) else 0) else 0,
+            .text_rows = self.winTextRows(w),
+            .file_row = view.top,
+        };
+    }
+
+    /// Resolve screen row `rw.r` and advance the walk. With soft wrap one
+    /// buffer line can fill several screen rows, so the walk is over
+    /// (line, segment) pairs; without it every line is one row and `seg`
+    /// never leaves 0. `rw.wl` is left holding the returned line's layout.
+    fn nextRow(self: *Editor, rw: *RowWalk, view: *const View) RowSlot {
+        if (rw.pair) |p| switch (git.slotAt(p.hunks, rw.new_side, rw.dtop + rw.r)) {
+            .filler => return .filler,
+            .row => |br| rw.file_row = br,
+        };
+        if (rw.ld) |x| {
+            if (rw.seg == 0 and rw.file_row != rw.vrow and rw.file_row <= view.buf.lineCount()) {
+                rw.vrow = rw.file_row;
+                rw.vlines = x.above(rw.file_row);
+                // The block above the top row is above the viewport when
+                // scrolled (like a pair's fillers); at row 0 the leading
+                // clamp decides how much of it shows.
+                rw.vi = if (rw.file_row != view.top) 0 else if (view.top == 0) @min(rw.lskip, rw.vlines.len) else rw.vlines.len;
+            }
+            if (rw.vi < rw.vlines.len) {
+                const text = rw.vlines[rw.vi];
+                rw.vi += 1;
+                return .{ .woven = text };
+            }
+        }
+        if (rw.file_row >= view.buf.lineCount()) {
+            rw.file_row += 1;
+            return .past_eof;
+        }
+        const row = rw.file_row;
+        const seg = rw.seg;
+        if (seg == 0) {
+            // One layout per line, reused for each row it fills.
+            rw.wl = layoutLine(
+                view.buf.line(row),
+                view.cols,
+                if (view.active and row == view.cy) self.cursorDisplayCol() else null,
+                view.wrap,
+                @max(1, rw.text_rows),
+            );
+        }
+        rw.seg += 1;
+        if (rw.seg >= rw.wl.n) {
+            rw.seg = 0;
+            rw.file_row += 1;
+        }
+        return .{ .line = .{ .row = row, .seg = seg } };
+    }
+
+    /// A resolved click: the buffer position under a screen cell, plus the
+    /// display column that was clicked (which is what vim's curswant keeps —
+    /// it may sit past the end of a short line).
+    const Hit = struct { row: usize, col: usize, dcol: usize };
+
+    /// The window whose *text* area covers this cell. Its bottom row is a
+    /// status line whenever more than one window is open, and the sidebar's
+    /// columns belong to no window at all, so both fall outside every window.
+    fn winAt(self: *Editor, row: usize, col: usize) ?*Win {
+        for (self.wins.items) |w| {
+            if (row < w.gy or row >= w.gy + self.winTextRows(w)) continue;
+            if (col < w.gx or col >= w.gx + w.gw) continue;
+            return w;
+        }
+        return null;
+    }
+
+    /// The buffer position under a screen cell of `w` — the inverse of
+    /// `renderWindow`, replayed through the very same `nextRow` walk, so the
+    /// two can never disagree about which row shows which line. Rows that are
+    /// in no buffer snap to a real line rather than inventing one: a diff-pair
+    /// filler to the next line that side actually has, a woven old line to the
+    /// line it sits above (what `lineAtScreenRow` already does for `H`/`M`/`L`),
+    /// a `~` row to the last line. The gutter resolves to column 0, as in nvim.
+    fn winHit(self: *Editor, w: *Win, row: usize, col: usize) Hit {
+        const view = self.buildView(w);
+        const want = row - w.gy;
+        var rw = self.rowWalk(w, &view);
+        var slot: RowSlot = .past_eof;
+        while (rw.r <= want) : (rw.r += 1) slot = self.nextRow(&rw, &view);
+
+        const last = view.buf.lineCount() - 1;
+        const line_row: usize = switch (slot) {
+            .line => |l| l.row,
+            .filler => @min(git.rowAtOrAfter(rw.pair.?.hunks, rw.new_side, rw.dtop + want), last),
+            .woven => @min(rw.vrow, last),
+            .past_eof => last,
+        };
+        const seg: usize = switch (slot) {
+            .line => |l| l.seg,
+            else => 0,
+        };
+        const line = view.buf.line(line_row);
+        if (col < w.gx + view.gutter) return .{ .row = line_row, .col = 0, .dcol = 0 };
+        // A snapped row's layout is not the one the walk left behind.
+        const wl = switch (slot) {
+            .line => rw.wl,
+            else => layoutLine(line, view.cols, null, view.wrap, @max(1, rw.text_rows)),
+        };
+        const wincol = col - w.gx - view.gutter;
+        var d: usize = undefined;
+        if (!view.wrap) {
+            d = view.left + wincol;
+        } else {
+            // A continuation row draws `pad` cells of hanging indent before its
+            // text, and ends at the word break rather than at the window edge —
+            // the cells past it belong to no character, so they must resolve
+            // into this row instead of the next one.
+            d = if (wincol < wl.pad(seg)) wl.starts[seg] else wl.starts[seg] + (wincol - wl.pad(seg));
+            if (seg + 1 < wl.n and d >= wl.starts[seg + 1]) d = wl.starts[seg + 1] - 1;
+        }
+        const b = if (view.active) self.byteAtRenderedCol(line_row, line, d) else byteAtDisplayCol(line, d);
+        return .{ .row = line_row, .col = b, .dcol = d -| (if (view.active) self.inlayCols(line_row, b) else 0) };
+    }
+
+    /// Inverse of `cursorDisplayCol`: the byte whose rendered span covers
+    /// display column `d`, inlay-hint virtual text included. Only the active
+    /// window draws hints, so only it needs this. The scan stops once the
+    /// pure column passes `d` (hints only ever push text further right), so
+    /// it costs a window's width, not a line's length.
+    fn byteAtRenderedCol(self: *Editor, row: usize, line: []const u8, d: usize) usize {
+        if (self.lsp == null or self.inlayCols(row, line.len) == 0) return byteAtDisplayCol(line, d);
+        var i: usize = 0;
+        var dc: usize = 0;
+        var best: usize = 0;
+        while (true) {
+            if (dc + self.inlayCols(row, i) > d) break;
+            best = i;
+            if (i >= line.len) break;
+            const dec = unicode.decode(line[i..]);
+            dc += cellWidth(dec.cp, dc);
+            i += dec.len;
+        }
+        return best;
+    }
+
+    fn renderWindow(self: *Editor, w: *Win) !void {
+        const th = theme.current;
+        const view = self.buildView(w);
+        const text_rows = self.winTextRows(w);
+        const tinted = self.diffTinted(w);
+        var rw = self.rowWalk(w, &view);
+        while (rw.r < text_rows) : (rw.r += 1) {
+            self.beginSeg(w.gy + rw.r, w.gx);
+            try self.emitFmt("\x1b[{d};{d}H", .{ w.gy + rw.r, w.gx });
+            switch (self.nextRow(&rw, &view)) {
+                .filler => try self.emitFillerRow(w, rw.new_side),
+                .woven => |text| try self.emitDeletedRow(&view, text),
+                .past_eof => {
+                    try self.setBg(th.bg);
+                    try self.setFg(th.fg_dim);
+                    try self.emit("~");
+                    try self.emitSpaces(w.gw - 1);
                 },
-                .row => |br| file_row = br,
-            };
-            if (ld) |x| {
-                if (seg == 0 and file_row != vrow and file_row <= view.buf.lineCount()) {
-                    vrow = file_row;
-                    vlines = x.above(file_row);
-                    // The block above the top row is above the viewport when
-                    // scrolled (like a pair's fillers); at row 0 the leading
-                    // clamp decides how much of it shows.
-                    vi = if (file_row != view.top) 0 else if (view.top == 0) @min(lskip, vlines.len) else vlines.len;
-                }
-                if (vi < vlines.len) {
-                    try self.emitDeletedRow(&view, vlines[vi]);
-                    vi += 1;
-                    continue;
-                }
-            }
-            if (file_row >= view.buf.lineCount()) {
-                try self.setBg(th.bg);
-                try self.setFg(th.fg_dim);
-                try self.emit("~");
-                try self.emitSpaces(w.gw - 1);
-                file_row += 1;
-                continue;
-            }
-            const is_cur = view.active and file_row == view.cy;
-            var row_bg = if (is_cur) th.cursorline else th.bg;
-            if (tinted and !is_cur) {
-                if (view.git.get(file_row)) |sign| {
-                    // In the line view a pure deletion is *shown* by its woven
-                    // rows; tinting the surviving neighbour too would mark
-                    // unchanged text as changed.
-                    if (ld == null or sign != .deleted) row_bg = mixColor(th.bg, switch (sign) {
-                        .added => th.git_add,
-                        .changed => th.git_change,
-                        .deleted => th.git_delete,
-                    }, 25);
-                }
-            }
-            try self.setBg(row_bg);
-            if (seg == 0) {
-                // One layout per line, reused for each row it fills.
-                wl = layoutLine(
-                    view.buf.line(file_row),
-                    view.cols,
-                    if (is_cur) self.cursorDisplayCol() else null,
-                    view.wrap,
-                    @max(1, text_rows),
-                );
-                try self.emitGutter(&view, file_row);
-            } else try self.emitWrapGutter(&view);
-            try self.emitLine(&view, file_row, row_bg, seg, wl);
-            seg += 1;
-            if (seg >= wl.n) {
-                seg = 0;
-                file_row += 1;
+                .line => |l| {
+                    const is_cur = view.active and l.row == view.cy;
+                    var row_bg = if (is_cur) th.cursorline else th.bg;
+                    if (tinted and !is_cur) {
+                        if (view.git.get(l.row)) |sign| {
+                            // In the line view a pure deletion is *shown* by its
+                            // woven rows; tinting the surviving neighbour too
+                            // would mark unchanged text as changed.
+                            if (rw.ld == null or sign != .deleted) row_bg = mixColor(th.bg, switch (sign) {
+                                .added => th.git_add,
+                                .changed => th.git_change,
+                                .deleted => th.git_delete,
+                            }, 25);
+                        }
+                    }
+                    try self.setBg(row_bg);
+                    if (l.seg == 0) try self.emitGutter(&view, l.row) else try self.emitWrapGutter(&view);
+                    try self.emitLine(&view, l.row, row_bg, l.seg, rw.wl);
+                },
             }
         }
         if (self.wins.items.len > 1) try self.emitWinStatus(w, view);
@@ -9328,6 +9635,19 @@ fn incompleteEscapeTail(buf: []const u8) bool {
     return true;
 }
 
+/// How many bytes of a full input buffer can be decoded now. A trailing escape
+/// sequence that is definitely unfinished is excluded, so `readInput` can hold
+/// it back for the next read instead of handing the decoder its fragments.
+/// A lone trailing ESC is the Escape *key* — unless the terminal already has
+/// more input queued behind it (`more_pending`), which is the same judgement
+/// the short `waitMore` wait makes when the buffer has room to spare.
+fn completePrefixLen(buf: []const u8, more_pending: bool) usize {
+    if (!incompleteEscapeTail(buf)) return buf.len;
+    const idx = std.mem.lastIndexOfScalar(u8, buf, 0x1b) orelse return buf.len;
+    if (buf.len - idx == 1 and !more_pending) return buf.len;
+    return idx;
+}
+
 /// The leading whitespace (spaces/tabs) of a line.
 fn leadingIndent(line: []const u8) []const u8 {
     return line[0 .. std.mem.indexOfNone(u8, line, " \t") orelse line.len];
@@ -9952,4 +10272,23 @@ test "byteAtDisplayCol round-trips with displayCol" {
     const off = byteAtDisplayCol(line, tabWidth());
     try std.testing.expectEqual(@as(usize, 2), off);
     try std.testing.expectEqual(@as(usize, tabWidth()), displayCol(line, off));
+}
+
+test "completePrefixLen holds back a split escape sequence" {
+    const eq = std.testing.expectEqual;
+    // Nothing unfinished: the whole buffer is decodable.
+    try eq(@as(usize, 4), completePrefixLen("abcd", false));
+    try eq(@as(usize, 6), completePrefixLen("ab\x1b[3~", false));
+    try eq(@as(usize, 13), completePrefixLen("ab\x1b[<32;15;4M", false));
+    // An unfinished CSI tail is held back whatever the terminal has queued.
+    try eq(@as(usize, 2), completePrefixLen("ab\x1b[<32;15", false));
+    try eq(@as(usize, 2), completePrefixLen("ab\x1b[<32;15", true));
+    try eq(@as(usize, 2), completePrefixLen("ab\x1b[", false));
+    try eq(@as(usize, 2), completePrefixLen("ab\x1bO", false));
+    // A lone trailing ESC is the Escape key — unless more input is already
+    // queued behind it, in which case it introduces a sequence.
+    try eq(@as(usize, 3), completePrefixLen("ab\x1b", false));
+    try eq(@as(usize, 2), completePrefixLen("ab\x1b", true));
+    // ESC followed by an ordinary byte is complete (Alt-x, not a CSI).
+    try eq(@as(usize, 4), completePrefixLen("ab\x1bx", true));
 }

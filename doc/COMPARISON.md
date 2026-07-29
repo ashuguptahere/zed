@@ -82,7 +82,9 @@ below and prioritised in `TODO.md`.
 - Bufferline (tabs-style open-buffer bar; zedit only has `:ls`) — **medium**
 - Registers UI — register picker (`Space "` style), `Ctrl-r` register insertion in insert mode/prompts — **medium**
 - Jump labels (`gw` two-char labeled jumps) — **medium**
-- Mouse support (click to move, drag select, scroll) — **low**
+- ~~Mouse support (click to move, drag select, scroll)~~ — **DONE**
+  (mode 1002; click-to-move + focus-follows-click, drag-to-select anchored at
+  the press, nvim-pinned; no double/triple-click word/line select)
 - Statusline configuration (user-arranged left/center/right segments) — zedit's is fixed (only `nerd_font` toggle) — **low**
 - Rulers, whitespace rendering, per-mode cursor shapes, configurable gutters — **low**
 
@@ -138,7 +140,7 @@ Per `/home/origo/Desktop/zed/CLAUDE.md`:
 - Buffer-word completion when no language server answers (vim's keyword completion, fuzzy-ranked across every open buffer) — Helix has no server-free completion at all
 - Structural text objects from the syntax tree (`af`/`if`, `ac`/`ic`, `aa`/`ia`, `aC`/`iC`, `]f`/`[f`) — Helix's tree-sitter object set is larger, but the mechanism is there
 - Fish-style inline suggestions on the command line (history/command-name ghost text, Right/End to accept) — neither Helix nor stock Neovim ships this
-- Mouse wheel scrolling; buffer tabs along the top; a recently-opened startup screen; `:update` against the release tags
+- Mouse: click to move the cursor, drag to select, wheel scrolling; buffer tabs along the top; a recently-opened startup screen; `:update` against the release tags
 - Remote editing over plain SSH (`ssh://host/path`) with nothing installed on the far side — neither Helix nor stock Neovim does this
 
 ---
@@ -209,7 +211,7 @@ Ground truth: `/home/origo/Desktop/zed/CLAUDE.md` (note: the on-disk version is 
 - **Bufferline-equivalent** powerline title bar across the top (buffer tabs — click to switch, unsaved marker — plus the explorer header), always on by default, VS Code-style
 - **Telescope-preview-equivalent** live file preview beside every picker that names a file, tree-sitter highlighted and scrollable with `Ctrl-d`/`Ctrl-u` or the wheel
 - **Alpha/dashboard-equivalent** startup screen listing recently opened files and directories
-- **Mouse wheel scrolling** (3-line step), tab clicks, explorer clicks and picker result-row clicks (select, then click-again opens); **`:update`** checks the release tags on demand
+- **Mouse** (mode 1002): click to move the cursor (focusing the split it lands in), drag to select, wheel scrolling (3-line step), tab clicks, explorer clicks and picker result-row clicks (select, then click-again opens); **`:update`** checks the release tags on demand
 - **Remote editing over SSH** (`ssh://host/path`, `:ssh`) with no agent on the remote host — beyond Neovim's built-in netrw/scp handling
 - Explicitly **not** yet AstroNvim-complete: no notify-style popups, no mason-style server install/management, and only the active window gets live LSP/overlay rendering.
 

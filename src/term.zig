@@ -32,8 +32,13 @@ pub const ansi = struct {
     pub const leave_alt_screen = "\x1b[?1049l";
     pub const enable_bracketed_paste = "\x1b[?2004h";
     pub const disable_bracketed_paste = "\x1b[?2004l";
-    pub const enable_mouse = "\x1b[?1000h\x1b[?1006h"; // button events, SGR encoding
-    pub const disable_mouse = "\x1b[?1006l\x1b[?1000l";
+    // Button events *plus* motion while a button is held (drag), SGR encoding.
+    // 1002 is a strict superset of 1000 — press and release both still arrive —
+    // so the two are never set together. 1003 (motion with no button down) is
+    // deliberately not set: it would wake the editor on every pointer move,
+    // where 1002 reports nothing at all while the mouse is idle.
+    pub const enable_mouse = "\x1b[?1002h\x1b[?1006h";
+    pub const disable_mouse = "\x1b[?1006l\x1b[?1002l";
     pub const clear_line_right = "\x1b[K";
     pub const cursor_home = "\x1b[H";
     pub const hide_cursor = "\x1b[?25l";
@@ -115,15 +120,20 @@ pub const Terminal = struct {
         posix.sigaction(posix.SIG.WINCH, &act, null);
     }
 
-    pub fn enterAltScreen(self: *Terminal) Error!void {
+    /// `mouse` is the config setting: false never asks the terminal to report,
+    /// so the mouse stays entirely the terminal's (its own click-drag selection
+    /// included) and no gesture reaches the editor.
+    pub fn enterAltScreen(self: *Terminal, mouse: bool) Error!void {
         try self.write(ansi.enter_alt_screen);
         // Bracketed paste: terminal-pastes arrive fenced in \x1b[200~ ...
         // \x1b[201~ so they insert literally (crucial over SSH, where the
         // terminal's paste is the only clipboard route into the editor).
         try self.write(ansi.enable_bracketed_paste);
-        // Mouse wheel scrolling (clicks are reported too but ignored; text
-        // selection still works with the terminal's usual Shift+drag).
-        try self.write(ansi.enable_mouse);
+        // The wheel, clicks and drags. Any tracking mode makes the terminal
+        // claim the button, so its own plain-drag selection is gone either
+        // way; Shift+drag stays a total bypass and is how text is selected
+        // for the terminal's clipboard.
+        if (mouse) try self.write(ansi.enable_mouse);
         self.alt_active = true;
     }
 

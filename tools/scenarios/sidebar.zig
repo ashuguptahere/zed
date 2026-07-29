@@ -336,24 +336,20 @@ pub fn run(ctx: *h.Ctx) !void {
             ctx.check("wheel still scrolls the buffer", rowHasAt(ctx, &scr, 2, "l7", 29, 80));
         }
 
-        // Pin: a click in the text area stays ignored — the cursor must not move.
+        // A click in the text area moves the cursor there (it is the buffer's
+        // own hit-test, not the tree's) and leaves the view alone. The columns
+        // left of 29 belong to the sidebar, so only the tree can claim those.
         s.send("5j");
         s.drain(300);
-        var before_row: usize = 0;
-        var before_col: usize = 0;
-        {
-            var scr = try screen(ctx, &s);
-            defer scr.deinit();
-            before_row = scr.cur_row;
-            before_col = scr.cur_col;
-        }
         s.send("\x1b[<0;45;15M\x1b[<0;45;15m");
         s.drain(400);
         {
             var scr = try screen(ctx, &s);
             defer scr.deinit();
-            ctx.check("text-area click does not move the cursor", scr.cur_row == before_row and scr.cur_col == before_col);
-            ctx.check("text-area click changes nothing", rowHasAt(ctx, &scr, 2, "l7", 29, 80));
+            // Column 45 is past the end of a three-character line, so the
+            // cursor clamps back to it (text starts at column 34).
+            ctx.check("text-area click moves the cursor to the clicked row", scr.cur_row == 15 and scr.cur_col == 36);
+            ctx.check("text-area click does not scroll the view", rowHasAt(ctx, &scr, 2, "l7", 29, 80));
         }
 
         // A fast double-click (both pairs in one write) is two toggles: the
@@ -415,10 +411,10 @@ pub fn run(ctx: *h.Ctx) !void {
         s.drain(200);
     }
 
-    // The release side of a click is inert, like the wheel: `d` then a click
-    // in the text area must leave the operator pending, so the following `w`
-    // still completes `dw` (before the fix the release decoded as `unknown`,
-    // cancelled the operator and left `^[[<…m` in the showcmd indicator).
+    // A click completes a pending operator as an exclusive charwise motion
+    // (nvim's rule, pinned in `vim_compat`), and its release stays out of the
+    // showcmd indicator — before that fix the release decoded as `unknown`
+    // and smeared `^[[<…m` across it.
     {
         const dir = try h.tempDir(ctx.gpa);
         defer ctx.gpa.free(dir);
@@ -432,15 +428,15 @@ pub fn run(ctx: *h.Ctx) !void {
         s.drain(400);
         s.send("d");
         s.drain(200);
-        s.send("\x1b[<0;40;10M\x1b[<0;40;10m"); // text-area click: ignored, inert
-        s.drain(300);
-        s.send("w");
+        // Row 10 is past the end of a one-line file and column 40 past the end
+        // of its only line, so the exclusive motion reaches end-of-line and
+        // `d` empties it — byte-for-byte what nvim does with the same report.
+        s.send("\x1b[<0;40;10M\x1b[<0;40;10m");
         s.drain(400);
         {
             var scr = try screen(ctx, &s);
             defer scr.deinit();
-            ctx.check("click keeps the pending operator (wheel parity)", rowHasAt(ctx, &scr, 2, "two three", 1, 80) and
-                scr.colOf(ctx.gpa, 2, "one") == null);
+            ctx.check("a click completes the pending operator", scr.colOf(ctx.gpa, 2, "one") == null);
             ctx.check("release bytes never reach showcmd", scr.colOf(ctx.gpa, 24, "[<0;") == null);
         }
         s.send(":q!\r");

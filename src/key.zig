@@ -9,13 +9,15 @@
 const std = @import("std");
 const unicode = @import("unicode.zig");
 
-/// A mouse button press, at 1-based screen coordinates.
+/// A mouse event, at 1-based screen coordinates.
 pub const Mouse = struct { row: u16, col: u16 };
 
 pub const Key = union(enum) {
     char: u21,
-    mouse_press: Mouse,
-    mouse_other, // a mouse report that never acts: release, drag, other buttons
+    mouse_press: Mouse, // left button down
+    mouse_drag: Mouse, // motion while the left button is held
+    mouse_release: Mouse, // left button up
+    mouse_other, // a mouse report that never acts: other buttons, modifiers, tilt
     ctrl: u8, // the associated lowercase letter, e.g. 0x03 -> 'c'
     enter,
     tab,
@@ -101,27 +103,47 @@ fn ss3(final: u8) Key {
 }
 
 /// Parse an SGR mouse report: ESC [ < button ; x ; y (M|m). The wheel
-/// (buttons 64/65) and a left-button press become keys; releases (`m` final)
-/// and every other button decode to `mouse_other` — a distinct key the editor
-/// swallows whole, so a release can never reset pending state or smear its
-/// raw bytes into the showcmd indicator the way an `unknown` key would.
+/// (buttons 64/65) and the three left-button events — press, motion while
+/// held, release — become keys; every other report decodes to `mouse_other`,
+/// a distinct key the editor swallows whole, so it can never reset pending
+/// state or smear its raw bytes into the showcmd indicator the way an
+/// `unknown` key would.
+///
+/// The button field packs flags, so each is tested by mask and in order:
+/// bit 7 = extra buttons 8-11, bits 2-4 = shift/alt/ctrl, bit 6 = the wheel
+/// (its low bits distinguish vertical 64/65 from the horizontal tilt axis
+/// 66/67, which unlike the wheel *does* send a release), bit 5 = motion,
+/// bits 0-1 = the button. Modified reports stay inert: nvim gives Alt+drag
+/// and Ctrl+click meanings of their own (blockwise select, tag jump) that
+/// zedit does not implement, so binding them to the plain gesture would be
+/// silently wrong rather than merely missing.
 fn decodeSgrMouse(bytes: []const u8) Decoded {
     var i: usize = 3; // past "\x1b[<"
     while (i < bytes.len and (bytes[i] == ';' or (bytes[i] >= '0' and bytes[i] <= '9'))) i += 1;
     if (i >= bytes.len) return .{ .key = .unknown, .consumed = bytes.len }; // truncated
     const consumed = i + 1; // include the final M/m
-    if (bytes[i] != 'M') return .{ .key = .mouse_other, .consumed = consumed }; // non-press (incl. release): inert
+    const final = bytes[i];
+    if (final != 'M' and final != 'm') return .{ .key = .mouse_other, .consumed = consumed };
 
     // button ; x ; y — the "<" marker makes even a malformed report
     // unambiguously mouse noise, so every parse failure is inert too.
     var it = std.mem.splitScalar(u8, bytes[3..i], ';');
-    const button = std.fmt.parseInt(u16, it.next() orelse "", 10) catch return .{ .key = .mouse_other, .consumed = consumed };
-    if (button == 64) return .{ .key = .scroll_up, .consumed = consumed };
-    if (button == 65) return .{ .key = .scroll_down, .consumed = consumed };
-    if (button != 0) return .{ .key = .mouse_other, .consumed = consumed }; // only the left button acts
+    const b = std.fmt.parseInt(u16, it.next() orelse "", 10) catch return .{ .key = .mouse_other, .consumed = consumed };
+    if (b & 128 != 0 or b & 28 != 0) return .{ .key = .mouse_other, .consumed = consumed }; // extra buttons, modifiers
+    if (b & 64 != 0) {
+        if (final != 'M') return .{ .key = .mouse_other, .consumed = consumed }; // a tilt release
+        return switch (b & 3) {
+            0 => .{ .key = .scroll_up, .consumed = consumed },
+            1 => .{ .key = .scroll_down, .consumed = consumed },
+            else => .{ .key = .mouse_other, .consumed = consumed }, // horizontal tilt
+        };
+    }
+    if (b & 3 != 0) return .{ .key = .mouse_other, .consumed = consumed }; // middle/right/"no button"
     const col = std.fmt.parseInt(u16, it.next() orelse "", 10) catch return .{ .key = .mouse_other, .consumed = consumed };
     const row = std.fmt.parseInt(u16, it.next() orelse "", 10) catch return .{ .key = .mouse_other, .consumed = consumed };
-    return .{ .key = .{ .mouse_press = .{ .row = row, .col = col } }, .consumed = consumed };
+    const m: Mouse = .{ .row = row, .col = col };
+    if (final == 'm') return .{ .key = .{ .mouse_release = m }, .consumed = consumed };
+    return .{ .key = if (b & 32 != 0) .{ .mouse_drag = m } else .{ .mouse_press = m }, .consumed = consumed };
 }
 
 /// Parse ESC [ <number> ~  style sequences (Home/End/Delete/PageUp/PageDown).
@@ -179,20 +201,51 @@ test "decode SGR mouse wheel" {
     try std.testing.expectEqual(Key.scroll_up, up.key);
     try std.testing.expectEqual(@as(usize, 11), up.consumed);
     try std.testing.expectEqual(Key.scroll_down, decode("\x1b[<65;1;1M").key);
-    // A left-button press reports where it landed; every other report is
-    // `mouse_other` — consumed whole and swallowed by the editor, never
-    // `unknown` (which would reset pending state and show in showcmd).
+    // The wheel sends no release, but the horizontal tilt axis does — a
+    // wheel branch keyed on bit 6 alone would scroll vertically, twice.
+    try std.testing.expectEqual(Key.mouse_other, decode("\x1b[<64;5;5m").key);
+    try std.testing.expectEqual(Key.mouse_other, decode("\x1b[<66;5;5M").key); // tilt left
+    try std.testing.expectEqual(Key.mouse_other, decode("\x1b[<67;5;5m").key); // tilt right release
+}
+
+test "decode SGR mouse press, drag and release" {
+    // The three left-button events act; everything else is `mouse_other` —
+    // consumed whole and swallowed by the editor, never `unknown` (which
+    // would reset pending state and show in showcmd).
     const click = decode("\x1b[<0;12;3M");
     try std.testing.expectEqual(@as(u16, 12), click.key.mouse_press.col);
     try std.testing.expectEqual(@as(u16, 3), click.key.mouse_press.row);
-    try std.testing.expectEqual(Key.mouse_other, decode("\x1b[<0;12;3m").key); // left release
-    try std.testing.expectEqual(@as(usize, 10), decode("\x1b[<0;12;3m").consumed);
-    try std.testing.expectEqual(Key.mouse_other, decode("\x1b[<64;5;5m").key); // wheel release
+    try std.testing.expectEqual(@as(usize, 10), click.consumed);
+
+    const drag = decode("\x1b[<32;120;45M");
+    try std.testing.expectEqual(@as(u16, 120), drag.key.mouse_drag.col);
+    try std.testing.expectEqual(@as(u16, 45), drag.key.mouse_drag.row);
+    try std.testing.expectEqual(@as(usize, 13), drag.consumed);
+
+    const rel = decode("\x1b[<0;12;3m");
+    try std.testing.expectEqual(@as(u16, 12), rel.key.mouse_release.col);
+    try std.testing.expectEqual(@as(u16, 3), rel.key.mouse_release.row);
+    try std.testing.expectEqual(@as(usize, 10), rel.consumed);
+
     try std.testing.expectEqual(Key.mouse_other, decode("\x1b[<2;5;5M").key); // right button
     try std.testing.expectEqual(Key.mouse_other, decode("\x1b[<1;5;5M").key); // middle button
-    try std.testing.expectEqual(Key.mouse_other, decode("\x1b[<32;5;5M").key); // left drag
+    try std.testing.expectEqual(Key.mouse_other, decode("\x1b[<33;5;5M").key); // middle drag
     try std.testing.expectEqual(Key.mouse_other, decode("\x1b[<35;5;5M").key); // bare motion
+    try std.testing.expectEqual(Key.mouse_other, decode("\x1b[<3;5;5m").key); // "no button" release
+    try std.testing.expectEqual(Key.mouse_other, decode("\x1b[<128;5;5M").key); // extra button 8
+    try std.testing.expectEqual(Key.mouse_other, decode("\x1b[<129;5;5m").key); // extra button 9 release
+    // Modifiers are unbound, so a modified report never acts as a plain one.
+    try std.testing.expectEqual(Key.mouse_other, decode("\x1b[<4;5;5M").key); // shift-click
+    try std.testing.expectEqual(Key.mouse_other, decode("\x1b[<8;5;5M").key); // alt-click
+    try std.testing.expectEqual(Key.mouse_other, decode("\x1b[<16;5;5M").key); // ctrl-click
+    try std.testing.expectEqual(Key.mouse_other, decode("\x1b[<40;5;5M").key); // alt-drag
+    try std.testing.expectEqual(Key.mouse_other, decode("\x1b[<48;5;5M").key); // ctrl-drag
+    try std.testing.expectEqual(Key.mouse_other, decode("\x1b[<72;5;5M").key); // alt-wheel
     try std.testing.expectEqual(Key.mouse_other, decode("\x1b[<;5;5M").key); // malformed: still mouse noise
+    try std.testing.expectEqual(Key.mouse_other, decode("\x1b[<0;12;3X").key); // unknown final byte
+    // A truncated report consumes what it has, so the decode loop never stalls.
+    try std.testing.expectEqual(Key.unknown, decode("\x1b[<32;15").key);
+    try std.testing.expectEqual(@as(usize, 8), decode("\x1b[<32;15").consumed);
 }
 
 test "decode utf8 char" {

@@ -206,6 +206,16 @@ or
 accepts it. Enter always runs only what you typed. Set
 .B false
 to turn the ghost text off.
+.TP
+.B mouse
+.BR true / false
+(default true). Ask the terminal to report mouse events: the wheel scrolls, a
+click moves the cursor (and focuses the split it landed in), and a drag
+selects. Set
+.B false
+to leave the mouse entirely to your terminal \(em including its own click\-drag
+selection, which any reporting mode takes over. See
+.BR MOUSE .
 .SH SNIPPETS
 A completion item the server marks as a snippet expands its placeholders and
 starts a tabstop session:
@@ -334,6 +344,37 @@ These read the real syntax tree, so they follow the language's grammar rather
 than brace counting. Files whose language has no vendored grammar have no
 structural objects.
 .SH MOUSE
+zedit asks the terminal for button and drag reports (DEC modes 1002 + 1006).
+Set
+.B mouse = false
+in the configuration file to ask for nothing at all, leaving the mouse
+entirely to your terminal.
+.PP
+A left click in a window's text area moves the cursor there; if that window is
+not the focused one, the click focuses it first. Nothing is added to the
+jumplist, a pending count is discarded, an open selection ends, and insert
+mode continues at the new position \(em all as in Neovim's
+.BR mouse=a .
+With an
+.I operator
+pending, the click is its motion: an exclusive charwise range, which becomes
+linewise by vim's usual rule when it ends in column 0. Clicks resolve
+correctly through soft-wrapped continuation rows (indent included), tabs,
+double-width characters, inlay hints, the diff views' virtual rows and the
+gutter (which counts as column 1).
+.PP
+Holding the button and moving selects: the press anchors, each crossed cell
+extends, and the release finishes, leaving an ordinary charwise visual
+selection that
+.BR d ,
+.BR y ,
+.B c
+and the rest act on. A drag that leaves the window keeps extending inside it,
+clamped to what is on screen. A drag that never leaves its cell stays a plain
+click. Double-click-for-word, triple-click-for-line and Alt+drag blockwise are
+not implemented; so are modified clicks generally, which stay inert rather
+than pretending to be plain ones.
+.PP
 The wheel scrolls the focused window three lines per notch and moves the
 cursor with it, so the cursor keeps its position on screen. At the very top or
 bottom of the file nothing moves. In a picker the wheel scrolls the preview
@@ -347,16 +388,19 @@ starts in): a click on a result row selects it and the preview follows, a
 click on the already-selected row opens it \(em so a double-click opens from
 anywhere \(em explorer and tab clicks keep working (a tab click closes the
 picker and lands on that buffer), and the prompt row and preview pane are
-ignored.
-Clicks anywhere else \(em the text area included \(em are ignored, so
-your terminal's own selection still works. A jump further
+ignored. A jump further
 than half a window \(em
 .BR G ,
 .BR 100G ,
-a search hit \(em redraws with the cursor centred, as vim does. Select text with
-your terminal's usual
+a search hit \(em redraws with the cursor centred, as vim does.
+.PP
+To select text for your
+.I terminal's
+own clipboard, use its
 .B Shift
-+drag.
++drag. Every mouse-tracking mode takes the plain button away from the
+terminal, so Shift is the escape hatch in any of them \(em and Shift+click,
+Shift+drag and Shift+wheel therefore never reach zedit at all.
 .SH "NORMAL MODE KEYS"
 .SS Motions
 .TP

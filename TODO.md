@@ -50,6 +50,17 @@ The shortlist is done; these are the next-highest gaps from
       longer than the row (they clip; the cursor pins to the last cell).
 - [ ] Remote: remote git signs/sidebar, partial transfers for huge remote
       files.
+- [ ] Mouse gestures beyond click+drag: double-click word / triple-click line
+      (SGR carries no click count, so each needs a `mousetime` window and the
+      config knob for it), Alt+drag blockwise (a different anchor rule — the
+      pre-click cursor — and many terminals eat Alt), edge auto-scroll while
+      dragging (needs a repeat timer; the completion debounce is the only
+      timer zedit arms), drag-to-resize splits, and Insert Visual (a drag out
+      of insert returns to normal here, to insert in nvim).
+- [ ] Wheel scrolls the focused window, not the one under the pointer.
+      `winAt` is the easy half and now exists; the rest is parameterising
+      `lineAfterRows`/`lineRows`/`lineLayout`/`textCols` on `*Win` instead of
+      the Editor's active-window mirror.
 - [ ] More nvim ground-truth test tranches (dot-repeat/macro edge cases).
 
 ## Done (chronological)
@@ -499,3 +510,99 @@ The shortlist is done; these are the next-highest gaps from
       78-144 us on `src/editor.zig`; 2.3 ms on the adversarial
       low-vocabulary file. One harvest per typing pause, never per keystroke.
       Idle CPU still 0.0 ms over 3 s (`cpu` scenario). (UNRELEASED)
+
+- [x] Mouse: click to move the cursor, drag to select (owner request, three
+      empirical probes as input). The terminal is now asked for
+      motion-while-pressed (DEC 1002 + 1006, replacing 1000 — a strict
+      superset, and the probe measured that plain-drag terminal selection was
+      *already* gone under 1000, so nothing was lost), and `key.zig` decodes
+      press / drag / release as three events by masking the button field in
+      order (extra buttons, modifiers, wheel-vs-tilt, then the button) rather
+      than comparing it for equality. Modified reports stay inert on purpose:
+      nvim gives Alt+drag and Ctrl+click meanings of their own that zedit does
+      not implement, so binding them to the plain gesture would be silently
+      wrong. Shift+mouse never reaches an application at all.
+      The screen→buffer inverse is the renderer's own loop, lifted out of
+      `renderWindow` into `RowWalk`/`nextRow` and replayed by `winHit` — the
+      `tabArea`/`pickerLayout`/`sbRows` draw-here-click-here invariant applied
+      to the hardest case (four independent row-consuming mechanisms, two of
+      them hunk-driven and order-dependent, so there is no closed form). A
+      virtual row (diff-pair filler, woven old line, `~`) snaps to the nearest
+      real line; the column inverse handles the gutter (column 1, nvim's
+      rule), tabs, wide cells, wrap segments with their hanging indent and the
+      padding past a word break, and inlay hints.
+      Every vim-shaped rule was generated from real nvim through a pty (`-u
+      NONE -i NONE -n --noplugin`, `:set mouse=a` typed, never `-c`) and lives
+      in `vim_compat` as 19 cases: operator-pending click, backwards ranges,
+      the exclusive→linewise rule, linewise yank, count discarded, visual
+      ended, insert continued, curswant kept at the *clicked* column, clamping
+      past EOL/EOF, the drag anchored at the press, release-extends, jitter
+      stays normal, V→drag→charwise, and no jumplist entry. Two of the probes'
+      recommendations were dropped against that ground truth: modifier
+      masking (see above) and clamping the anchor of a drag begun in insert
+      mode — nvim keeps it one past the last character (`getpos("v")` probed
+      out of band), so zedit does too.
+      Prerequisite fix in the same change: a read that filled `inbuf` exactly
+      skipped the completion wait, so an escape sequence straddling the
+      boundary decoded as its fragments (a bare Esc leaving insert mode, the
+      tail running as commands). The unfinished tail is now carried into the
+      next read; `inbuf` also went 256 B → 1 KB so a whole drag is one read
+      and one frame. Config `mouse` (default true) turns reporting off
+      entirely.
+      Tests: 38 pty checks in the new `tools/scenarios/mouse.zig`, 19
+      nvim-pinned cases in `vim_compat`, an inlay-hint click in `lsp`, two
+      updated `sidebar` pins, `completePrefixLen` unit tests and a rewritten
+      `key.zig` decoder suite — each behavioural piece proven to fail with the
+      old behaviour planted back. 752 → 811 itest checks, all green.
+      Measured (ReleaseFast, 8.7 MB / 200k lines): a full 80-column drag is
+      864 bytes and 76 reports on the wire (vs 22 bytes under 1000); decoding
+      and applying the whole chunk costs 234 us median (3.1 us/report) plus
+      **one** 74 us render, because `processInput` coalesces a read into a
+      single frame; 4.6 us/report end to end from `/proc`. Idle CPU still 0 —
+      1002 reports nothing while the mouse is still. `zig build bench`
+      unchanged within noise (startup 5.7→5.6 ms, keypress 0.12 ms both).
+      Known gaps recorded: no double/triple-click word/line select, no
+      Alt+drag blockwise, no edge auto-scroll while dragging, no drag-resize,
+      and a drag begun in insert mode leaves plain visual (nvim's Insert
+      Visual returns to insert). (UNRELEASED)
+
+- [x] Adversarial review of the above, three defects found and fixed
+      (UNRELEASED):
+      1. `buildSpan`'s exclusive→column-0 step read `end.row` *after* the
+         same struct literal had already written it — the literal's result
+         location is `end` itself. So the step used the length of the line
+         before the one it meant (a wrong-length delete between lines of
+         different widths) and underflowed when the end sat on row 1,
+         aborting the editor. Pre-existing and reachable with no mouse at all
+         (`d}` onto a blank second line), which is how it stayed hidden:
+         `nvim#m4` covered the shape but its fixture's lines were all ten
+         characters wide, so the wrong length was the right one. Now pinned
+         both ways in `vim_compat` (`nvim#m24`–`m27`).
+      2. `.` after an operator+click repeated the *previous* change: the
+         press returned before the dot-capture wrapper, so the click never
+         reached the repeat register. It is captured now when it consumes an
+         operator, replaying the recorded screen cell as vim's redo does
+         (`nvim#m22`/`m23`).
+      3. A press left the pending command on showcmd, and the next command
+         appended to it (`d`+click then `3` read `d3`). A press clears it,
+         like any other key that acts at once — nvim blanks that cell for
+         `d`+click and `3`+click alike (pty-probed).
+      Verification added: an exhaustive draw-here-click-here sweep (every
+      plain ASCII cell the renderer drew, across soft-wrapped rows with
+      hanging indent and a mid-word break, tab stops, a horizontally scrolled
+      window and a vertical split — 389 cells, all landing under the pointer);
+      a read-boundary sweep that puts the split on *each byte* of a CSI, SS3,
+      drag report and paste fence (28 offsets; 30 of them fail with the carry
+      removed); modified-gesture inertness; `mouse = false` asserted against
+      the raw stream for every tracking mode, not just 1002; a resize
+      mid-drag; a drag into the explorer with the release outside the text
+      area; and `Session.resize` in the harness to drive real SIGWINCH.
+      811 → 834 itest checks, all green.
+
+- [ ] Found while reviewing, left alone as unrelated to the mouse work: a
+      window narrowed to zero columns aborts in `renderWindow`
+      (`emitSpaces(w.gw - 1)`), reachable with more vertical splits than the
+      terminal has columns (5 `:vsplit`s in a 3-column terminal) and with no
+      mouse involved. The fix belongs in `layout()` — floor a window's width
+      and height at 1 — rather than in the one subtraction that happens to
+      notice.

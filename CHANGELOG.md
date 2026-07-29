@@ -2,6 +2,76 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.23.0 - 2026-07-29
+
+### Added
+
+- **Click to move the cursor, drag to select.** zedit now asks the terminal
+  for motion-while-pressed reports (DEC mode 1002 alongside 1006, replacing
+  1000), and decodes press, drag and release as three distinct events. A left
+  click in a window's text area puts the cursor there — focusing that window
+  first when it is not the active one — and holding the button down extends a
+  charwise selection from the press cell, leaving an ordinary visual selection
+  that `d`/`y`/`c` and the rest act on. Every rule is pinned to real nvim's
+  `mouse=a`, driven through a pty: no jumplist entry, a pending count
+  discarded, an open selection ended, insert mode continued, and a pending
+  *operator* applied over the clicked range as an exclusive charwise motion
+  (linewise by vim's column-0 rule). `goal_col` keeps the clicked column, not
+  the clamped one, so clicking past a short line and pressing `j` lands where
+  the pointer was.
+- Clicks resolve through the renderer's own row walk, lifted out of
+  `renderWindow` into a re-runnable `RowWalk`/`nextRow` the hit-test replays —
+  the `tabArea` draw-here-click-here invariant, applied to the hardest case.
+  So a click lands correctly on a soft-wrapped continuation row (hanging
+  indent included, and the padding past a word break stays on its own row),
+  on a tab or either cell of a wide CJK character, on a line carrying inlay
+  hints, and in the diff views, where a virtual row (a pair's filler, a woven
+  old line) snaps to the nearest real line instead of inventing a position.
+  The gutter reads as column 1, as in nvim.
+- Config `mouse` (default `true`). `mouse = false` never emits the enable
+  sequence, so the terminal keeps the mouse entirely — including its own
+  click-drag selection, which any tracking mode takes over — and a stray
+  report from a terminal another program left in tracking mode stays inert.
+
+### Fixed
+
+- **A read that filled the input buffer exactly decoded a split escape
+  sequence as its fragments** — a bare Esc dropping you out of insert mode
+  and the tail running as commands or landing in the document. The completion
+  wait that repairs a short read had nowhere to put the rest, so the
+  unfinished tail is now held back and prepended to the next read instead.
+  Mouse drags made this routine rather than theoretical: one drag across an
+  80-column window is ~900 bytes of reports. The input buffer also grew from
+  256 bytes to 1 KB, so a whole drag arrives in one read and costs one frame.
+- **An exclusive motion ending in column 0 built the wrong span, and aborted
+  the editor when the end sat on line 2.** vim's rule steps such an end back
+  to the end of the previous line, but the two halves of that step were
+  written into one struct literal whose result location *is* the value being
+  read — so the row was already updated when the column was computed, giving
+  the length of the line before the one wanted, and underflowing outright at
+  row 1. `d}` onto a blank second line crashed; `d`+click at column 0 of line
+  2 crashed; between lines of different lengths the delete simply stopped at
+  the wrong column. Pinned against nvim in `vim_compat` (`nvim#m24`–`m27`),
+  with and without the mouse.
+- **`.` after an operator+click repeated the wrong change.** A press that
+  consumes a pending operator makes a change, but it returned before the
+  dot-capture wrapper, so the click never entered the repeat register and `.`
+  silently re-ran whatever change came before it. It is captured now, and
+  replays the recorded screen cell exactly as vim's redo does.
+- **A mouse press left the pending command on the showcmd indicator.** `d`
+  then a click executed the delete but kept showing `d`, and the next command
+  appended to it (`3` then read `d3`). A press acts at once, like an arrow
+  key, so it clears the indicator — pty-probed against nvim, which blanks that
+  cell for both `d`+click and `3`+click.
+
+### Changed
+
+- Modified mouse reports (Shift/Alt/Ctrl), the horizontal tilt axis and the
+  extra buttons stay inert rather than acting as their plain counterparts —
+  nvim gives Alt+drag and Ctrl+click meanings of their own that zedit does not
+  implement. Shift+mouse never reaches an application in any terminal tested;
+  it is how text is selected for the terminal's own clipboard.
+
 ## 0.22.0 - 2026-07-28
 
 ### Added

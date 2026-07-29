@@ -89,6 +89,13 @@ pub const Session = struct {
         _ = c.write(self.master, bytes.ptr, bytes.len);
     }
 
+    /// Resize the pty, which sends the child a real SIGWINCH — the only way to
+    /// exercise the resize path (re-tiling, a stale frame diff) end to end.
+    pub fn resize(self: *Session, rows: u16, cols: u16) void {
+        var ws = c.winsize{ .ws_row = rows, .ws_col = cols, .ws_xpixel = 0, .ws_ypixel = 0 };
+        _ = c.ioctl(self.master, c.TIOCSWINSZ, &ws);
+    }
+
     /// Read whatever the editor emits over `ms` milliseconds, appending it to
     /// `out`. Returns early if the child closes the pty.
     pub fn drain(self: *Session, ms: i64) void {

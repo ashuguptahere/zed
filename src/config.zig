@@ -74,6 +74,11 @@ pub const Settings = struct {
     /// newest matching history entry (or a command name) shown as dim ghost
     /// text after the cursor; Right/End accepts it. False turns it off.
     cmdline_suggestions: bool = true,
+    /// Ask the terminal to report mouse events: the wheel, clicks that move
+    /// the cursor, and drags that select. False never enables reporting, so
+    /// the mouse stays entirely the terminal's — including its own click-drag
+    /// selection, which any tracking mode takes over.
+    mouse: bool = true,
 };
 
 /// The live settings, read by the editor/renderer. Defaults apply when there
@@ -175,6 +180,13 @@ pub const default_text =
     \\# what you typed. Set false to turn the ghost text off.
     \\cmdline_suggestions = true
     \\
+    \\# Report mouse events to zedit: the wheel scrolls, a click moves the
+    \\# cursor (and focuses the split it landed in), and a drag selects.
+    \\# Set false to leave the mouse entirely to your terminal — including
+    \\# its own click-drag selection, which any reporting mode takes over.
+    \\# Shift+drag is the terminal's own selection either way.
+    \\mouse = true
+    \\
 ;
 
 /// "true"/"false" → the bool; anything else is null (setting left untouched).
@@ -237,6 +249,8 @@ pub fn apply(text: []const u8) void {
             if (parseBool(value)) |b| settings.format_on_save = b;
         } else if (std.mem.eql(u8, key, "cmdline_suggestions")) {
             if (parseBool(value)) |b| settings.cmdline_suggestions = b;
+        } else if (std.mem.eql(u8, key, "mouse")) {
+            if (parseBool(value)) |b| settings.mouse = b;
         }
     }
 }

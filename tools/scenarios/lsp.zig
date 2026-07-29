@@ -132,6 +132,18 @@ pub fn run(ctx: *h.Ctx) !void {
         ctx.check("inlay hint rendered inline", r.plainHas(": i32"));
     }
 
+    // A click lands on the byte under the pointer even where a hint has pushed
+    // the text right: the 5-cell ": i32" after `const a` makes screen column 21
+    // the `1`, where a hint-blind inverse would give the `;` two cells on.
+    {
+        const r = drive(ctx, &.{
+            .{ .keys = "\x1b[<0;21;2M\x1b[<0;21;2m", .ms = 400 },
+            .{ .keys = "x", .ms = 300 },
+        }, "\x1b:wq\r");
+        defer r.deinit(ctx.gpa);
+        ctx.check("a click accounts for inlay hints", r.textHas("const a = ;\n"));
+    }
+
 
     // Incremental sync: an edit on line 0 makes the mock echo "INCREMENTAL".
     {
