@@ -2,6 +2,96 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.26.0 - 2026-07-29
+
+### Added
+
+- **True rectangular block paste.** A blockwise yank or delete now records a
+  *blockwise* register (`register.zig` grew a `Kind` — charwise / linewise /
+  blockwise — and the block's display `width`), and `p`/`P` lay it back in as
+  a rectangle instead of splicing it charwise. Every rule below was probed
+  from real nvim (`-u NONE -i NONE -n --noplugin`) through a pty before it was
+  written:
+  - the column is the cursor's for `P` and the cell after it for `p` — both
+    column 0 on an empty line;
+  - a line too short to reach that column is padded with spaces, measured in
+    *display* columns, so a tab counts for `tab_width`;
+  - the buffer grows new lines when the block outlasts it (`G$p` of a
+    two-row block on the last line appends a padded second row);
+  - a count lays the block **side by side** rather than stacking it: `3p` of
+    "ab"/"cd" on "xy" gives "xabababy";
+  - a register line is squared up to the block's width only when something
+    follows it on that line — its own tail, or a further repetition — which
+    is why a paste at end-of-line stays ragged and leaves the pad trailing;
+  - the cursor lands on the rectangle's first cell.
+  Blockwise `d`/`x` now fill the register at all — they previously deleted
+  the block and recorded nothing, so a following `p` pasted stale text.
+- **Block `A` pads short lines; `I` and `c` skip them.** vim's asymmetry,
+  nvim-verified: `A` pads a line that stops short of the append column out
+  with spaces so the text lands in one straight column, while `I` and `c`
+  leave such a line untouched (a line ending *exactly* at the left edge still
+  counts). `$` in blockwise visual is now tracked as its own state: the block
+  follows each line's own end as `j`/`k` grow it, `$A` appends there and pads
+  nothing, `$I`/`$c` still work off the left edge, and any motion that names
+  a column ends it.
+- `"{reg}` now selects a register in **visual** mode as it does in normal
+  mode, for every selection kind (`<C-v>jl"ay` then `"ap` round-trips a
+  rectangle through register `a`). It was ignored there before.
+- `@@` repeats the last macro played, and takes a count (`2@@`).
+
+### Fixed
+
+- `[count].` now **replaces** the recorded count instead of repeating the
+  whole change that many times: `3x` then `2.` removes five characters, as in
+  vim, where it removed nine. The substituted count goes *after* a `"{reg}`
+  prefix, which vim copies across untouched — written in front of it the two
+  digit runs fused, so `3.` after `"a2dd` ran as `32dd` and took the whole
+  file. (A count typed *after* the operator, `d2w`, is still multiplied
+  rather than replaced; see TODO.md.)
+- A blockwise yank, delete or change now records the block's width in spaces
+  for a line that stops **before** the block's left edge, as vim's
+  `endspaces` does, instead of recording nothing there. Only a paste with
+  nothing after it on the line showed the difference — the squaring-up
+  covered the rest — so `G$p` of such a rectangle came out one row short of
+  its own width. A `$` block's spaces run one wider still, its right edge
+  sitting one past the longest line's end. All nvim-pinned; a row ending
+  *exactly* at the left edge still yanks empty.
+- `"A` appending to a register now keeps the kind the register already had —
+  only a linewise addition overrides it — so appending to a rectangle leaves
+  a rectangle, one row longer and at its original width, rather than
+  flattening it to charwise. A blockwise register gains a whole row; only a
+  charwise one has its last line joined to the addition (nvim-verified).
+- A block's right edge is now the **last** cell of the character an endpoint
+  sits on, not its first, so a selection ending on a double-width character
+  or a tab covers it whole: `<C-v>jl` over "漢字ab" deletes the two wide
+  characters (it used to leave half the pair behind and yank a stray space),
+  and `<C-v>j` then `A` on a line ending in a tab appends past the tab
+  instead of before it. Pre-existing, and reached by every blockwise
+  operator.
+- `.` no longer records *itself* as the last change. A second `.` used to
+  repeat the repeat and then stall on the recursion guard, which also broke
+  any macro that recorded a `.`.
+- A cursor movement mid-insert now splits the change the way vim's
+  `ResetRedobuff` + `"1i"` does, so `.` repeats only the text typed after the
+  move, as a plain insert: `A` `XY` `<Left>` `Z` `<Esc>` then `.` inserts a
+  bare "Z" at the cursor rather than appending "XZY" at the line's end.
+  (Backspace does not split a change — only movement does.)
+- A blockwise `A` leaves the cursor on the block's **top-left** corner, not
+  the append column it was typing at. That is what makes `.` re-apply the
+  same rectangle instead of one shifted right by its own width.
+- A macro replay now **stops at the first command that fails** — a motion
+  with nowhere to go, a find or a committed search with no match — instead of
+  running the keys after it; a count stops with it. The abort is scoped to
+  the replay it happened in, and the *incremental* search deliberately does
+  not raise it, or a replayed `/pat` would abort part-way through typing its
+  own pattern and strand the prompt open.
+- Typed `j`/`k` in visual mode no longer clobber the goal column. The arrows
+  were guarded but the letters were not, so a blockwise selection crossing an
+  empty line collapsed to column 0; nvim keeps curswant and stays square.
+- The blockwise-visual cursor may sit one column past a short line's end
+  (vim's rule), so a block can be built wider than the line under it and `$`
+  can mean "past every line's end".
+
 ## 0.25.0 - 2026-07-29
 
 ### Added

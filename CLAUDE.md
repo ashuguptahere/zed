@@ -166,7 +166,7 @@ Source is `src/`, one responsibility per module:
 | `unicode.zig` | UTF-8 decoding, codepoint boundaries, display width. |
 | `buffer.zig`  | The document: two-phase zero-copy load (`loadPartial` indexes a head so the screen can paint, `loadRest` fills the tail), a lazy `u32` line index over one shared buffer, per-line storage materialised on the first edit, save, UTF-8-aware edits. |
 | `motion.zig`  | Pure cursor motions, word/WORD rules, find-char, `%`, text objects, the double-click mouse word. |
-| `register.zig`| Vim registers (named/unnamed, linewise flag) for yank/delete/paste. |
+| `register.zig`| Vim registers (named/unnamed; charwise/linewise/blockwise kind + block width) for yank/delete/paste. |
 | `undo.zig`    | Undo history as a tree of edits — each state the diff from its parent (branches, `g-`/`g+`, `:earlier`/`:later`), optionally kept on disk. |
 | `regex.zig`   | Regex engine: Pike VM (Thompson NFA), linear time, captures; modern "very magic" syntax. |
 | `search.zig`  | Buffer search (`/ ? n N * #`): regex-powered, with a whole-source SIMD memmem fast path for literal patterns while the buffer is unedited. |
@@ -381,8 +381,14 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   `i( i[ i{ i< i" i' i\`` and `a…` variants (plus `b`/`B` aliases), e.g.
   `ciw`, `di"`, `da(`, `dap`. Objects work in visual mode too (`vip`, `vi(` —
   paragraph objects switch the selection to V-LINE, as vim does).
-- **Registers/paste:** `"a` selects a register; `p`/`P` paste (linewise/charwise).
-  `"+` / `"*` are the system clipboard: yanks there are sent to the terminal
+- **Registers/paste:** `"a` selects a register (in visual mode too); `p`/`P`
+  paste it back the way it was taken — charwise, linewise, or **blockwise** as
+  a rectangle: one register line per buffer line at one display column,
+  padding a line too short to reach it, growing the file when the block
+  outlasts it, and laying the block side by side under a count (`3p`). A
+  register line is squared up to the block's width only when something follows
+  it on that line, which is vim's rule and why a paste at end-of-line stays
+  ragged. `"+` / `"*` are the system clipboard: yanks there are sent to the terminal
   as OSC 52 (sets the local clipboard, even over SSH); pastes use the
   register's shadow copy. Terminal pastes arrive via bracketed paste and
   insert literally (no auto-pairs, single undo step; works in insert, normal,
@@ -411,17 +417,34 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   state; a pruned saved state means travel stays conservatively dirty until
   the next write. All nvim-verified in
   `vim_compat`.
-  **Repeat:** `.` repeats the last change.
+  **Repeat:** `.` repeats the last change. `[count].` *replaces* the change's
+  leading count rather than repeating the change that many times (`3x` then
+  `2.` removes five characters, not nine; the substitute goes after a
+  `"{reg}` prefix, which vim keeps — a count in front of it would fuse with
+  the register's own digits), `.` never records itself (so `..` works and a
+  macro may record one), and a cursor movement mid-insert splits the change
+  as vim does — `.` then repeats only the text typed after the move, as a
+  plain insert.
 - **Visual:** `v` (char), `V` (line), `Ctrl-v` (block); move to extend, `o`
   swaps ends, then `d c y x > <`. In block mode `I`/`A` insert at the left/right
-  edge of every selected line (via the multi-cursor machinery).
+  edge of every selected line (via the multi-cursor machinery), with vim's
+  asymmetry on lines that do not reach the block: `A` pads one out with
+  spaces, while `I` and `c` skip it. `$` extends the block to each line's own
+  end — and keeps doing so as `j`/`k` grow it — so `$A` appends at every
+  line's end and pads nothing; any motion naming a column ends it. `y`/`d`/`x`
+  fill a blockwise register (see Registers/paste).
 - **Search:** `/pat` `?pat` (incremental — jumps live as you type, `Esc`
   cancels and restores the cursor), `n N`, `*` `#` (whole-word, `\<word\>`).
   Matches are highlighted; wraps. Patterns are modern regexes (regex.zig:
   `. [..] * + ? ( ) | ^ $ \w \d \s \b \< \>` — Helix/ripgrep style, not
   vim's magic mode); a plain word behaves exactly as before.
 - **Marks/macros:** `m{a-z}`, `` `{a-z} ``, `'{a-z}`; `q{a-z}…q` records, `@{a-z}`
-  / `{n}@a` replays.
+  / `{n}@a` replays, and `@@` repeats the last macro (counted too). A replay
+  stops at the first command that fails — a motion with nowhere to go, a find
+  or a committed search with no match — instead of running the keys after it;
+  a count stops with it. The abort is scoped to that replay, so the next key
+  typed runs normally, and the *incremental* search does not raise it (a
+  replayed `/pat` must not abort while typing its own pattern).
 - **Jumplist:** `Ctrl-o` / `Ctrl-i` (also `Tab`) walk back/forward through
   jump-motions — `G`/`gg`/`{n}G`, `H M L`, `%`, committed searches (back to the
   origin), `n N * #`, mark jumps, `:{n}`, and every buffer switch (`:e`,
@@ -876,14 +899,23 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
 - Vim gaps: paragraph objects/motions treat only truly empty lines as
   boundaries (vim's rule; `nroff`-style paragraph macros in `'paragraphs'`
   aren't supported), and there are no sentence objects (`is`/`as`, `(`/`)`).
-  The trickier dot-repeat/macro interactions are not (fully)
-  implemented — `.` replays the recorded *bytes*, so a **counted** repeat runs
-  the whole command N times where vim applies the count once. That is
-  invisible for `2.` after `dw` (same answer either way) but not after an
-  operator+click, whose replayed screen cell is re-resolved from a cursor the
-  previous replay already moved: `2.` deletes one character more than nvim
-  does. Fixing it means storing the count beside the keys rather than
-  re-running them; autoindent is vim's 'autoindent' only (no smartindent/
+  `[count]` before an *insert* command (`3a`, `3i`, `3A`, blockwise `3A`) is
+  not implemented: vim types the text that many times, zedit types it once
+  (`3a` `X` Esc on "abc" gives nvim "aXXXbc", zedit "aXbc"). `p`/`P` in
+  **visual** mode (replace the selection with a register) is missing for
+  every selection kind. `G`/`gg` go to the line's first non-blank where nvim
+  keeps the cursor's column (its `'startofline'` is off by default), which
+  reaches every jump that lands on a new line. A **bare** `/` or `?` (Enter
+  on an empty pattern) clears the last pattern where vim repeats it, and now
+  also stops a macro replay as a failed search would. Dot-repeat and macros
+  are otherwise nvim-pinned (the `nvim#dm*` tranche in `vim_compat`), counted
+  repeats included as far as a *leading* count goes: `[count].` replaces it
+  rather than re-running the change, which is what the operator+click case
+  needed — its replayed screen cell is re-resolved from a cursor the previous
+  replay already moved. A count typed *after* the operator (`d2w`) is still
+  multiplied by the new one, since telling a count from an argument in the
+  recorded bytes needs vim's normalised redo buffer rather than string
+  surgery. Autoindent is vim's 'autoindent' only (no smartindent/
   tree-sitter indent queries). Cmdline completion covers command names,
   `:e`/`:w` paths and `:theme` (not every command's arguments). The cmdline
   has vim's editing keys (cursor motion, `Delete`, `Ctrl-w`/`Ctrl-u`,
@@ -935,8 +967,14 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   re-tiles all windows; no nested/mixed layouts or per-window resizing). Only
   the active window has live LSP polling and an editable selection/search/inlay
   overlay; inactive windows render from their cached state.
-- Block paste of a blockwise yank is charwise (not a true rectangular paste);
-  block `A` on lines shorter than the block does not pad with spaces.
+- Blockwise paste is a true rectangle, block `A`/`I` pad and skip as vim does,
+  and a block edge covers a wide character or a tab whole — but *pasting into*
+  the middle of a tab resolves to the tab's own boundary rather than splitting
+  it into spaces the way vim does (`tabstop=4`, block "11"/"22" pasted with
+  `P` at display column 1 over "\tZ": nvim writes " 22   Z", zedit "22\tZ").
+  Every other alignment rule is in display columns, tabs included — only
+  breaking a tab apart is missing, and it needs vim's virtual-column
+  machinery.
 - Buffer-word completion is a flat word list, not vim's full `'complete'`
   machinery: no completion from included files, tags or the dictionary, and
   no `Ctrl-x` sub-modes. Proximity decides which words are *collected*

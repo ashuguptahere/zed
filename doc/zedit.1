@@ -579,6 +579,10 @@ Set a mark, jump to it exactly, jump to its line.
 .TP
 .B q{a-z} \fR...\fP q \fR then\fP @{a-z}
 Record and replay a macro.
+.B @@
+replays the last one, and both take a count. A replay stops at the first
+command that fails \(em a motion with nowhere to go, or a find or search
+with no match \(em rather than running the keys after it.
 .SH "VISUAL MODE"
 .B v
 character\-wise,
@@ -591,7 +595,25 @@ In block mode,
 .B I
 and
 .B A
-insert at the left/right edge of every selected line. Press
+insert at the left/right edge of every selected line:
+.B A
+pads a line too short to reach the append column with spaces, while
+.B I
+and
+.B c
+skip such a line altogether (vim's asymmetry).
+.B $
+extends the block to each line's own end, and keeps doing so as
+.BR j / k
+grow it, so
+.B $A
+appends at every line's end. The block's edges follow display columns and
+cover a double\-width character (or a tab) whole. A blockwise
+.BR y / d / x
+fills the register as a rectangle, which
+.BR p / P
+paste back as one \(em padding short lines, growing the file past its end,
+and laying the block side by side under a count. Press
 .B S{char}
 to surround the selection.
 .SH "PICKERS (Space leader, AstroNvim-style groups)"

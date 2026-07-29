@@ -207,7 +207,7 @@ Ground truth: `/home/origo/Desktop/zed/CLAUDE.md` (note: the on-disk version is 
 - **Telescope-equivalents:** fuzzy file finder, project content grep (regex, per line), buffer picker, theme picker — with a warm cached file list and space-separated multi-term queries
 - **gitsigns-equivalent** gutter signs, plus inline unified diff, side-by-side index diff, and a VS Code-style in-buffer line-by-line diff (old lines woven in as virtual rows)
 - **neo-tree-equivalent** sidebar file explorer (navigation/open + reveal of the active file on buffer switch; no create/rename/delete, not watched)
-- **Vim core:** motions/operators/registers/marks/macros/dot-repeat, text objects (word + bracket/quote), visual char/line/block (block I/A works; block paste and short-line `A` padding are approximate), surround, incremental highlighted literal search (incsearch+hlsearch defaults)
+- **Vim core:** motions/operators/registers/marks/macros/dot-repeat, text objects (word + bracket/quote), visual char/line/block (rectangular block paste, block `I`/`A`/`c` with vim's short-line padding/skipping, `$` blocks; no visual-mode `p`), surround, incremental highlighted literal search (incsearch+hlsearch defaults)
 - **Multiple cursors** (one-per-line column editing — beyond stock Neovim)
 - **Buffers + splits:** `:e :bn :bp :bd :bd! :ls` (vim's `:bd` rules: the last buffer becomes `[No Name]`, dirty refuses without `!`), `:split`/`:vsplit`, `Ctrl-w` focus/close/only (flat tiling, no resize)
 - **Appearance:** true-colour themes (Tokyo Night + 4 more, live-switchable), powerline statusline, relative+absolute numbers, cursorline, indent guides

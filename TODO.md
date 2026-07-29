@@ -41,7 +41,41 @@ The shortlist is done; these are the next-highest gaps from
 - [ ] Side-by-side diff: a leading deletion gap taller than the window shows
       only its tail (the pane top is a buffer row, clamped to keep the cursor
       on screen; a display-space pane top would make the whole gap reachable).
-- [ ] True rectangular block paste; block `A` padding on short lines.
+- [ ] `[count]` before an insert command (`3a`, `3A`, `3i`, and blockwise
+      `3A`) types the text that many times in vim; zedit types it once
+      (nvim: `3a` `X` Esc on "abc" → "aXXXbc", zedit → "aXbc"). The whole
+      family shares one rule — repeat the insert session's text on Esc — so
+      it wants doing once, with its own nvim-pinned tranche.
+- [ ] `p`/`P` in visual mode (replace the selection with a register) is not
+      implemented at all — no selection kind, blockwise included (nvim:
+      `<C-v>jly` `jj0` `vl` `p` gives "11cd" / "22efgh"; zedit leaves the
+      buffer untouched). Separate from the rectangular paste, which is done.
+- [ ] Pasting a block *into* the middle of a tab resolves to the tab's own
+      boundary instead of splitting the tab into spaces. Probed with
+      `tabstop=4` on "11\n22\nabcd\n\tZ": `<C-v>jly` `jjl` `P` gives nvim
+      " 22   Z" on the last line, zedit "22\tZ". Needs vim's virtual-column
+      machinery (`coladvance`), so it is its own piece of work rather than a
+      patch to the paste. (A block *edge* on a tab is handled: it covers the
+      tab whole, as vim does — `nvim#bp37`/`nvim#bi17`.)
+- [ ] `[count].` replaces only a *leading* count. A count typed after the
+      operator is still multiplied by the new one: nvim's `d2w` then `3.`
+      deletes three words and `2d2w` then `3.` also three, where zedit deletes
+      six in both (probed on "a b c d e f g h i j k l m"). vim can do it
+      because its redo buffer holds one normalised count; zedit replays the
+      recorded *bytes*, and there `2` in `d2w` is indistinguishable from the
+      `2` in `f2` or `r2` without parsing the command. Fixing it means
+      capturing the count beside the keys at record time — its own tranche,
+      with the `[count]`-before-insert family above.
+- [ ] A bare `/` or `?` (Enter on an empty pattern) clears the last search
+      where vim repeats it (nvim: `/X` then `qq` `/` Enter `x` `q` `gg0` `@q`
+      deletes the X on line 1; zedit's replay finds nothing and — since the
+      empty commit now counts as a failed search — stops before the `x`).
+      Two lines in `searchPreview`, but it wants the nvim-pinned case that
+      goes with it.
+- [ ] `G`/`gg` go to the line's first non-blank; nvim keeps the cursor's
+      column (its `'startofline'` is off by default). Probed: on
+      "foo\nbarbaz", `ll` `G` `x` gives "babaz" in nvim, "arbaz" in zedit.
+      Affects every jump that lands on a new line, so it wants its own pass.
 - [ ] Tree-sitter injections (Markdown uses two layers; HTML JS/CSS plain),
       query predicates (`#match?`/`#eq?`), tree-sitter indent queries.
 - [ ] Remote: remote git signs/sidebar, partial transfers for huge remote
@@ -60,7 +94,8 @@ The shortlist is done; these are the next-highest gaps from
       `Vy`; zedit does the opposite for both. Needs its own nvim-pinned
       tranche in `vim_compat`, since `dd`/`cc`/`>` and the operator-pending
       path share the rule.
-- [ ] More nvim ground-truth test tranches (dot-repeat/macro edge cases).
+- [ ] More nvim ground-truth test tranches (the linewise-visual cursor column
+      above; operator-pending `gj`/`gk`; sentence objects).
 
 ## Done (chronological)
 
@@ -673,6 +708,73 @@ The shortlist is done; these are the next-highest gaps from
       ticks, state S). Both proven to fail with the old code planted back;
       `cmdRowSplit` carries the rule with a unit test and three pty checks.
       (UNRELEASED)
+
+- [x] Blockwise registers, rectangular paste, block `A`/`I` padding, and a
+      dot-repeat/macro tranche — 76 new nvim-pinned cases in `vim_compat`,
+      48 of them proven to fail against the pre-change binary.
+      `register.zig` grew a `Kind` (charwise/linewise/blockwise) plus the
+      block's display `width`, since a yank slices each row ragged and only
+      the width can square it back up. `p`/`P` of a blockwise register now
+      lay the rectangle in: the column is the cursor's for `P` and the next
+      cell for `p` (both 0 on an empty line), a line too short for it is
+      padded with spaces *in display columns*, the buffer grows new lines
+      when the block outlasts it, a count lays the block side by side, and a
+      register line is squared up to the width only when something follows
+      it — which is why a paste at end-of-line leaves the pad bare and
+      trailing. Blockwise `d`/`x` fill the register at all now (they filled
+      nothing before). Block `A` pads a short line out to the append column
+      and `$A` appends at each line's own end instead; `I` and `c` *skip* a
+      line that never reaches the left edge (vim's asymmetry). Four
+      geometry bugs fell out on the way and are fixed: typed `j`/`k` in
+      visual mode clobbered the goal column (arrows were guarded, letters
+      were not), so a block collapsed to column 0 across an empty line; the
+      blockwise cursor could not sit one past a short line's end; `$` was
+      not tracked at all; and `"{reg}` was ignored in visual mode for every
+      selection kind. Dot-repeat/macros: `[count].` now *replaces* the
+      recorded count instead of repeating the change that many times
+      (`3x` then `2.` removes five, not nine); `.` no longer records itself
+      (a second `.` used to repeat the repeat and then stall, which also
+      broke a macro that recorded one); a cursor movement mid-insert splits
+      the change as vim's `ResetRedobuff`+`"1i"` does, so `.` repeats only
+      the text typed after it; a blockwise `A` leaves the cursor on the
+      block's top-left corner, which is what makes `.` re-apply the same
+      rectangle rather than one shifted right by its own width; `@@` repeats
+      the last macro and takes a count; and a replay now stops at the first
+      command that fails (a motion that cannot move, a find or a committed
+      search with no match) instead of running the rest. The abort is scoped
+      to the replay — the incremental search deliberately does not raise it,
+      or a replayed `/pat` would abort while typing its own pattern and
+      leave the prompt open. Suites green: unit + itest (1027 passed).
+      Gaps recorded above, all with transcripts: `[count]` before an insert
+      command, visual-mode `p`, and `G`/`gg` not keeping the column.
+      (UNRELEASED)
+
+- [x] Adversarial review of the above, re-probed against nvim from scratch
+      (~90 fresh probes, every rule re-derived rather than trusted). The
+      pinned rules all held; four defects did not, and are fixed with
+      nvim-pinned cases (`nvim#bp26`–`bp37`, `nvim#bi16`–`bi17`,
+      `nvim#dm8a`–`dm8b`, plus a `register.zig` unit test):
+      a blockwise `y`/`d`/`c` recorded **nothing** for a line stopping before
+      the block's left edge, where vim records the block's width in spaces
+      (its `endspaces`) — invisible wherever the paste has a tail to square
+      up against, but `G$p` of such a rectangle came out short; a `$` block's
+      run is one wider still, its right edge sitting one past the longest
+      line's end. `"A` flattened a blockwise register to charwise, where vim
+      keeps the register's own kind unless the addition is linewise, appends
+      it as a new row and keeps the original width. `[count].` wrote the
+      substituted count in *front* of a `"{reg}` prefix, fusing the two digit
+      runs — `3.` after `"a2dd` ran as `32dd` and deleted the whole file
+      (it now goes after the prefix, matching nvim exactly). And a block's
+      right edge was the *first* cell of the character under the endpoint
+      rather than its last, so a selection ending on a double-width character
+      or a tab took half of it: `<C-v>jl` `d` over "漢字ab" left a stray
+      space where nvim deletes both characters, and block `A` on a tab line
+      landed before the tab. That last one predates the block work and
+      reaches every blockwise operator; fixing it also closed the block-`A`
+      half of the tab divergence, which is now narrowed to pasting *into* a
+      tab. Suites green: unit + itest (1045 passed). New gaps recorded above
+      with transcripts: `[count].` after an operator-side count, and a bare
+      `/` not repeating the last pattern. (UNRELEASED)
 
 - [ ] Found while reviewing, left alone as unrelated to the mouse work: a
       window narrowed to zero columns aborts in `renderWindow`

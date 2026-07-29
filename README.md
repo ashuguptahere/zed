@@ -45,7 +45,8 @@
     struct, impl), `aa`/`ia` (argument, with its comma), `aC`/`iC` (comment,
     across a run of comment lines), and `]f`/`[f` to step between functions
   - Built-ins (no plugins): autoindent, auto-pairs, comment toggle (`gcc` / `gc{motion}`),
-    surround (`ys`/`cs`/`ds`, visual `S`), blockwise visual (`Ctrl-v` + `I`/`A`),
+    surround (`ys`/`cs`/`ds`, visual `S`), blockwise visual (`Ctrl-v` + `I`/`A`/`c`,
+    `$` to each line's own end, and a rectangular `p`/`P`),
     multiple cursors (`Ctrl-n` / `Ctrl-p` add carets; edits apply to all),
     **buffer-word completion** — with no language server installed the popup
     still fills from the identifiers in your open buffers (vim's keyword

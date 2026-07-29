@@ -286,6 +286,14 @@ pub const Editor = struct {
 
     // visual
     vstart: Pos = .{ .row = 0, .col = 0 },
+    // `$` was pressed in blockwise visual: the block reaches each line's own
+    // end rather than a fixed column, and keeps doing so as `j`/`k` grow it.
+    vb_dollar: bool = false,
+    /// Where a blockwise `A` session must leave the cursor when it ends: vim
+    /// puts it back on the block's top-*left* corner, not the append column it
+    /// was typing at (nvim-verified), which is what makes `.` re-apply the
+    /// same rectangle instead of one shifted right by its own width.
+    vb_origin: ?Pos = null,
     // A left button is down and its press landed in a window's text area, so
     // motion reports extend a selection from there. No `*Win` is kept: windows
     // are freed by `:close`/`:only`/a diff teardown, all reachable mid-drag,
@@ -319,6 +327,10 @@ pub const Editor = struct {
     // search
     last_search: std.ArrayList(u8) = .empty,
     last_search_forward: bool = true,
+    /// Whether the live (incremental) search currently has a match. Committing
+    /// a search that has none is the failure a macro stops at — the typing on
+    /// the way there is not.
+    search_hit: bool = false,
     // Compiled form of the pattern being highlighted/jumped (cached per text;
     // null when the pattern is empty or (still) invalid, e.g. mid-typing).
     search_re: ?regex.Regex = null,
@@ -446,6 +458,13 @@ pub const Editor = struct {
     recording: ?u8 = null,
     macro_buf: std.ArrayList(u8) = .empty,
     replay_depth: usize = 0,
+    /// The register `@` last played, which is what `@@` repeats.
+    last_macro: ?u8 = null,
+    /// The command just run failed the way vim beeps at (a motion that could
+    /// not move, a search with no match). A macro replay stops at one instead
+    /// of running the rest of its keys; cleared before each key from the
+    /// terminal, so it only ever spans one replay.
+    failed: bool = false,
 
     // dot-repeat
     dot_keys: std.ArrayList(u8) = .empty,
@@ -817,6 +836,10 @@ pub const Editor = struct {
             const raw = chunk[i .. i + d.consumed];
             i += d.consumed;
             if (self.recording != null) self.macro_buf.appendSlice(self.gpa, raw) catch {};
+            // A failure only ever aborts the replay it happened in; the next
+            // key a person types starts clean. (Recording is not a replay:
+            // vim runs the keys as they are typed, error or not.)
+            self.failed = false;
             try self.feedKey(d.key, raw);
             if (self.quit) break;
         }
@@ -950,7 +973,9 @@ pub const Editor = struct {
             const raw = bytes[i .. i + d.consumed];
             i += d.consumed;
             try self.feedKey(d.key, raw);
-            if (self.quit) break;
+            // vim stops a replay at the first command that fails, so the keys
+            // after a motion that could not move never run.
+            if (self.quit or self.failed) break;
         }
     }
 
@@ -1685,10 +1710,16 @@ pub const Editor = struct {
                 self.resetPending();
             },
             .macro_play => {
-                const reg = charByte(k) orelse {
+                // `@@` replays whatever `@` last played (vim's rule); before
+                // any `@` at all it is simply unknown and does nothing.
+                const named = charByte(k) orelse {
                     self.resetPending();
                     return;
                 };
+                const reg = if (named == '@') (self.last_macro orelse {
+                    self.resetPending();
+                    return;
+                }) else named;
                 const n = self.eff();
                 self.resetPending();
                 try self.playMacro(reg, n);
@@ -2152,6 +2183,7 @@ pub const Editor = struct {
 
     fn vertical(self: *Editor, up: bool, n: usize) MotionResult {
         const row = if (up) (if (self.cy > n) self.cy - n else 0) else @min(self.cy + n, self.buf.lineCount() - 1);
+        if (row == self.cy and n > 0) self.failed = true; // no line to move to
         return .{ .pos = .{ .row = row, .col = 0 }, .kind = .linewise, .col_mode = .keep_goal };
     }
 
@@ -2295,7 +2327,10 @@ pub const Editor = struct {
         var col = self.cx;
         var n = self.total(); // vim multiplies `2d3fa`: count before × after
         while (n > 0) : (n -= 1) {
-            col = motion.findChar(line, col, ch, forward, false) orelse return self.resetPending();
+            col = motion.findChar(line, col, ch, forward, false) orelse {
+                self.failed = true; // vim's find fails outright, count and all
+                return self.resetPending();
+            };
         }
         if (till) col = if (forward) unicode.prevBoundary(line, col) else unicode.nextBoundary(line, col);
         const inclusive = forward; // forward find/till is inclusive; backward is exclusive
@@ -2330,7 +2365,7 @@ pub const Editor = struct {
         }
         const text = self.extract(span) catch return;
         defer self.gpa.free(text);
-        self.yankTo(text, span.lines);
+        self.yankTo(text, if (span.lines) .linewise else .charwise, 0);
 
         if (op == .yank) {
             if (span.lines) {
@@ -2506,7 +2541,7 @@ pub const Editor = struct {
     fn charwiseDelete(self: *Editor, span: Span) !void {
         const text = try self.extract(span);
         defer self.gpa.free(text);
-        self.yankTo(text, false);
+        self.yankTo(text, .charwise, 0);
         self.pushUndo();
         self.setCursor(self.deleteSpan(span));
     }
@@ -2621,7 +2656,9 @@ pub const Editor = struct {
         };
         const n = self.eff();
         self.pushUndo();
-        if (reg.linewise) {
+        if (reg.kind == .blockwise) {
+            self.pasteBlock(reg, after, n);
+        } else if (reg.kind == .linewise) {
             var at = if (after) self.cy + 1 else self.cy;
             const first = at;
             var rep: usize = 0;
@@ -2648,6 +2685,58 @@ pub const Editor = struct {
             self.updateGoal();
         }
         self.resetPending();
+    }
+
+    /// Blockwise paste: the register's lines go back in as a rectangle — one
+    /// register line per buffer line, all starting at the same *display*
+    /// column, the buffer growing new lines when the block outlasts it.
+    /// Every rule below is nvim-pinned (see `vim_compat`'s nvim#bp cases):
+    ///
+    ///   * the column is the cursor's for `P` and the cell after it for `p`,
+    ///     except on an empty line, where both are column 0;
+    ///   * a line too short to reach that column is padded with spaces (in
+    ///     display columns, so a tab counts for `tab_width`), which is why a
+    ///     paste past the end of a short line leaves trailing whitespace;
+    ///   * a register line is padded out to the block's width only when
+    ///     something follows it on that line — either the line's own tail or a
+    ///     further repetition of a count — so `3p` squares the block up but a
+    ///     paste at end-of-line stays ragged;
+    ///   * the cursor lands on the first cell of the pasted rectangle.
+    fn pasteBlock(self: *Editor, reg: register.Register, after: bool, n: usize) void {
+        const first = self.curLine();
+        const at_byte = if (after and first.len > 0) unicode.nextBoundary(first, self.cx) else self.cx;
+        const dcol = displayCol(first, at_byte);
+
+        var pad: std.ArrayList(u8) = .empty;
+        defer pad.deinit(self.gpa);
+        var row = self.cy;
+        var it = std.mem.splitScalar(u8, reg.text, '\n');
+        while (it.next()) |seg| : (row += 1) {
+            if (row >= self.buf.lineCount()) self.buf.insertLineAt(row, "") catch return;
+            // Reach `dcol`, padding a line that stops short of it.
+            const line = self.buf.line(row);
+            const have = displayCol(line, line.len);
+            if (have < dcol) {
+                pad.clearRetainingCapacity();
+                pad.appendNTimes(self.gpa, ' ', dcol - have) catch return;
+                self.buf.insertBytes(row, line.len, pad.items) catch return;
+            }
+            const col = byteAtDisplayCol(self.buf.line(row), dcol);
+            const tail = col < self.buf.line(row).len;
+
+            pad.clearRetainingCapacity();
+            const seg_w = displayCol(seg, seg.len);
+            var rep: usize = 0;
+            while (rep < n) : (rep += 1) {
+                pad.appendSlice(self.gpa, seg) catch return;
+                // Square the rectangle up for whatever comes after it.
+                if ((rep + 1 < n or tail) and seg_w < reg.width)
+                    pad.appendNTimes(self.gpa, ' ', reg.width - seg_w) catch return;
+            }
+            self.buf.insertBytes(row, col, pad.items) catch return;
+        }
+        self.cx = byteAtDisplayCol(self.curLine(), dcol);
+        self.updateGoal();
     }
 
     /// Insert charwise register text at (cy, col), splitting lines on '\n'.
@@ -2702,6 +2791,19 @@ pub const Editor = struct {
     }
 
     fn insertKey(self: *Editor, k: key.Key) !void {
+        // Moving the cursor mid-insert breaks the change in two, and vim's `.`
+        // then repeats only what was typed *after* the move — as a plain `i`,
+        // whatever command opened the insert (nvim-verified: `A` `XY` <Left>
+        // `Z` <Esc>, then `.` on another line inserts a bare "Z" at the cursor
+        // rather than appending "XZY" at its end). Restarting the capture at
+        // "i" is exactly vim's `ResetRedobuff` + `"1i"`.
+        if (!self.in_dot and !self.comp_open) switch (k) {
+            .up, .down, .left, .right, .home, .end => {
+                self.dot_temp.clearRetainingCapacity();
+                self.dot_temp.append(self.gpa, 'i') catch {};
+            },
+            else => {},
+        };
         // While the completion popup is open it claims navigation/accept keys;
         // text edits fall through and then re-filter the list.
         if (self.comp_open and try self.completionIntercept(k)) return;
@@ -2836,7 +2938,12 @@ pub const Editor = struct {
                 self.mode = .normal;
                 self.comp_open = false;
                 self.sig_open = false;
-                if (self.cx > 0) self.cx = unicode.prevBoundary(self.curLine(), self.cx);
+                if (self.vb_origin) |o| {
+                    // A blockwise `A` ends on the block's top-left corner.
+                    self.cy = @min(o.row, self.buf.lineCount() - 1);
+                    self.cx = byteAtDisplayCol(self.curLine(), o.col);
+                    self.vb_origin = null;
+                } else if (self.cx > 0) self.cx = unicode.prevBoundary(self.curLine(), self.cx);
                 self.updateGoal();
             },
             .enter => {
@@ -2975,6 +3082,7 @@ pub const Editor = struct {
 
     fn enterVisual(self: *Editor, m: Mode) void {
         self.mode = m;
+        self.vb_dollar = false;
         self.vstart = self.cursor();
         self.resetPending();
         // Plain visual by default; the mouse re-sets this for a gesture that
@@ -3011,7 +3119,15 @@ pub const Editor = struct {
                 },
                 '0' => self.cx = 0,
                 '^' => self.cx = motion.firstNonBlank(self.curLine()),
-                '$' => self.cx = lastColumn(self.curLine()),
+                // `$` in a block extends it to end-of-line — a ragged block
+                // that keeps following each line's own end as it grows. The
+                // cursor goes one *past* the last character, which is where
+                // vim leaves it in blockwise visual (probed: `<C-v>jj$h` then
+                // `A` appends one column in from the longest line's end).
+                '$' => {
+                    self.cx = self.columnLimit(self.curLine());
+                    if (self.mode == .visual_block) self.vb_dollar = true;
+                },
                 'w' => self.setCursorKeep(motion.wordForward(self.buf, self.cursor(), false)),
                 'W' => self.setCursorKeep(motion.wordForward(self.buf, self.cursor(), true)),
                 'b' => self.setCursorKeep(motion.wordBackward(self.buf, self.cursor(), false)),
@@ -3040,6 +3156,10 @@ pub const Editor = struct {
                 'v' => self.mode = .visual,
                 'i' => self.await_arg = .visual_object_inner,
                 'a' => self.await_arg = .visual_object_around,
+                // `"{reg}` picks the register the next y/d/c fills, in visual
+                // mode exactly as in normal mode (nvim: `<C-v>jl"ay` then
+                // `"ap` round-trips the rectangle through register a).
+                '"' => self.await_arg = .register,
                 '{' => {
                     const res = self.paragraphMotion(false);
                     self.setCursorKeep(res.pos);
@@ -3053,7 +3173,24 @@ pub const Editor = struct {
             },
             else => {},
         }
-        if (k != .up and k != .down) self.updateGoal();
+        const moved: enum { vertical, horizontal, other } = switch (kk) {
+            .char => |c| switch (c) {
+                'j', 'k' => .vertical,
+                'h', 'l', ' ', '0', '^', 'w', 'W', 'b', 'e', 'G', 'g', '%', 'o' => .horizontal,
+                else => .other,
+            },
+            else => .other,
+        };
+        // Any motion that names a column ends a `$` block's "to end-of-line"
+        // reach (vim resets curswant); `j`/`k` deliberately keep it, which is
+        // how a ragged block grows downwards.
+        if (moved == .horizontal) self.vb_dollar = false;
+        // Vertical motions keep the goal column, so a block stays square as it
+        // crosses a short or empty line. The arrows are translated to `j`/`k`
+        // above, so the guard has to key on the *dispatched* key, not the typed
+        // one — keying on the typed one let `j` over an empty line collapse the
+        // block to column 0, where nvim keeps curswant and stays square.
+        if (moved != .vertical) self.updateGoal();
     }
 
     /// `i`/`a` + object in visual mode: reshape the selection to the object.
@@ -3149,31 +3286,97 @@ pub const Editor = struct {
 
     // === blockwise visual ==================================================
 
-    const BlockRect = struct { top: usize, bot: usize, left: usize, right: usize };
+    const BlockRect = struct {
+        top: usize,
+        bot: usize,
+        left: usize,
+        right: usize,
+
+        fn width(r: BlockRect) usize {
+            return r.right + 1 - r.left;
+        }
+    };
 
     /// The block rectangle in display columns from the anchor and cursor.
     fn blockCols(self: *Editor) BlockRect {
         const a = self.vstart;
         const b = self.cursor();
-        const a_dc = displayCol(self.buf.line(a.row), a.col);
-        const b_dc = displayCol(self.buf.line(b.row), b.col);
+        const a_line = self.buf.line(a.row);
+        const b_line = self.buf.line(b.row);
+        const a_dc = displayCol(a_line, a.col);
+        const b_dc = displayCol(b_line, b.col);
         return .{
             .top = @min(a.row, b.row),
             .bot = @max(a.row, b.row),
             .left = @min(a_dc, b_dc),
-            .right = @max(a_dc, b_dc),
+            // The right edge is the *last* cell of the character an endpoint
+            // sits on, not its first, so a block ending on a double-width
+            // character (or a tab) covers it whole — nvim-verified: `<C-v>jl`
+            // over "a漢b" yanks "a漢", and `A` there appends past the 漢.
+            .right = @max(endCell(a_line, a.col, a_dc), endCell(b_line, b.col, b_dc)),
         };
+    }
+
+    /// Where row `i` of the block starts and ends in bytes. Under `$` the
+    /// block was extended to end-of-line, so each row ends at its own.
+    fn blockSpan(self: *Editor, r: BlockRect, i: usize) struct { usize, usize } {
+        const line = self.buf.line(i);
+        return .{
+            byteAtDisplayCol(line, r.left),
+            if (self.vb_dollar) line.len else byteAtDisplayCol(line, r.right + 1),
+        };
+    }
+
+    /// The block's text into `out`, rows joined by `\n`. Returns the width to
+    /// store with the register: the rectangle's own, or — for a `$` block,
+    /// which has no fixed right edge — the widest row it actually took.
+    fn blockText(self: *Editor, r: BlockRect, out: *std.ArrayList(u8)) !usize {
+        var width = r.width();
+        if (self.vb_dollar) {
+            width = 0;
+            var i = r.top;
+            while (i <= r.bot) : (i += 1) {
+                const line = self.buf.line(i);
+                const lo, const hi = self.blockSpan(r, i);
+                if (hi > lo) width = @max(width, displayCol(line, hi) - displayCol(line, lo));
+            }
+        }
+        // A line stopping *before* the block's left edge contributes a run of
+        // spaces rather than nothing (vim's `endspaces`) — the block's own
+        // width, or one more for a `$` block, whose right edge sits one past
+        // the longest line's end. Only a paste with nothing after it on the
+        // line shows the difference, since the squaring-up below covers the
+        // rest; without them `G$p` of such a block loses the alignment.
+        // nvim-verified, and the same for `y`, `d` and `c`. A row at the
+        // block's own top or bottom can never be this short: the endpoint
+        // sitting on it is what clamped `left` in the first place.
+        const short = if (self.vb_dollar) width + 1 else width;
+        var i = r.top;
+        while (i <= r.bot) : (i += 1) {
+            const line = self.buf.line(i);
+            if (displayCol(line, line.len) < r.left) {
+                try out.appendNTimes(self.gpa, ' ', short);
+            } else {
+                const lo, const hi = self.blockSpan(r, i);
+                if (hi > lo) try out.appendSlice(self.gpa, line[lo..hi]);
+            }
+            if (i < r.bot) try out.append(self.gpa, '\n');
+        }
+        return width;
     }
 
     fn blockDelete(self: *Editor) !void {
         if (self.rejectReadOnly()) return;
         const r = self.blockCols();
+        // vim fills the register from a blockwise delete just as from a yank.
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(self.gpa);
+        const w = try self.blockText(r, &out);
+        self.yankTo(out.items, .blockwise, w);
         self.pushUndo();
         var i = r.top;
         while (i <= r.bot) : (i += 1) {
-            const line = self.buf.line(i);
-            const lo = byteAtDisplayCol(line, r.left);
-            const hi = byteAtDisplayCol(line, r.right + 1);
+            const lo, const hi = self.blockSpan(r, i);
             if (hi > lo) try self.buf.deleteInLine(i, lo, hi);
         }
         self.mode = .normal;
@@ -3186,15 +3389,8 @@ pub const Editor = struct {
         const r = self.blockCols();
         var out: std.ArrayList(u8) = .empty;
         defer out.deinit(self.gpa);
-        var i = r.top;
-        while (i <= r.bot) : (i += 1) {
-            const line = self.buf.line(i);
-            const lo = byteAtDisplayCol(line, r.left);
-            const hi = byteAtDisplayCol(line, r.right + 1);
-            try out.appendSlice(self.gpa, line[lo..hi]);
-            if (i < r.bot) try out.append(self.gpa, '\n');
-        }
-        self.yankTo(out.items, false);
+        const w = try self.blockText(r, &out);
+        self.yankTo(out.items, .blockwise, w);
         self.mode = .normal;
         self.cy = r.top;
         self.cx = byteAtDisplayCol(self.buf.line(r.top), r.left);
@@ -3203,31 +3399,67 @@ pub const Editor = struct {
 
     /// Block insert/append: place a caret at the left/right edge of every row in
     /// the block, then enter multi-cursor insert (typing replicates to all rows).
+    ///
+    /// The two are deliberately asymmetric, and both halves are nvim-verified.
+    /// `A` *pads* a line too short to reach the append column with spaces, so
+    /// the text still lands in one straight column; `I` *skips* a line that
+    /// does not reach the left edge, leaving it untouched. Under `$` — the
+    /// block extended to end-of-line — `A` appends at each line's own end and
+    /// pads nothing, while `I` is unaffected (the left edge is still a column).
     fn blockInsert(self: *Editor, at_right: bool) !void {
         if (self.rejectReadOnly()) return;
         const r = self.blockCols();
-        const dc = if (at_right) r.right + 1 else r.left;
+        const to_eol = self.vb_dollar and at_right;
+        const dcol = if (at_right) r.right + 1 else r.left;
         self.clearExtra();
-        self.cy = r.top;
-        self.cx = byteAtDisplayCol(self.buf.line(r.top), dc);
-        var i = r.top + 1;
-        while (i <= r.bot) : (i += 1) {
-            self.extra.append(self.gpa, .{ .row = i, .col = byteAtDisplayCol(self.buf.line(i), dc) }) catch {};
-        }
         self.mode = .normal;
-        try self.enterInsertMulti(.at);
+        self.pushUndo(); // the padding below is part of the same undo step
+        self.placeBlockCarets(r, dcol, if (at_right) .pad else .skip, to_eol);
+        // `I` already types at the left edge; only `A` has to be walked back.
+        if (at_right and self.mode == .insert) self.vb_origin = .{ .row = r.top, .col = r.left };
+        self.resetPending();
     }
 
     fn blockChange(self: *Editor) !void {
         if (self.rejectReadOnly()) return;
         const r = self.blockCols();
         try self.blockDelete(); // sets cursor to (top, left); pushes undo
-        self.cy = r.top;
-        self.cx = byteAtDisplayCol(self.buf.line(r.top), r.left);
-        var i = r.top + 1;
+        // Like `I`, a line that never reached the left edge is left alone.
+        self.placeBlockCarets(r, r.left, .skip, false);
+    }
+
+    /// What to do with a row of the block too short to reach `dcol`: `A` pads
+    /// it out with spaces, `I` and `c` leave it out of the edit entirely.
+    const ShortLine = enum { pad, skip };
+
+    /// Put a caret at `dcol` on every row of `r` and enter multi-cursor insert.
+    /// The first row that gets one owns the real cursor — with `.skip`, that
+    /// need not be the block's top row. If no row qualifies, nothing is
+    /// inserted and we stay in normal mode.
+    fn placeBlockCarets(self: *Editor, r: BlockRect, dcol: usize, short: ShortLine, to_eol: bool) void {
+        var pad: std.ArrayList(u8) = .empty;
+        defer pad.deinit(self.gpa);
+        var placed = false;
+        var i = r.top;
         while (i <= r.bot) : (i += 1) {
-            self.extra.append(self.gpa, .{ .row = i, .col = byteAtDisplayCol(self.buf.line(i), r.left) }) catch {};
+            var line = self.buf.line(i);
+            if (!to_eol and displayCol(line, line.len) < dcol) {
+                if (short == .skip) continue;
+                pad.clearRetainingCapacity();
+                pad.appendNTimes(self.gpa, ' ', dcol - displayCol(line, line.len)) catch return;
+                self.buf.insertBytes(i, line.len, pad.items) catch return;
+                line = self.buf.line(i);
+            }
+            const col = if (to_eol) line.len else byteAtDisplayCol(line, dcol);
+            if (placed) {
+                self.extra.append(self.gpa, .{ .row = i, .col = col }) catch {};
+            } else {
+                self.cy = i;
+                self.cx = col;
+                placed = true;
+            }
         }
+        if (!placed) return;
         self.mode = .insert;
         self.updateGoal();
     }
@@ -3466,21 +3698,27 @@ pub const Editor = struct {
         self.last_search.clearRetainingCapacity();
         self.last_search.appendSlice(self.gpa, query) catch {};
         self.last_search_forward = forward;
-        self.jumpSearch(forward);
+        if (!self.jumpSearch(forward)) self.failed = true;
     }
 
-    fn jumpSearch(self: *Editor, forward: bool) void {
-        if (self.last_search.items.len == 0) return;
-        const re = self.compiledPattern(self.last_search.items) orelse return; // invalid mid-typing
+    /// Jump to the next/previous match of the last pattern. Returns false when
+    /// there is none — only the *committed* searches treat that as a failure a
+    /// macro should stop at; the incremental preview must not, or a replayed
+    /// `/pat` would abort halfway through typing its own pattern and leave the
+    /// prompt open.
+    fn jumpSearch(self: *Editor, forward: bool) bool {
+        if (self.last_search.items.len == 0) return false;
+        const re = self.compiledPattern(self.last_search.items) orelse return false; // invalid mid-typing
         const hit = if (forward)
             search.next(self.buf, self.cursor(), re)
         else
             search.prev(self.buf, self.cursor(), re);
         if (hit) |p| {
             self.setCursor(p);
-        } else {
-            self.setStatus("pattern not found: {s}", .{self.last_search.items});
+            return true;
         }
+        self.setStatus("pattern not found: {s}", .{self.last_search.items});
+        return false;
     }
 
     /// Compile-and-cache `pat` (search patterns are modern regexes; a plain
@@ -3556,7 +3794,7 @@ pub const Editor = struct {
     fn repeatSearch(self: *Editor, same_dir: bool) void {
         self.addJump();
         const fwd = if (same_dir) self.last_search_forward else !self.last_search_forward;
-        self.jumpSearch(fwd);
+        if (!self.jumpSearch(fwd)) self.failed = true;
         self.resetPending();
     }
 
@@ -4908,7 +5146,10 @@ pub const Editor = struct {
                     .ex => try self.execEx(),
                     // The cursor already moved live; record the origin so
                     // Ctrl-o returns to where the search began.
-                    .search_forward, .search_backward => self.addJumpAt(self.d, self.search_origin),
+                    .search_forward, .search_backward => {
+                        self.addJumpAt(self.d, self.search_origin);
+                        if (!self.search_hit) self.failed = true; // E486: no match
+                    },
                     .rename => self.lspRename(),
                 }
             },
@@ -5389,7 +5630,7 @@ pub const Editor = struct {
         self.last_search.appendSlice(self.gpa, self.cmd.items) catch {};
         self.last_search_forward = self.cmd_kind == .search_forward;
         self.setCursor(self.search_origin);
-        if (self.cmd.items.len > 0) self.jumpSearch(self.last_search_forward);
+        self.search_hit = self.cmd.items.len > 0 and self.jumpSearch(self.last_search_forward);
     }
 
     fn execEx(self: *Editor) !void {
@@ -5795,6 +6036,10 @@ pub const Editor = struct {
     fn pushUndo(self: *Editor) void {
         self.history.record(self.buf, self.cy, self.cx);
         self.change_started = true;
+        // Every insert session starts with one of these, so a block `A`'s
+        // pending cursor-origin can never outlive its own session (the block
+        // path sets it again straight after its push).
+        self.vb_origin = null;
     }
 
     /// The diff views' documents are read-only: the index snapshot mirrors
@@ -6898,8 +7143,8 @@ pub const Editor = struct {
     /// Store yanked/deleted text in the pending register. Writes to the
     /// clipboard registers (`"+` / `"*`) are also sent to the terminal as an
     /// OSC 52 sequence, which sets the *local* system clipboard even over SSH.
-    fn yankTo(self: *Editor, text: []const u8, linewise: bool) void {
-        self.registers.set(self.pending_register, text, linewise) catch {};
+    fn yankTo(self: *Editor, text: []const u8, kind: register.Kind, width: usize) void {
+        self.registers.set(self.pending_register, text, kind, width) catch {};
         if (register.Store.isClipboard(self.pending_register)) self.osc52Copy(text);
     }
 
@@ -7071,18 +7316,23 @@ pub const Editor = struct {
         // The closing 'q' was recorded by processInput; drop it.
         if (self.macro_buf.items.len > 0) self.macro_buf.items.len -= 1;
         const reg = self.recording.?;
-        self.registers.set(reg, self.macro_buf.items, false) catch {};
+        self.registers.set(reg, self.macro_buf.items, .charwise, 0) catch {};
         self.recording = null;
         self.setStatus("recorded @{c}", .{reg});
     }
 
     fn playMacro(self: *Editor, reg: u8, times: usize) !void {
+        self.last_macro = reg; // what a later `@@` means
         const r = self.registers.get(reg) orelse return;
         // Copy: replaying may overwrite the register.
         const keys = self.gpa.dupe(u8, r.text) catch return;
         defer self.gpa.free(keys);
         var i: usize = 0;
-        while (i < times) : (i += 1) try self.replayBytes(keys);
+        // A failed command aborts the rest of the replay *and* the remaining
+        // repetitions — vim stops at the error rather than ploughing on
+        // (nvim-verified: `qq` `jx` `q` on the last line replays the `j`,
+        // which fails, and leaves the `x` unrun).
+        while (i < times and !self.failed) : (i += 1) try self.replayBytes(keys);
     }
 
     fn repeatDot(self: *Editor) !void {
@@ -7090,14 +7340,38 @@ pub const Editor = struct {
             self.resetPending();
             return;
         }
-        const times = self.eff();
-        const keys = self.gpa.dupe(u8, self.dot_keys.items) catch return;
-        defer self.gpa.free(keys);
+        // `[count].` *replaces* the original count rather than repeating the
+        // whole change (nvim-verified: `3x` then `2.` removes five characters,
+        // not nine), so a fresh count rewrites the recorded keys' leading one.
+        // A leading `0` is the column motion, never a count. The count belongs
+        // *after* a `"{reg}` prefix, which vim copies across untouched: writing
+        // it in front instead would glue the two digit runs of `"a2dd` into one
+        // and turn `3.` into `32dd`.
+        const count = self.count;
+        var keys: std.ArrayList(u8) = .empty;
+        defer keys.deinit(self.gpa);
+        var recorded: []const u8 = self.dot_keys.items;
+        if (count > 0) {
+            var n: usize = if (recorded.len >= 2 and recorded[0] == '"') 2 else 0;
+            const head = n;
+            if (n < recorded.len and recorded[n] >= '1' and recorded[n] <= '9') {
+                while (n < recorded.len and recorded[n] >= '0' and recorded[n] <= '9') n += 1;
+            }
+            keys.appendSlice(self.gpa, recorded[0..head]) catch return;
+            keys.print(self.gpa, "{d}", .{count}) catch return;
+            keys.appendSlice(self.gpa, recorded[n..]) catch return;
+        } else {
+            keys.appendSlice(self.gpa, recorded) catch return;
+        }
+        recorded = keys.items;
         self.resetPending();
         self.in_dot = true;
         defer self.in_dot = false;
-        var i: usize = 0;
-        while (i < times) : (i += 1) try self.replayBytes(keys);
+        try self.replayBytes(recorded);
+        // `.` is not itself a change: leaving `change_started` set would make
+        // the capture below record "." as the last change, and every further
+        // `.` would then only repeat itself.
+        self.change_started = false;
     }
 
     // === cursor / counts helpers ==========================================
@@ -7193,8 +7467,11 @@ pub const Editor = struct {
     /// The furthest column the cursor may sit at on `line` in the current mode.
     fn columnLimit(self: *Editor, line: []const u8) usize {
         return switch (self.mode) {
-            .normal, .visual, .visual_line, .visual_block => lastColumn(line),
-            .insert, .command, .picker => line.len,
+            .normal, .visual, .visual_line => lastColumn(line),
+            // Blockwise visual reaches one column past the last character, so
+            // a block can be built one wider than the short line under it and
+            // `$` can mean "past every line's end" (nvim-verified).
+            .visual_block, .insert, .command, .picker => line.len,
         };
     }
 
@@ -10587,6 +10864,15 @@ fn eql(a: []const u8, b: []const u8) bool {
 fn cellWidth(cp: u21, col: usize) usize {
     if (cp == '\t') return tabWidth() - (col % tabWidth());
     return unicode.width(cp);
+}
+
+/// The last display cell the character at byte `col` occupies, given that its
+/// first is `dc`. One past the end of a line is a one-cell virtual position,
+/// and a zero-width (combining) character owns no cell of its own.
+fn endCell(line: []const u8, col: usize, dc: usize) usize {
+    if (col >= line.len) return dc;
+    const w = cellWidth(unicode.decode(line[col..]).cp, dc);
+    return if (w == 0) dc else dc + w - 1;
 }
 
 fn displayCol(line: []const u8, upto: usize) usize {

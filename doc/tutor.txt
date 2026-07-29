@@ -405,8 +405,15 @@
    - Precision motions:  f F t T  jump to a character in the line
      (repeat with ; and ,), and  %  bounces between matching brackets.
    - Marks:  ma  remembers a spot,  `a  jumps back to it.
-   - Macros:  qa ... q  records your keystrokes,  @a  replays them.
+   - Macros:  qa ... q  records your keystrokes,  @a  replays them,
+     and  @@  replays the last one again.  A replay stops as soon as
+     something fails, so it will not run on past the end of the file.
    - Registers:  "ayy  yanks into register a,  "ap  pastes from it.
+   - Column editing:  Ctrl-v  selects a rectangle.  I  and  A  type at
+     its left/right edge on every line at once ( A  pads short lines
+     out with spaces;  I  skips them), and  $  makes the block reach
+     each line's own end.  y  and  d  take the rectangle whole —  p
+     puts it back as a rectangle wherever you are.
    - Multiple cursors:  Ctrl-n / Ctrl-p  add a caret on the line below
      or above; typing edits every line at once; Esc collapses them.
    - Scrolling:  Ctrl-d / Ctrl-u  move by half a page, and the mouse

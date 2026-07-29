@@ -11,6 +11,7 @@ const h = @import("../harness.zig");
 
 const ESC = "\x1b";
 const CR = "\r";
+const CV = "\x16"; // Ctrl-v: blockwise visual
 const target = "/tmp/zedit_it_compat.txt";
 
 // SGR mouse reports at a *buffer* position. nvim (driven with `-u NONE -i NONE
@@ -384,4 +385,178 @@ pub fn run(ctx: *h.Ctx) !void {
     h.case(ctx, target, "regex / search jumps to match", &.{ "/b.d\r", "x", ":wq", CR }, "xxx\nbad\n", "xxx\nad\n");
     // Capture groups in the replacement swap two words.
     h.case(ctx, target, "capture groups in :s replacement", &.{ ":%s/(\\w+) (\\w+)/\\2 \\1/\r", ":wq", CR }, "one two\n", "two one\n");
+
+    blockPaste(ctx);
+    blockInsert(ctx);
+    dotAndMacros(ctx);
+}
+
+/// Blockwise registers and their rectangular paste. Every expectation below
+/// came out of headless nvim driven through the pty prober, and together they
+/// pin the whole model: `p` inserts after the cursor cell and `P` at it (both
+/// at column 0 on an empty line); a line too short to reach that column is
+/// padded with spaces; a register line is squared up to the block's width only
+/// when something follows it (the line's own tail, or another repetition of a
+/// count); the buffer grows new lines when the block outlasts it; and the
+/// cursor lands on the rectangle's first cell.
+fn blockPaste(ctx: *h.Ctx) void {
+    const abc = "abc\ndef\nghi\n";
+    const two = "11\n22\nab\nc\n";
+    h.case(ctx, target, "nvim#bp1 p puts the block after the cursor cell", &.{ CV ++ "jy", "ll", "p", ":wq", CR }, abc, "abca\ndefd\nghi\n");
+    h.case(ctx, target, "nvim#bp2 P puts it at the cursor cell", &.{ CV ++ "jy", "ll", "P", ":wq", CR }, abc, "abac\ndedf\nghi\n");
+    h.case(ctx, target, "nvim#bp3 a line too short for the column is padded", &.{ CV ++ "jly", "jj$", "p", ":wq", CR }, two, "11\n22\nab11\nc 22\n");
+    h.case(ctx, target, "nvim#bp4 P at column 0", &.{ CV ++ "jly", "jj0", "P", ":wq", CR }, "11\n22\nab\ncd\n", "11\n22\n11ab\n22cd\n");
+    h.case(ctx, target, "nvim#bp5 the block grows the file past its end", &.{ CV ++ "jly", "G$", "p", ":wq", CR }, "11\n22\nzz\n", "11\n22\nzz11\n  22\n");
+    h.case(ctx, target, "nvim#bp6 …P too", &.{ CV ++ "jly", "G$", "P", ":wq", CR }, "11\n22\nzz\n", "11\n22\nz11z\n 22\n");
+    h.case(ctx, target, "nvim#bp7 a three-row block past the end", &.{ CV ++ "jjly", "G$", "p", ":wq", CR }, "11\n22\n33\nq\n", "11\n22\n33\nq11\n 22\n 33\n");
+    h.case(ctx, target, "nvim#bp8 a count lays the block side by side", &.{ CV ++ "jly", "jj0", "3p", ":wq", CR }, "ab\ncd\nxy\nzw\n", "ab\ncd\nxabababy\nzcdcdcdw\n");
+    h.case(ctx, target, "nvim#bp9 an empty register line pads out when text follows", &.{ "l" ++ CV ++ "jy", "jj0", "p", ":wq", CR }, "ab\nc\nxxxx\nyyyy\n", "ab\nc\nxbxxx\ny yyy\n");
+    h.case(ctx, target, "nvim#bp10 …but not at end-of-line, which leaves the pad bare", &.{ CV ++ "jly", "jj$", "p", ":wq", CR }, "11\n\nabcdef\nx\n", "11\n\nabcdef1\nx     \n");
+    h.case(ctx, target, "nvim#bp11 the cursor lands on the block's first cell", &.{ CV ++ "jly", "jj0", "p", "x", ":wq", CR }, "11\n22\nabcd\nefgh\n", "11\n22\na1bcd\ne22fgh\n");
+    h.case(ctx, target, "nvim#bp12 …after P as well", &.{ CV ++ "jly", "jjl", "P", "x", ":wq", CR }, "11\n22\nabcd\nefgh\n", "11\n22\na1bcd\ne22fgh\n");
+    h.case(ctx, target, "nvim#bp13 the block goes into the middle of a taller file", &.{ CV ++ "jly", "jjl", "p", ":wq", CR }, "11\n22\naaaa\nbbbb\ncccc\ndddd\n", "11\n22\naa11aa\nbb22bb\ncccc\ndddd\n");
+    h.case(ctx, target, "nvim#bp14 an empty line takes the block at column 0", &.{ CV ++ "jly", "G0", "p", ":wq", CR }, "11\n22\n\n", "11\n22\n11\n22\n");
+    // A blockwise *delete* fills the register just as a yank does — `x` is `d`.
+    h.case(ctx, target, "nvim#bp15 a blockwise d fills the register", &.{ "l" ++ CV ++ "jd", "G$", "p", ":wq", CR }, abc, "ac\ndf\nghib\n   e\n");
+    h.case(ctx, target, "nvim#bp16 a blockwise x fills it the same way", &.{ "l" ++ CV ++ "jx", "G$", "p", ":wq", CR }, abc, "ac\ndf\nghib\n   e\n");
+    // `$` makes the block ragged: it follows each line's own end, and the
+    // register keeps no fixed right edge — so it pastes ragged unless a tail
+    // or a further repetition needs it squared up.
+    h.case(ctx, target, "nvim#bp17 a $ block pastes ragged", &.{ CV ++ "j$y", "jj0", "p", ":wq", CR }, "abcd\nef\nX\nY\n", "abcd\nef\nXabcd\nYef\n");
+    h.case(ctx, target, "nvim#bp18 …squared up for all but the last repetition", &.{ CV ++ "j$y", "jj0", "2p", ":wq", CR }, "abcd\nef\nX\nY\n", "abcd\nef\nXabcdabcd\nYef  ef\n");
+    h.case(ctx, target, "nvim#bp19 …and its width still pads a tail", &.{ CV ++ "j$y", "jj0", "p", ":wq", CR }, "abcd\nef\nQQQQ\nRRRR\n", "abcd\nef\nQabcdQQQ\nRef  RRR\n");
+    h.case(ctx, target, "nvim#bp20 a $ block d fills the register too", &.{ "l" ++ CV ++ "j$d", "G$", "p", ":wq", CR }, "abcd\nef\nghij\nQQ\nRR\n", "a\ne\nghij\nQQ\nRRbcd\n  f\n");
+    // A block may reach one column past a short line's end (vim's blockwise
+    // rule), and that width travels with the register.
+    h.case(ctx, target, "nvim#bp21 a block one past a short line keeps its width", &.{ CV ++ "lll", "y", "j0", "p", ":wq", CR }, "ab\nQQQQ\n", "ab\nQab QQQ\n");
+    h.case(ctx, target, "nvim#bp22 j keeps the goal column across an empty line", &.{ "l" ++ CV ++ "jj", "y", "3j0", "p", ":wq", CR }, "abcd\n\nefgh\nZZZZ\nWWWW\nVVVV\n", "abcd\n\nefgh\nZbZZZ\nW WWW\nVfVVV\n");
+    // The register kind is per write: a block yank replaces an earlier
+    // linewise one, and `"a` picks the register in visual mode as in normal.
+    h.case(ctx, target, "nvim#bp23 a block yank overrides an earlier linewise one", &.{ "yy", CV ++ "jly", "G0", "p", ":wq", CR }, "ab\ncd\nzz\n", "ab\ncd\nzabz\n cd\n");
+    h.case(ctx, target, "nvim#bp24 a blockwise register round-trips through \"a", &.{ CV ++ "jl", "\"ay", "jj0", "\"ap", ":wq", CR }, "11\n22\nzz\nyy\n", "11\n22\nz11z\ny22y\n");
+    h.case(ctx, target, "nvim#bp25 u undoes the whole rectangle", &.{ CV ++ "jly", "jj0", "p", "u", ":wq", CR }, "11\n22\nabcd\nefgh\n", "11\n22\nabcd\nefgh\n");
+    // A line stopping *before* the block's left edge does not yank as nothing:
+    // vim records the block's width in spaces there, so the rectangle survives
+    // a paste at end-of-line, where nothing follows to square it up. (Such a
+    // row is always interior — the endpoint sitting on a short line is what
+    // clamped `left` to begin with, so a row ending exactly at the edge, in
+    // bp31, must stay empty.)
+    const gap8 = "abcdefgh\nZ\nabcdefgh\nQQ\n";
+    h.case(ctx, target, "nvim#bp26 a row short of the left edge yanks spaces", &.{ "ll" ++ CV ++ "jjlly", "G$", "p", ":wq", CR }, gap8, "abcdefgh\nZ\nabcdefgh\nQQcde\n     \n  cde\n");
+    h.case(ctx, target, "nvim#bp27 …from a blockwise d as well", &.{ "ll" ++ CV ++ "jjlld", "G$", "p", ":wq", CR }, gap8, "abfgh\nZ\nabfgh\nQQcde\n     \n  cde\n");
+    h.case(ctx, target, "nvim#bp28 …and one wider still under $", &.{ "ll" ++ CV ++ "jj$y", "G$", "p", ":wq", CR }, gap8, "abcdefgh\nZ\nabcdefgh\nQQcdefgh\n         \n  cdefgh\n");
+    h.case(ctx, target, "nvim#bp29 …repeated whole by a count", &.{ "ll" ++ CV ++ "jjly", "G$", "3p", ":wq", CR }, "abcdef\nZ\nabcdef\nQQ\n", "abcdef\nZ\nabcdef\nQQcdcdcd\n        \n  cdcdcd\n");
+    h.case(ctx, target, "nvim#bp30 …and wider than a $ block's own width", &.{ "ll" ++ CV ++ "jj$y", "3j0", "P", ":wq", CR }, "abcdefgh\nZ\nabcdefgh\nQQQQ\nRRRR\nSSSS\n", "abcdefgh\nZ\nabcdefgh\ncdefghQQQQ\n       RRRR\ncdefghSSSS\n");
+    h.case(ctx, target, "nvim#bp31 a row ending exactly at the edge stays empty", &.{ "ll" ++ CV ++ "jjlly", "G$", "p", ":wq", CR }, "abcdefgh\nabcdefgh\nZ\nQQ\n", "abcdefgh\nabcdefgh\nZ\nQQbc\n  bc\n  \n");
+    // `"A` appends: the register keeps the kind it had — a rectangle gains a
+    // row at its own width — unless the addition is linewise, which overrides.
+    h.case(ctx, target, "nvim#bp32 \"A adds a row to a blockwise register", &.{ CV ++ "jl", "\"ay", "jj0", "\"Ay$", "j0", "\"ap", ":wq", CR }, "ab\ncd\nZZZZZZ\nYYYY\nWWWW\nVVVV\n", "ab\ncd\nZZZZZZ\nYabYYY\nWcdWWW\nVZZZZZZVVV\n");
+    h.case(ctx, target, "nvim#bp33 …but a linewise \"A overrides the kind", &.{ CV ++ "jl", "\"ay", "jj", "\"Ayy", "G0", "\"ap", ":wq", CR }, "ab\ncd\nZZZZ\nYYYY\n", "ab\ncd\nZZZZ\nYYYY\nab\ncd\nZZZZ\n");
+    // The block's right edge is the *last* cell of the character an endpoint
+    // sits on, so a double-width character — or a tab — is covered whole.
+    h.case(ctx, target, "nvim#bp34 a block ending on a wide char covers it", &.{ CV ++ "jld", ":wq", CR }, "漢字ab\n漢字cd\n", "ab\ncd\n");
+    h.case(ctx, target, "nvim#bp35 …and pastes it back whole", &.{ CV ++ "jly", "jj0", "p", ":wq", CR }, "漢字\n日本\nxxxxxx\nyyyyyy\n", "漢字\n日本\nx漢字xxxxx\ny日本yyyyy\n");
+    h.case(ctx, target, "nvim#bp36 …a wide char one cell in, too", &.{ "l" ++ CV ++ "jy", "jj0", "P", ":wq", CR }, "a漢b\nc漢d\nQQQQ\nRRRR\n", "a漢b\nc漢d\n漢QQQQ\n漢RRRR\n");
+    h.case(ctx, target, "nvim#bp37 …and a tab at the edge", &.{ "ll" ++ CV ++ "jy", "jj0", "p", ":wq", CR }, "abcd\n\tZ\nQQQQQQ\nRRRRRR\n", "abcd\n\tZ\nQabcdQQQQQ\nR\tRRRRR\n");
+}
+
+/// Blockwise `I` / `A` / `c` on lines that do not reach the block, which is
+/// where vim is deliberately asymmetric: `A` pads a short line out with
+/// spaces, while `I` and `c` skip it entirely. All nvim-verified.
+fn blockInsert(ctx: *h.Ctx) void {
+    const gap = "abcd\n\nefgh\n";
+    const ragged = "abcd\nef\nghijkl\n";
+    h.case(ctx, target, "nvim#bi1 A pads a line short of the append column", &.{ "l" ++ CV ++ "jj", "A", "Z", ESC, ":wq", CR }, gap, "abZcd\n  Z\nefZgh\n");
+    h.case(ctx, target, "nvim#bi2 I skips a line short of the left edge", &.{ "l" ++ CV ++ "jj", "I", "Z", ESC, ":wq", CR }, gap, "aZbcd\n\neZfgh\n");
+    h.case(ctx, target, "nvim#bi3 I keeps a line that ends exactly at the edge", &.{ "ll" ++ CV ++ "jj", "I", "Z", ESC, ":wq", CR }, "abcd\nef\nghij\n", "abZcd\nefZ\nghZij\n");
+    h.case(ctx, target, "nvim#bi4 I at column 0 reaches the empty line", &.{ CV ++ "jj", "I", "Z", ESC, ":wq", CR }, "ab\n\ncd\n", "Zab\nZ\nZcd\n");
+    h.case(ctx, target, "nvim#bi5 c skips a line short of the left edge", &.{ "ll" ++ CV ++ "jj", "c", "Z", ESC, ":wq", CR }, gap, "abZd\n\nefZh\n");
+    h.case(ctx, target, "nvim#bi6 A over a whole block types on every row", &.{ CV ++ "jjl", "A", "XY", ESC, ":wq", CR }, "abcd\nef\nghij\n", "abXYcd\nefXY\nghXYij\n");
+    h.case(ctx, target, "nvim#bi7 u undoes the padding with the insert", &.{ "l" ++ CV ++ "jj", "A", "Z", ESC, "u", ":wq", CR }, gap, gap);
+    // `$`: the block follows each line's own end, so `A` appends there and
+    // pads nothing — while `I` still works off the left edge.
+    h.case(ctx, target, "nvim#bi8 $A appends at each line's own end", &.{ CV ++ "jj$", "A", "Z", ESC, ":wq", CR }, ragged, "abcdZ\nefZ\nghijklZ\n");
+    h.case(ctx, target, "nvim#bi9 $ survives j as the block grows", &.{ CV ++ "$jj", "A", "Z", ESC, ":wq", CR }, ragged, "abcdZ\nefZ\nghijklZ\n");
+    h.case(ctx, target, "nvim#bi10 h after $ pins the right edge again", &.{ CV ++ "jj$", "h", "A", "Z", ESC, ":wq", CR }, ragged, "abcd  Z\nef    Z\nghijklZ\n");
+    h.case(ctx, target, "nvim#bi11 $I still inserts at the left edge", &.{ "l" ++ CV ++ "jj$", "I", "Z", ESC, ":wq", CR }, ragged, "aZbcd\neZf\ngZhijkl\n");
+    h.case(ctx, target, "nvim#bi12 $c changes to each line's end", &.{ "l" ++ CV ++ "jj$", "c", "Z", ESC, ":wq", CR }, ragged, "aZ\neZ\ngZ\n");
+    h.case(ctx, target, "nvim#bi13 $A reaches an empty line at column 0", &.{ CV ++ "jj$", "A", "Z", ESC, ":wq", CR }, gap, "abcdZ\nZ\nefghZ\n");
+    // Where the cursor is left afterwards, which is what makes `.` repeat the
+    // same rectangle rather than one shifted right by its own width.
+    h.case(ctx, target, "nvim#bi14 A ends on the block's top-left corner", &.{ CV ++ "jjl", "A", "Z", ESC, "x", ":wq", CR }, "abcd\nefgh\nijkl\n", "bZcd\nefZgh\nijZkl\n");
+    h.case(ctx, target, "nvim#bi15 I ends there as well", &.{ "l" ++ CV ++ "jj", "I", "Z", ESC, "x", ":wq", CR }, "abcd\nefgh\nijkl\n", "abcd\neZfgh\niZjkl\n");
+    // The append column is one past the block's right edge, and that edge is
+    // the last cell of the character under the endpoint — so an endpoint on a
+    // wide character or a tab puts the text past the whole of it.
+    h.case(ctx, target, "nvim#bi16 A past a wide char at the edge", &.{ "l" ++ CV ++ "j", "A", "Z", ESC, ":wq", CR }, "a漢b\nc漢d\n", "a漢Zb\nc漢Zd\n");
+    h.case(ctx, target, "nvim#bi17 A past a tab at the edge", &.{ "ll" ++ CV ++ "j", "A", "Q", ESC, ":wq", CR }, "abcd\n\tZ\n", "abcdQ\n\tQZ\n");
+}
+
+/// Dot-repeat and macro edge cases, all pinned to headless nvim: the count
+/// rules, inserts broken by a cursor movement, blockwise changes, pasting
+/// every register kind, and the ways a macro nests, repeats and aborts.
+fn dotAndMacros(ctx: *h.Ctx) void {
+    const nine = "1\n2\n3\n4\n5\n6\n7\n8\n9\n";
+    const two_lines = "foo\nbar\n";
+    // Counts: `.` alone re-uses the recorded one, and a fresh count *replaces*
+    // it rather than multiplying the repeat.
+    h.case(ctx, target, "nvim#dm1 3dd then . deletes three more", &.{ "3dd", ".", ":wq", CR }, nine, "7\n8\n9\n");
+    h.case(ctx, target, "nvim#dm2 3dd then 2. deletes only two", &.{ "3dd", "2.", ":wq", CR }, nine, "6\n7\n8\n9\n");
+    h.case(ctx, target, "nvim#dm3 3x then 2. removes five characters, not nine", &.{ "3x", "2.", ":wq", CR }, "abcdefghij\n", "fghij\n");
+    h.case(ctx, target, "nvim#dm4 2dw then 3. replaces the count", &.{ "2dw", "3.", ":wq", CR }, "a b c d e f g h i\n", "f g h i\n");
+    h.case(ctx, target, "nvim#dm5 2dw then a bare . keeps it", &.{ "2dw", ".", ":wq", CR }, "a b c d e f g\n", "e f g\n");
+    h.case(ctx, target, "nvim#dm6 2dd then 4. replaces a doubled operator's count", &.{ "2dd", "4.", ":wq", CR }, nine, "7\n8\n9\n");
+    h.case(ctx, target, "nvim#dm7 a leading 0 is the motion, not a count", &.{ "x", "0.", ":wq", CR }, "abcdef\n", "cdef\n");
+    // The substituted count belongs *after* a `"{reg}` prefix, which vim keeps.
+    // In front of it the two digit runs fuse: `3.` after `"a2dd` became `32dd`
+    // and took the whole file.
+    h.case(ctx, target, "nvim#dm8a 3. after \"a2dd replaces only the count", &.{ "\"a2dd", "3.", ":wq", CR }, nine, "6\n7\n8\n9\n");
+    h.case(ctx, target, "nvim#dm8b 2. after \"a3x likewise", &.{ "\"a3x", "2.", ":wq", CR }, "abcdefghij\n", "fghij\n");
+    // The count rule matters most for an operator whose motion is a *click*:
+    // the replayed screen cell is re-resolved against a cursor the previous
+    // replay already moved, so repeating the change N times used to drift.
+    const grid = "abcdefgh\nijklmnop\nqrstuvwx\nyz012345\n67890abc\ndefghijk\n";
+    h.case(ctx, target, "nvim#dm8 2. after d + click", &.{ "ll", "d", click(3, 2), "2.", ":wq", CR }, grid, "ab890abc\ndefghijk\n");
+    h.case(ctx, target, "nvim#dm9 a bare . after d + click", &.{ "ll", "d", click(3, 2), ".", ":wq", CR }, grid, "ab890abc\ndefghijk\n");
+    // `.` is not itself a change, so repeating it repeats the change again
+    // rather than repeating the repeat.
+    h.case(ctx, target, "nvim#dm10 dw then two dots", &.{ "dw", "..", ":wq", CR }, "a b c d e\n", "d e\n");
+    h.case(ctx, target, "nvim#dm11 x then three dots", &.{ "x", "...", ":wq", CR }, "abcdef\n", "ef\n");
+    // A cursor movement mid-insert splits the change: vim repeats only the
+    // text typed after it, and as a plain `i` whatever opened the insert.
+    h.case(ctx, target, "nvim#dm12 . after an insert broken by Left", &.{ "i", "AB\x1b[DC", ESC, "j0", ".", ":wq", CR }, two_lines, "ACBfoo\nCbar\n");
+    h.case(ctx, target, "nvim#dm13 . after an A broken by Left inserts, not appends", &.{ "A", "XY\x1b[DZ", ESC, "j0", ".", ":wq", CR }, two_lines, "fooXZY\nZbar\n");
+    h.case(ctx, target, "nvim#dm14 . after an insert broken by Right", &.{ "i", "AB\x1b[CC", ESC, "j0", ".", ":wq", CR }, "foobar\nbazqux\n", "ABfCoobar\nCbazqux\n");
+    h.case(ctx, target, "nvim#dm15 backspace does not break the insert", &.{ "i", "AB\x7fC", ESC, "j0", ".", ":wq", CR }, two_lines, "ACfoo\nACbar\n");
+    // Operator + text-object changes.
+    h.case(ctx, target, "nvim#dm16 . after ciw", &.{ "ciw", "X", ESC, "j0", ".", ":wq", CR }, "one two\nthree four\n", "X two\nX four\n");
+    h.case(ctx, target, "nvim#dm17 . after ct,", &.{ "ct,", "X", ESC, "j0", ".", ":wq", CR }, "aaa,bbb\nccc,ddd\n", "X,bbb\nX,ddd\n");
+    // Blockwise inserts and changes repeat as the same rectangle.
+    h.case(ctx, target, "nvim#dm18 . after a blockwise A", &.{ CV ++ "jjl", "A", "Z", ESC, "3j", ".", ":wq", CR }, "abcd\nef\nghij\nklmn\nop\nqrst\n", "abZcd\nefZ\nghZij\nklZmn\nopZ\nqrZst\n");
+    h.case(ctx, target, "nvim#dm19 . after a blockwise A that padded", &.{ "l" ++ CV ++ "jj", "A", "Z", ESC, "3j", ".", ":wq", CR }, "abcd\n\nefgh\nijkl\n\nmnop\n", "abZcd\n  Z\nefZgh\nijZkl\n  Z\nmnZop\n");
+    h.case(ctx, target, "nvim#dm20 . after a blockwise I", &.{ CV ++ "jj", "I", "Z", ESC, "3j", ".", ":wq", CR }, "aaaa\nbbbb\ncccc\ndddd\neeee\nffff\n", "Zaaaa\nZbbbb\nZcccc\nZdddd\nZeeee\nZffff\n");
+    h.case(ctx, target, "nvim#dm21 . after a blockwise c", &.{ "l" ++ CV ++ "jj", "c", "Z", ESC, "3j", ".", ":wq", CR }, "abcd\nefgh\nijkl\nmnop\nqrst\nuvwx\n", "aZcd\neZgh\niZkl\nmZop\nqZst\nuZwx\n");
+    // `.` after a paste, once per register kind.
+    h.case(ctx, target, "nvim#dm22 . after a charwise p", &.{ "ylj0", "p", ".", ":wq", CR }, "ab\ncd\n", "ab\ncaad\n");
+    h.case(ctx, target, "nvim#dm23 . after a linewise p", &.{ "yy", "j", "p", ".", ":wq", CR }, "ab\ncd\n", "ab\ncd\nab\nab\n");
+    h.case(ctx, target, "nvim#dm24 . after a blockwise p", &.{ CV ++ "jly", "jj0", "p", ".", ":wq", CR }, "11\n22\nabcd\nefgh\n", "11\n22\na1111bcd\ne2222fgh\n");
+    h.case(ctx, target, "nvim#dm25 . after a blockwise P", &.{ CV ++ "jly", "jjl", "P", ".", ":wq", CR }, "11\n22\nabcd\nefgh\n", "11\n22\na1111bcd\ne2222fgh\n");
+    // Macros: recording runs the keys as they are typed, and a replay is a
+    // second run of the same bytes — including a `.` and a nested `@`.
+    h.case(ctx, target, "nvim#dm26 a macro that records a dot", &.{ "dw", "qq", "j0.", "q", "@q", ":wq", CR }, "a b c\nd e f\ng h i\n", "b c\ne f\nh i\n");
+    h.case(ctx, target, "nvim#dm27 a macro that records a count", &.{ "qa", "2dd", "q", "@a", ":wq", CR }, nine, "5\n6\n7\n8\n9\n");
+    h.case(ctx, target, "nvim#dm28 a macro replaying a macro", &.{ "qadd", "q", "qb@a@a", "q", "@b", ":wq", CR }, "1\n2\n3\n4\n5\n6\n7\n8\n", "6\n7\n8\n");
+    h.case(ctx, target, "nvim#dm29 a counted replay", &.{ "qadd", "q", "3@a", ":wq", CR }, "1\n2\n3\n4\n5\n6\n7\n8\n", "5\n6\n7\n8\n");
+    h.case(ctx, target, "nvim#dm30 @@ repeats the last macro", &.{ "qadd", "q", "@a", "@@", ":wq", CR }, "1\n2\n3\n4\n5\n6\n", "4\n5\n6\n");
+    h.case(ctx, target, "nvim#dm31 @@ takes a count", &.{ "qadd", "q", "@a", "2@@", ":wq", CR }, "1\n2\n3\n4\n5\n6\n7\n8\n", "5\n6\n7\n8\n");
+    h.case(ctx, target, "nvim#dm32 q re-records over an existing register", &.{ "qax", "q", "qaxx", "q", "@a", ":wq", CR }, "abcdef\n", "f\n");
+    h.case(ctx, target, "nvim#dm33 a macro records a blockwise paste", &.{ CV ++ "jly", "qq", "jj0p", "q", "G", "k", "@q", ":wq", CR }, "11\n22\nabcd\nefgh\nijkl\nmnop\n", "11\n22\na11bcd\ne22fgh\nijkl\nmnop\n");
+    // An error stops the replay where it happened — the keys after it never
+    // run, and neither do the repetitions left on a count.
+    h.case(ctx, target, "nvim#dm34 a replay stops at a motion that cannot move", &.{ "qq", "jx", "q", "G", "@q", ":wq", CR }, "aaa\nbbb\nccc\n", "aaa\nbb\nccc\n");
+    h.case(ctx, target, "nvim#dm35 …and at a find with no match", &.{ "qq", "fzx", "q", "gg", "@q", ":wq", CR }, "axb\nayb\n", "xb\nayb\n");
+    h.case(ctx, target, "nvim#dm36 …and at a search with no match", &.{ "qq", "x/zzz\rx", "q", "gg", "@q", ":wq", CR }, "a\nb\nc\n", "\nb\nc\n");
+    h.case(ctx, target, "nvim#dm37 a counted replay stops at the error too", &.{ "qq", "IX" ++ ESC ++ "j", "q", "gg", "3@q", ":wq", CR }, "aaa\nbbb\nccc\n", "XXaaa\nXbbb\nXccc\n");
+    // The abort is scoped to the replay: the next key a person types runs.
+    h.case(ctx, target, "nvim#dm38 a failed replay does not swallow the next key", &.{ "qq", "/zzz\r", "q", "@q", "x", ":wq", CR }, "abc\n", "bc\n");
 }
