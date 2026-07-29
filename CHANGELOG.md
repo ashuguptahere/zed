@@ -2,6 +2,12 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.23.1 - 2026-07-29
+
+### Fixed
+
+- More vertical splits than the terminal has columns (or horizontal splits than it has rows) gave a window zero width, which underflowed the row painter's `gw - 1` and aborted the editor. Window geometry is now floored at one legal cell, so a tiling accident degrades instead of crashing. Found by the mouse review, which correctly scoped it out as pre-existing and mouse-independent.
+
 ## 0.23.0 - 2026-07-29
 
 ### Added

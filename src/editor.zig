@@ -7816,27 +7816,31 @@ pub const Editor = struct {
         const avail = if (cols > sb_w) cols - sb_w else 1;
         const x0: usize = if (config.settings.sidebar == .left) 1 + sb_w else 1;
         const n = self.wins.items.len;
+        // Every window gets at least one legal cell. More splits than the
+        // terminal has columns (or rows) used to hand the row painter a
+        // zero-width window, whose `gw - 1` underflowed and aborted the
+        // editor — a tiling accident must degrade, never crash.
         if (self.split_vertical and n > 1) {
-            const each = avail / n;
+            const each = @max(1, avail / n);
             var x: usize = x0;
             for (self.wins.items, 0..) |w, i| {
-                const ww = if (i == n - 1) (if (x0 + avail > x) x0 + avail - x else 1) else each;
-                w.gx = x;
+                const want = if (i == n - 1) (if (x0 + avail > x) x0 + avail - x else 1) else each;
+                w.gx = @min(x, cols);
                 w.gy = 1 + tab_h;
-                w.gw = ww;
+                w.gw = @max(1, @min(want, cols + 1 -| w.gx));
                 w.gh = total_rows;
-                x += ww;
+                x += want;
             }
         } else {
-            const each = if (n > 0) total_rows / n else total_rows;
+            const each = @max(1, if (n > 0) total_rows / n else total_rows);
             var y: usize = 1 + tab_h;
             for (self.wins.items, 0..) |w, i| {
-                const wh = if (i == n - 1) (if (total_rows + 1 + tab_h > y) total_rows + tab_h - y + 1 else 1) else each;
+                const want = if (i == n - 1) (if (total_rows + 1 + tab_h > y) total_rows + tab_h - y + 1 else 1) else each;
                 w.gx = x0;
-                w.gy = y;
+                w.gy = @min(y, self.win.rows);
                 w.gw = avail;
-                w.gh = wh;
-                y += wh;
+                w.gh = @max(1, @min(want, self.win.rows -| w.gy));
+                y += want;
             }
         }
     }

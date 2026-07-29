@@ -7,7 +7,59 @@ const h = @import("../harness.zig");
 
 const CTRL_W = "\x17";
 
+/// More splits than the terminal has cells must degrade, not abort: a
+/// zero-width window used to underflow the row painter's `gw - 1`. Reachable
+/// with no mouse involved, so it lives with the window tests.
+fn tinyTerminalSplits(ctx: *h.Ctx) !void {
+    const dir = try h.tempDir(ctx.gpa);
+    defer ctx.gpa.free(dir);
+    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const path = h.join(ctx, dir, "a.txt");
+    defer ctx.gpa.free(path);
+    h.writeFile(ctx.io, path, "one\ntwo\n");
+
+    // Three columns, then five vertical splits: each window wants zero width.
+    var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "a.txt" }, .cwd = dir, .cols = 3 });
+    defer s.finish();
+    s.drain(400);
+    var i: usize = 0;
+    while (i < 5) : (i += 1) {
+        s.send(":vsplit\r");
+        s.drain(200);
+    }
+    // Still alive and still answering keys?
+    s.send(":only\r");
+    s.drain(400);
+    ctx.check("a terminal too narrow for its splits does not abort", !s.containsPlain(ctx.gpa, "panic"));
+    s.send("ix");
+    s.drain(200);
+    s.send("\x1b:wq\r");
+    s.drain(400);
+    const got = h.readFile(ctx.gpa, ctx.io, path);
+    defer ctx.gpa.free(got);
+    ctx.check("and still edits afterwards", std.mem.startsWith(u8, got, "xone"));
+
+    // The same in the other orientation.
+    var t = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "a.txt" }, .cwd = dir, .cols = 40 });
+    defer t.finish();
+    t.drain(400);
+    t.resize(4, 40); // shorter than the splits about to be made
+    t.drain(300);
+    i = 0;
+    while (i < 5) : (i += 1) {
+        t.send(":split\r");
+        t.drain(200);
+    }
+    t.send(":only\r");
+    t.drain(400);
+    ctx.check("a terminal too short for its splits does not abort", !t.containsPlain(ctx.gpa, "panic"));
+    t.send(":q!\r");
+    t.drain(200);
+}
+
 pub fn run(ctx: *h.Ctx) !void {
+    try tinyTerminalSplits(ctx);
+
     // A vertical split shows two different buffers side by side at once.
     {
         const dir = try h.tempDir(ctx.gpa);
