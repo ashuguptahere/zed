@@ -2,6 +2,129 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.27.0 - 2026-07-29
+
+### Added
+
+- **Tree-sitter language injections.** A grammar's `injections.scm` marks
+  regions written in *another* language, and each is parsed by that language's
+  grammar into a child layer whose captures fill those bytes — real injection,
+  via `ts_parser_set_included_ranges` so node offsets stay document offsets.
+  A fenced code block in Markdown picks its language from the info string when
+  it names one of the ten vendored grammars (```python highlights as Python,
+  not as one long string literal), and the body of an HTML `<script>` element
+  is JavaScript. Markdown's inline spans are now an injection like any other:
+  the hardcoded "second layer over the whole document" is gone, replaced by
+  the general mechanism, and markdown-inline parses only the `(inline)` nodes
+  and table cells — which the block grammar keeps out of `(inline)`, so a
+  table's `**bold**` is styled now where it never was — instead of the entire
+  file. `@none` (markdown's `code_fence_content`) now
+  *clears* what an outer pattern painted, which is what stops a fence from
+  staying green under the injected colours.
+  - Regions are collected from the **visible range only**, so a fenced block
+    below the fold costs nothing until it is scrolled to and per-keystroke
+    work stays O(screen). A region that merely *starts* on screen is clipped
+    to it once it runs past 64 KB — see Performance below.
+  - Layers are **kept and reparsed incrementally** — the same parser and the
+    same compiled query across edits and scrolls; the runtime diffs the
+    included ranges against the old tree and re-lexes only what moved.
+  - Limits, all documented: injection depth 1, at most 6 injected languages
+    and 64 regions each on screen at once, no CSS grammar vendored (so
+    `<style>` bodies stay plain HTML), and no `#offset!` / `#gsub!` /
+    `injection.combined` directives — which is why the two `injections.scm`
+    files are hand-written for zedit's subset rather than copied from
+    nvim-treesitter, whose versions lean on all three.
+- **Query predicates are evaluated.** `#eq?` (against a string or another
+  capture), `#any-of?`, `#match?`, the `#not-` form of each, and `#lua-match?`
+  when the Lua pattern means exactly what the same regex would (no `%` escape,
+  no `()` capture, no `-` lazy repeat — which covers all three the Zig query
+  uses). Matching goes through `regex.zig`'s Pike VM, and each predicate's
+  regex is compiled **once**, stored beside the compiled query in the
+  process-wide cache, never per node. Predicates that need machinery zedit
+  does not have (`#is-not? local`, which wants a locals query) and unknown
+  ones are ignored, leaving their pattern firing exactly as before.
+- **Tree-sitter indent queries** behind the existing `autoindent` setting.
+  Zig, C, Python, Rust, Go, JavaScript and TypeScript ship an `indents.scm`;
+  `o`, `O`, Enter and `cc` add one level for every block the line the new one
+  *follows* opens, so Enter after `void f(void) {` or `def f():` lands one
+  step in and nesting stacks. The indent unit is a tab where the surrounding
+  code is tab-indented (a gofmt'd file indents with tabs) and `tab_width`
+  spaces otherwise. Enter counts only the text before the cursor, so an opener
+  the split pushes onto the new line opens nothing — C's `{`, the opener's
+  first byte, and Python's `:`, its last. Where the tree cannot answer —
+  no grammar, no indent query, `O`/`cc` on the first line, or a blank line to
+  follow — it is vim's plain copy rule, unchanged.
+
+### Changed
+
+- Predicate evaluation **removes** a large amount of over-highlighting that
+  was there before: every Zig identifier matched the query's
+  `((identifier) @type (#lua-match? @type "^[A-Z_]…"))` and
+  `(#eq? @variable.builtin "_")` patterns, every Python and Rust identifier
+  its `@constant`/`@constructor` patterns, and so on — the predicate was the
+  only thing meant to keep them off, and it was not being run.
+
+### Fixed
+
+- Markdown fenced code blocks no longer render as one undifferentiated string
+  literal.
+- **The same keys now produce the same indent however the input is chunked.**
+  The syntax indent gave up ("the tree is a revision behind") whenever several
+  keys reached the interpreter without a frame between them, and silently fell
+  back to vim's copy rule — so `.` disagreed with the change it repeated, a
+  macro replay disagreed with its own recording, and typing fast enough that
+  the terminal batched the bytes disagreed with typing slowly. `obar<Esc>` on
+  `void g(void) {` gave `    bar` typed and `bar` replayed. The parse is now
+  caught up on the spot instead, which costs nothing in the steady state (one
+  key, one frame, tree already current). In a *batch* it costs one reparse per
+  indent key rather than the one the next frame owed: each `o` changes the
+  buffer, so the next one cannot be answered from the tree the previous one
+  left. Measured: a 50-repeat `o`+text macro in one input burst is 3.3 ms on a
+  100-byte file, 39 ms on 150 KB and 419 ms on 1.5 MB — ~8.4 ms a key, which
+  is one `tsReparse` of that file, and the O(document) serialisation there is
+  the known gap CLAUDE.md already records. Correct indentation was judged
+  worth it; typing normally (one key, one frame) pays none of it. Pinned by
+  `ts-indent#x1`-`#x4`, which are deliberately single-chunk.
+- **`O` and `cc` above a blank line keep the block's indent.** The line above
+  is the one the syntax model reads; a blank one carries no indent and opens no
+  block, so the new line landed at column 0 — losing the indent for the very
+  common "blank line inside a block" shape, and doing *worse* than the plain
+  'autoindent' this replaced. It now falls back to vim's rule (copy the
+  cursor's own line) there, which is what real nvim gives. Pinned by
+  `ts-indent#b1`-`#b4`.
+
+### Performance
+
+- **An injected region far bigger than the screen is clipped to it.**
+  Collecting regions from the visible range bounds *which* nodes are injected,
+  not how far one reaches: a node that merely starts on screen handed its
+  whole length to its parser on **every keystroke**, which is exactly the
+  O(document) work the visible-range restriction exists to avoid. Measured in
+  ReleaseFast on a 3.3 MB HTML file that is one `<script>` — the injected
+  range was bytes 20..3,337,802 with bytes 0..1,852 on screen — typing cost
+  **88.6 ms a key against 0.27 ms** before injections existed. A region over
+  64 KB (~1600 lines, the same limit zedit already puts on tree-sitter in the
+  picker preview) is now cut to the visible range, so the same file is
+  **1.5 ms** a key; a region under the cap is still parsed whole, which is
+  what keeps a code block running off the bottom of the screen highlighted
+  from its real start. Only a frame's first and last region can straddle the
+  viewport, so the work per layer is the screen plus at most two caps. A
+  7.4 MB markdown file that is one python fence went from 4629 ms a key
+  (before injections) to 1695 ms, having been 2337 ms without the clip.
+- Editing markdown got **4.3× cheaper**. The old inline layer re-parsed the
+  *entire document* on every keystroke; as an injection it parses only the
+  `(inline)` regions on screen. Measured in ReleaseFast on a 1400-line
+  markdown file with five python fences, over a 40-line window, as the mean of
+  200 single-character edits: reparse + `queryRange` **50.1 ms → 11.6 ms**
+  (the injected layer's share is 1.2 ms; the 10.1 ms left is the markdown
+  *block* grammar's own incremental parse, unchanged by this work).
+- Predicate evaluation costs +21 µs per keystroke on a 1400-line Zig file
+  (139.9 → 160.9 µs for reparse + query over a 40-line window) — the regexes
+  are compiled once per query, and the work is O(screen) like the query it
+  gates. `zig build bench` is unchanged within run-to-run noise: startup
+  5.6 → 5.6 ms, 10 MB open 10.0 → 9.6 ms, big-file first paint 1.3 → 1.0 ms,
+  keypress 0.12 → 0.12 ms, picker-open cold 7.3 → 6.3 ms.
+
 ## 0.26.0 - 2026-07-29
 
 ### Added

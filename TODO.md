@@ -76,8 +76,16 @@ The shortlist is done; these are the next-highest gaps from
       column (its `'startofline'` is off by default). Probed: on
       "foo\nbarbaz", `ll` `G` `x` gives "babaz" in nvim, "arbaz" in zedit.
       Affects every jump that lands on a new line, so it wants its own pass.
-- [ ] Tree-sitter injections (Markdown uses two layers; HTML JS/CSS plain),
-      query predicates (`#match?`/`#eq?`), tree-sitter indent queries.
+- [ ] Tree-sitter depth, the rest of it: `@indent.end`/`@indent.dedent`
+      (a Python `return` should dedent; nvim-treesitter does) and
+      `@indent.align` (align a wrapped expression to its opening paren), an
+      `=` re-indent operator, nested injections (depth is 1 today), a CSS
+      grammar so an HTML `<style>` body stops being plain, and the
+      `#offset!`/`#gsub!`/`injection.combined` directives upstream queries
+      use. `#is?`/`#is-not?` want a locals query. Also `o` *on* a blank line
+      inside a block: zedit keeps plain vim's column 0 (the tree has nothing
+      to say about a blank line), nvim-treesitter indents to the block —
+      pty-probed, pinned as `ts-indent#b4`.
 - [ ] Remote: remote git signs/sidebar, partial transfers for huge remote
       files.
 - [ ] Mouse gestures beyond the four-click cycle: Alt+drag blockwise (a
@@ -775,6 +783,134 @@ The shortlist is done; these are the next-highest gaps from
       tab. Suites green: unit + itest (1045 passed). New gaps recorded above
       with transcripts: `[count].` after an operator-side count, and a bare
       `/` not repeating the last pattern. (UNRELEASED)
+
+- [x] Tree-sitter depth: real language injections, query predicates and
+      indent queries (UNRELEASED). Injections replace the two-layer markdown
+      approximation outright — a grammar's `injections.scm` marks regions,
+      each is parsed by the named grammar into a child layer through
+      `ts_parser_set_included_ranges`, and markdown-inline is now just one of
+      those. A fenced block picks its language from the info string; an HTML
+      `<script>` body is JavaScript. Regions come from the *visible* range
+      only and layers are reparsed incrementally (same parser, same compiled
+      query), so per-keystroke work stays O(screen). Measured (ReleaseFast,
+      1400-line markdown with five python fences, 40-line window, mean of 200
+      single-character edits): reparse+query **50.1 ms -> 11.6 ms**, because
+      the old two-layer path re-parsed the *whole document* with
+      markdown-inline on every keystroke while the injected layer parses only
+      the ~11 `(inline)` regions on screen (1.2 ms); the 10.1 ms that remains
+      is the markdown *block* grammar's own incremental parse, untouched. On
+      a 1400-line Zig file (no injections) the same measurement goes 139.9 ->
+      160.9 us, the +21 us being predicate evaluation, itself O(screen).
+      `zig build bench` unchanged within noise: startup 5.6 -> 5.6 ms,
+      10 MB open 10.0 -> 9.6 ms, big-file first paint 1.3 -> 1.0 ms, keypress
+      0.12 -> 0.12 ms, picker-open cold 7.3 -> 6.3 ms. Predicates (`#eq?`/`#any-of?`/`#match?`/`#not-*`
+      and `#lua-match?` where it means the same as a regex) run through
+      `regex.zig`, compiled once per query beside the cached query — which
+      also removed a lot of quiet over-highlighting, since *every* Zig,
+      Python and Rust identifier was matching patterns that only their
+      predicate was ever meant to let through. Indent queries for
+      Zig/C/Python/Rust/Go/JS/TS add one level per block the reference line
+      opens; the `#c*`/`#p*` cases in the new `indent` suite are ground
+      truth from real nvim driven through nvim-treesitter's indent module,
+      the `#f*`/`#b*` fallback cases against plain nvim, and the
+      Zig/Go/Rust/JS/TS ones are zedit's own documented expectations (no
+      parsers on this machine to ask).
+      Suites green: unit + itest. Gaps recorded above:
+      `@indent.end`/`@indent.dedent`/`@indent.align`, nested injections, a
+      CSS grammar, and the `#offset!`/`#gsub!` directives.
+      Adversarial review afterwards found and fixed two real defects, both
+      now pinned (`ts-indent#x1`-`#x4`, `#b1`-`#b4`):
+      the indent gave up whenever the tree was a revision behind, which is
+      *every* batch of keys arriving without a frame between them — so `.`,
+      macros and fast typing silently fell back to the copy rule and the same
+      keys produced different files; and `O`/`cc` above a blank line lost the
+      block's indent entirely, doing worse than the plain 'autoindent' it
+      replaced (nvim gives the block indent; verified against real nvim).
+      The review also measured the feature independently against HEAD: first
+      paint unchanged (1.85 ms on both an 88 KB fenced markdown and a 57 KB
+      script-heavy HTML), preview keystroke 0.33 -> 0.32 ms, RSS over 40 `:e`
+      cycles flat and *lower* (40.8 -> 24.9 MB), markdown keystroke
+      70.4 -> 4.1 ms, and `ts_query_new` called zero extra times across ten
+      highlighters of the same language (the cache is genuinely
+      process-wide). The two costs the feature does add: an HTML settle of
+      5.7 -> 10.8 ms (the JavaScript layer, which is the feature) and a
+      markdown `Ctrl-d` of 0.6 -> 1.4 ms (parsing the fences newly scrolled
+      into view).
+      Also corrected: CLAUDE.md/CHANGELOG said "16 regions each" where the
+      code caps at 64.
+      An inventory pass after that re-derived every claim from the code and
+      from real nvim, and closed what it found:
+      * The one claim nothing pinned was the one the markdown speed-up rests
+        on — that markdown-inline parses the `(inline)` nodes rather than the
+        document. Handing it the whole file back (exactly the old behaviour)
+        broke *no* test. Two unit tests now pin it: the layers' actual
+        `included_ranges`, and that injections are collected from the visible
+        range only.
+      * `ts-indent#p8` was filed as nvim ground truth and was not: real nvim
+        (both with nvim-treesitter and with plain 'autoindent') leaves
+        `def f(|):` + Enter at column 0, where zedit indented. The cause was
+        real — `upto` only narrowed the query's byte range, which excludes
+        C's `{` (the opener's first byte) but never Python's `:` (its last),
+        so "Enter counts only the text before the cursor" was true for brace
+        languages alone. An `@indent.begin` node that starts and ends on the
+        line now has to *end* inside the counted prefix.
+      * `ts-indent#b4` genuinely disagrees with nvim-treesitter (`o` on a
+        blank line inside a block: vim's column 0 vs the block's indent). Left
+        as vim's answer and recorded as a gap rather than left implied.
+      * The "layers are reused, not rebuilt" test compares parser pointers and
+        does *not* fail when every layer is rebuilt per frame — the C
+        allocator hands the freed block straight back. Left for the
+        performance pass, which owns that claim.
+      * markdown's `injections.scm` claimed nvim's inline rule verbatim while
+        dropping its `(pipe_table_cell)` alternative, so a table cell's
+        `**bold**` was never styled. Alternative restored, pinned.
+      * Every node type named by the new `indents.scm`/`injections.scm` files
+        was checked against the vendored `parser.c` symbol tables (all
+        present; a missing one would fail `ts_query_new` and silently switch
+        the feature off, which the loader test now catches).
+      A performance + robustness pass after *that* measured everything again
+      against a HEAD build and found one real defect, now fixed and pinned:
+      **a region far bigger than the screen was handed to its parser whole,
+      every keystroke.** Collecting regions from the visible range bounds
+      which nodes are injected, not how far one reaches, so a 3.3 MB HTML
+      file that is one `<script>` gave the javascript layer bytes
+      20..3,337,802 with 0..1,852 on screen — 88.6 ms a key against 0.27 ms
+      before injections existed, which is precisely the O(document) work the
+      restriction exists to prevent. A region over 64 KB is now clipped to the
+      visible range (1.5 ms a key); under the cap it is still parsed whole, so
+      a block running off the bottom of the screen keeps its real start.
+      Everything else measured clean against HEAD: `zig build bench`
+      unchanged, `ts_query_new` called 9 times for a session that opens ten
+      zig files and a markdown with five fence languages (2 for zig +
+      markdown/markdown-inline/injections + one per fence language) and never
+      again across scrolling, editing or 20 `:bn`; layers built 17 and stable;
+      RSS flat over 50 `:e` cycles; markdown keystrokes 10x cheaper than HEAD
+      at every size (50 KB 46.8 -> 3.8 ms, 2 MB 2045 -> 200 ms) with the
+      residue being the markdown *block* grammar's own O(document) reparse,
+      which HEAD has too; markdown/HTML decorate 2236 -> 454 ms. Robustness
+      sweep (unterminated fence, unvendored/empty info string, injection at
+      byte 0 and at EOF, CRLF, invalid UTF-8 inside a fence, 10 MB of fences,
+      one giant `<script>`, a fence's info string edited live python -> zig ->
+      nonsense -> python, a region deleted out from under its layer): no
+      crash, no hang, clean exit, correct fallback in every case, and
+      markdown -> html -> js terminates at depth 1 as documented.
+      Also closed, having been left for this pass: the "layers are reused, not
+      rebuilt" test compared parser pointers, which a per-frame rebuild
+      passes (the C allocator returns the freed parser). `Layer.built` counts
+      constructions and the test pins it, which does fail on a planted
+      rebuild.
+      Two costs measured and accepted, neither a defect: a full-page scroll in
+      markdown is 0.38 -> 0.94 ms (parsing the fences newly on screen),
+      constant in document size — 0.99/1.01/0.99/1.01 ms at
+      50 KB/500 KB/2 MB/10 MB; and the indent catch-up reparse costs one
+      `tsReparse` per indent key in an input *burst*, not the one the next
+      frame owed (each `o` changes the buffer, so the next cannot read the
+      tree the previous one left). A 50-repeat `o` macro in one burst: 3.3 ms
+      at 100 B, 39 ms at 150 KB, 419 ms at 1.5 MB. The CHANGELOG and the
+      comment in `tsOpenIndents` claimed the batch cost was one reparse; both
+      corrected. The driver is `tsReparse`'s O(document) serialisation, which
+      is already a recorded gap; typing normally (one key, one frame) pays
+      none of it.
 
 - [ ] Found while reviewing, left alone as unrelated to the mouse work: a
       window narrowed to zero columns aborts in `renderWindow`

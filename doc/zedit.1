@@ -123,7 +123,15 @@ highlighting, LSP and git signs are skipped so huge files open instantly.
 (default true).
 .BR o / O /Enter/ cc
 inherit the current line's indentation; an auto\-indent left blank is
-stripped, like vim.
+stripped, like vim. Where the grammar ships an indent query (Zig, C, Python,
+Rust, Go, JavaScript, TypeScript) the syntax tree takes over: the new line
+inherits from the line it follows and gains one level per block that line
+opens, so Enter after
+.B {
+or
+.B "def f():"
+steps in. Files with no grammar — and a blank line to follow, which carries no
+indent and opens nothing — keep vim's plain copy rule.
 .TP
 .B buffer_tabs
 .BR true / false
@@ -322,6 +330,18 @@ quits, and any other key dismisses the screen. The list is kept in
 (default
 .IR ~/.local/state/zedit/recent ),
 newest first, capped at 30 entries, with vanished paths pruned on load.
+.SH "LANGUAGE INJECTIONS"
+A region written in another language is parsed by that language's grammar and
+highlighted with its own colours: a fenced code block in Markdown uses the
+language named by its info string when that is one of the vendored grammars
+(zig, c, python, json, javascript, typescript, rust, go, html, markdown), and
+the body of an HTML
+.B <script>
+element is JavaScript. Only the visible part of the document is scanned, so a
+fenced block below the fold costs nothing until it is scrolled to. There is no
+CSS grammar, so a
+.B <style>
+body is left as plain HTML.
 .SH "STRUCTURAL OBJECTS (tree-sitter)"
 .TP
 .B af if

@@ -18,7 +18,10 @@ batteries-included editor.
 3. ~~**System clipboard**~~ — **DONE** (`"+`/`"*` via OSC 52 + bracketed
    paste in; works over SSH with zero dependencies).
 4. ~~**Autoindent**~~ — **DONE** (`o`/`O`/Enter/`cc` inherit indent, blank
-   auto-indents stripped, nvim-verified; smartindent/TS indent still open).
+   auto-indents stripped, nvim-verified) — and now tree-sitter indent queries
+   on top for Zig/C/Python/Rust/Go/JS/TS (one level per block the line opens;
+   C and Python cases pinned against nvim-treesitter's own indent module).
+   `@indent.end`/`@indent.align` and an `=` re-indent operator are still open.
 5. ~~**LSP: find references, formatting (+ format-on-save), cross-file /
    multi-line WorkspaceEdits**~~ — **DONE** (`Space l R` references picker,
    `Space l f`/`:format`, `format_on_save` config; rename/code-action/applyEdit
@@ -202,7 +205,8 @@ Ground truth: `/home/origo/Desktop/zed/CLAUDE.md` (note: the on-disk version is 
 - **Built-in commenting `gcc`/`gc{motion}`** (Neovim 0.10 parity) and **auto-pairs**
 - **`]d`/`[d` diagnostic navigation with count** (0.10 default maps) plus a line-diagnostic view (`Space l d`)
 - **LSP core:** diagnostics (gutter + statusline), hover `K`, `gd`, rename, code actions (incl. `executeCommand` and server-initiated `applyEdit`), completion popup, signature help with overload cycling, document symbols picker, **inlay hints as virtual text** (0.10 parity), incremental `didChange` sync — with documented single-file/single-line limits
-- **Tree-sitter highlighting, incremental + viewport-scoped queries**, 10 languages, two-layer Markdown (an injections approximation)
+- **Tree-sitter highlighting, incremental + viewport-scoped queries**, 10 languages, real **language injections** (Markdown fences pick the language from the info string, markdown-inline and HTML `<script>` are injections like any other; visible-range scoped, layers reused across reparses) and **query predicates** (`#match?`/`#eq?`/`#any-of?`/`#not-*`/`#lua-match?`, each regex compiled once per query) — no CSS grammar, so `<style>` stays plain
+- **Tree-sitter indent queries** for Zig/C/Python/Rust/Go/JS/TS behind `autoindent` (`@indent.begin` only; no `@indent.end`/`@indent.dedent`/`@indent.align`)
 - **AstroNvim-style leader UX:** which-key popup with nested groups (`Space f/l/g/e/c/w/q`)
 - **Telescope-equivalents:** fuzzy file finder, project content grep (regex, per line), buffer picker, theme picker — with a warm cached file list and space-separated multi-term queries
 - **gitsigns-equivalent** gutter signs, plus inline unified diff, side-by-side index diff, and a VS Code-style in-buffer line-by-line diff (old lines woven in as virtual rows)

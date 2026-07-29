@@ -13,6 +13,7 @@ const scenarios = .{
     .{ "extra", @import("scenarios/extra.zig") },
     .{ "search", @import("scenarios/search.zig") },
     .{ "treesitter", @import("scenarios/treesitter.zig") },
+    .{ "indent", @import("scenarios/indent.zig") },
     .{ "picker", @import("scenarios/picker.zig") },
     .{ "git", @import("scenarios/git.zig") },
     .{ "windows", @import("scenarios/windows.zig") },

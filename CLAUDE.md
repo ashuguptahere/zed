@@ -180,16 +180,18 @@ Source is `src/`, one responsibility per module:
 | `recent.zig`  | The recently-opened list behind the startup screen (XDG state file). |
 | `remote.zig`  | Editing over SSH: `ssh://user@host/path` parsing, read/write/list via one `ssh` per operation. |
 | `lsp.zig`     | Minimal LSP client: JSON-RPC over a server's stdio (diagnostics, hover, goto, completion, signature help; incremental or full doc sync per the server's capabilities). |
-| `treesitter.zig` | Tree-sitter highlighting via the vendored C runtime + grammar (incremental parse, visible-range `highlights.scm` query, compiled queries shared process-wide). |
+| `treesitter.zig` | Tree-sitter highlighting via the vendored C runtime + grammar (incremental parse, visible-range `highlights.scm` query, language injections, `#match?`/`#eq?` predicates, `indents.scm`; compiled queries + predicate regexes shared process-wide). |
 | `editor.zig`  | State, the vim command interpreter, multiple cursors, multiple buffers + windows (splits), pickers, LSP, tree-sitter, viewport, themed rendering. |
 
 Vendored C lives under `vendor/` (`tree-sitter/` runtime, plus `tree-sitter-zig`,
 `-c`, `-python`, `-json`, `-javascript`, `-typescript`, `-rust`, `-go`, `-html`, `-markdown` (block + inline) grammars, each with
-`parser.c`, an optional `scanner.c`, and `highlights.scm`); `build.zig` compiles
+`parser.c`, an optional `scanner.c`, and `highlights.scm`, plus an optional
+`injections.scm` and `indents.scm`); `build.zig` compiles
 them with `-D_GNU_SOURCE` and links libc. Adding a grammar is one entry in the
-`grammars` list in `build.zig` plus a case in `treesitter.zig` (TypeScript keeps
-its grammar under `typescript/` with a sibling `common/scanner.h`, and its query
-layers on JavaScript's).
+`grammars` list in `build.zig` plus a case in `specFor`/`specByName` in
+`treesitter.zig` (TypeScript keeps
+its grammar under `typescript/` with a sibling `common/scanner.h`, and its
+highlight *and* indent queries layer on JavaScript's).
 
 The pure, error-prone logic (motions, search) lives in its own unit-tested
 modules; `editor.zig` is the stateful orchestrator (mode machine, operators,
@@ -227,9 +229,11 @@ ReleaseFast binaries for Linux x86_64/aarch64 (static musl) and macOS
 x86_64/aarch64 and attaches them to a GitHub release (`release.yml`).
 
 Compiling a grammar's `highlights.scm` costs 3–14 ms, so the compiled queries
-are cached per grammar for the life of the process (`query_cache` in
-`treesitter.zig`) and shared by every buffer and the picker preview — opening
-ten files of one language compiles its query once, not ten times.
+— highlights, `injections.scm` and `indents.scm` alike, together with the
+predicate regexes parsed out of each — are cached per query source for the
+life of the process (`query_cache` in `treesitter.zig`) and shared by every
+buffer and the picker preview: opening ten files of one language compiles its
+query once, not ten times.
 
 Build times: the vendored tree-sitter C (19 translation units) is compiled
 **once** into a static library that every artifact links — attaching the C
@@ -254,8 +258,9 @@ itest` builds `zedit` plus a `mock_lsp` server, then runs the `itest` harness:
   capture + ANSI stripping, temp dirs, file helpers, `/proc` CPU sampling).
 - `tools/mock_lsp.zig` — a stub language server for the LSP scenario.
 - `tools/itest.zig` — the runner; `tools/scenarios/*.zig` are the suites (vim,
-  vim_compat, feature, multicursor, extra, search, treesitter, picker, git,
-  windows, sidebar, mouse, config, cmdline, robust, ssh, remote, lsp, cpu), each a
+  vim_compat, feature, multicursor, extra, search, treesitter, indent, picker,
+  git, windows, sidebar, mouse, titlebar, config, cmdline, robust, remote, ssh,
+  lsp, bufcomplete, cpu, wrap, undotree), each a
   `pub fn run(ctx: *harness.Ctx) !void`.
   `vim_compat` asserts byte-for-byte agreement with expected outputs generated
   by driving real Neovim headlessly — extend it the same way when porting more
@@ -456,6 +461,29 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   Autoindent (config `autoindent`, on by default): `o`/`O`/Enter/`cc` inherit
   the current line's leading whitespace, and an auto-indent left blank is
   stripped on leaving the line (vim's rule; nvim-verified in `vim_compat`).
+  With a grammar that ships an `indents.scm` (Zig, C, Python, Rust, Go, JS,
+  TS) the syntax tree takes over: the new line inherits from the line it
+  *follows* — the current one for `o`/Enter, the one above for `O`/`cc` —
+  plus one level per block that line *opens*, so Enter after
+  `void f(void) {` or `def f():` lands one step in
+  rather than flush with its opener, and nesting stacks. Enter counts only the
+  text *before* the cursor, so an opener the split pushes onto the new line
+  opens nothing — C's `{`, which is the opener's first byte, and Python's `:`,
+  which is its last (nvim-verified, as are the `#c*`/`#p*` cases in the
+  `indent` scenario — driven through nvim-treesitter's own indent module; the
+  `#f*`/`#b*` fallback cases are pinned against plain nvim instead). The unit is
+  a tab where the surrounding code is tab-indented, else `tab_width` spaces.
+  Only `@indent.begin` is evaluated — there is no `@indent.end`/`@indent.dedent`
+  (a Python `return` keeps the block's indent where nvim dedents) and no
+  `@indent.align` (a wrapped expression is not aligned to its opening paren) —
+  and whenever the tree cannot answer (no grammar, no indent query for it,
+  `O`/`cc` on the first line, or a **blank** line to follow — which carries no
+  indent and opens nothing) it is vim's plain copy rule, right down to
+  `O`/`cc` reading their *own* line again. A tree a revision behind the buffer
+  is *not* one of those cases: a batch of keys arriving with no frame between
+  them (a `.` repeat, a macro replay, a paste, plain fast typing) catches the
+  parse up on the spot, so the same keys always produce the same indent
+  whatever the terminal did with them.
 - **Built-ins (no plugins):** `gcc` / `gc{motion}` comment toggling, auto-pairs.
 - **Surround:** `ys{motion}{char}` (e.g. `ysiw)`), `cs{old}{new}` (e.g. `cs"'`),
   `ds{char}`, `yss{char}` for the whole line, and `S{char}` in visual mode.
@@ -820,7 +848,9 @@ appears only when the title bar is off, since the active tab already shows it
 glyphs, and the config's `nerd_font = false` swaps in a flat statusline whose
 width budgets drop the separator cells, painting edge to edge in any font),
 syntax highlighting (tree-sitter for 10 languages (Zig/C/Python/JSON/JS/TS/Rust/Go/HTML/Markdown) via
-`treesitter.zig`, the `syntax.zig` lexer otherwise), relative+absolute line numbers, a
+`treesitter.zig`, with language injections — a python-tagged fenced block in
+Markdown is highlighted as Python, a `<script>` body as JavaScript — and the grammars' own
+query predicates honoured; the `syntax.zig` lexer otherwise), relative+absolute line numbers, a
 cursorline, indent guides, and a git change gutter (add/change/delete signs
 from `git diff`, recomputed on load and save). All colour is emitted as 24-bit
 SGR; the frame is still built once and written in a single syscall, and
@@ -915,8 +945,13 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   replay already moved. A count typed *after* the operator (`d2w`) is still
   multiplied by the new one, since telling a count from an argument in the
   recorded bytes needs vim's normalised redo buffer rather than string
-  surgery. Autoindent is vim's 'autoindent' only (no smartindent/
-  tree-sitter indent queries). Cmdline completion covers command names,
+  surgery. Autoindent is vim's 'autoindent' plus the grammar's
+  `@indent.begin` nodes (see the Insert section) — there is no smartindent,
+  no `@indent.end`/`@indent.dedent`/`@indent.align`, and no `=` re-indent
+  operator. Where the tree has nothing to say the copy rule wins outright, so
+  `o` *on* a blank line inside a block starts at column 0 (plain vim's answer,
+  pinned as `ts-indent#b4`) where nvim-treesitter would indent to the block —
+  pty-probed, and the one measured disagreement with it. Cmdline completion covers command names,
   `:e`/`:w` paths and `:theme` (not every command's arguments). The cmdline
   has vim's editing keys (cursor motion, `Delete`, `Ctrl-w`/`Ctrl-u`,
   `c_CTRL-R`, completion of the text before the cursor, upward wrapping), but
@@ -1024,10 +1059,47 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   Go, HTML and Markdown (the vendored grammars); other files use the lexer. Parsing is incremental (the prior
   tree is reused via a prefix/suffix diff) and the highlight query runs only over the
   visible byte range (re-run on edit or scroll), so per-keystroke work is
-  O(screen) not O(document). Query predicates (`#match?`/`#eq?`) are not
-  evaluated. Full tree-sitter injections aren't implemented; Markdown instead
-  uses two highlight layers (block grammar + inline grammar, the latter filling
-  bytes the block layer left plain), and HTML doesn't highlight embedded JS/CSS.
+  O(screen) not O(document). **Injections** are real: a grammar's
+  `injections.scm` marks regions written in another language and each is
+  parsed by that grammar into a child layer (`ts_parser_set_included_ranges`,
+  so byte offsets stay document offsets). Markdown fences pick their language
+  from the info string when it names one of the ten vendored grammars, its
+  inline spans and table cells go to markdown-inline (the old hardcoded second
+  layer, now just another injection, and scoped to those nodes rather than to
+  the whole file), and an HTML `<script>` body is JavaScript. Regions are
+  collected from the *visible* range only, so a fenced block below the fold
+  costs nothing; layers are kept and reparsed incrementally (the runtime diffs
+  the included ranges against the old tree), never rebuilt per keystroke.
+  That bounds *which* nodes are injected, not how far one reaches, so a region
+  running past **64 KB** (~1600 lines; the same limit the picker preview puts
+  on tree-sitter) is **clipped to the visible range** — a 3.3 MB `<script>`
+  starts on screen and used to hand its whole length to the JavaScript parser
+  on every keystroke, 88.6 ms a key against 1.5 ms clipped. Under the cap the
+  region is parsed whole, which is what keeps a code block running off the
+  bottom of the screen highlighted from its real start, and only a frame's
+  first and last region can straddle the viewport, so the work per layer is
+  the screen plus at most two caps.
+  Limits: injection depth is 1 (a child layer's own `injections.scm` is not
+  run, so a `<script>` inside a markdown ```html fence is plain HTML — this is
+  also what makes the recursion terminate by construction); at most 6 injected
+  languages and 64 regions each are live at once — markdown's inline layer is
+  one of those six, so a screen showing more than five fence languages loses
+  the sixth, and one holding more than 64 separate inline spans (a run of
+  one-line paragraphs) loses the last of them; autoindent inside an injected
+  region uses the *host* grammar's indent query, which for markdown means
+  vim's copy rule; `<style>` stays plain because **no CSS grammar is
+  vendored**; and the
+  `#offset!` / `#gsub!` / `injection.combined` directives upstream queries use
+  are not implemented (which is why the two `injections.scm` files here are
+  hand-written for this subset rather than copied from nvim-treesitter).
+  **Query predicates** are evaluated against the captured node's text:
+  `#eq?` (string or capture), `#any-of?`, `#match?`, their `#not-` forms, and
+  `#lua-match?` when the Lua pattern means the same thing as the regex (no
+  `%` escape, no `()` capture, no `-` lazy repeat — which covers all three the
+  Zig query uses). Each `#match?` regex is compiled once, beside the compiled
+  query in the process-wide cache, never per node; `regex.zig`'s Pike VM does
+  the matching. `#is?`/`#is-not?` (which need a locals query) and unknown
+  predicates are ignored, leaving their pattern firing as before.
   Adding a grammar = vendor its `parser.c` + `highlights.scm` and extend
   `treesitter.zig` (and, for `af`/`ac` to work there, its node names in
   `functionKinds`/`typeKinds`/`listKinds`/`commentKinds` in `editor.zig`). Structural objects currently

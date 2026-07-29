@@ -55,28 +55,40 @@ pub fn build(b: *std.Build) void {
     exe_mod.link_libc = true;
     exe_mod.addIncludePath(b.path("vendor/tree-sitter/include"));
     // Each grammar: the dir holding its generated parser.c (+ optional C
-    // scanner and tree_sitter/ headers), and its highlights query embedded via
+    // scanner and tree_sitter/ headers), and its query files embedded via
     // @embedFile. `src` is explicit because tree-sitter-typescript keeps its
-    // grammar under typescript/ with a sibling common/scanner.h.
-    const Grammar = struct { name: []const u8, src: []const u8, scanner: bool, highlights: []const u8 };
+    // grammar under typescript/ with a sibling common/scanner.h. `dir` is where
+    // the .scm files live (the grammar's own directory); an empty `injections`
+    // or `indents` means that grammar ships none and the feature is simply off
+    // for it.
+    const Grammar = struct {
+        name: []const u8,
+        dir: []const u8,
+        src: []const u8,
+        scanner: bool,
+        injections: bool = false,
+        indents: bool = false,
+    };
     const grammars = [_]Grammar{
-        .{ .name = "zig", .src = "vendor/tree-sitter-zig/src", .scanner = false, .highlights = "vendor/tree-sitter-zig/highlights.scm" },
-        .{ .name = "c", .src = "vendor/tree-sitter-c/src", .scanner = false, .highlights = "vendor/tree-sitter-c/highlights.scm" },
-        .{ .name = "python", .src = "vendor/tree-sitter-python/src", .scanner = true, .highlights = "vendor/tree-sitter-python/highlights.scm" },
-        .{ .name = "json", .src = "vendor/tree-sitter-json/src", .scanner = false, .highlights = "vendor/tree-sitter-json/highlights.scm" },
-        .{ .name = "javascript", .src = "vendor/tree-sitter-javascript/src", .scanner = true, .highlights = "vendor/tree-sitter-javascript/highlights.scm" },
-        .{ .name = "typescript", .src = "vendor/tree-sitter-typescript/typescript/src", .scanner = true, .highlights = "vendor/tree-sitter-typescript/highlights.scm" },
-        .{ .name = "rust", .src = "vendor/tree-sitter-rust/src", .scanner = true, .highlights = "vendor/tree-sitter-rust/highlights.scm" },
-        .{ .name = "go", .src = "vendor/tree-sitter-go/src", .scanner = false, .highlights = "vendor/tree-sitter-go/highlights.scm" },
-        .{ .name = "html", .src = "vendor/tree-sitter-html/src", .scanner = true, .highlights = "vendor/tree-sitter-html/highlights.scm" },
-        .{ .name = "markdown", .src = "vendor/tree-sitter-markdown/src", .scanner = true, .highlights = "vendor/tree-sitter-markdown/highlights.scm" },
-        .{ .name = "markdown_inline", .src = "vendor/tree-sitter-markdown-inline/src", .scanner = true, .highlights = "vendor/tree-sitter-markdown-inline/highlights.scm" },
+        .{ .name = "zig", .dir = "vendor/tree-sitter-zig", .src = "vendor/tree-sitter-zig/src", .scanner = false, .indents = true },
+        .{ .name = "c", .dir = "vendor/tree-sitter-c", .src = "vendor/tree-sitter-c/src", .scanner = false, .indents = true },
+        .{ .name = "python", .dir = "vendor/tree-sitter-python", .src = "vendor/tree-sitter-python/src", .scanner = true, .indents = true },
+        .{ .name = "json", .dir = "vendor/tree-sitter-json", .src = "vendor/tree-sitter-json/src", .scanner = false },
+        .{ .name = "javascript", .dir = "vendor/tree-sitter-javascript", .src = "vendor/tree-sitter-javascript/src", .scanner = true, .indents = true },
+        .{ .name = "typescript", .dir = "vendor/tree-sitter-typescript", .src = "vendor/tree-sitter-typescript/typescript/src", .scanner = true, .indents = true },
+        .{ .name = "rust", .dir = "vendor/tree-sitter-rust", .src = "vendor/tree-sitter-rust/src", .scanner = true, .indents = true },
+        .{ .name = "go", .dir = "vendor/tree-sitter-go", .src = "vendor/tree-sitter-go/src", .scanner = false, .indents = true },
+        .{ .name = "html", .dir = "vendor/tree-sitter-html", .src = "vendor/tree-sitter-html/src", .scanner = true, .injections = true },
+        .{ .name = "markdown", .dir = "vendor/tree-sitter-markdown", .src = "vendor/tree-sitter-markdown/src", .scanner = true, .injections = true },
+        .{ .name = "markdown_inline", .dir = "vendor/tree-sitter-markdown-inline", .src = "vendor/tree-sitter-markdown-inline/src", .scanner = true },
     };
     inline for (grammars) |g| {
         ts_mod.addIncludePath(b.path(g.src));
         ts_mod.addCSourceFile(.{ .file = b.path(g.src ++ "/parser.c"), .flags = &.{"-D_GNU_SOURCE"} });
         if (g.scanner) ts_mod.addCSourceFile(.{ .file = b.path(g.src ++ "/scanner.c"), .flags = &.{"-D_GNU_SOURCE"} });
-        exe_mod.addAnonymousImport("ts_highlights_" ++ g.name, .{ .root_source_file = b.path(g.highlights) });
+        exe_mod.addAnonymousImport("ts_highlights_" ++ g.name, .{ .root_source_file = b.path(g.dir ++ "/highlights.scm") });
+        if (g.injections) exe_mod.addAnonymousImport("ts_injections_" ++ g.name, .{ .root_source_file = b.path(g.dir ++ "/injections.scm") });
+        if (g.indents) exe_mod.addAnonymousImport("ts_indents_" ++ g.name, .{ .root_source_file = b.path(g.dir ++ "/indents.scm") });
     }
 
     const ts_lib = b.addLibrary(.{ .name = "tree-sitter", .root_module = ts_mod, .linkage = .static });

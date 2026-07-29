@@ -44,7 +44,9 @@
   - Tree-sitter structural objects: `af`/`if` (function), `ac`/`ic` (class,
     struct, impl), `aa`/`ia` (argument, with its comma), `aC`/`iC` (comment,
     across a run of comment lines), and `]f`/`[f` to step between functions
-  - Built-ins (no plugins): autoindent, auto-pairs, comment toggle (`gcc` / `gc{motion}`),
+  - Built-ins (no plugins): autoindent (the syntax tree's own indent rules for
+    Zig/C/Python/Rust/Go/JS/TS, so Enter after `{` or `def f():` steps in),
+    auto-pairs, comment toggle (`gcc` / `gc{motion}`),
     surround (`ys`/`cs`/`ds`, visual `S`), blockwise visual (`Ctrl-v` + `I`/`A`/`c`,
     `$` to each line's own end, and a rectangular `p`/`P`),
     multiple cursors (`Ctrl-n` / `Ctrl-p` add carets; edits apply to all),
@@ -168,6 +170,11 @@
   Zig/C/Python/JSON/JS/TS/Rust/Go/HTML/Markdown, a built-in lexer otherwise),
   a powerline statusline, relative+absolute line numbers, cursorline, indent
   guides, and a git change gutter
+- **Language injections**: a fenced code block in Markdown is highlighted as
+  the language its info string names, and a `<script>` body as JavaScript —
+  each region parsed by that grammar, not approximated. The grammars' own
+  query predicates (`#match?`, `#eq?`, `#any-of?`) are evaluated too, so a
+  capture fires only where its query says it should
 - UTF-8 throughout, with correct display width for wide (CJK) and zero-width
   (combining) characters, and tab expansion
 - Event-driven input loop: blocks in `poll(2)` when idle, renders only on

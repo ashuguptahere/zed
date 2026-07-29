@@ -68,6 +68,11 @@
 
   NOTE: the statusline shows the current mode.  When in doubt, Esc.
 
+  NOTE: in a source file zedit indents for you.  Press  o  after a line
+  that opens a block —  {  in C/Zig/Rust/Go/JS, or a  def f():  in
+  Python — and the new line starts one level in; inside the block it
+  keeps the level.  It follows the file's own style, tabs or spaces.
+
 ------------------------------------------------------------------------------
                       Lesson 3: DELETING AND CHANGING
 ------------------------------------------------------------------------------
@@ -441,6 +446,9 @@
      the wrapped part hangs under the line it belongs to.  j and k still step whole lines, as in vim;  gj  and
      gk  step one screen row, and  g0 / g$  reach the ends of one.  Put
      soft_wrap = false  in your config to scroll sideways instead.
+   - Code inside prose:  a fenced block in a Markdown file is coloured
+     as the language you name after the backticks (```python), and a
+     <script> in an HTML file is coloured as JavaScript.
    - Themes:  :theme  or  Space f t  switches between the five built-in
      palettes;  zedit --init-config  writes a commented config file.
    - Staying current:  :update  asks whether a newer zedit was released

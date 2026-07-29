@@ -2378,8 +2378,9 @@ pub const Editor = struct {
 
         self.pushUndo();
         if (op == .change and span.lines) {
-            const keep = if (config.settings.autoindent) leadingIndent(self.buf.line(span.top)) else "";
-            self.setAutoIndent(span.top, keep);
+            // The replacement line follows the one above it.
+            const ref: ?usize = if (span.top > 0) span.top - 1 else null;
+            self.setAutoIndentFollowing(span.top, ref, span.top, null);
             self.buf.setLine(span.top, self.ai_indent.items) catch {};
             var i: usize = 0;
             while (i < span.bot - span.top) : (i += 1) self.buf.removeLineAt(span.top + 1);
@@ -2778,8 +2779,11 @@ pub const Editor = struct {
     fn openLine(self: *Editor, below: bool) !void {
         if (self.rejectReadOnly()) return;
         self.pushUndo();
-        const inherit = if (config.settings.autoindent) leadingIndent(self.curLine()) else "";
-        self.setAutoIndent(self.cy, inherit); // copy before the insert shifts rows
+        // The new line follows the current one for `o` and the one above it for
+        // `O`; that is the line whose syntax decides the indent. Computed
+        // before the insert shifts rows.
+        const ref: ?usize = if (below) self.cy else (if (self.cy > 0) self.cy - 1 else null);
+        self.setAutoIndentFollowing(self.cy, ref, self.cy, null);
         const at = if (below) self.cy + 1 else self.cy;
         try self.buf.insertLineAt(at, self.ai_indent.items);
         self.cy = at;
@@ -2951,10 +2955,8 @@ pub const Editor = struct {
                 // an untouched auto-indent (which then gets stripped, like
                 // vim), else this line's own leading whitespace.
                 if (config.settings.autoindent) {
-                    if (was_ai != self.cy or !lineIsBlank(self.curLine())) {
-                        self.ai_indent.clearRetainingCapacity();
-                        self.ai_indent.appendSlice(self.gpa, leadingIndent(self.curLine())) catch {};
-                    }
+                    if (was_ai != self.cy or !lineIsBlank(self.curLine()))
+                        self.setAutoIndentFollowing(self.cy, self.cy, self.cy, self.cx);
                     self.stripBlankAutoIndent(was_ai);
                 }
                 try self.buf.splitLine(self.cy, self.cx);
@@ -2996,6 +2998,97 @@ pub const Editor = struct {
         self.ai_indent.clearRetainingCapacity();
         self.ai_indent.appendSlice(self.gpa, text) catch {};
         self.ai_row = if (config.settings.autoindent) row else null;
+    }
+
+    /// Prepare `ai_indent` for a new line at `at` that will *follow* line
+    /// `ref`: that line's own leading whitespace (vim's 'autoindent'), plus one
+    /// unit for every block it opens according to the grammar's `indents.scm`
+    /// — so Enter after `void f(void) {` or `def f():` lands one level in
+    /// rather than flush with the opener.
+    ///
+    /// `upto` limits how much of `ref` counts — Enter passes the cursor column,
+    /// because a `{` the split is about to push onto the *new* line has not
+    /// opened anything on the old one (nvim-verified: Enter before the brace of
+    /// `void f(void) {` leaves the new line at column 0).
+    ///
+    /// Whenever the syntax tree cannot answer — no grammar, no indent query for
+    /// it, no line for the new one to follow (`O`/`cc` on the first line), or a
+    /// blank line to follow (which carries no indent and opens nothing) — this
+    /// is vim's plain 'autoindent': copy `fallback`'s own leading whitespace,
+    /// exactly as before. For `o` and Enter the two rules read the same line
+    /// anyway, so a grammar-less file behaves identically either way.
+    fn setAutoIndentFollowing(self: *Editor, at: usize, ref: ?usize, fallback: usize, upto: ?usize) void {
+        if (!config.settings.autoindent) {
+            self.setAutoIndent(at, "");
+            return;
+        }
+        const row = ref orelse return self.setAutoIndent(at, leadingIndent(self.buf.line(fallback)));
+        // A blank reference line has no indent to inherit and opens no block,
+        // so following it would land the new line at column 0 — losing the
+        // block's indent for every `O`/`cc` above a blank line, which is where
+        // half of real code puts one. vim (and nvim-treesitter) copy the
+        // cursor's own line there, so fall back to that.
+        if (lineIsBlank(self.buf.line(row)))
+            return self.setAutoIndent(at, leadingIndent(self.buf.line(fallback)));
+        var levels = self.tsOpenIndents(row, upto) orelse
+            return self.setAutoIndent(at, leadingIndent(self.buf.line(fallback)));
+        const base = leadingIndent(self.buf.line(row));
+        self.setAutoIndent(at, base);
+        if (levels == 0) return;
+        const unit = self.indentUnit(base);
+        while (levels > 0) : (levels -= 1) self.ai_indent.appendSlice(self.gpa, unit) catch {};
+    }
+
+    /// How many indent levels line `row` opens, per the grammar's indent query,
+    /// counting only its first `upto` bytes (all of it when null). Null when
+    /// the tree cannot answer at all — see `setAutoIndentFollowing`.
+    fn tsOpenIndents(self: *Editor, row: usize, upto: ?usize) ?usize {
+        // Before anything else: a grammar with no indent query (Markdown,
+        // JSON, HTML) can only ever answer null, so it must not pay for the
+        // catch-up parse below to find that out.
+        if (self.ts == null or self.ts.?.indent == null) return null;
+        // A batch of keys — a macro, a `.` repeat, a paste, or simply typing
+        // faster than the terminal delivers — reaches the interpreter with no
+        // frame in between, so the tree can be a revision behind. Catch it up
+        // instead of answering "cannot say": otherwise the very same keys
+        // indent differently depending on how the input happened to be
+        // chunked, and `.` disagrees with the change it repeats. Costs nothing
+        // in the steady state (one key, one frame, tree already current); in a
+        // batch it costs one reparse *per indent key*, since each one changes
+        // the buffer and the next cannot be answered from the tree the
+        // previous one left. Measured: a 50-repeat `o` macro in one burst is
+        // 3.3 ms on a 100-byte file and 419 ms on 1.5 MB — ~8.4 ms a key,
+        // i.e. one `tsReparse`, whose O(document) serialisation is the gap
+        // CLAUDE.md already records. Correct indentation is worth it.
+        if (self.ts_rev != self.buf.revision) self.tsReparse();
+        if (self.ts_rev != self.buf.revision) return null; // the reparse failed
+        var h = if (self.ts) |*x| x else return null;
+        if (row >= self.buf.lineCount()) return null;
+        const start = self.byteOffset(row, 0) orelse return null;
+        const len = self.buf.line(row).len;
+        const end = start + @min(upto orelse len, len);
+        if (start + len > self.ts_doc_len) return null;
+        return h.openIndents(row, start, end);
+    }
+
+    /// One indent level's worth of whitespace: a tab where the surrounding
+    /// code is tab-indented, else `tab_width` spaces. The reference line's own
+    /// indent decides when it has one; otherwise the file's first indented
+    /// line does, which is what makes a tab-indented Go file indent with tabs
+    /// even though its `func f() {` is flush left.
+    fn indentUnit(self: *Editor, base: []const u8) []const u8 {
+        const spaces = " " ** 16;
+        const wide = spaces[0..@min(config.settings.tab_width, spaces.len)];
+        if (base.len > 0) return if (base[base.len - 1] == '\t') "\t" else wide;
+        const rows = @min(self.buf.lineCount(), 200);
+        var r: usize = 0;
+        while (r < rows) : (r += 1) {
+            const line = self.buf.line(r);
+            if (line.len == 0) continue;
+            if (line[0] == '\t') return "\t";
+            if (line[0] == ' ') return wide;
+        }
+        return wide;
     }
 
     /// vim's autoindent rule: leaving an auto-indented line without typing on
