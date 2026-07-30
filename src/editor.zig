@@ -803,7 +803,7 @@ pub const Editor = struct {
                     continue;
                 }
             }
-            const lsp_fd: ?std.posix.fd_t = if (self.lsp) |*c| (if (c.alive) c.out_fd else null) else null;
+            const lsp_fd: ?std.posix.fd_t = if (self.lsp) |*c| (if (c.alive()) c.outFd() else null) else null;
             const ready = try self.term.waitReady(&.{ lsp_fd, self.termFd(), self.dbgFd() }, self.pollTimeout());
             if (self.completionDue()) {
                 self.fireDue();
@@ -6503,7 +6503,7 @@ pub const Editor = struct {
     /// (the client picks incremental vs. full based on the server's capability).
     fn syncLsp(self: *Editor) void {
         var client = if (self.lsp) |*c| c else return;
-        if (!client.alive or self.buf.revision == self.lsp_rev) return;
+        if (!client.alive() or self.buf.revision == self.lsp_rev) return;
         const content = self.buf.toBytes(self.gpa) catch return;
         defer self.gpa.free(content);
         client.didChange(content);
@@ -6737,12 +6737,12 @@ pub const Editor = struct {
     fn formatBeforeSave(self: *Editor) void {
         if (!config.settings.format_on_save) return;
         const client = if (self.lsp) |*c| c else return;
-        if (!client.alive or !client.can_format) return;
+        if (!client.alive() or !client.can_format) return;
         self.syncLsp();
         client.fmt_ready = false;
         client.requestFormatting(config.settings.tab_width);
         var tries: usize = 100;
-        while (!client.fmt_ready and client.alive and tries > 0) : (tries -= 1) client.pump(10);
+        while (!client.fmt_ready and client.alive() and tries > 0) : (tries -= 1) client.pump(10);
         if (!client.fmt_ready) return; // timed out; save the text as-is
         client.fmt_ready = false;
         if (client.fmt_edits.items.len > 0) _ = self.applyEdits(client.fmt_edits.items) catch 0;
@@ -6920,7 +6920,7 @@ pub const Editor = struct {
             w.top = @min(w.top, w.cy);
         }
         if (doc.lsp) |*c| {
-            if (c.alive and doc.buf.revision != doc.lsp_rev) {
+            if (c.alive() and doc.buf.revision != doc.lsp_rev) {
                 const content = doc.buf.toBytes(self.gpa) catch return n;
                 defer self.gpa.free(content);
                 c.didChange(content);
@@ -6946,7 +6946,7 @@ pub const Editor = struct {
     /// exactly like one that was never installed rather than wait forever.
     fn liveLsp(self: *Editor) ?*lsp.Client {
         const c = if (self.lsp) |*cl| cl else return null;
-        return if (c.alive) c else null;
+        return if (c.alive()) c else null;
     }
 
     /// Ask for completions (the debounce fired, or `Ctrl-n`): the language

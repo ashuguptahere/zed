@@ -2,6 +2,17 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.32.1 - 2026-07-30
+
+### Changed
+
+- `lsp.zig` now uses the shared `jsonrpc.Transport` rather than its own copy
+  of the `Content-Length` framing — the follow-up promised when the module was
+  added for `dap.zig` and deliberately kept out of that commit. One
+  implementation, 47 fewer lines, and `alive()`/`outFd()` are methods on both
+  clients now instead of a field on one and a method on the other. No
+  behaviour change; the LSP scenarios are the check.
+
 ## 0.32.0 - 2026-07-30
 
 ### Added

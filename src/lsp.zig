@@ -11,6 +11,8 @@
 //! terminal; incoming messages are processed without blocking the UI.
 
 const std = @import("std");
+const jsonrpc = @import("jsonrpc.zig");
+const appendEscaped = jsonrpc.appendEscaped;
 const posix = std.posix;
 const unicode = @import("unicode.zig");
 const log = @import("log.zig");
@@ -111,13 +113,11 @@ pub const Client = struct {
     gpa: Allocator,
     io: std.Io,
     child: std.process.Child,
-    out_fd: posix.fd_t,
-    alive: bool,
+    t: jsonrpc.Transport,
     next_id: i64,
     version: i64,
 
     uri: []u8, // file:// URI of the open document
-    read_buf: std.ArrayList(u8),
     diags: std.ArrayList(Diagnostic),
 
     init_done: bool,
@@ -181,12 +181,15 @@ pub const Client = struct {
             .gpa = gpa,
             .io = io,
             .child = child,
-            .out_fd = child.stdout.?.handle,
-            .alive = true,
+            .t = .{
+                .gpa = gpa,
+                .io = io,
+                .out_fd = child.stdout.?.handle,
+                .stdin = child.stdin.?,
+            },
             .next_id = 2,
             .version = 1,
             .uri = gpa.dupe(u8, uri) catch return null,
-            .read_buf = .empty,
             .diags = .empty,
             .init_done = false,
             .incremental = false,
@@ -231,8 +234,8 @@ pub const Client = struct {
         // Pump until the server answers `initialize`, or give up.
         const started = log.nowMs();
         const deadline = started + 4000;
-        while (!self.init_done and self.alive and log.nowMs() < deadline) {
-            if (pollReadable(self.out_fd, 200)) self.readAvailable();
+        while (!self.init_done and self.t.alive and log.nowMs() < deadline) {
+            self.pump(200);
         }
         if (!self.init_done) {
             std.log.scoped(.lsp).warn("{s}: no initialize response within 4s — giving up", .{argv[0]});
@@ -245,10 +248,20 @@ pub const Client = struct {
         return self;
     }
 
+    /// Whether the server is still usable. A method, not a field, so it reads
+    /// the transport's own state — the same shape `dap.Client` has.
+    pub fn alive(self: *const Client) bool {
+        return self.t.alive;
+    }
+
+    pub fn outFd(self: *const Client) posix.fd_t {
+        return self.t.out_fd;
+    }
+
     pub fn deinit(self: *Client) void {
         self.child.kill(self.io);
         self.gpa.free(self.uri);
-        self.read_buf.deinit(self.gpa);
+        self.t.deinit();
         self.doc.deinit(self.gpa);
         self.clearDiags();
         self.diags.deinit(self.gpa);
@@ -360,7 +373,7 @@ pub const Client = struct {
     /// Notify the server of an edit. Sends an incremental change (just the
     /// edited range) when the server supports it, else the full document.
     pub fn didChange(self: *Client, content: []const u8) void {
-        if (!self.alive) return;
+        if (!self.t.alive) return;
         self.version += 1;
         if (self.incremental) self.sendDidChangeIncremental(content) else self.sendDidChangeFull(content);
         self.rememberDoc(content);
@@ -454,7 +467,7 @@ pub const Client = struct {
     /// diagnostics context (the editor doesn't keep diagnostic ranges), so this
     /// surfaces range/refactor actions plus any the server offers unprompted.
     pub fn requestCodeAction(self: *Client, sl: usize, sc: usize, el: usize, ec: usize) void {
-        if (!self.alive) return;
+        if (!self.t.alive) return;
         self.ca_id = self.nextId();
         var body: std.ArrayList(u8) = .empty;
         defer body.deinit(self.gpa);
@@ -470,7 +483,7 @@ pub const Client = struct {
     /// `workspace/applyEdit` request (handled in `handleMessage`); the command
     /// response itself is usually null and we don't track it.
     pub fn executeCommand(self: *Client, command: []const u8, arguments_json: ?[]const u8) void {
-        if (!self.alive) return;
+        if (!self.t.alive) return;
         var body: std.ArrayList(u8) = .empty;
         defer body.deinit(self.gpa);
         const a = self.gpa;
@@ -489,7 +502,7 @@ pub const Client = struct {
     /// `workspace/symbol`: symbols across the project, filtered by `query`
     /// server-side (an empty query asks for everything the server will give).
     pub fn requestWorkspaceSymbol(self: *Client, query: []const u8) void {
-        if (!self.alive) return;
+        if (!self.t.alive) return;
         self.wsym_id = self.nextId();
         var body: std.ArrayList(u8) = .empty;
         defer body.deinit(self.gpa);
@@ -502,7 +515,7 @@ pub const Client = struct {
     }
 
     pub fn requestDocumentSymbol(self: *Client) void {
-        if (!self.alive) return;
+        if (!self.t.alive) return;
         self.sym_id = self.nextId();
         var body: std.ArrayList(u8) = .empty;
         defer body.deinit(self.gpa);
@@ -516,7 +529,7 @@ pub const Client = struct {
 
     /// Request inlay hints for the whole document [0,0]-[end_line,0].
     pub fn requestInlayHints(self: *Client, end_line: usize) void {
-        if (!self.alive) return;
+        if (!self.t.alive) return;
         self.hint_id = self.nextId();
         var body: std.ArrayList(u8) = .empty;
         defer body.deinit(self.gpa);
@@ -529,7 +542,7 @@ pub const Client = struct {
     }
 
     pub fn requestRename(self: *Client, line: usize, col: usize, new_name: []const u8) void {
-        if (!self.alive) return;
+        if (!self.t.alive) return;
         self.rename_id = self.nextId();
         var body: std.ArrayList(u8) = .empty;
         defer body.deinit(self.gpa);
@@ -544,7 +557,7 @@ pub const Client = struct {
     }
 
     pub fn requestReferences(self: *Client, line: usize, col: usize) void {
-        if (!self.alive) return;
+        if (!self.t.alive) return;
         self.ref_id = self.nextId();
         var body: std.ArrayList(u8) = .empty;
         defer body.deinit(self.gpa);
@@ -558,7 +571,7 @@ pub const Client = struct {
 
     /// Request whole-document formatting with the editor's indent settings.
     pub fn requestFormatting(self: *Client, tab_size: usize) void {
-        if (!self.alive) return;
+        if (!self.t.alive) return;
         self.fmt_id = self.nextId();
         var body: std.ArrayList(u8) = .empty;
         defer body.deinit(self.gpa);
@@ -571,7 +584,7 @@ pub const Client = struct {
     }
 
     fn sendPositionRequest(self: *Client, id: i64, method: []const u8, line: usize, col: usize) void {
-        if (!self.alive) return;
+        if (!self.t.alive) return;
         var body: std.ArrayList(u8) = .empty;
         defer body.deinit(self.gpa);
         const a = self.gpa;
@@ -599,59 +612,26 @@ pub const Client = struct {
     }
 
     fn writeMessage(self: *Client, body: []const u8) void {
-        if (!self.alive) return;
-        var hdr: [64]u8 = undefined;
-        const h = std.fmt.bufPrint(&hdr, "Content-Length: {d}\r\n\r\n", .{body.len}) catch return;
-        const stdin = self.child.stdin.?;
-        stdin.writeStreamingAll(self.io, h) catch {
-            self.alive = false;
-            return;
-        };
-        stdin.writeStreamingAll(self.io, body) catch {
-            self.alive = false;
-        };
+        self.t.write(body);
     }
 
     // --- incoming ----------------------------------------------------------
 
     /// Called by the editor when the server's stdout is readable.
     pub fn readAvailable(self: *Client) void {
-        var tmp: [4096]u8 = undefined;
-        const n = posix.read(self.out_fd, &tmp) catch {
-            if (self.alive) std.log.scoped(.lsp).warn("server read failed — marking it dead", .{});
-            self.alive = false;
-            return;
-        };
-        if (n == 0) {
-            if (self.alive) std.log.scoped(.lsp).warn("server closed its stdout (exited?)", .{});
-            self.alive = false;
-            return;
-        }
-        self.read_buf.appendSlice(self.gpa, tmp[0..n]) catch return;
-        self.drainFrames();
-    }
-
-    fn drainFrames(self: *Client) void {
-        while (true) {
-            const buf = self.read_buf.items;
-            const sep = std.mem.indexOf(u8, buf, "\r\n\r\n") orelse return;
-            const len = contentLength(buf[0..sep]) orelse {
-                // Unparseable header; drop it and continue.
-                self.read_buf.replaceRange(self.gpa, 0, sep + 4, &.{}) catch return;
-                continue;
-            };
-            const total = sep + 4 + len;
-            if (self.read_buf.items.len < total) return; // wait for the rest
-            self.handleMessage(self.read_buf.items[sep + 4 .. total]);
-            self.read_buf.replaceRange(self.gpa, 0, total, &.{}) catch return;
-        }
+        const was = self.t.alive;
+        self.t.readAvailable();
+        if (was and !self.t.alive)
+            std.log.scoped(.lsp).warn("server read failed or it closed its stdout — marking it dead", .{});
+        while (self.t.nextFrame()) |body| self.handleMessage(body);
     }
 
     /// Block up to `timeout_ms` for server output and process it (used by the
-    /// bounded synchronous wait in format-on-save). One poll + read per call.
+    /// bounded synchronous wait in format-on-save, and by the handshake).
     pub fn pump(self: *Client, timeout_ms: i32) void {
-        if (!self.alive) return;
-        if (pollReadable(self.out_fd, timeout_ms)) self.readAvailable();
+        if (!self.t.alive) return;
+        self.t.pump(timeout_ms);
+        while (self.t.nextFrame()) |body| self.handleMessage(body);
     }
 
     fn handleMessage(self: *Client, body: []const u8) void {
@@ -1259,33 +1239,6 @@ fn asStr(v: ?std.json.Value) ?[]const u8 {
         .string => |s| s,
         else => null,
     };
-}
-
-fn contentLength(header: []const u8) ?usize {
-    const tag = "Content-Length:";
-    const idx = std.mem.indexOf(u8, header, tag) orelse return null;
-    var rest = header[idx + tag.len ..];
-    rest = std.mem.trim(u8, rest, " \r\n\t");
-    const end = std.mem.indexOfNone(u8, rest, "0123456789") orelse rest.len;
-    return std.fmt.parseInt(usize, rest[0..end], 10) catch null;
-}
-
-fn appendEscaped(list: *std.ArrayList(u8), gpa: Allocator, s: []const u8) !void {
-    var aw: std.Io.Writer.Allocating = .fromArrayList(gpa, list);
-    defer list.* = aw.toArrayList();
-    try std.json.Stringify.encodeJsonStringChars(s, .{}, &aw.writer);
-}
-
-fn pollReadable(fd: posix.fd_t, timeout_ms: i32) bool {
-    var fds = [_]posix.pollfd{.{ .fd = fd, .events = posix.POLL.IN, .revents = 0 }};
-    const n = posix.poll(&fds, timeout_ms) catch return false;
-    return n > 0 and (fds[0].revents & posix.POLL.IN) != 0;
-}
-
-test "contentLength parsing" {
-    try std.testing.expectEqual(@as(?usize, 42), contentLength("Content-Length: 42"));
-    try std.testing.expectEqual(@as(?usize, 7), contentLength("Content-Type: x\r\nContent-Length: 7"));
-    try std.testing.expectEqual(@as(?usize, null), contentLength("Nope: 1"));
 }
 
 test "json escaping" {

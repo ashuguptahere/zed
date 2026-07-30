@@ -65,10 +65,6 @@ behind the roadmap items.
        watches, REPL evaluation, conditional and function breakpoints, attach,
        multiple threads (a `stopped` event names one and steps go to it), and
        a launch-configuration format. No package management (agreed).
-8. [ ] **Convert `lsp.zig` to `jsonrpc.Transport`.** It still carries its own
-       copy of the framing; the shared module was written for `dap.zig` and
-       kept apart from that feature on purpose, so the conversion lands as a
-       change of its own with the full suite as the check.
 
 Local builds are host-only already (`b.standardTargetOptions`); the release
 workflow's matrix passes `-Dtarget=` for the cross-compiled artifacts, so
@@ -181,6 +177,8 @@ there is nothing to change there.
       CPU. (0.31.0)
 - [x] Debugger: a DAP client with breakpoints, launch, stop/step and
       jump-to-stop, driven in tests by a stub adapter. (0.32.0)
+- [x] `lsp.zig` converted to the shared `jsonrpc.Transport`: one framing
+      implementation, 47 fewer lines. (0.32.1)
 
 - [x] Modal editor core: event-driven zero-idle-CPU loop, single-syscall
       frames, UTF-8-correct movement/rendering, friendly CLI. (0.1.0)

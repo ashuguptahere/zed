@@ -5,10 +5,6 @@
 //! that is the whole of what the two protocols share; what a message *means*
 //! belongs to `lsp.zig` and `dap.zig`. Control is inverted (`nextFrame`
 //! rather than a callback) so a caller stays an ordinary loop.
-//!
-//! `lsp.zig` still carries its own copy of this logic; converting it is a
-//! separate change, kept apart from a new feature so a regression in the
-//! most-tested subsystem in the editor cannot hide inside one (TODO.md).
 
 const std = @import("std");
 const posix = std.posix;
