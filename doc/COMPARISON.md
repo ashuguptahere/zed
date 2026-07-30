@@ -2,7 +2,7 @@
 
 A working document for the batteries-included roadmap. Compared against
 **Helix 25.07.1** and **Neovim 0.12.4** (their docs + changelogs), verified
-against zedit's actual feature set (CLAUDE.md) on 2026-06-17. Performance
+against zedit's actual feature set (CLAUDE.md), last re-verified 2026-07-30. Performance
 comparisons live in README.md's Benchmarks section (`zig build bench`).
 
 Legend: importance is judged for zedit's goal — an AstroNvim-keybinding,
@@ -57,11 +57,11 @@ below and prioritised in `TODO.md`.
 
 **Editing model**
 - Multiple selections as the core model — Helix's `s` (select regex inside selection), `S` (split on regex), keep/remove selections by regex, copy-selection-to-next-line `C`, rotate/align/trim/merge selections; zedit's multicursor is one-caret-per-line column editing only — **high** (this is also Helix's answer to bulk edits)
-- Regex search — `/` `?` `*` and global search are all regex in Helix; zedit is literal-only everywhere — **high**
-- `:%s` equivalent — Helix does `%` + `s` (regex select) + `c`; zedit has neither regex substitution nor select-in-selection — **high**
-- Indentation handling — autoindent on `o`/`O`/Enter via tree-sitter indent queries, `=` re-indent/format; zedit has no autoindent at all (a named known gap) — **high**
-- System clipboard integration — Helix has clipboard yank/paste with pluggable providers (xclip/wl-copy/OSC52/tmux); CLAUDE.md mentions only internal registers — **high**
-- Shell integration — pipe selections through commands (`|`, `!`, `$`), insert command output — **medium**
+- ~~Regex search~~ — **DONE** (`regex.zig` Pike VM; `/ ? n N * #` and the grep picker are all regex)
+- ~~`:%s` equivalent~~ — **DONE** as vim's `:[range]s/pat/rep/[gi]` with captures; Helix's *select-in-selection* route (`%` + `s` + `c`) still has no equivalent, since that needs the multiple-selection model above — **medium**
+- Indentation handling — ~~autoindent on `o`/`O`/Enter via tree-sitter indent queries~~ **DONE** (`autoindent` + `indents.scm` for 7 languages, `@indent.begin` only); the `=` re-indent operator is still missing — **medium**
+- ~~System clipboard integration~~ — **DONE** (`"+`/`"*` via OSC 52 out and bracketed paste in, so it works over SSH with nothing installed; no xclip/wl-copy provider layer, which OSC 52 makes unnecessary)
+- Shell integration — pipe selections through commands (`|`, `!`, `$`), insert command output — **medium** (the embedded terminal covers "run a command", not "filter this selection")
 - Tree-sitter selection expand/shrink and sibling/child navigation (`Alt-o`/`Alt-i` etc.) — **medium**
 - Increment/decrement numbers (`Ctrl-a`/`Ctrl-x`) — **low**
 - Autosave — focus-lost and after-delay auto-save — **low**
@@ -80,10 +80,10 @@ below and prioritised in `TODO.md`.
 - LSP progress messages in statusline; document colors — **low** (inline/end-of-line diagnostic text is **DONE**)
 
 **UI**
-- Jumplist — `Ctrl-o`/`Ctrl-i` navigation history plus a jumplist picker; zedit has nothing (vim muscle memory expects this) — **high**
+- ~~Jumplist~~ — **DONE** (`Ctrl-o`/`Ctrl-i`, cross-buffer, nvim-pinned); a jumplist *picker* is still absent — **low**
 - Command palette (`Space ?` — searchable list of every command with its binding) — **medium**
-- Bufferline (tabs-style open-buffer bar; zedit only has `:ls`) — **medium**
-- Registers UI — register picker (`Space "` style), `Ctrl-r` register insertion in insert mode/prompts — **medium**
+- ~~Bufferline~~ — **DONE** (the powerline title bar: one clickable tab per buffer, active accented, unsaved dotted)
+- Registers UI — `Ctrl-r` register insertion is **DONE on the command line** only; no register *picker* and no insert-mode `Ctrl-r` — **medium**
 - Jump labels (`gw` two-char labeled jumps) — **medium**
 - ~~Mouse support (click to move, drag select, scroll)~~ — **DONE**
   (mode 1002; click-to-move + focus-follows-click, drag-to-select anchored at
@@ -103,10 +103,10 @@ below and prioritised in `TODO.md`.
   **DONE** (`soft_wrap` on by default, `↳` continuation marker, word breaks,
   `wrap_indent`, `wrap_column`, and `gj`/`gk`/`g0`/`g$`)
 - Smart-case search + configurable wrap-around — **medium**
-- ~~Tree-sitter textobjects~~ — **DONE** for functions and types (`af`/`if`, `ac`/`ic`, `]f`/`[f`); parameter/comment objects remain — **low**
+- ~~Tree-sitter textobjects~~ — **DONE** for functions, types, parameters and comments (`af`/`if`, `ac`/`ic`, `aa`/`ia`, `aC`/`iC`, `]f`/`[f`); Helix's set is still larger — **low**
 - EditorConfig support (25.07) — **low**
 - Surround on auto-detected *closest* pair (Helix `m`-mode pair detection via tree-sitter; zedit surround requires naming the char) — **low**
-- DAP debugging (breakpoints, step, variables — experimental even in Helix) — **low**
+- ~~DAP debugging~~ — **DONE** for the core loop (breakpoints, launch, stop, step over/into/out, jump-to-stop, via any stdio adapter); variables, scopes, watches, REPL evaluation, conditional breakpoints, attach and multiple threads remain — **low**
 - Language breadth — Helix ships grammars/queries for 200+ languages and `--health` per-language capability reporting; zedit has 10 grammars + a fallback lexer — **medium**
 
 ## Notable Helix CHANGELOG items zedit could adopt
@@ -149,6 +149,10 @@ Per `/home/origo/Desktop/zed/CLAUDE.md`:
 - A vim-complete command line otherwise: mid-line editing, `Delete`, `Ctrl-w`/`Ctrl-u` erase, `Ctrl-r{reg}` register insertion, wildmenu completion of the text before the cursor, per-kind history, and nvim's upward-wrapping line when it outgrows the row (Helix's prompt has no register insertion and no wildmenu)
 - Mouse: click to move the cursor, drag to select, double/triple-click word/line selection with word-wise drag, wheel scrolling the window under the pointer; buffer tabs along the top; a recently-opened startup screen; `:update` against the release tags
 - Remote editing over plain SSH (`ssh://host/path`) with nothing installed on the far side — neither Helix nor stock Neovim does this
+- An embedded terminal (`Space t`): a real shell on its own pty in a split, emulated by `vt.zig` — Helix has no terminal at all
+- A debugger (`Space d`): a DAP client with breakpoints, launch, stop and stepping — Helix's DAP support is experimental
+- Per-directory sessions (`Space S`) restoring the open files, cursors, splits and tree state — Helix has no session persistence
+- UI toggles (`Space u`) flipping wrap, numbers, tabs, diagnostics, autoindent, completion, format-on-save and mouse reporting for the session
 
 ---
 
@@ -158,26 +162,26 @@ Ground truth: `/home/origo/Desktop/zed/CLAUDE.md` (note: the on-disk version is 
 
 ## Vim/Neovim core features zedit LACKS
 
-- **Regex search & `:%s` substitution with ranges** — `/`, `*`, and project grep are all literal; there is no `:s` at all, no ranges, no `\<...\>`, no incremental `:s` preview ('inccommand') — **high** (explicitly in zedit's own "Known gaps")
+- ~~**Regex search & `:%s` substitution with ranges**~~ — **DONE** (`/`, `*` and the project grep are regex, `:[range]s/pat/rep/[gi]` with captures and `\<...\>`); the syntax is modern "very magic" rather than vim's magic mode, and there is no incremental `:s` preview ('inccommand') — **low**
 - **Global/ex commands (`:g`, `:v`, `:normal`, general `{range}cmd`)** — the command line only knows `:w :q :e :bn :split :{n}` etc.; no ex address machinery to hang `:g/pat/d` or `:'<,'>normal @q` on — **med** (depends on regex landing first)
-- **Jumplist/changelist (`Ctrl-o`/`Ctrl-i`, `g;`/`g,`, `''`)** — nothing records jump history; `gd`, `G`, search, and picker jumps are one-way trips — **high** (worst daily gap for LSP-driven navigation)
-- **Autoindent/smartindent** — `o`/`O` and Enter in insert start at column 0; no `=` indent operator either — **high** (in "Known gaps"; constant friction when writing code)
+- **Changelist (`g;`/`g,`) and `''`** — ~~the jumplist~~ is **DONE** (`Ctrl-o`/`Ctrl-i`, cross-buffer, recording `G`/search/marks/`%`/buffer switches/`gd`, nvim-pinned), but there is no *change* list and no `''` back-to-previous-position — **med**
+- **smartindent and the `=` operator** — ~~autoindent~~ is **DONE** (vim's copy rule plus the grammar's `@indent.begin` for 7 languages), but there is no smartindent, no `@indent.end`/`@indent.dedent`/`@indent.align`, and no `=` re-indent operator — **med**
 - **Folding (`zf zo zc za`, foldexpr)** — no fold support of any kind, despite tree-sitter and LSP (both of which Neovim uses as fold providers) already being in-tree — **med**
-- **Missing text objects: `ip`/`ap` (paragraph), `it`/`at` (tags), `is`/`as` (sentence)** — only word and bracket/quote objects exist; the `{` `}` paragraph and `(` `)` sentence *motions* are missing too — **high** for `ip/ap` + `{ }`, med for `it/at` (HTML grammar is already vendored), low for sentences
+- **Missing text objects: `it`/`at` (tags), `is`/`as` (sentence)** — ~~`ip`/`ap` and the `{` `}` motions~~ are **DONE**; the `(` `)` sentence motions are not — **med** for `it/at` (the HTML grammar is already vendored), low for sentences
 - **`gq`/`gw` formatting ('textwidth')** — no reflow operator; painful for prose/comments/markdown — **med**
 - **Spell checking ('spell', `]s`, `z=`)** — absent — **low**
-- **Sessions (`:mksession`) / shada (`:oldfiles`, last-position `'"`)** — no persistence of any editor state between runs — **low**
-- **Persistent undo ('undofile') and undo tree (`g-`/`g+`, `:earlier`)** — undo is capped in-memory linear snapshots; history dies with the process and branches are lost on divergence — **med**
-- **Cmdline completion & history** — no Tab/wildmenu path completion for `:e`/`:w <name>`, no command completion, no ↑ history, no `q:` — **high** (`:e` without path completion barely works)
+- **Last-position mark `'"`** — ~~sessions~~ are **DONE** (`Space S`, one per working directory: open files, cursors, splits, tree state; explicit both ways) and ~~`:oldfiles`~~ is the startup screen's recent list, but reopening a file does not restore where you were in it — **low**
+- ~~**Persistent undo ('undofile') and undo tree (`g-`/`g+`, `:earlier`)**~~ — **DONE** (a real branching tree, `g-`/`g+`, `:earlier`/`:later` with counts/spans/file-writes, `:undolist` picker, and `persistent_undo` on disk)
+- ~~**Cmdline completion & history**~~ — **DONE** (nvim `wildmode=full` Tab completion of command names, `:e`/`:w` paths and `:theme`, a wildmenu popup with nvim's file-navigation keys, per-kind history with prefix filtering, and fish-style inline suggestions on top); `q:` (the cmdline window) is still absent — **low**
 - **Count with insert (`3ifoo<Esc>`, `5o`)** — grammar is documented as `[count]` + motion/operator only; insert-entry counts aren't claimed anywhere — **low**
 - **Replace mode (`R`, `gR`)** — single-char `r` exists, sustained overtype doesn't — **med**
 - **Window resizing/rotation (`Ctrl-w + - < > = _ |`, `Ctrl-w r x H J K L`)** — splits are a flat, even, single-orientation tiling; no per-window resize and no nested/mixed layouts (in "Known gaps") — **med**
-- **Tab pages (`:tabnew`, `gt`/`gT`)** — no second layout container above windows; also no bufferline (the AstroNvim substitute for tabs) — **low** (buffers+splits cover most of it)
-- **Autocommands / user hooks / key remapping** — config is theme/`tab_width`/`nerd_font`/`sidebar` only; no keybinding customization, no filetype/event hooks (`FileType`, `BufWritePre` — i.e. no format-on-save), by-design no scripting — **med** (keymap remap + write hooks are the commonly missed subset)
-- **Terminal buffer (`:terminal`)** — no way to run a shell/build inside the editor — **med**
-- **System clipboard (`"+`/`"*` registers)** — registers are internal only; no OSC 52 or external tool integration — **high** (copy-out of the editor currently requires the mouse)
+- **Tab pages (`:tabnew`, `gt`/`gT`)** — no second layout container above windows; the bufferline (the AstroNvim substitute) **is** there now — **low** (buffers+splits+tabs cover most of it)
+- **Autocommands / user hooks / key remapping** — ~~format-on-save~~ is **DONE** as a setting (`format_on_save`, on by default), but there is still no keybinding customization and no general filetype/event hook (`FileType`, `BufWritePre`); by design there is no scripting — **med** (keymap remapping is the commonly missed subset)
+- ~~**Terminal buffer (`:terminal`)**~~ — **DONE** (`Space t` / `:terminal`: a real shell on its own pty in a split, `vt.zig` emulating it, nvim's Terminal-mode split with `Ctrl-\ Ctrl-n`); no scrollback and no alternate screen yet — **low**
+- ~~**System clipboard (`"+`/`"*` registers)**~~ — **DONE** (OSC 52 out, bracketed paste in; works over SSH)
 - **Quickfix/location list (`:copen`, `]q`, `:cnext`)** — grep/diagnostics only exist as transient pickers/signs; no persistent, walkable result list — **med**
-- **Soft line wrap ('wrap')** — long lines horizontally scroll only — **med**
+- ~~**Soft line wrap ('wrap')**~~ — **DONE** (`soft_wrap` on by default, `↳` marker, word breaks, `wrap_indent`, `wrap_column`, `gj`/`gk`/`g0`/`g$`)
 - **`Ctrl-a`/`Ctrl-x` number increment** — absent — **low**
 
 ## Notable Neovim 0.10–0.12 changelog items zedit could adopt
@@ -198,7 +202,7 @@ Ground truth: `/home/origo/Desktop/zed/CLAUDE.md` (note: the on-disk version is 
 14. **Project-local config: `'exrc'` loaded from parent directories (0.12)** — a per-project `zedit` config file alongside the global one.
 15. **`:Undotree` bundled undo-tree visualizer (0.12)** — worth noting as the direction for `undo.zig` once history becomes a tree rather than capped snapshots.
 
-(Not worth adopting: `vim.pack` plugin manager (0.12) — contradicts zedit's no-plugin design; terminal reflow/OSC 8/synchronized-output items (0.11/0.12) are moot until a `:terminal` exists.)
+(Not worth adopting: `vim.pack` plugin manager (0.12) — contradicts zedit's no-plugin design; terminal reflow/OSC 8/synchronized-output items (0.11/0.12) are now *relevant* — `:terminal` exists as of 0.31.0 — but wait on scrollback and the alternate screen.)
 
 ## Neovim/AstroNvim features zedit ALREADY HAS (verified)
 
@@ -207,10 +211,13 @@ Ground truth: `/home/origo/Desktop/zed/CLAUDE.md` (note: the on-disk version is 
 - **LSP core:** diagnostics (gutter + statusline), hover `K`, `gd`, rename, code actions (incl. `executeCommand` and server-initiated `applyEdit`), completion popup, signature help with overload cycling, document symbols picker, **inlay hints as virtual text** (0.10 parity), incremental `didChange` sync — with documented single-file/single-line limits
 - **Tree-sitter highlighting, incremental + viewport-scoped queries**, 10 languages, real **language injections** (Markdown fences pick the language from the info string, markdown-inline and HTML `<script>` are injections like any other; visible-range scoped, layers reused across reparses) and **query predicates** (`#match?`/`#eq?`/`#any-of?`/`#not-*`/`#lua-match?`, each regex compiled once per query) — no CSS grammar, so `<style>` stays plain
 - **Tree-sitter indent queries** for Zig/C/Python/Rust/Go/JS/TS behind `autoindent` (`@indent.begin` only; no `@indent.end`/`@indent.dedent`/`@indent.align`)
-- **AstroNvim-style leader UX:** which-key popup with nested groups (`Space f/l/g/e/c/w/q`)
+- **AstroNvim-style leader UX:** which-key popup with nested groups — `Space f` find, `l` language, `g` git, `b` buffers, `u` UI toggles, `S` session, `d` debug, plus `e` explorer, `t` terminal, `n` new buffer, `c` close, `w` write, `q` quit (one table drives the dispatch and the popup, so a group cannot be added to one and forgotten in the other)
+- **toggleterm-equivalent** embedded terminal (`Space t` / `:terminal`) with nvim's Terminal-mode split (`Ctrl-\ Ctrl-n` out, `i` back in)
+- **nvim-dap-equivalent** debugger (`Space d` / `:debug`): breakpoints in the gutter, launch through any stdio adapter, stop/step, and the cursor following the stop location
+- **resession-equivalent** per-directory sessions (`Space S` / `:session`), explicit both ways — nothing is saved on exit or restored on launch
 - **Telescope-equivalents:** fuzzy file finder, project content grep (regex, per line), buffer picker, theme picker — with a warm cached file list and space-separated multi-term queries
 - **gitsigns-equivalent** gutter signs, plus inline unified diff, side-by-side index diff, and a VS Code-style in-buffer line-by-line diff (old lines woven in as virtual rows)
-- **neo-tree-equivalent** sidebar file explorer (navigation/open + reveal of the active file on buffer switch; no create/rename/delete, not watched)
+- **neo-tree-equivalent** sidebar file explorer (navigation/open by key or mouse, VS Code's tree arrows, `a`/`A` to create a file or folder with any missing directories made on the way, and reveal of the active file on buffer switch; no rename/delete, not watched)
 - **Vim core:** motions/operators/registers/marks/macros/dot-repeat, text objects (word + bracket/quote), visual char/line/block (rectangular block paste, block `I`/`A`/`c` with vim's short-line padding/skipping, `$` blocks; no visual-mode `p`), surround, incremental highlighted literal search (incsearch+hlsearch defaults)
 - **Multiple cursors** (one-per-line column editing — beyond stock Neovim)
 - **Buffers + splits:** `:e :bn :bp :bd :bd! :ls` (vim's `:bd` rules: the last buffer becomes `[No Name]`, dirty refuses without `!`), `:split`/`:vsplit`, `Ctrl-w` focus/close/only (flat tiling, no resize)
@@ -229,7 +236,6 @@ Ground truth: `/home/origo/Desktop/zed/CLAUDE.md` (note: the on-disk version is 
 
 - A plugin manager / scripting runtime (nvim 0.12 `vim.pack`) — contradicts
   the batteries-included design; features land in the editor instead.
-- DAP debugging — experimental even in Helix; revisit on demand.
 - Full vim emulation trivia (`:smile`) — vim-compat is driven by the
   nvim-verified `vim_compat` test suite, not completionism.
 

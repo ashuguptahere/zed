@@ -73,6 +73,37 @@ fn driveOpt(ctx: *h.Ctx, flag: ?[]const u8, steps: []const Step, final: []const 
 }
 
 pub fn run(ctx: *h.Ctx) !void {
+    // --- a slow-starting server must not freeze the editor ------------------
+    // The handshake used to block the run loop for up to four seconds waiting
+    // for `initialize`. The file was painted, so it looked ready — but every
+    // keystroke was ignored until the server answered. rust-analyzer takes
+    // that long routinely, which is how this shipped unnoticed: it only bites
+    // where a *slow* server is installed, and CI is such a machine.
+    {
+        const dir = try h.tempDir(ctx.gpa);
+        defer ctx.gpa.free(dir);
+        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const f = h.join(ctx, dir, "slow.txt");
+        defer ctx.gpa.free(f);
+        h.writeFile(ctx.io, f, "alpha\n");
+        const cmd = try std.fmt.allocPrint(ctx.gpa, "{s} --slow-init=3000", .{ctx.mock});
+        defer ctx.gpa.free(cmd);
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ ctx.zedit, "--lsp", cmd, "slow.txt" },
+            .cwd = dir,
+        });
+        defer s.finish();
+        s.drain(400); // the same budget every editing case gets
+        s.send("obar\x1b:wq\r");
+        s.drain(600);
+        const got = h.readFile(ctx.gpa, ctx.io, f);
+        defer ctx.gpa.free(got);
+        // The server is still 2 seconds from answering; the edit must have
+        // landed anyway.
+        ctx.check("a slow language server does not block editing", std.mem.eql(u8, got, "alpha\nbar\n"));
+    }
+
+
     // Diagnostics + hover. "0" clears the startup status (cursor stays off the
     // diagnostic line so the count shows); "j" moves onto it; "K" hovers.
     {

@@ -784,6 +784,19 @@ focuses the shell already open rather than starting another; an exited shell
 keeps its last output until any key closes the window. Also
 .BR :terminal .
 .TP
+.B Space n
+New:
+.B b
+an empty buffer,
+.B f
+a new file,
+.B d
+a new folder. The file and folder prompts take a whole path, so
+.I src/net/http.zig
+creates both directories and the file — the same prompts the explorer's
+.BR a / A
+open, reachable without the tree.
+.TP
 .B Space S
 This working directory's session:
 .B s

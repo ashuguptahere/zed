@@ -121,6 +121,10 @@ pub const Client = struct {
     diags: std.ArrayList(Diagnostic),
 
     init_done: bool,
+    /// The document to hand over once the server answers `initialize`: the
+    /// handshake does not block, so `didOpen` cannot be sent at spawn time.
+    pending_text: ?[]u8 = null,
+    pending_lang: []const u8 = "plaintext",
     incremental: bool, // server supports incremental textDocument/didChange
     can_format: bool, // server advertises documentFormattingProvider
     doc: std.ArrayList(u8), // mirror of the open document, for diffing changes
@@ -230,21 +234,18 @@ pub const Client = struct {
             .wsym_ready = false,
         };
 
+        // The handshake is *asynchronous*. Blocking here for the reply froze
+        // the editor for as long as the server took to answer — up to four
+        // seconds, and rust-analyzer regularly needs more than one — with the
+        // file already painted and every keystroke ignored. That is exactly
+        // the "never block on work the user did not ask for" rule this
+        // module's own decorate-after-paint ordering exists to keep, broken
+        // one step later. The reply is picked up by the ordinary poll loop,
+        // and `didOpen` follows it (see `handleMessage`).
         self.sendInitialize(root);
-        // Pump until the server answers `initialize`, or give up.
-        const started = log.nowMs();
-        const deadline = started + 4000;
-        while (!self.init_done and self.t.alive and log.nowMs() < deadline) {
-            self.pump(200);
-        }
-        if (!self.init_done) {
-            std.log.scoped(.lsp).warn("{s}: no initialize response within 4s — giving up", .{argv[0]});
-            self.deinit();
-            return null;
-        }
-        std.log.scoped(.lsp).info("{s}: handshake done in {d} ms", .{ argv[0], log.nowMs() - started });
-        self.sendNotification("initialized", "{}");
-        self.sendDidOpen(language_id, content);
+        self.pending_lang = language_id;
+        self.pending_text = gpa.dupe(u8, content) catch null;
+        std.log.scoped(.lsp).info("{s}: spawned, initialize sent", .{argv[0]});
         return self;
     }
 
@@ -254,12 +255,20 @@ pub const Client = struct {
         return self.t.alive;
     }
 
+    /// Alive *and* past the handshake. Anything that sends a request must
+    /// check this, not `alive`: the handshake no longer blocks, so there is a
+    /// window at startup where the server exists but will reject traffic.
+    pub fn ready(self: *const Client) bool {
+        return self.t.alive and self.init_done;
+    }
+
     pub fn outFd(self: *const Client) posix.fd_t {
         return self.t.out_fd;
     }
 
     pub fn deinit(self: *Client) void {
         self.child.kill(self.io);
+        if (self.pending_text) |t| self.gpa.free(t);
         self.gpa.free(self.uri);
         self.t.deinit();
         self.doc.deinit(self.gpa);
@@ -654,6 +663,15 @@ pub const Client = struct {
         if (id == 1) { // response to our `initialize`
             self.init_done = true;
             if (result_opt) |r| self.parseServerCaps(r);
+            // Only now may anything else be sent: `initialized` acknowledges
+            // the handshake and `didOpen` hands over the document the editor
+            // was already showing while the server started up.
+            self.sendNotification("initialized", "{}");
+            if (self.pending_text) |text| {
+                self.sendDidOpen(self.pending_lang, text);
+                self.gpa.free(text);
+                self.pending_text = null;
+            }
             return;
         }
         const result = result_opt orelse return;

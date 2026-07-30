@@ -276,7 +276,7 @@ itest` builds `zedit` plus a `mock_lsp` server, then runs the `itest` harness:
   serves for a public repo *without* a token, where the log body needs one); `tools/scenarios/*.zig` are the suites (vim,
   vim_compat, feature, multicursor, extra, search, treesitter, indent, picker,
   git, windows, sidebar, mouse, titlebar, config, cmdline, robust, remote, ssh,
-  lsp, bufcomplete, cpu, wrap, undotree), each a
+  lsp, bufcomplete, cpu, wrap, undotree, session, terminal, debug), each a
   `pub fn run(ctx: *harness.Ctx) !void`.
   `vim_compat` asserts byte-for-byte agreement with expected outputs generated
   by driving real Neovim headlessly — extend it the same way when porting more
@@ -524,8 +524,11 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   `g s` side-by-side, `g l` line diff); `Space d` = Debug (`d b` breakpoint,
   `d c` start/continue, `d n`/`d i`/`d o` step, `d q` stop); `Space t` = a terminal; `Space S` = Session for this
   working directory (`S s` save, `S l` load, `S d` delete — also
-  `:session save|load|delete`); `Space e` file explorer, `Space n` a new empty
-  buffer (AstroNvim's `<leader>n`; the buffer it replaces stays open),
+  `:session save|load|delete`); `Space e` file explorer; `Space n` = New (`n b` an
+  empty buffer — AstroNvim's `<leader>n`, the buffer it replaces stays open;
+  `n f` a new file and `n d` a new folder, the same prompts the explorer's
+  `a`/`A` open but reachable without the tree, and both take a whole path so
+  `src/net/http.zig` makes the directories on the way);
   `Space c` close buffer,
   `Space w` write, `Space q` quit. In a picker: type to filter, `Ctrl-n`/`Ctrl-p` or
   arrows to move, `Enter` to open, `Esc` to cancel, and `Ctrl-r` re-walks the
@@ -911,6 +914,15 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   cursor with the active parameter emphasized (`Ctrl-p` cycles overloads, with
   an `(i/n)` counter; dismissed with `Esc`). Edits are sent as incremental
   `didChange` ranges when the server advertises it, else full-document.
+  **The handshake never blocks.** `initialize` is sent at spawn and the reply
+  is picked up by the ordinary poll loop, which then sends `initialized` and
+  `didOpen`; until it lands, `Client.ready()` is false and every request path
+  treats the server as absent. It used to wait up to four seconds inline —
+  the file was painted, so the editor *looked* ready while ignoring every
+  keystroke, which is the decorate-after-paint rule broken one step later.
+  rust-analyzer routinely takes that long, so the freeze was real and only
+  showed where a slow server happened to be installed (pinned by the `lsp`
+  scenario's `--slow-init` mock).
   Best-effort: no server installed simply means no LSP. Its stdout is polled
   alongside the terminal, so an idle editor still uses no CPU.
 

@@ -161,6 +161,7 @@ const Await = enum {
     space_ui, // <space>u — the UI-toggles group
     space_session, // <space>S — save/load/delete this directory's session
     space_debug, // <space>d — the debugger
+    space_new, // <space>n — new buffer / file / folder
     surround_add_char, // ys{motion}{char} / visual S{char}
     surround_delete, // ds{char}
     surround_change_from, // cs{old}...
@@ -1838,7 +1839,7 @@ pub const Editor = struct {
                     'l' => self.await_arg = .space_lang,
                     'g' => self.await_arg = .space_git,
                     'u' => self.await_arg = .space_ui,
-                    'n' => self.newBuffer(), // AstroNvim's <leader>n
+                    'n' => self.await_arg = .space_new,
                     'S' => self.await_arg = .space_session,
                     't' => self.openTerminal(), // AstroNvim's <leader>t
                     'd' => self.await_arg = .space_debug,
@@ -1856,6 +1857,15 @@ pub const Editor = struct {
                     'n' => self.cycleDoc(true, 1), // next buffer (]b)
                     'p' => self.cycleDoc(false, 1), // previous buffer ([b)
                     'c' => self.closeOthers(), // AstroNvim's <leader>bc
+                    else => {},
+                };
+            },
+            .space_new => {
+                self.resetPending();
+                if (k == .char) switch (k.char) {
+                    'b' => self.newBuffer(), // AstroNvim's <leader>n
+                    'f' => self.enterNewEntry(false),
+                    'd' => self.enterNewEntry(true),
                     else => {},
                 };
             },
@@ -6503,7 +6513,7 @@ pub const Editor = struct {
     /// (the client picks incremental vs. full based on the server's capability).
     fn syncLsp(self: *Editor) void {
         var client = if (self.lsp) |*c| c else return;
-        if (!client.alive() or self.buf.revision == self.lsp_rev) return;
+        if (!client.ready() or self.buf.revision == self.lsp_rev) return;
         const content = self.buf.toBytes(self.gpa) catch return;
         defer self.gpa.free(content);
         client.didChange(content);
@@ -6737,7 +6747,7 @@ pub const Editor = struct {
     fn formatBeforeSave(self: *Editor) void {
         if (!config.settings.format_on_save) return;
         const client = if (self.lsp) |*c| c else return;
-        if (!client.alive() or !client.can_format) return;
+        if (!client.ready() or !client.can_format) return;
         self.syncLsp();
         client.fmt_ready = false;
         client.requestFormatting(config.settings.tab_width);
@@ -6920,7 +6930,7 @@ pub const Editor = struct {
             w.top = @min(w.top, w.cy);
         }
         if (doc.lsp) |*c| {
-            if (c.alive() and doc.buf.revision != doc.lsp_rev) {
+            if (c.ready() and doc.buf.revision != doc.lsp_rev) {
                 const content = doc.buf.toBytes(self.gpa) catch return n;
                 defer self.gpa.free(content);
                 c.didChange(content);
@@ -6946,7 +6956,10 @@ pub const Editor = struct {
     /// exactly like one that was never installed rather than wait forever.
     fn liveLsp(self: *Editor) ?*lsp.Client {
         const c = if (self.lsp) |*cl| cl else return null;
-        return if (c.alive()) c else null;
+        // `ready`, not `alive`: the handshake no longer blocks, so there is a
+        // window where the server is spawned but has not answered
+        // `initialize` and would reject anything sent to it.
+        return if (c.ready()) c else null;
     }
 
     /// Ask for completions (the debounce fired, or `Ctrl-n`): the language
@@ -9017,9 +9030,11 @@ pub const Editor = struct {
             self.sbExpand(path[0..slash]);
         }
         if (is_dir) self.sbExpand(path);
-        self.sbRebuild();
-        for (self.sb_entries.items, 0..) |e, idx| {
-            if (std.mem.eql(u8, e.path, path)) self.sb_sel = idx;
+        if (self.sb_open) { // no point rebuilding a tree nobody is looking at
+            self.sbRebuild();
+            for (self.sb_entries.items, 0..) |e, idx| {
+                if (std.mem.eql(u8, e.path, path)) self.sb_sel = idx;
+            }
         }
         if (is_dir) {
             self.setStatus("created {s}/", .{path});
@@ -9911,7 +9926,7 @@ pub const Editor = struct {
         .{ .key = "l", .desc = "Language tools \u{2026}" },
         .{ .key = "g", .desc = "Git \u{2026}" },
         .{ .key = "u", .desc = "UI toggles \u{2026}" },
-        .{ .key = "n", .desc = "new buffer" },
+        .{ .key = "n", .desc = "new \u{2026}" },
         .{ .key = "S", .desc = "session \u{2026}" },
         .{ .key = "t", .desc = "terminal" },
         .{ .key = "d", .desc = "debug \u{2026}" },
@@ -9919,6 +9934,15 @@ pub const Editor = struct {
         .{ .key = "c", .desc = "close buffer" },
         .{ .key = "w", .desc = "write (save)" },
         .{ .key = "q", .desc = "quit" },
+    };
+    /// `Space n` — making things. The file and folder entries are the same
+    /// prompts the explorer's `a`/`A` open, reachable without the tree: they
+    /// take a whole path, so `src/net/http.zig` creates both directories and
+    /// the file (VS Code's rule).
+    const new_keys = [_]WhichKey{
+        .{ .key = "b", .desc = "new buffer" },
+        .{ .key = "f", .desc = "new file" },
+        .{ .key = "d", .desc = "new folder" },
     };
     /// `Space d` — the debugger. AstroNvim's `<leader>d` keys, restricted to
     /// what is actually implemented (see TODO.md for what is not).
@@ -10414,6 +10438,7 @@ pub const Editor = struct {
             .space_ui => .{ .title = " SPACE u", .keys = &ui_keys },
             .space_session => .{ .title = " SPACE S", .keys = &session_keys },
             .space_debug => .{ .title = " SPACE d", .keys = &debug_keys },
+            .space_new => .{ .title = " SPACE n", .keys = &new_keys },
             else => null,
         };
     }

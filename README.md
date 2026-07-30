@@ -81,7 +81,8 @@
   which-key menus: `Space f f` find files, `Space f w` find words (regex grep,
   same syntax as `/`),
   `Space f b` buffers, `Space f t` themes, `Space f u` the undo tree;
-  `Space n` a new empty buffer; `Space d …` a **debugger** (breakpoints,
+  `Space n …` new buffer / file / folder (a path like `src/net/http.zig`
+  creates the directories on the way); `Space d …` a **debugger** (breakpoints,
   start/continue, step over/into/out — DAP, so `lldb-dap`, `debugpy` and
   `dlv dap` all work); `Space t` an **embedded terminal** (a real
   shell in a split — nvim's mode split, `Ctrl-\ Ctrl-n` back to normal);

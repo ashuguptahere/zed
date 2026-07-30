@@ -26,11 +26,16 @@ pub fn main(init: std.process.Init) !void {
     var nocomp = false;
     var thenempty = false;
     var die = false;
+    var slow_init_ms: i96 = 0; // delay before answering `initialize`
     var comps: usize = 0; // completion requests answered so far
     for (argv[1..]) |a| {
         if (eql(a, "--fmt")) fmt_mode = true;
         if (eql(a, "--xfile")) xfile = true;
         if (eql(a, "--nocomp")) nocomp = true;
+        // A server that is slow to start — rust-analyzer routinely needs
+        // seconds. The editor must stay usable throughout.
+        if (std.mem.startsWith(u8, a, "--slow-init="))
+            slow_init_ms = std.fmt.parseInt(i96, a["--slow-init=".len..], 10) catch 0;
         if (eql(a, "--thenempty")) thenempty = true;
         if (eql(a, "--die")) die = true;
     }
@@ -50,6 +55,8 @@ pub fn main(init: std.process.Init) !void {
         const id = intField(parsed.value, "id");
 
         if (eql(method, "initialize")) {
+            if (slow_init_ms > 0)
+                std.Io.sleep(io, .{ .nanoseconds = slow_init_ms * std.time.ns_per_ms }, .awake) catch {};
             const caps_head = "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{{\"capabilities\":{{" ++
                 "\"textDocumentSync\":2,\"completionProvider\":{{}},\"referencesProvider\":true," ++
                 "\"signatureHelpProvider\":{{\"triggerCharacters\":[\"(\",\",\"]}}";

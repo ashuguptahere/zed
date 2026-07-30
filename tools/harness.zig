@@ -171,6 +171,23 @@ pub const Session = struct {
         }
     }
 
+    /// Whether the editor is still running, and if not how it ended. A case
+    /// that leaves its file untouched looks the same whether the editor
+    /// crashed, hung, or was simply too slow to reach the keys before the
+    /// harness killed it — this is what tells them apart, and it is the only
+    /// way to ask the question from outside a CI runner.
+    pub fn childState(self: *Session, buf: []u8) []const u8 {
+        var st: c_int = 0;
+        const r = c.waitpid(self.pid, &st, c.WNOHANG);
+        if (r == 0) return "still running";
+        if (r != self.pid) return "unknown";
+        // WIFEXITED / WIFSIGNALED, spelled out: the macros are not exported
+        // by translate-c.
+        const low = st & 0x7f;
+        if (low == 0) return std.fmt.bufPrint(buf, "exited {d}", .{(st >> 8) & 0xff}) catch "exited";
+        return std.fmt.bufPrint(buf, "killed by signal {d}", .{low}) catch "signalled";
+    }
+
     pub fn finish(self: *Session) void {
         _ = c.kill(self.pid, 9);
         var st: c_int = 0;
@@ -478,10 +495,14 @@ pub fn runEdit(ctx: *Ctx, target: []const u8, initial: []const u8, chunks: []con
     s.drain(600); // let :wq save and quit
     const plain = s.plain(ctx.gpa) catch (ctx.gpa.dupe(u8, "") catch unreachable);
     defer ctx.gpa.free(plain);
-    const from = plain.len -| 220;
+    const from = plain.len -| 200;
+    var sb: [64]u8 = undefined;
+    const state = s.childState(&sb);
+    const tail = std.fmt.allocPrint(ctx.gpa, "[{s}] {s}", .{ state, plain[from..] }) catch
+        (ctx.gpa.dupe(u8, state) catch unreachable);
     return .{
         .text = readFile(ctx.gpa, ctx.io, target),
-        .tail = ctx.gpa.dupe(u8, plain[from..]) catch unreachable,
+        .tail = tail,
     };
 }
 

@@ -2,6 +2,49 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.33.0 - 2026-07-30
+
+### Fixed
+
+- **A slow language server no longer freezes the editor.** The LSP handshake
+  waited inline for the server's `initialize` reply — up to four seconds —
+  from inside the decorate step. The file was already painted, so the editor
+  *looked* ready while ignoring every keystroke. `initialize` is now sent at
+  spawn and its reply picked up by the ordinary poll loop, which then sends
+  `initialized` and `didOpen`; until that lands, `Client.ready()` is false and
+  every request path treats the server as absent.
+
+  This was the CI-only failure (`indent: ts-indent#r1 rust fn body`) that had
+  been open since `db9825e`. GitHub's runner image ships the Rust toolchain,
+  so `rust-analyzer` is installed there and slow to answer; no language server
+  is installed on the development machine at all, so the freeze never
+  happened locally. It began at the commit that added the first `.rs` test
+  case, not at one that broke anything — the bug was older than the failure.
+
+  It was a real user-facing freeze, not a test artefact: anyone with
+  rust-analyzer installed lost the editor for seconds on opening a Rust file.
+  Pinned by an `lsp` scenario driving a mock server with `--slow-init=3000`
+  and asserting an edit still lands.
+
+### Added
+
+- **`Space n` is a New group**: `n b` an empty buffer (AstroNvim's
+  `<leader>n`), `n f` a new file, `n d` a new folder. The file and folder
+  prompts are the ones the explorer's `a`/`A` open, now reachable without the
+  tree, and both take a whole path — `src/net/http.zig` creates the
+  directories on the way.
+
+### Changed
+
+- `doc/COMPARISON.md` re-verified end to end. It still described sessions, a
+  terminal, DAP, regex search, `:%s`, autoindent, the jumplist, soft wrap, the
+  system clipboard, persistent undo, cmdline completion, `ip`/`ap` and the
+  bufferline as things zedit lacks — all shipped, several of them long ago.
+  DAP was additionally listed under *non-goals*.
+- A failed editing case records the editor's process state (`still running` /
+  `exited N` / `killed by signal N`) with its got/want, so a CI annotation
+  distinguishes a crash from a hang from a too-slow start.
+
 ## 0.32.4 - 2026-07-30
 
 ### Changed

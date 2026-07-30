@@ -282,7 +282,7 @@
      Space f b  switch between the open buffers
      Space b    Buffers menu: picker, next/previous, close others
      Space f u  the undo tree, as a picker you can jump around in
-     Space n    a new empty buffer
+     Space n    new: b buffer, f file, d folder (a path makes the dirs)
      Space d    debug: b a breakpoint, c start/continue, n/i/o step
      Space t    a terminal: a real shell in a split below
      Space S    this directory's session: s save, l load, d delete

@@ -358,8 +358,13 @@ fn bufferClose(ctx: *h.Ctx) !void {
         var m = s.mark();
         s.send(" ");
         s.drain(300);
-        ctx.check("Space lists the new-buffer key", s.containsPlainSince(ctx.gpa, m, "new buffer"));
+        ctx.check("Space lists the new group", s.containsPlainSince(ctx.gpa, m, "new "));
+        m = s.mark();
         s.send("n");
+        s.drain(400);
+        ctx.check("Space n lists buffer/file/folder", s.containsPlainSince(ctx.gpa, m, "new buffer") and
+            s.containsPlainSince(ctx.gpa, m, "new file") and s.containsPlainSince(ctx.gpa, m, "new folder"));
+        s.send("b");
         s.drain(400);
         m = s.mark();
         s.send(":ls\r");
@@ -384,6 +389,49 @@ fn bufferClose(ctx: *h.Ctx) !void {
         s.drain(200);
         s.send(":qa!\r");
         s.drain(400);
+    }
+
+    // 3d. `Space n f` / `n d` create a file or folder without the tree — the
+    //     same prompts `a`/`A` open there, and a whole path works, so one
+    //     command makes every missing directory on the way.
+    {
+        const nested = h.join(ctx, dir, "deep/nest");
+        defer ctx.gpa.free(nested);
+        h.runQuiet(ctx.gpa, ctx.io, &.{ "rm", "-rf", nested });
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "one.txt" }, .cwd = dir, .cols = 100 });
+        defer s.finish();
+        s.drain(400);
+        var m = s.mark();
+        s.send(" nf");
+        s.drain(400);
+        ctx.check("Space n f prompts for a file", s.containsPlainSince(ctx.gpa, m, "new file:"));
+        s.send("deep/nest/mod.zig\r");
+        s.drain(700);
+        ctx.check("Space n f creates it through missing directories",
+            s.containsPlainSince(ctx.gpa, m, "created deep/nest/mod.zig"));
+        m = s.mark();
+        s.send("ihello\x1b:w\r");
+        s.drain(600);
+        const made = h.join(ctx, dir, "deep/nest/mod.zig");
+        defer ctx.gpa.free(made);
+        const got = h.readFile(ctx.gpa, ctx.io, made);
+        defer ctx.gpa.free(got);
+        ctx.check("the created file is the one being edited", std.mem.eql(u8, got, "hello\n"));
+        m = s.mark();
+        s.send(" nd");
+        s.drain(400);
+        s.send("\x15another/level\r"); // Ctrl-u clears the prefill
+        s.drain(700);
+        ctx.check("Space n d creates nested folders", s.containsPlainSince(ctx.gpa, m, "created another/level/"));
+        s.send(":qa!\r");
+        s.drain(400);
+        const dirmade = h.join(ctx, dir, "another/level");
+        defer ctx.gpa.free(dirmade);
+        const st = std.Io.Dir.cwd().statFile(ctx.io, dirmade, .{}) catch {
+            ctx.check("the folder exists on disk", false);
+            return;
+        };
+        ctx.check("the folder exists on disk", st.kind == .directory);
     }
 
     // 4. Adoption chain: the fresh [No Name] satisfies openFile's adopt rule,

@@ -11,32 +11,12 @@ behind the roadmap items.
 
 ## Next (in order)
 
-1. [ ] **The CI-only test failure: `indent: ts-indent#r1 rust fn body`.**
-       Named at last (0.32.2's annotations). It arrived with `db9825e`
-       (tree-sitter injections + indent queries) and has failed every run
-       since; `8a68fc8` was the last green one. The case is: open a `.rs`
-       holding `fn f() {\n}\n`, press `o`, type `bar`, expect the grammar's
-       indent query to put it one level in. It passes locally under every
-       configuration tried — full speed, one contended core, a bare
-       environment (no `HOME`, `LANG=C`, minimal `PATH`), and with the
-       startup drain cut from 400 ms to 100 ms, which rules out the
-       paint-then-decorate window. Neither machine has a language server
-       installed, so that is not it either. 0.32.3 makes the annotation carry
-       the `got` value; what CI actually produces is the next thing to look
-       at. Older notes on what else is ruled out:
-       the same commit run locally gives `1094 passed, 0 failed`, so the
-       *count* matches exactly — no check is being skipped there, one behaves
-       differently. Ruled out so far: check count, `TERM` (the harness always
-       sets it), the recent-files state and sessions (isolated
-       `XDG_STATE_HOME`), a live `nvim` dependency (expectations are
-       checked-in literals), `--check-update` (the release URL answers in
-       milliseconds with no tags, so the "no releases" branch passes with or
-       without credentials), and raw slowness — a full run pinned to half a
-       core is still `1123 passed, 0 failed`. Fixed one plausible cause on
-       the way (the harness ignored short writes, 0.30.0) without being able
-       to reproduce it. The run now reprints every failed check as
-       `suite: name` at the tail (0.28.0), so the next CI log names it —
-       that is the blocker, not the fix.
+1. [x] ~~**The CI-only test failure**~~ — `indent: ts-indent#r1 rust fn body`,
+       fixed in 0.33.0. The LSP handshake blocked the run loop for up to four
+       seconds waiting for `initialize`; GitHub's runner ships rust-analyzer
+       and the development machine has no language server at all, so only CI
+       ever saw it, and only for the one test that opens a `.rs` file. A real
+       user-facing freeze, not a test artefact.
 2. [ ] **The terminal's own colour at the far right / far bottom.** Traced as
        far as the code allows: every render branch pads to its window's width
        (`emitFillerRow`, `emitDeletedRow`, `past_eof`, `emitLine`), the
@@ -189,6 +169,9 @@ there is nothing to change there.
       CPU. (0.31.0)
 - [x] Debugger: a DAP client with breakpoints, launch, stop/step and
       jump-to-stop, driven in tests by a stub adapter. (0.32.0)
+- [x] The LSP handshake made asynchronous — a slow server no longer freezes
+      the editor; `Space n` became a New group (buffer/file/folder);
+      `doc/COMPARISON.md` re-verified end to end. (0.33.0)
 - [x] `lsp.zig` converted to the shared `jsonrpc.Transport`: one framing
       implementation, 47 fewer lines. (0.32.1)
 
