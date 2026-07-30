@@ -2,6 +2,20 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.33.3 - 2026-07-30
+
+### Changed
+
+- The 0.33.2 regression test asserted its outcome against a fixed 2.3-second
+  budget, which a slower machine blows through — it went red on CI while the
+  behaviour it guards was correct. It now waits *for the popup* in 250 ms
+  slices up to six seconds. Verified to still fail without the fix, and to
+  pass with the mock's handshake delayed anywhere from 900 ms to 2 s, where
+  the fixed budget failed from 1.2 s up.
+
+  A test that encodes how long a machine should take is a test that reports
+  the machine, not the code.
+
 ## 0.33.2 - 2026-07-30
 
 ### Fixed

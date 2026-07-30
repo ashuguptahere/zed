@@ -86,12 +86,20 @@ pub fn run(ctx: *h.Ctx) !void {
         defer s.finish();
         s.drain(300); // deliberately less than the server needs to answer
         s.send("Gomock"); // the debounce fires while it is still handshaking
-        s.drain(2000);
-        var scr = try h.Screen.init(ctx.gpa, 24, 80);
-        defer scr.deinit();
-        scr.apply(s.out.items);
-        ctx.check("a completion asked for during the handshake still arrives",
-            popupHas(ctx, &scr, "mockComplete"));
+        // Wait for the *outcome*, not for a fixed number of milliseconds: how
+        // long the handshake plus a round trip takes depends on the machine,
+        // and a budget tuned here is a test that goes red on a slower one for
+        // no reason. Give up after six seconds, which is a failure either way.
+        var found = false;
+        var waited: usize = 0;
+        while (waited < 6000 and !found) : (waited += 250) {
+            s.drain(250);
+            var scr = try h.Screen.init(ctx.gpa, 24, 80);
+            defer scr.deinit();
+            scr.apply(s.out.items);
+            found = popupHas(ctx, &scr, "mockComplete");
+        }
+        ctx.check("a completion asked for during the handshake still arrives", found);
         s.send("\x1b:q!\r");
         s.drain(300);
     }

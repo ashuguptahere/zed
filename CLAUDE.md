@@ -217,6 +217,14 @@ zig build itest -- git sidebar  # ... just those suites (the full run is 10+ min
 zig build bench -Doptimize=ReleaseFast   # benchmark vs helix/nvim (if installed)
 ```
 
+**Assert the outcome, not the schedule.** A pty check that waits a fixed
+number of milliseconds and then looks encodes how fast the machine is; CI is
+slower than a workstation, so such a test goes red for reasons that have
+nothing to do with the code (it happened to the handshake-window completion
+test). Where an outcome arrives *eventually*, poll for it in slices up to a
+generous deadline and fail on the deadline. Fixed budgets are right only for
+"this must NOT happen" checks, where waiting longer cannot change the answer.
+
 **Measure what a user waits for.** `waitQuiet` alone cannot time an editor:
 it starts counting silence immediately, so anything slower to respond than the
 quiet window scores as instant. Always require a first response before timing
