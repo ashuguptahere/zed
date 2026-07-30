@@ -34,6 +34,19 @@ pub const Ctx = struct {
     /// The suite currently running, so a failure names where to look.
     suite: []const u8 = "",
 
+    /// Like `check`, but a failure records `fmt` too — the got/want of an
+    /// editing case, say. The detail rides along into the tail summary *and*
+    /// the CI annotation, which is the only channel out of a runner whose log
+    /// needs a token to read.
+    pub fn checkFmt(self: *Ctx, name: []const u8, cond: bool, comptime fmt: []const u8, args: anytype) void {
+        if (cond) return self.check(name, true);
+        const detail = std.fmt.allocPrint(self.gpa, fmt, args) catch return self.check(name, false);
+        defer self.gpa.free(detail);
+        const full = std.fmt.allocPrint(self.gpa, "{s} [{s}]", .{ name, detail }) catch return self.check(name, false);
+        defer self.gpa.free(full);
+        self.check(full, false);
+    }
+
     pub fn check(self: *Ctx, name: []const u8, cond: bool) void {
         if (cond) {
             self.passed += 1;
@@ -455,5 +468,5 @@ pub fn case(ctx: *Ctx, target: []const u8, name: []const u8, chunks: []const []c
     defer ctx.gpa.free(got);
     const ok = std.mem.eql(u8, got, want);
     if (!ok) std.debug.print("       got  \"{f}\"\n       want \"{f}\"\n", .{ std.zig.fmtString(got), std.zig.fmtString(want) });
-    ctx.check(name, ok);
+    ctx.checkFmt(name, ok, "got \"{f}\" want \"{f}\"", .{ std.zig.fmtString(got), std.zig.fmtString(want) });
 }

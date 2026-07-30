@@ -11,7 +11,19 @@ behind the roadmap items.
 
 ## Next (in order)
 
-1. [ ] **The CI-only test failure.** CI reported `1093 passed, 1 failed`;
+1. [ ] **The CI-only test failure: `indent: ts-indent#r1 rust fn body`.**
+       Named at last (0.32.2's annotations). It arrived with `db9825e`
+       (tree-sitter injections + indent queries) and has failed every run
+       since; `8a68fc8` was the last green one. The case is: open a `.rs`
+       holding `fn f() {\n}\n`, press `o`, type `bar`, expect the grammar's
+       indent query to put it one level in. It passes locally under every
+       configuration tried — full speed, one contended core, a bare
+       environment (no `HOME`, `LANG=C`, minimal `PATH`), and with the
+       startup drain cut from 400 ms to 100 ms, which rules out the
+       paint-then-decorate window. Neither machine has a language server
+       installed, so that is not it either. 0.32.3 makes the annotation carry
+       the `got` value; what CI actually produces is the next thing to look
+       at. Older notes on what else is ruled out:
        the same commit run locally gives `1094 passed, 0 failed`, so the
        *count* matches exactly — no check is being skipped there, one behaves
        differently. Ruled out so far: check count, `TERM` (the harness always

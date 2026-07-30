@@ -2,6 +2,17 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.32.3 - 2026-07-30
+
+### Changed
+
+- A failed editing case now records its `got`/`want` alongside the check name,
+  so the CI annotation carries the actual value and not just "this failed".
+  The open CI-only failure is `indent: ts-indent#r1 rust fn body`, which
+  passes on every local configuration tried — the value CI produces is the
+  next thing needed, and the log it is printed in cannot be read without a
+  token.
+
 ## 0.32.2 - 2026-07-30
 
 ### Changed
