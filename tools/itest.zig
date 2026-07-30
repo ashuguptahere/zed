@@ -79,6 +79,14 @@ pub fn main(init: std.process.Init) !void {
         // "1 failed" without a name is a bug report nobody can act on.
         std.debug.print("failed checks:\n", .{});
         for (ctx.failures.items) |f| std.debug.print("  - {s}\n", .{f});
+        // On GitHub Actions, also emit them as workflow errors. Those become
+        // check annotations, which the API serves for a public repository
+        // *without* a token — where the log body needs one. So a failure can
+        // be diagnosed from outside the runner, which is exactly the problem
+        // that made the first CI-only failure take days to name.
+        if (std.c.getenv("GITHUB_ACTIONS") != null) {
+            for (ctx.failures.items) |f| std.debug.print("::error title=itest::{s}\n", .{f});
+        }
         std.process.exit(1);
     }
     ctx.deinit();

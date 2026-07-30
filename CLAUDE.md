@@ -268,10 +268,12 @@ itest` builds `zedit` plus a `mock_lsp` server, then runs the `itest` harness:
 - `tools/mock_lsp.zig` — a stub language server for the LSP scenario.
 - `tools/mock_dap.zig` — a stub debug adapter for the debug scenario, so the
   suite needs no lldb-dap or debugpy installed anywhere.
-- `tools/itest.zig` — the runner (argv[3..] filters suites by name; a failing
+- `tools/itest.zig` — the runner (argv[4..] filters suites by name; a failing
   run reprints every failed check as `suite: name` at the **tail**, because a
   CI log is read and pasted from the bottom, where the per-check `[FAIL]` line
-  has long scrolled away); `tools/scenarios/*.zig` are the suites (vim,
+  has long scrolled away — and under `GITHUB_ACTIONS` also emits each as a
+  `::error::` workflow command, which becomes a check annotation the API
+  serves for a public repo *without* a token, where the log body needs one); `tools/scenarios/*.zig` are the suites (vim,
   vim_compat, feature, multicursor, extra, search, treesitter, indent, picker,
   git, windows, sidebar, mouse, titlebar, config, cmdline, robust, remote, ssh,
   lsp, bufcomplete, cpu, wrap, undotree), each a

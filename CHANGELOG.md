@@ -2,6 +2,16 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.32.2 - 2026-07-30
+
+### Changed
+
+- A failing `zig build itest` on GitHub Actions now emits each failed check as
+  a `::error::` workflow command as well as printing it. Those become check
+  annotations, which the API serves for a public repository **without** a
+  token — where the log body needs one. The CI-only failure that is still open
+  could not be read from outside the runner at all; now it can.
+
 ## 0.32.1 - 2026-07-30
 
 ### Changed
