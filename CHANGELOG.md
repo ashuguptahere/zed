@@ -2,6 +2,18 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.32.4 - 2026-07-30
+
+### Changed
+
+- A failed editing case now records the tail of the editor's screen with the
+  got/want, so a CI annotation shows what the editor was *doing*. The open
+  failure — `indent: ts-indent#r1 rust fn body` — turns out to report
+  `got "fn f() {\n}\n"`: the file is unchanged, so the edit never happened at
+  all rather than being indented wrongly. Whether that is a crash, a hang or a
+  refused write is exactly what the screen tail answers, and it cannot be read
+  from the log without a token.
+
 ## 0.32.3 - 2026-07-30
 
 ### Changed

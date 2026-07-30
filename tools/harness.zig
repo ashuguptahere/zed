@@ -450,23 +450,52 @@ pub fn removeTree(gpa: std.mem.Allocator, io: std.Io, path: []const u8) void {
 
 /// Write `initial` to `target`, run `zedit target`, send `chunks`, then return the
 /// saved file contents (caller frees). The workhorse for editing scenarios.
-pub fn runEdit(ctx: *Ctx, target: []const u8, initial: []const u8, chunks: []const []const u8) []u8 {
+pub const EditRun = struct {
+    /// The file as the editor left it.
+    text: []u8,
+    /// The tail of what the editor printed, ANSI stripped. Only looked at
+    /// when a case fails — a panic message or an error statusline there is
+    /// the difference between "indented wrongly" and "never ran", which is
+    /// unknowable from the file alone.
+    tail: []u8,
+
+    pub fn deinit(self: *EditRun, gpa: std.mem.Allocator) void {
+        gpa.free(self.text);
+        gpa.free(self.tail);
+    }
+};
+
+pub fn runEdit(ctx: *Ctx, target: []const u8, initial: []const u8, chunks: []const []const u8) EditRun {
     writeFile(ctx.io, target, initial);
     var s = Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, target } }) catch
-        return ctx.gpa.dupe(u8, "") catch unreachable;
+        return .{
+            .text = ctx.gpa.dupe(u8, "") catch unreachable,
+            .tail = ctx.gpa.dupe(u8, "spawn failed") catch unreachable,
+        };
     defer s.finish();
     s.drain(400); // first frame
     s.sendKeys(chunks);
     s.drain(600); // let :wq save and quit
-    return readFile(ctx.gpa, ctx.io, target);
+    const plain = s.plain(ctx.gpa) catch (ctx.gpa.dupe(u8, "") catch unreachable);
+    defer ctx.gpa.free(plain);
+    const from = plain.len -| 220;
+    return .{
+        .text = readFile(ctx.gpa, ctx.io, target),
+        .tail = ctx.gpa.dupe(u8, plain[from..]) catch unreachable,
+    };
 }
 
 /// One editing case: `runEdit` on `target`, then check the saved file equals
 /// `want`, printing got/want on a failure.
 pub fn case(ctx: *Ctx, target: []const u8, name: []const u8, chunks: []const []const u8, initial: []const u8, want: []const u8) void {
-    const got = runEdit(ctx, target, initial, chunks);
-    defer ctx.gpa.free(got);
+    var run = runEdit(ctx, target, initial, chunks);
+    defer run.deinit(ctx.gpa);
+    const got = run.text;
     const ok = std.mem.eql(u8, got, want);
-    if (!ok) std.debug.print("       got  \"{f}\"\n       want \"{f}\"\n", .{ std.zig.fmtString(got), std.zig.fmtString(want) });
-    ctx.checkFmt(name, ok, "got \"{f}\" want \"{f}\"", .{ std.zig.fmtString(got), std.zig.fmtString(want) });
+    if (!ok) std.debug.print("       got  \"{f}\"\n       want \"{f}\"\n       screen …{s}\n", .{
+        std.zig.fmtString(got), std.zig.fmtString(want), run.tail,
+    });
+    ctx.checkFmt(name, ok, "got \"{f}\" want \"{f}\" screen …{f}", .{
+        std.zig.fmtString(got), std.zig.fmtString(want), std.zig.fmtString(run.tail),
+    });
 }
