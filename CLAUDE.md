@@ -178,6 +178,8 @@ Source is `src/`, one responsibility per module:
 | `complete.zig` | Buffer-word completion candidates: identifiers harvested from the open buffers (the fallback when no server answers). |
 | `snippet.zig` | LSP snippet parsing: `$1`, `${1:placeholder}`, `${1|a,b|}`, `$0`, escapes → plain text + tabstops. |
 | `recent.zig`  | The recently-opened list behind the startup screen (XDG state file). |
+| `jsonrpc.zig` | The `Content-Length`-framed JSON transport LSP and DAP share (framing only — `lsp.zig` still has its own copy; converting it is a separate change). |
+| `dap.zig`     | Debug Adapter Protocol client: launch, breakpoints, stop/step, the stack frame the program stopped in; plus the breakpoint set, which outlives a session. |
 | `vt.zig`      | Terminal emulator: bytes from a child process in, a grid of styled cells out (pure, unit-tested — no pty, no rendering). |
 | `session.zig` | Per-directory sessions: the open files + cursors, the split layout and the tree's state, serialised to an XDG state file. |
 | `remote.zig`  | Editing over SSH: `ssh://user@host/path` parsing, read/write/list via one `ssh` per operation. |
@@ -264,6 +266,8 @@ itest` builds `zedit` plus a `mock_lsp` server, then runs the `itest` harness:
 - `tools/harness.zig` — the pty harness (`Session.spawn`/`drain`/`send`, output
   capture + ANSI stripping, temp dirs, file helpers, `/proc` CPU sampling).
 - `tools/mock_lsp.zig` — a stub language server for the LSP scenario.
+- `tools/mock_dap.zig` — a stub debug adapter for the debug scenario, so the
+  suite needs no lldb-dap or debugpy installed anywhere.
 - `tools/itest.zig` — the runner (argv[3..] filters suites by name; a failing
   run reprints every failed check as `suite: name` at the **tail**, because a
   CI log is read and pasted from the bottom, where the per-check `[FAIL]` line
@@ -515,7 +519,8 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   references, `l s` document symbols, `l S` workspace symbols, `l d` line
   diagnostic, `l D` all diagnostics, `l f` format);
   `Space g` = Git (`g d` inline diff,
-  `g s` side-by-side, `g l` line diff); `Space t` = a terminal; `Space S` = Session for this
+  `g s` side-by-side, `g l` line diff); `Space d` = Debug (`d b` breakpoint,
+  `d c` start/continue, `d n`/`d i`/`d o` step, `d q` stop); `Space t` = a terminal; `Space S` = Session for this
   working directory (`S s` save, `S l` load, `S d` delete — also
   `:session save|load|delete`); `Space e` file explorer, `Space n` a new empty
   buffer (AstroNvim's `<leader>n`; the buffer it replaces stays open),
@@ -724,6 +729,24 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   third window, and each split view re-tiles in its own orientation. All of
   them reflect the file as last saved, like the gutter signs; all refresh on
   `:w` (a weave with no changes left simply closes).
+- **Debugger (`Space d`, `:debug`):** a DAP client (`dap.zig`) speaking the
+  same `Content-Length` framing as LSP — shared in `jsonrpc.zig`. `Space d b`
+  toggles a breakpoint on the cursor's line, `d B` clears them all, `d c`
+  starts or continues, `d n`/`d i`/`d o` step over/into/out, `d q` ends the
+  session. `:debug <program> [args]` launches: the adapter comes from `--dap`
+  or a per-filetype default (`lldb-dap` for C/Zig/Rust, `debugpy` for Python,
+  `dlv dap` for Go), exactly as the language server does. Breakpoints are
+  **editor** state, not session state — set them before anything runs, and
+  they survive the program exiting; the set is sorted and deduplicated
+  (`dap.Breakpoints`, unit-tested) because DAP replaces a file's whole list on
+  every change. They render as a `●` in the gutter, ahead of the diagnostic
+  and git signs, and the one the program is stopped on turns amber. A `stopped`
+  event triggers a `stackTrace`, whose top frame's file and line is where the
+  cursor goes. The adapter's stdout is polled with everything else, so a
+  stopped session costs zero CPU. Everything the adapter sends is untrusted
+  and reaches the screen through the usual sanitizer. Absent: variables and
+  scopes, watches, REPL evaluation, conditional and function breakpoints,
+  attach, and multiple threads (`stopped` names one and steps go to it).
 - **Embedded terminal (`Space t`, `:terminal`):** a real shell on its own pty
   in a horizontal split, with zedit as its terminal emulator. `vt.zig` is the
   emulator — a pure state machine (grid in cells, no pty, no rendering) so the

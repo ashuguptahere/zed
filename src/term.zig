@@ -26,6 +26,10 @@ fn handleWinch(_: posix.SIG) callconv(.c) void {
     resize_pending.store(true, .release);
 }
 
+/// How many child descriptors the editor may wait on beside the keyboard:
+/// a language server, an embedded terminal and a debug adapter.
+pub const max_extra_fds = 3;
+
 /// ANSI escape sequences. Grouped here so call sites read declaratively.
 pub const ansi = struct {
     pub const enter_alt_screen = "\x1b[?1049h";
@@ -183,7 +187,9 @@ pub const Terminal = struct {
     }
 
     /// Which descriptors became readable while blocked in `waitReady`.
-    pub const Ready = struct { input: bool, other: bool, extra: bool = false };
+    /// `input` is the keyboard; `others[i]` mirrors the i-th entry of the
+    /// slice passed to `waitReady` (a null entry is always false).
+    pub const Ready = struct { input: bool, others: [max_extra_fds]bool = .{false} ** max_extra_fds };
 
     /// Block (consuming no CPU) until stdin or `other` (e.g. a language server)
     /// is readable, or a signal fires. Both fields are false when interrupted —
@@ -197,36 +203,37 @@ pub const Terminal = struct {
     /// Block until input (or `other`) is readable. `timeout_ms` of -1 blocks
     /// forever — the idle case, costing zero CPU; a non-negative value is used
     /// only while something is actually scheduled (the completion debounce).
-    /// `other` is the language server's stdout, `extra` an embedded terminal's
-    /// pty. Both are optional, and an absent one costs nothing — the editor
-    /// still blocks on just stdin when neither is running.
-    pub fn waitReady(self: *Terminal, other: ?posix.fd_t, extra: ?posix.fd_t, timeout_ms: i32) Error!Ready {
-        var fds: [3]posix.pollfd = undefined;
+    /// Block until the keyboard or one of `others` has something. The extras
+    /// are the language server's stdout, an embedded terminal's pty and a
+    /// debug adapter's stdout; a null entry costs nothing, so an editor with
+    /// none of them running still blocks on just stdin at zero CPU.
+    ///
+    /// POLLHUP counts as ready: a child that exits leaves its pipe hung up
+    /// rather than readable, and the loop must wake to notice rather than
+    /// blocking for ever on something already dead.
+    pub fn waitReady(self: *Terminal, others: []const ?posix.fd_t, timeout_ms: i32) Error!Ready {
+        std.debug.assert(others.len <= max_extra_fds);
+        var fds: [1 + max_extra_fds]posix.pollfd = undefined;
+        var slot: [max_extra_fds]?usize = .{null} ** max_extra_fds;
         fds[0] = .{ .fd = self.in, .events = posix.POLL.IN, .revents = 0 };
         var n: posix.nfds_t = 1;
-        var other_i: ?usize = null;
-        var extra_i: ?usize = null;
-        if (other) |o| {
-            fds[n] = .{ .fd = o, .events = posix.POLL.IN, .revents = 0 };
-            other_i = n;
-            n += 1;
-        }
-        if (extra) |x| {
-            fds[n] = .{ .fd = x, .events = posix.POLL.IN, .revents = 0 };
-            extra_i = n;
+        for (others, 0..) |maybe, i| {
+            const fd = maybe orelse continue;
+            fds[n] = .{ .fd = fd, .events = posix.POLL.IN, .revents = 0 };
+            slot[i] = n;
             n += 1;
         }
         const rc = posix.system.poll(&fds, n, timeout_ms);
         return switch (posix.system.errno(rc)) {
-            .SUCCESS => .{
-                .input = (fds[0].revents & posix.POLL.IN) != 0,
-                .other = if (other_i) |i| (fds[i].revents & posix.POLL.IN) != 0 else false,
-                // POLLHUP too: a shell that exits makes its pty readable-then-
-                // hung-up, and the loop must wake to reap it rather than
-                // blocking forever on a dead child.
-                .extra = if (extra_i) |i| (fds[i].revents & (posix.POLL.IN | posix.POLL.HUP)) != 0 else false,
+            .SUCCESS => blk: {
+                var r = Ready{ .input = (fds[0].revents & posix.POLL.IN) != 0 };
+                for (slot, 0..) |maybe, i| {
+                    const at = maybe orelse continue;
+                    r.others[i] = (fds[at].revents & (posix.POLL.IN | posix.POLL.HUP)) != 0;
+                }
+                break :blk r;
             },
-            .INTR => .{ .input = false, .other = false },
+            .INTR => .{ .input = false },
             else => |e| posix.unexpectedErrno(e),
         };
     }

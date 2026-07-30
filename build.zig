@@ -128,6 +128,13 @@ pub fn build(b: *std.Build) void {
     });
     const mock_exe = b.addExecutable(.{ .name = "mock_lsp", .root_module = mock_mod });
 
+    const mock_dap_mod = b.createModule(.{
+        .root_source_file = b.path("tools/mock_dap.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const mock_dap_exe = b.addExecutable(.{ .name = "mock_dap", .root_module = mock_dap_mod });
+
     const itest_mod = b.createModule(.{
         .root_source_file = b.path("tools/itest.zig"),
         .target = target,
@@ -139,6 +146,7 @@ pub fn build(b: *std.Build) void {
     const run_itest = b.addRunArtifact(itest_exe);
     run_itest.addArtifactArg(exe); // argv[1] = zedit
     run_itest.addArtifactArg(mock_exe); // argv[2] = mock_lsp
+    run_itest.addArtifactArg(mock_dap_exe); // argv[3] = mock_dap
     if (b.args) |args| run_itest.addArgs(args);
     const itest_step = b.step("itest", "Run pty integration tests");
     itest_step.dependOn(&run_itest.step);

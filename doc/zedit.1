@@ -42,6 +42,12 @@ Use
 .I cmd
 as the language server for the opened file instead of the per-filetype default.
 .TP
+.BR \-D ", " \-\-dap " " \fIcmd\fP
+Use
+.I cmd
+as the debug adapter instead of the per-filetype default
+.RB ( lldb-dap ", " debugpy ", " "dlv dap" ).
+.TP
 .BR \-c ", " \-\-config " " \fIpath\fP
 Read configuration from
 .I path
@@ -743,6 +749,28 @@ refresh,
 return focus to the buffer,
 .B q
 close.
+.TP
+.B Space d
+The debugger:
+.B b
+toggle a breakpoint on this line,
+.B B
+clear them all,
+.B c
+start or continue,
+.B n
+step over,
+.B i
+step into,
+.B o
+step out,
+.B q
+end the session. Start one with
+.BR ":debug <program> [args]" ;
+the adapter comes from
+.B --dap
+or a per-filetype default. Breakpoints belong to the file, not the session, so
+they survive the program exiting.
 .TP
 .B Space t
 An embedded terminal: a shell on its own pty in a horizontal split, opened in

@@ -24,6 +24,7 @@ pub const Ctx = struct {
     io: std.Io,
     zedit: []const u8, // path to the built zedit binary
     mock: []const u8, // path to the built mock_lsp binary
+    mock_dap: []const u8 = "", // path to the built mock_dap binary
     passed: usize = 0,
     failed: usize = 0,
     /// Names of the checks that failed, reprinted at the end of the run. A CI

@@ -2,6 +2,51 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.32.0 - 2026-07-30
+
+### Added
+
+- **A debugger** (`Space d`, `:debug`) — a Debug Adapter Protocol client, so
+  `lldb-dap`, `debugpy` and `dlv dap` all work without zedit knowing anything
+  about a particular debugger. The last of the "one app, not five" items.
+
+  `Space d b` toggles a breakpoint on the cursor's line, `d B` clears them
+  all, `d c` starts or continues, `d n`/`d i`/`d o` step over/into/out and
+  `d q` ends the session. `:debug <program> [args]` launches; the adapter
+  comes from `--dap` or a per-filetype default, exactly as the language server
+  does.
+
+  Breakpoints are **editor** state, not session state: they are set before
+  anything runs and survive the program exiting. The set is sorted and
+  deduplicated per file (`dap.Breakpoints`, unit-tested) because DAP replaces
+  a file's whole list on every change. They render as a `●` in the gutter,
+  ahead of the diagnostic and git signs, and the one the program is stopped on
+  turns amber.
+
+  A `stopped` event triggers a `stackTrace`, and its top frame's file and line
+  is where the cursor goes — so the program stopping opens the right file at
+  the right place.
+
+  Not implemented (TODO.md): variables and scopes, watches, REPL evaluation,
+  conditional and function breakpoints, attach, and multiple threads.
+
+- **`jsonrpc.zig`**, the `Content-Length`-framed JSON transport LSP and DAP
+  share. Only the framing — what a message *means* stays with each protocol —
+  and control is inverted (`nextFrame` rather than a callback) so a caller
+  stays an ordinary loop. `lsp.zig` still carries its own copy; converting it
+  is deliberately a separate change, so a regression in the most-tested
+  subsystem in the editor cannot hide inside a new feature.
+
+- **`--dap <cmd>`** (`-D`), mirroring `--lsp`.
+
+### Changed
+
+- `waitReady` now takes a slice of extra descriptors rather than a fixed pair,
+  since the editor may be waiting on a language server, a shell and a debug
+  adapter at once. A null entry costs nothing, so an editor running none of
+  them still blocks on stdin alone — a stopped debug session is measured at
+  zero CPU in the scenario, like the idle shell.
+
 ## 0.31.0 - 2026-07-30
 
 ### Added

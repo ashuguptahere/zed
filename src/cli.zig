@@ -16,6 +16,7 @@ pub const Config = struct {
     file: ?[]const u8 = null,
     log_path: ?[]const u8 = null,
     lsp_cmd: ?[]const u8 = null,
+    dap_cmd: ?[]const u8 = null,
     config_path: ?[]const u8 = null,
     tutor: bool = false,
     benchmark: bool = false,
@@ -57,6 +58,12 @@ pub fn parse(argv: []const [:0]const u8) Parsed {
                 cfg.lsp_cmd = argv[i];
             } else if (prefix(arg, "--lsp=")) {
                 cfg.lsp_cmd = arg["--lsp=".len..];
+            } else if (eql(arg, "-D") or eql(arg, "--dap")) {
+                i += 1;
+                if (i >= argv.len) return .{ .err = "--dap requires an adapter command" };
+                cfg.dap_cmd = argv[i];
+            } else if (prefix(arg, "--dap=")) {
+                cfg.dap_cmd = arg["--dap=".len..];
             } else if (eql(arg, "-c") or eql(arg, "--config")) {
                 i += 1;
                 if (i >= argv.len) return .{ .err = "--config requires a file path" };
@@ -93,6 +100,7 @@ const help_text =
     \\  -v, --version        Show version and exit
     \\  -l, --log <path>     Write diagnostic logs to <path>
     \\  -s, --lsp <cmd>      Language server command (e.g. "zls"); defaults per filetype
+    \\  -D, --dap <cmd>      Debug adapter command (e.g. "lldb-dap"); defaults per filetype
     \\  -c, --config <path>  Use <path> instead of ~/.config/zedit/config
     \\  -t, --tutor          Open the interactive tutorial (like vimtutor)
     \\  -b, --benchmark      Time open/search/save on [file] (or synthetic data) and exit

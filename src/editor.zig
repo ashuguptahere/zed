@@ -32,6 +32,7 @@ const cli = @import("cli.zig");
 const recent = @import("recent.zig");
 const session = @import("session.zig");
 const vt = @import("vt.zig");
+const dap = @import("dap.zig");
 const snippet = @import("snippet.zig");
 const remote = @import("remote.zig");
 const regex = @import("regex.zig");
@@ -159,6 +160,7 @@ const Await = enum {
     space_buffer, // <space>b — the Buffers group (picker, next/prev, close)
     space_ui, // <space>u — the UI-toggles group
     space_session, // <space>S — save/load/delete this directory's session
+    space_debug, // <space>d — the debugger
     surround_add_char, // ys{motion}{char} / visual S{char}
     surround_delete, // ds{char}
     surround_change_from, // cs{old}...
@@ -533,6 +535,7 @@ pub const Editor = struct {
 
     // language server
     lsp_cmd: ?[]const u8, // override command, else a per-language default
+    dap_cmd: ?[]const u8 = null, // --dap: the debug adapter, else a per-language default
     lsp: ?lsp.Client = null,
     lsp_rev: u64 = 0, // buffer revision last sent via didChange
     // completion popup (insert mode)
@@ -559,6 +562,14 @@ pub const Editor = struct {
     paste_carry_len: usize = 0,
 
     quit: bool = false,
+    /// The debug session, when one is running, and the breakpoints — which
+    /// outlive it, since they are placed before anything starts and must
+    /// survive the program exiting.
+    dbg: ?dap.Client = null,
+    /// The 1-based line the program is stopped on, highlighted in the buffer
+    /// it belongs to (cleared as soon as it runs on).
+    dbg_line: ?usize = null,
+    breakpoints: dap.Breakpoints,
     /// Terminal mode saw `Ctrl-\`, waiting to see whether `Ctrl-n` follows
     /// (nvim's escape pair). Any other key sends both to the child.
     term_escape: bool = false,
@@ -602,7 +613,7 @@ pub const Editor = struct {
         if (doc.shell) |*s| s.deinit();
     }
 
-    pub fn init(gpa: Allocator, io: std.Io, t: *term.Terminal, buf: buffer.Buffer, lsp_cmd: ?[]const u8) !Editor {
+    pub fn init(gpa: Allocator, io: std.Io, t: *term.Terminal, buf: buffer.Buffer, lsp_cmd: ?[]const u8, dap_cmd: ?[]const u8) !Editor {
         const doc = try makeDoc(gpa, buf);
         const win = try gpa.create(Win);
         win.* = .{ .doc = doc };
@@ -623,9 +634,11 @@ pub const Editor = struct {
             .history = undo.History.init(gpa),
             .sb_expanded = std.StringHashMap(void).init(gpa),
             .recents = .{ .gpa = gpa },
+            .breakpoints = .{ .gpa = gpa },
             .lang = syntax.detect(doc.buf.path),
             .git_signs = git.Signs.init(gpa),
             .lsp_cmd = lsp_cmd,
+            .dap_cmd = dap_cmd,
         };
     }
 
@@ -685,6 +698,8 @@ pub const Editor = struct {
         self.sbFree();
         self.sb_entries.deinit(self.gpa);
         self.sb_prefill.deinit(self.gpa);
+        if (self.dbg) |*d| d.deinit();
+        self.breakpoints.deinit();
         var xit = self.sb_expanded.keyIterator();
         while (xit.next()) |k| self.gpa.free(k.*);
         self.sb_expanded.deinit();
@@ -789,7 +804,7 @@ pub const Editor = struct {
                 }
             }
             const lsp_fd: ?std.posix.fd_t = if (self.lsp) |*c| (if (c.alive) c.out_fd else null) else null;
-            const ready = try self.term.waitReady(lsp_fd, self.termFd(), self.pollTimeout());
+            const ready = try self.term.waitReady(&.{ lsp_fd, self.termFd(), self.dbgFd() }, self.pollTimeout());
             if (self.completionDue()) {
                 self.fireDue();
                 needs_render = true;
@@ -800,12 +815,16 @@ pub const Editor = struct {
                 needs_render = true;
                 continue;
             }
-            if (ready.other) {
+            if (ready.others[0]) {
                 if (self.lsp) |*c| c.readAvailable();
                 try self.consumeLspResults();
                 needs_render = true;
             }
-            if (ready.extra and self.pumpTerminal()) needs_render = true;
+            if (ready.others[1] and self.pumpTerminal()) needs_render = true;
+            if (ready.others[2]) {
+                if (self.dbg) |*d| d.readAvailable();
+                if (self.consumeDebug()) needs_render = true;
+            }
             if (ready.input) {
                 const chunk = try self.readInput();
                 if (chunk.len > 0) {
@@ -1822,6 +1841,7 @@ pub const Editor = struct {
                     'n' => self.newBuffer(), // AstroNvim's <leader>n
                     'S' => self.await_arg = .space_session,
                     't' => self.openTerminal(), // AstroNvim's <leader>t
+                    'd' => self.await_arg = .space_debug,
                     'e' => self.sidebarToggle(), // file explorer (AstroNvim <leader>e)
                     'w' => _ = try self.write(""),
                     'q' => self.doQuit(),
@@ -1836,6 +1856,19 @@ pub const Editor = struct {
                     'n' => self.cycleDoc(true, 1), // next buffer (]b)
                     'p' => self.cycleDoc(false, 1), // previous buffer ([b)
                     'c' => self.closeOthers(), // AstroNvim's <leader>bc
+                    else => {},
+                };
+            },
+            .space_debug => {
+                self.resetPending();
+                if (k == .char) switch (k.char) {
+                    'b' => self.toggleBreakpoint(),
+                    'B' => self.clearBreakpoints(),
+                    'c' => self.debugContinue(),
+                    'n' => self.debugStep(.over),
+                    'i' => self.debugStep(.into),
+                    'o' => self.debugStep(.out),
+                    'q' => self.debugStop(),
                     else => {},
                 };
             },
@@ -5782,7 +5815,7 @@ pub const Editor = struct {
     /// Every completable command, by its full name (all are also accepted
     /// spelled out by execEx; the short forms still work typed by hand).
     const command_names = [_][]const u8{
-        "bdelete", "bnext",  "bprevious", "buffers",  "close", "diff",   "earlier",
+        "bdelete", "bnext",  "bprevious", "buffers",  "close", "debug", "diff",   "earlier",
         "edit",    "format", "later",     "ldiff",    "ls",    "only",   "quit",
         "quitall", "session", "split",    "terminal", "theme", "undolist", "vdiff",
         "vsplit",  "wall",    "wq",       "write",    "x",
@@ -5895,6 +5928,8 @@ pub const Editor = struct {
             self.closeWindow();
         } else if (eql(cmd, "on") or eql(cmd, "only")) {
             self.onlyWindow();
+        } else if (eql(cmd, "debug")) {
+            self.startDebug(arg);
         } else if (eql(cmd, "term") or eql(cmd, "terminal")) {
             self.openTerminal();
         } else if (eql(cmd, "session")) {
@@ -7550,6 +7585,134 @@ pub const Editor = struct {
         }
         self.mode = .picker;
         self.refilter();
+    }
+
+    // === the debugger ======================================================
+
+    fn dbgFd(self: *Editor) ?std.posix.fd_t {
+        const d = if (self.dbg) |*x| x else return null;
+        return if (d.alive()) d.outFd() else null;
+    }
+
+    /// `Space d b` — a breakpoint on the cursor's line. They belong to the
+    /// file, not to a session: set them before anything runs, and they survive
+    /// the program exiting.
+    fn toggleBreakpoint(self: *Editor) void {
+        const path = self.buf.path orelse return self.setStatus("no file name — save it first", .{});
+        const line = self.cy + 1; // DAP counts from 1
+        const on = self.breakpoints.toggle(path, line);
+        self.pushBreakpoints(path);
+        self.setStatus("breakpoint {s} at line {d}", .{ if (on) "set" else "cleared", line });
+    }
+
+    fn clearBreakpoints(self: *Editor) void {
+        const n = self.breakpoints.total();
+        if (n == 0) return self.setStatus("no breakpoints", .{});
+        var it = self.breakpoints.files.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.clearRetainingCapacity();
+            if (self.dbg) |*d| d.setBreakpoints(entry.key_ptr.*, &.{});
+        }
+        self.setStatus("cleared {d} breakpoint{s}", .{ n, if (n == 1) "" else "s" });
+    }
+
+    /// Tell a running adapter this file's whole set (DAP replaces per file).
+    fn pushBreakpoints(self: *Editor, path: []const u8) void {
+        const d = if (self.dbg) |*x| x else return;
+        if (!d.alive()) return;
+        d.setBreakpoints(path, self.breakpoints.linesFor(path));
+    }
+
+    const Step = enum { over, into, out };
+
+    /// `Space d c` — continue a stopped program, or start one. Starting needs
+    /// a program to run, which only `:debug <program>` can name.
+    fn debugContinue(self: *Editor) void {
+        const d = if (self.dbg) |*x| x else
+            return self.setStatus("no debug session — :debug <program> starts one", .{});
+        if (!d.alive()) return self.setStatus("the debug session has ended", .{});
+        if (d.state != .stopped) return self.setStatus("already running", .{});
+        d.cont();
+        self.setStatus("continuing", .{});
+    }
+
+    fn debugStep(self: *Editor, how: Step) void {
+        const d = if (self.dbg) |*x| x else return self.setStatus("no debug session", .{});
+        if (!d.alive()) return self.setStatus("the debug session has ended", .{});
+        if (d.state != .stopped) return self.setStatus("the program is running — it must stop first", .{});
+        switch (how) {
+            .over => d.next(),
+            .into => d.stepIn(),
+            .out => d.stepOut(),
+        }
+    }
+
+    fn debugStop(self: *Editor) void {
+        if (self.dbg) |*d| {
+            d.deinit();
+            self.dbg = null;
+            self.dbg_line = null;
+            self.setStatus("debug session ended", .{});
+        } else self.setStatus("no debug session", .{});
+    }
+
+    /// `:debug <program> [args]` — start an adapter for the current filetype
+    /// and launch `program` under it.
+    fn startDebug(self: *Editor, arg: []const u8) void {
+        if (arg.len == 0) return self.setStatus("usage: :debug <program> [args]", .{});
+        if (self.dbg != null) self.debugStop();
+        var argv: std.ArrayList([]const u8) = .empty;
+        defer argv.deinit(self.gpa);
+        if (self.dap_cmd) |cmd| {
+            var it = std.mem.tokenizeScalar(u8, cmd, ' ');
+            while (it.next()) |w| argv.append(self.gpa, w) catch return;
+        } else {
+            const def = defaultAdapter(self.lang) orelse
+                return self.setStatus("no debug adapter for this filetype — pass --dap <command>", .{});
+            argv.appendSlice(self.gpa, def) catch return;
+        }
+        var parts = std.mem.tokenizeScalar(u8, arg, ' ');
+        const program = parts.next() orelse return self.setStatus("usage: :debug <program> [args]", .{});
+        var args: std.ArrayList([]const u8) = .empty;
+        defer args.deinit(self.gpa);
+        while (parts.next()) |a| args.append(self.gpa, a) catch return;
+
+        var client = dap.Client.spawn(self.gpa, self.io, argv.items) catch |err|
+            return self.setStatus("could not start {s}: {s}", .{ argv.items[0], @errorName(err) });
+        // The handshake is a round trip; waiting briefly here means the
+        // `initialized` event has usually arrived by the time the user's next
+        // key does, without the editor ever blocking for long.
+        client.pump(500);
+        client.launch(program, args.items);
+        var it = self.breakpoints.files.iterator();
+        while (it.next()) |entry| client.setBreakpoints(entry.key_ptr.*, entry.value_ptr.items);
+        client.configurationDone();
+        self.dbg = client;
+        self.setStatus("debugging {s}", .{program});
+    }
+
+    /// Act on whatever the adapter said: when it stops, go to the line.
+    /// Returns true when the screen needs redrawing.
+    fn consumeDebug(self: *Editor) bool {
+        const d = if (self.dbg) |*x| x else return false;
+        if (!d.takeChanged()) return false;
+        switch (d.state) {
+            .stopped => {
+                if (d.where) |w| {
+                    if (w.path.len > 0) {
+                        self.openFile(w.path, w.line);
+                        self.dbg_line = w.line;
+                        self.setStatus("stopped ({s}) at {s}:{d}", .{ w.reason, docLabel(self.d), w.line });
+                    }
+                }
+            },
+            .exited => {
+                self.dbg_line = null;
+                self.setStatus("the program exited", .{});
+            },
+            else => self.dbg_line = null,
+        }
+        return true;
     }
 
     // === the embedded terminal =============================================
@@ -9751,10 +9914,22 @@ pub const Editor = struct {
         .{ .key = "n", .desc = "new buffer" },
         .{ .key = "S", .desc = "session \u{2026}" },
         .{ .key = "t", .desc = "terminal" },
+        .{ .key = "d", .desc = "debug \u{2026}" },
         .{ .key = "e", .desc = "explorer" },
         .{ .key = "c", .desc = "close buffer" },
         .{ .key = "w", .desc = "write (save)" },
         .{ .key = "q", .desc = "quit" },
+    };
+    /// `Space d` — the debugger. AstroNvim's `<leader>d` keys, restricted to
+    /// what is actually implemented (see TODO.md for what is not).
+    const debug_keys = [_]WhichKey{
+        .{ .key = "b", .desc = "toggle breakpoint" },
+        .{ .key = "B", .desc = "clear breakpoints" },
+        .{ .key = "c", .desc = "start / continue" },
+        .{ .key = "n", .desc = "step over" },
+        .{ .key = "i", .desc = "step into" },
+        .{ .key = "o", .desc = "step out" },
+        .{ .key = "q", .desc = "stop session" },
     };
     /// `Space S` — the session for this working directory. Explicit both
     /// ways: nothing is saved or restored unless a key says so.
@@ -10238,6 +10413,7 @@ pub const Editor = struct {
             .space_buffer => .{ .title = " SPACE b", .keys = &buffer_keys },
             .space_ui => .{ .title = " SPACE u", .keys = &ui_keys },
             .space_session => .{ .title = " SPACE S", .keys = &session_keys },
+            .space_debug => .{ .title = " SPACE d", .keys = &debug_keys },
             else => null,
         };
     }
@@ -10377,10 +10553,21 @@ pub const Editor = struct {
         const ndigits = gutter - 2;
         const is_cur = view.active and file_row == view.cy;
 
-        // Leftmost column: an LSP diagnostic sign (active window only) takes
-        // priority over a git sign.
+        // Leftmost column, in priority order: a breakpoint (the user put it
+        // there deliberately and must be able to see it), then an LSP
+        // diagnostic, then a git sign.
         var sign_drawn = false;
-        if (view.active) {
+        if (view.buf.path) |p| {
+            if (self.breakpoints.has(p, file_row + 1)) {
+                // Filled while the program is stopped on it, so the stop is
+                // visible at a glance among the other breakpoints.
+                const here = view.active and self.dbg_line == file_row + 1;
+                try self.setFg(if (here) th.git_change else th.git_delete);
+                try self.emit("\u{25CF}"); // ●
+                sign_drawn = true;
+            }
+        }
+        if (!sign_drawn and view.active) {
             if (self.lsp) |*c| {
                 if (c.severityAt(file_row)) |sev| {
                     try self.setFg(if (sev == 1) th.git_delete else th.git_change); // error=red, warn=yellow
@@ -11599,6 +11786,18 @@ fn langId(l: syntax.Language) []const u8 {
         .markdown => "markdown",
         .diff => "diff",
         .none => "plaintext",
+    };
+}
+
+/// Default debug-adapter command per language (used when the config's
+/// `debug_adapter` is empty). Only the adapters that speak DAP over stdio
+/// with no extra setup; anything else is the config key's job.
+fn defaultAdapter(l: syntax.Language) ?[]const []const u8 {
+    return switch (l) {
+        .c, .zig, .rust => &.{"lldb-dap"},
+        .python => &.{ "python3", "-m", "debugpy.adapter" },
+        .go => &.{ "dlv", "dap" },
+        else => null,
     };
 }
 

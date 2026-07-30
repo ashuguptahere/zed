@@ -109,7 +109,7 @@ pub fn main(init: std.process.Init) !void {
     };
 
     // From here the editor owns `buf`; only `ed.deinit` frees it.
-    var ed = editor.Editor.init(gpa, io, &terminal, buf, cfg.lsp_cmd) catch |err| {
+    var ed = editor.Editor.init(gpa, io, &terminal, buf, cfg.lsp_cmd, cfg.dap_cmd) catch |err| {
         buf.deinit();
         terminal.restore();
         var eb: [128]u8 = undefined;
@@ -288,6 +288,8 @@ test {
     _ = @import("recent.zig");
     _ = @import("session.zig");
     _ = @import("vt.zig");
+    _ = @import("jsonrpc.zig");
+    _ = @import("dap.zig");
     _ = @import("remote.zig");
     _ = @import("snippet.zig");
     _ = @import("complete.zig");

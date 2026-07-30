@@ -32,6 +32,7 @@ const scenarios = .{
     .{ "undotree", @import("scenarios/undotree.zig") },
     .{ "session", @import("scenarios/session.zig") },
     .{ "terminal", @import("scenarios/terminal.zig") },
+    .{ "debug", @import("scenarios/debug.zig") },
 };
 
 /// Whether suite `name` was asked for: everything when no filter was given.
@@ -46,13 +47,13 @@ fn wanted(only: []const []const u8, name: []const u8) bool {
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const argv = try init.minimal.args.toSlice(arena);
-    if (argv.len < 3) {
-        std.debug.print("usage: itest <zedit-binary> <mock_lsp-binary> [suite...]\n", .{});
+    if (argv.len < 4) {
+        std.debug.print("usage: itest <zedit> <mock_lsp> <mock_dap> [suite...]\n", .{});
         std.process.exit(2);
     }
     // `zig build itest -- sidebar git` runs just those suites: the full run is
     // over ten minutes, which is too slow a loop for one scenario under repair.
-    const only = argv[3..];
+    const only = argv[4..];
     // The build passes relative artifact paths; make them absolute so scenarios
     // that chdir into a temp dir can still exec the binaries.
     const cwd = try std.process.currentPathAlloc(init.io, arena);
@@ -61,6 +62,7 @@ pub fn main(init: std.process.Init) !void {
         .io = init.io,
         .zedit = try std.fs.path.resolve(arena, &.{ cwd, argv[1] }),
         .mock = try std.fs.path.resolve(arena, &.{ cwd, argv[2] }),
+        .mock_dap = try std.fs.path.resolve(arena, &.{ cwd, argv[3] }),
     };
 
     inline for (scenarios) |s| {

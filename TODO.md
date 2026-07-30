@@ -60,8 +60,15 @@ behind the roadmap items.
        `hung_up` guard in `term.zig` is for the platforms whose pty reports
        EOF before the child is reapable; on Linux `waitpid` wins that race,
        so CI never exercises it.
-7. [ ] **Debugger** — a DAP client (breakpoints, stepping, variables).
-       Large, multi-batch. No package management (agreed with the owner).
+7. [ ] **Debugger polish.** The core loop landed in 0.32.0 (breakpoints,
+       launch, stop, step, jump-to-stop). Not there yet: variables and scopes,
+       watches, REPL evaluation, conditional and function breakpoints, attach,
+       multiple threads (a `stopped` event names one and steps go to it), and
+       a launch-configuration format. No package management (agreed).
+8. [ ] **Convert `lsp.zig` to `jsonrpc.Transport`.** It still carries its own
+       copy of the framing; the shared module was written for `dap.zig` and
+       kept apart from that feature on purpose, so the conversion lands as a
+       change of its own with the full suite as the check.
 
 Local builds are host-only already (`b.standardTargetOptions`); the release
 workflow's matrix passes `-Dtarget=` for the cross-compiled artifacts, so
@@ -172,6 +179,8 @@ there is nothing to change there.
 - [x] Embedded terminal: a shell on its own pty in a split, a pure
       unit-tested VT emulator (`vt.zig`), nvim's mode split, zero idle
       CPU. (0.31.0)
+- [x] Debugger: a DAP client with breakpoints, launch, stop/step and
+      jump-to-stop, driven in tests by a stub adapter. (0.32.0)
 
 - [x] Modal editor core: event-driven zero-idle-CPU loop, single-syscall
       frames, UTF-8-correct movement/rendering, friendly CLI. (0.1.0)

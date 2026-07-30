@@ -81,7 +81,9 @@
   which-key menus: `Space f f` find files, `Space f w` find words (regex grep,
   same syntax as `/`),
   `Space f b` buffers, `Space f t` themes, `Space f u` the undo tree;
-  `Space n` a new empty buffer; `Space t` an **embedded terminal** (a real
+  `Space n` a new empty buffer; `Space d …` a **debugger** (breakpoints,
+  start/continue, step over/into/out — DAP, so `lldb-dap`, `debugpy` and
+  `dlv dap` all work); `Space t` an **embedded terminal** (a real
   shell in a split — nvim's mode split, `Ctrl-\ Ctrl-n` back to normal);
   `Space S …` sessions (save/load/delete this
   directory's open files, cursors, splits and tree state — explicit both ways,
