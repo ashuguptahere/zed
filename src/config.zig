@@ -284,7 +284,7 @@ pub fn xdgPath(buf: []u8, env_var: [:0]const u8, home_fallback: []const u8, leaf
 
 /// The standard config path: $XDG_CONFIG_HOME/zedit/config or
 /// ~/.config/zedit/config.
-pub fn standardPath(buf: []u8) ?[]const u8 {
+fn standardPath(buf: []u8) ?[]const u8 {
     return xdgPath(buf, "XDG_CONFIG_HOME", ".config", "config");
 }
 

@@ -4110,7 +4110,7 @@ pub const Editor = struct {
         self.picker_scroll = 0;
     }
 
-    pub fn openFilePicker(self: *Editor) void {
+    fn openFilePicker(self: *Editor) void {
         self.startPicker(.files);
         self.ensureFileCache(); // starts the walk; does not wait for it
         self.fillFileItems();
@@ -7749,20 +7749,9 @@ pub const Editor = struct {
             self.mode = .terminal;
             return self.setStatus("terminal", .{});
         }
-        const buf = buffer.Buffer.initEmpty(self.gpa) catch return self.setStatus("out of memory", .{});
-        const doc = makeDoc(self.gpa, buf) catch {
-            var b = buf;
-            b.deinit();
-            return self.setStatus("out of memory", .{});
-        };
+        const doc = self.makeEmptyDoc() orelse return self.setStatus("out of memory", .{});
         doc.name = self.gpa.dupe(u8, "[terminal]") catch null;
         doc.read_only = true; // nothing edits the grid through buffer commands
-        self.docs.append(self.gpa, doc) catch {
-            doc.buf.deinit();
-            freeDocState(doc, self.gpa);
-            self.gpa.destroy(doc);
-            return self.setStatus("out of memory", .{});
-        };
         self.splitWindow(false); // horizontal, below
         self.focusDoc(doc);
         self.layout(); // the new window's size, before the shell is told it

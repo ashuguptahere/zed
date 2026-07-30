@@ -64,7 +64,7 @@ pub const List = struct {
 };
 
 /// The state-file path, built into `buf`. Null when neither env var exists.
-pub fn statePath(buf: []u8) ?[]const u8 {
+fn statePath(buf: []u8) ?[]const u8 {
     return config.xdgPath(buf, "XDG_STATE_HOME", ".local/state", "recent");
 }
 

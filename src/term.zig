@@ -107,7 +107,7 @@ pub const Terminal = struct {
     }
 
     /// Restore the captured terminal settings. Idempotent.
-    pub fn disableRaw(self: *Terminal) void {
+    fn disableRaw(self: *Terminal) void {
         if (!self.raw_enabled) return;
         posix.tcsetattr(self.in, .FLUSH, self.original) catch {};
         self.raw_enabled = false;
@@ -141,7 +141,7 @@ pub const Terminal = struct {
         self.alt_active = true;
     }
 
-    pub fn leaveAltScreen(self: *Terminal) void {
+    fn leaveAltScreen(self: *Terminal) void {
         if (!self.alt_active) return;
         self.write(ansi.disable_mouse) catch {};
         self.write(ansi.disable_bracketed_paste) catch {};

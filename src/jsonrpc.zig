@@ -88,7 +88,7 @@ pub const Transport = struct {
 
 /// The `Content-Length` value from a header block, in whatever order the
 /// headers came.
-pub fn contentLength(header: []const u8) ?usize {
+fn contentLength(header: []const u8) ?usize {
     const tag = "Content-Length:";
     const at = std.mem.indexOf(u8, header, tag) orelse return null;
     const rest = header[at + tag.len ..];

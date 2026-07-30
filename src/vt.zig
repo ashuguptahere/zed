@@ -13,6 +13,9 @@
 //! Deliberately absent (see TODO.md): scrollback, the alternate screen — so a
 //! full-screen program run inside draws over the shell's output rather than
 //! restoring it on exit — and any mouse or bracketed-paste mode of its own.
+//! Mode sets (`CSI ? … h/l`, including DECTCEM's cursor hiding) are parsed and
+//! dropped: nothing here draws a cursor, so tracking its visibility was state
+//! no one read.
 
 const std = @import("std");
 const theme = @import("theme.zig");
@@ -86,12 +89,7 @@ pub const Screen = struct {
     /// does not. Without it, a line exactly as wide as the screen scrolls one
     /// row too early.
     wrap_next: bool = false,
-    cursor_visible: bool = true,
     saved: struct { cx: usize = 0, cy: usize = 0, attr: Attr = .{} } = .{},
-    /// True once the child has written anything, so a freshly opened terminal
-    /// can be told from one whose shell printed an empty prompt.
-    dirty: bool = false,
-
     state: State = .ground,
     params: [max_params]u32 = [_]u32{0} ** max_params,
     nparams: usize = 0,
@@ -150,7 +148,6 @@ pub const Screen = struct {
     // === feeding ===========================================================
 
     pub fn feed(self: *Screen, bytes: []const u8) void {
-        if (bytes.len > 0) self.dirty = true;
         for (bytes) |b| self.feedByte(b);
     }
 
@@ -425,13 +422,6 @@ pub const Screen = struct {
                 }
                 self.cx = 0;
                 self.cy = self.top;
-            },
-            'h', 'l' => {
-                // The only mode that changes what is drawn: DECTCEM, the
-                // cursor's visibility. The rest (alt screen, mouse, bracketed
-                // paste) are the child's business, and this grid has no
-                // second screen to switch to.
-                if (self.priv == '?' and self.param0(0) == 25) self.cursor_visible = final == 'h';
             },
             's' => self.saved = .{ .cx = self.cx, .cy = self.cy, .attr = self.attr },
             'u' => {
@@ -834,16 +824,6 @@ test "resize keeps the top-left contents and clamps the cursor" {
     try expectRow(&s, 0, "hell");
     try expectRow(&s, 1, "worl");
     try testing.expect(s.cy < 2 and s.cx < 4);
-}
-
-test "the cursor can be hidden and shown" {
-    var s = try Screen.init(testing.allocator, 2, 6);
-    defer s.deinit();
-    try testing.expect(s.cursor_visible);
-    s.feed("\x1b[?25l");
-    try testing.expect(!s.cursor_visible);
-    s.feed("\x1b[?25h");
-    try testing.expect(s.cursor_visible);
 }
 
 test "an erase after setting a background paints that background" {

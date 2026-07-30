@@ -2,6 +2,31 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.33.1 - 2026-07-30
+
+### Changed
+
+- Repo-wide complexity audit applied: **-75 lines**, no behaviour change and
+  the same 1183 tests.
+  - The DAP client collected every line the adapter printed into a capped
+    list nothing ever displayed — field, `addOutput`, cap and the `output`
+    event branch all gone; likewise `pause()` (no key, no command) and
+    `configured` (written once, never read).
+  - `dap.State.starting` merged into `.running`: every test was `!= .exited`
+    or `== .stopped`, so nothing ever distinguished them.
+  - `readAvailable`/`pump` in the DAP client were the same body but their
+    first call; they share a `drain()` now.
+  - `openTerminal` re-implemented `makeEmptyDoc` inline, teardown paths and
+    all.
+  - `vt.Screen.dirty` and `cursor_visible` were written and never read. Mode
+    sets (`CSI ? … h/l`) are still consumed and dropped — nothing here draws a
+    cursor, so tracking its visibility was state no one could use.
+  - `lsp.writeMessage` only delegated to the transport; its 16 callers now say
+    so directly.
+  - `undo.bytesHeld` existed for one test assertion, which now computes it.
+  - `mock_dap.stopped()` took a path and a line and discarded both.
+  - `pub` dropped from eleven declarations no other module imports.
+
 ## 0.33.0 - 2026-07-30
 
 ### Fixed

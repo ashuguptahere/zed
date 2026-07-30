@@ -62,7 +62,7 @@ pub fn parse(url: []const u8) ?Target {
 
 /// Wrap `s` for the remote shell: `'` + s (with `'` → `'\''`) + `'`.
 /// The result is a single shell word whatever `s` contains.
-pub fn shellQuote(gpa: std.mem.Allocator, s: []const u8) ![]u8 {
+fn shellQuote(gpa: std.mem.Allocator, s: []const u8) ![]u8 {
     const esc = try std.mem.replaceOwned(u8, gpa, s, "'", "'\\''");
     defer gpa.free(esc);
     return std.fmt.allocPrint(gpa, "'{s}'", .{esc});

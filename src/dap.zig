@@ -22,9 +22,9 @@ const jsonrpc = @import("jsonrpc.zig");
 const Allocator = std.mem.Allocator;
 
 pub const State = enum {
-    /// Spawned; the handshake is in flight.
-    starting,
-    /// The program is running: no line to show, stepping is meaningless.
+    /// Spawned, or running: no line to show, so stepping is meaningless.
+    /// (There is no separate "handshake in flight" state — nothing ever
+    /// treated it differently from running.)
     running,
     /// Stopped at `where`, which is where the cursor goes.
     stopped,
@@ -44,27 +44,18 @@ pub const Client = struct {
     io: std.Io,
     child: std.process.Child,
     t: jsonrpc.Transport,
-    state: State = .starting,
+    state: State = .running,
     seq: i64 = 1,
-    /// The adapter said `initialized`, so breakpoints may be sent.
-    configured: bool = false,
     /// The thread the last `stopped` event named; steps go to it.
     thread: i64 = 1,
     where: ?Stop = null,
-    /// Lines the adapter printed (its own diagnostics and the program's
-    /// stdout when it forwards it), newest last, capped.
-    output: std.ArrayList([]u8) = .empty,
     /// Set when a `stopped`/`terminated` event has changed things, so the
     /// editor knows to move the cursor and redraw. Cleared by `takeChanged`.
     changed: bool = false,
 
-    pub const max_output = 200;
-
     pub fn deinit(self: *Client) void {
         self.stop();
         self.clearWhere();
-        for (self.output.items) |o| self.gpa.free(o);
-        self.output.deinit(self.gpa);
         self.t.deinit();
     }
 
@@ -183,10 +174,6 @@ pub const Client = struct {
         self.threadRequest("stepOut");
     }
 
-    pub fn pause(self: *Client) void {
-        self.threadRequest("pause");
-    }
-
     fn threadRequest(self: *Client, command: []const u8) void {
         var buf: [64]u8 = undefined;
         const args = std.fmt.bufPrint(&buf, "{{\"threadId\":{d}}}", .{self.thread}) catch return;
@@ -209,6 +196,12 @@ pub const Client = struct {
 
     pub fn readAvailable(self: *Client) void {
         self.t.readAvailable();
+        self.drain();
+    }
+
+    /// Handle every complete message the transport now holds, and notice a
+    /// dead adapter.
+    fn drain(self: *Client) void {
         while (self.t.nextFrame()) |body| self.handle(body);
         if (!self.t.alive and self.state != .exited) {
             self.state = .exited;
@@ -220,11 +213,7 @@ pub const Client = struct {
     pub fn pump(self: *Client, timeout_ms: i32) void {
         if (!self.t.alive) return;
         self.t.pump(timeout_ms);
-        while (self.t.nextFrame()) |body| self.handle(body);
-        if (!self.t.alive and self.state != .exited) {
-            self.state = .exited;
-            self.changed = true;
-        }
+        self.drain();
     }
 
     fn handle(self: *Client, body: []const u8) void {
@@ -241,7 +230,6 @@ pub const Client = struct {
         const name = strOf(obj.get("event")) orelse return;
         const b = obj.get("body");
         if (std.mem.eql(u8, name, "initialized")) {
-            self.configured = true;
             self.changed = true;
         } else if (std.mem.eql(u8, name, "stopped")) {
             self.state = .stopped;
@@ -263,10 +251,6 @@ pub const Client = struct {
             self.state = .exited;
             self.clearWhere();
             self.changed = true;
-        } else if (std.mem.eql(u8, name, "output")) {
-            if (b) |v| {
-                if (strOf(field(v, "output"))) |line| self.addOutput(line);
-            }
         }
     }
 
@@ -292,25 +276,6 @@ pub const Client = struct {
             w.line = line;
         }
         self.changed = true;
-    }
-
-    /// Keep the adapter's output, split into lines and capped. It is remote
-    /// text: stored verbatim here, sanitized where it is drawn.
-    fn addOutput(self: *Client, text: []const u8) void {
-        var it = std.mem.splitScalar(u8, text, '\n');
-        while (it.next()) |raw| {
-            const line = std.mem.trimEnd(u8, raw, "\r");
-            if (line.len == 0) continue;
-            const owned = self.gpa.dupe(u8, line) catch return;
-            self.output.append(self.gpa, owned) catch {
-                self.gpa.free(owned);
-                return;
-            };
-            if (self.output.items.len > max_output) {
-                const dropped = self.output.orderedRemove(0);
-                self.gpa.free(dropped);
-            }
-        }
     }
 };
 

@@ -172,6 +172,8 @@ there is nothing to change there.
 - [x] The LSP handshake made asynchronous — a slow server no longer freezes
       the editor; `Space n` became a New group (buffer/file/folder);
       `doc/COMPARISON.md` re-verified end to end. (0.33.0)
+- [x] Complexity audit applied repo-wide: -75 lines of dead fields, unread
+      collections, delegating wrappers and duplicated bodies. (0.33.1)
 - [x] `lsp.zig` converted to the shared `jsonrpc.Transport`: one framing
       implementation, 47 fewer lines. (0.32.1)
 

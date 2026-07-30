@@ -361,7 +361,7 @@ pub const Client = struct {
         body.appendSlice(self.gpa, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"processId\":null,\"rootUri\":\"file://") catch return;
         appendEscaped(&body, self.gpa, root) catch return;
         body.appendSlice(self.gpa, "\",\"capabilities\":{\"textDocument\":{\"publishDiagnostics\":{},\"hover\":{},\"definition\":{},\"implementation\":{},\"typeDefinition\":{},\"completion\":{\"completionItem\":{\"snippetSupport\":true}},\"signatureHelp\":{},\"rename\":{},\"codeAction\":{},\"inlayHint\":{},\"documentSymbol\":{},\"workspaceSymbol\":{},\"references\":{},\"formatting\":{}}}}}") catch return;
-        self.writeMessage(body.items);
+        self.t.write(body.items);
     }
 
     fn sendDidOpen(self: *Client, language_id: []const u8, content: []const u8) void {
@@ -375,7 +375,7 @@ pub const Client = struct {
         body.appendSlice(a, "\",\"version\":1,\"text\":\"") catch return;
         appendEscaped(&body, a, content) catch return;
         body.appendSlice(a, "\"}}}") catch return;
-        self.writeMessage(body.items);
+        self.t.write(body.items);
         self.rememberDoc(content);
     }
 
@@ -396,7 +396,7 @@ pub const Client = struct {
         body.appendSlice(a, "\"text\":\"") catch return;
         appendEscaped(&body, a, content) catch return;
         body.appendSlice(a, "\"}]}}") catch return;
-        self.writeMessage(body.items);
+        self.t.write(body.items);
     }
 
     fn sendDidChangeIncremental(self: *Client, content: []const u8) void {
@@ -421,7 +421,7 @@ pub const Client = struct {
         body.appendSlice(a, std.fmt.bufPrint(&nb, "\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}},\"text\":\"", .{ start_pos.line, start_pos.character, end_pos.line, end_pos.character }) catch return) catch return;
         appendEscaped(&body, a, new_text) catch return;
         body.appendSlice(a, "\"}]}}") catch return;
-        self.writeMessage(body.items);
+        self.t.write(body.items);
     }
 
     /// Writes the didChange envelope up to (but not including) the first
@@ -485,7 +485,7 @@ pub const Client = struct {
         body.appendSlice(a, std.fmt.bufPrint(&nb, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":\"textDocument/codeAction\",\"params\":{{\"textDocument\":{{\"uri\":\"", .{self.ca_id}) catch return) catch return;
         appendEscaped(&body, a, self.uri) catch return;
         body.appendSlice(a, std.fmt.bufPrint(&nb, "\"}},\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}},\"context\":{{\"diagnostics\":[]}}}}}}", .{ sl, sc, el, ec }) catch return) catch return;
-        self.writeMessage(body.items);
+        self.t.write(body.items);
     }
 
     /// Run a code action's command. The server typically responds by sending a
@@ -505,7 +505,7 @@ pub const Client = struct {
             body.appendSlice(a, args) catch return;
         }
         body.appendSlice(a, "}}") catch return;
-        self.writeMessage(body.items);
+        self.t.write(body.items);
     }
 
     /// `workspace/symbol`: symbols across the project, filtered by `query`
@@ -520,7 +520,7 @@ pub const Client = struct {
         body.appendSlice(a, std.fmt.bufPrint(&nb, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":\"workspace/symbol\",\"params\":{{\"query\":\"", .{self.wsym_id}) catch return) catch return;
         appendEscaped(&body, a, query) catch return;
         body.appendSlice(a, "\"}}") catch return;
-        self.writeMessage(body.items);
+        self.t.write(body.items);
     }
 
     pub fn requestDocumentSymbol(self: *Client) void {
@@ -533,7 +533,7 @@ pub const Client = struct {
         body.appendSlice(a, std.fmt.bufPrint(&nb, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":\"textDocument/documentSymbol\",\"params\":{{\"textDocument\":{{\"uri\":\"", .{self.sym_id}) catch return) catch return;
         appendEscaped(&body, a, self.uri) catch return;
         body.appendSlice(a, "\"}}}") catch return; // close uri", textDocument, params, root
-        self.writeMessage(body.items);
+        self.t.write(body.items);
     }
 
     /// Request inlay hints for the whole document [0,0]-[end_line,0].
@@ -547,7 +547,7 @@ pub const Client = struct {
         body.appendSlice(a, std.fmt.bufPrint(&nb, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":\"textDocument/inlayHint\",\"params\":{{\"textDocument\":{{\"uri\":\"", .{self.hint_id}) catch return) catch return;
         appendEscaped(&body, a, self.uri) catch return;
         body.appendSlice(a, std.fmt.bufPrint(&nb, "\"}},\"range\":{{\"start\":{{\"line\":0,\"character\":0}},\"end\":{{\"line\":{d},\"character\":0}}}}}}}}", .{end_line}) catch return) catch return;
-        self.writeMessage(body.items);
+        self.t.write(body.items);
     }
 
     pub fn requestRename(self: *Client, line: usize, col: usize, new_name: []const u8) void {
@@ -562,7 +562,7 @@ pub const Client = struct {
         body.appendSlice(a, std.fmt.bufPrint(&nb, "\"}},\"position\":{{\"line\":{d},\"character\":{d}}},\"newName\":\"", .{ line, col }) catch return) catch return;
         appendEscaped(&body, a, new_name) catch return;
         body.appendSlice(a, "\"}}") catch return;
-        self.writeMessage(body.items);
+        self.t.write(body.items);
     }
 
     pub fn requestReferences(self: *Client, line: usize, col: usize) void {
@@ -575,7 +575,7 @@ pub const Client = struct {
         body.appendSlice(a, std.fmt.bufPrint(&nb, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":\"textDocument/references\",\"params\":{{\"textDocument\":{{\"uri\":\"", .{self.ref_id}) catch return) catch return;
         appendEscaped(&body, a, self.uri) catch return;
         body.appendSlice(a, std.fmt.bufPrint(&nb, "\"}},\"position\":{{\"line\":{d},\"character\":{d}}},\"context\":{{\"includeDeclaration\":true}}}}}}", .{ line, col }) catch return) catch return;
-        self.writeMessage(body.items);
+        self.t.write(body.items);
     }
 
     /// Request whole-document formatting with the editor's indent settings.
@@ -589,7 +589,7 @@ pub const Client = struct {
         body.appendSlice(a, std.fmt.bufPrint(&nb, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":\"textDocument/formatting\",\"params\":{{\"textDocument\":{{\"uri\":\"", .{self.fmt_id}) catch return) catch return;
         appendEscaped(&body, a, self.uri) catch return;
         body.appendSlice(a, std.fmt.bufPrint(&nb, "\"}},\"options\":{{\"tabSize\":{d},\"insertSpaces\":true}}}}}}", .{tab_size}) catch return) catch return;
-        self.writeMessage(body.items);
+        self.t.write(body.items);
     }
 
     fn sendPositionRequest(self: *Client, id: i64, method: []const u8, line: usize, col: usize) void {
@@ -601,7 +601,7 @@ pub const Client = struct {
         body.appendSlice(a, std.fmt.bufPrint(&nb, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":\"{s}\",\"params\":{{\"textDocument\":{{\"uri\":\"", .{ id, method }) catch return) catch return;
         appendEscaped(&body, a, self.uri) catch return;
         body.appendSlice(a, std.fmt.bufPrint(&nb, "\"}},\"position\":{{\"line\":{d},\"character\":{d}}}}}}}", .{ line, col }) catch return) catch return;
-        self.writeMessage(body.items);
+        self.t.write(body.items);
     }
 
     fn sendNotification(self: *Client, method: []const u8, params: []const u8) void {
@@ -611,17 +611,13 @@ pub const Client = struct {
         body.appendSlice(self.gpa, std.fmt.bufPrint(&nb, "{{\"jsonrpc\":\"2.0\",\"method\":\"{s}\",\"params\":", .{method}) catch return) catch return;
         body.appendSlice(self.gpa, params) catch return;
         body.appendSlice(self.gpa, "}") catch return;
-        self.writeMessage(body.items);
+        self.t.write(body.items);
     }
 
     fn nextId(self: *Client) i64 {
         const id = self.next_id;
         self.next_id += 1;
         return id;
-    }
-
-    fn writeMessage(self: *Client, body: []const u8) void {
-        self.t.write(body);
     }
 
     // --- incoming ----------------------------------------------------------
@@ -942,7 +938,7 @@ pub const Client = struct {
             defer a.free(id_json);
             body.appendSlice(a, id_json) catch return;
             body.appendSlice(a, ",\"result\":{\"applied\":true}}") catch return;
-            self.writeMessage(body.items);
+            self.t.write(body.items);
         }
     }
 

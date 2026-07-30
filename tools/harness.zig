@@ -38,7 +38,7 @@ pub const Ctx = struct {
     /// editing case, say. The detail rides along into the tail summary *and*
     /// the CI annotation, which is the only channel out of a runner whose log
     /// needs a token to read.
-    pub fn checkFmt(self: *Ctx, name: []const u8, cond: bool, comptime fmt: []const u8, args: anytype) void {
+    fn checkFmt(self: *Ctx, name: []const u8, cond: bool, comptime fmt: []const u8, args: anytype) void {
         if (cond) return self.check(name, true);
         const detail = std.fmt.allocPrint(self.gpa, fmt, args) catch return self.check(name, false);
         defer self.gpa.free(detail);
@@ -176,7 +176,7 @@ pub const Session = struct {
     /// crashed, hung, or was simply too slow to reach the keys before the
     /// harness killed it — this is what tells them apart, and it is the only
     /// way to ask the question from outside a CI runner.
-    pub fn childState(self: *Session, buf: []u8) []const u8 {
+    fn childState(self: *Session, buf: []u8) []const u8 {
         var st: c_int = 0;
         const r = c.waitpid(self.pid, &st, c.WNOHANG);
         if (r == 0) return "still running";
@@ -482,7 +482,7 @@ pub const EditRun = struct {
     }
 };
 
-pub fn runEdit(ctx: *Ctx, target: []const u8, initial: []const u8, chunks: []const []const u8) EditRun {
+fn runEdit(ctx: *Ctx, target: []const u8, initial: []const u8, chunks: []const []const u8) EditRun {
     writeFile(ctx.io, target, initial);
     var s = Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, target } }) catch
         return .{

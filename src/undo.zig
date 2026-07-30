@@ -813,14 +813,6 @@ pub const History = struct {
         try w.appendSlice(gpa, &std.mem.toBytes(std.mem.nativeToLittle(u64, v)));
     }
 
-    /// Bytes the history is holding — what the diff storage exists to keep small.
-    pub fn bytesHeld(self: *const History) usize {
-        var n: usize = self.base.items.len;
-        for (self.nodes.items) |s| {
-            if (s.alive) n += s.bytes.len;
-        }
-        return n;
-    }
 };
 
 test "undo and redo round trip" {
@@ -962,7 +954,12 @@ test "a node costs its edit, not the file" {
     // 200 one-character edits over a 100 KB file: the root and the live copy
     // dominate, the 200 states cost bytes each. Snapshots would have needed
     // 20 MB.
-    try std.testing.expect(h.bytesHeld() < 300_000);
+    // The memory the history holds: the anchor text plus every live diff.
+    var held: usize = h.base.items.len;
+    for (h.nodes.items) |s| {
+        if (s.alive) held += s.bytes.len;
+    }
+    try std.testing.expect(held < 300_000);
 }
 
 test "a history survives a round trip through its file" {

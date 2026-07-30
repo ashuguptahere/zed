@@ -184,7 +184,7 @@ fn scan(buf: *const buffer.Buffer, from: Pos, this: u8, other: u8, forward: bool
 /// every other ASCII character is its own class, which is why `.,;` selects
 /// one character at a time while `..` selects both. This is *not* the word
 /// class above: `viw` on `.,;` takes all three.
-pub fn mouseClass(cp: u21) u32 {
+fn mouseClass(cp: u21) u32 {
     if (cp == ' ' or cp == '\t') return 0;
     if (cp >= 0x80) return utfClass(cp);
     if (cp == '_' or isAlnum(cp)) return 2;

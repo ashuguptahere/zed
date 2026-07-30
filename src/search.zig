@@ -80,7 +80,7 @@ pub fn nextLiteral(buf: *const buffer.Buffer, from: Pos, needle: []const u8) ?Po
 }
 
 /// Last literal match strictly before `from`, wrapping to the bottom.
-pub fn prevLiteral(buf: *const buffer.Buffer, from: Pos, needle: []const u8) ?Pos {
+fn prevLiteral(buf: *const buffer.Buffer, from: Pos, needle: []const u8) ?Pos {
     if (needle.len == 0) return null;
     if (eligible(buf, needle)) |src| return fastPrev(buf, src, from, needle);
     const lines = buf.lineCount();

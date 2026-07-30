@@ -25,12 +25,10 @@ fn sendFmt(io: std.Io, comptime fmt: []const u8, args: anytype) void {
     send(io, std.fmt.bufPrint(&out_buf, fmt, args) catch return);
 }
 
-fn stopped(io: std.Io, path: []const u8, line: usize, reason: []const u8) void {
+fn stopped(io: std.Io, reason: []const u8) void {
     sendFmt(io,
         \\{{"type":"event","event":"stopped","body":{{"reason":"{s}","threadId":1,"allThreadsStopped":true}}}}
     , .{reason});
-    _ = path;
-    _ = line;
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -112,7 +110,7 @@ pub fn main(init: std.process.Init) !void {
             } else if (std.mem.eql(u8, cmd, "configurationDone")) {
                 send(io, "{\"type\":\"response\",\"success\":true,\"command\":\"configurationDone\"}");
                 if (line == 0) line = 1;
-                stopped(io, path.items, line, "breakpoint");
+                stopped(io, "breakpoint");
             } else if (std.mem.eql(u8, cmd, "stackTrace")) {
                 sendFmt(io,
                     \\{{"type":"response","success":true,"command":"stackTrace","body":{{"stackFrames":[{{"id":1,"name":"main","line":{d},"column":1,"source":{{"path":"{s}"}}}}],"totalFrames":1}}}}
@@ -122,7 +120,7 @@ pub fn main(init: std.process.Init) !void {
             {
                 sendFmt(io, "{{\"type\":\"response\",\"success\":true,\"command\":\"{s}\"}}", .{cmd});
                 line += 1; // one line further on each step
-                stopped(io, path.items, line, "step");
+                stopped(io, "step");
             } else if (std.mem.eql(u8, cmd, "continue")) {
                 send(io, "{\"type\":\"response\",\"success\":true,\"command\":\"continue\"}");
                 send(io, "{\"type\":\"event\",\"event\":\"output\",\"body\":{\"category\":\"stdout\",\"output\":\"program finished\\n\"}}");
