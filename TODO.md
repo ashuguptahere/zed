@@ -11,11 +11,20 @@ behind the roadmap items.
 
 ## Next (in order)
 
-1. [ ] **The CI-only test failure.** `zig build itest` is green locally
-       (including pinned to two cores with `taskset`, to rule out a load
-       race), but CI reports `1093 passed, 1 failed`. The run now reprints
-       every failed check as `suite: name` at the tail (0.28.0), so the next
-       CI log names it — that is the blocker, not the fix.
+1. [ ] **The CI-only test failure.** CI reported `1093 passed, 1 failed`;
+       the same commit run locally gives `1094 passed, 0 failed`, so the
+       *count* matches exactly — no check is being skipped there, one behaves
+       differently. Ruled out so far: check count, `TERM` (the harness always
+       sets it), the recent-files state and sessions (isolated
+       `XDG_STATE_HOME`), a live `nvim` dependency (expectations are
+       checked-in literals), `--check-update` (the release URL answers in
+       milliseconds with no tags, so the "no releases" branch passes with or
+       without credentials), and raw slowness — a full run pinned to half a
+       core is still `1123 passed, 0 failed`. Fixed one plausible cause on
+       the way (the harness ignored short writes, 0.30.0) without being able
+       to reproduce it. The run now reprints every failed check as
+       `suite: name` at the tail (0.28.0), so the next CI log names it —
+       that is the blocker, not the fix.
 2. [ ] **The terminal's own colour at the far right / far bottom.** Traced as
        far as the code allows: every render branch pads to its window's width
        (`emitFillerRow`, `emitDeletedRow`, `past_eof`, `emitLine`), the
@@ -36,8 +45,12 @@ behind the roadmap items.
        wanted at all before adding one.
 4. [ ] **A verified AstroNvim/Helix keymap gap analysis**, updating
        `doc/COMPARISON.md` — key by key, not from memory.
-5. [ ] **Session / workspace save + restore** (open buffers, windows,
-       cursors, the tree's expanded set).
+5. [ ] **Session polish.** Save/restore landed in 0.30.0 (files, cursors,
+       splits, tree open/closed). Not covered yet: the tree's *expanded*
+       directories, per-buffer cursors for files no pane shows (the editor
+       keeps a cursor per window, not per buffer — that model would have to
+       change first), named sessions beyond the one per directory, and the
+       jumplist/marks.
 6. [ ] **Embedded terminal** — a VT emulator in a window. Large, multi-batch.
 7. [ ] **Debugger** — a DAP client (breakpoints, stepping, variables).
        Large, multi-batch. No package management (agreed with the owner).
@@ -146,6 +159,8 @@ there is nothing to change there.
       failures and takes suite filters. (0.28.0)
 - [x] `Space f u` (undo tree) and `Space n` (new buffer): two features that
       existed with no key. (0.29.0)
+- [x] Sessions: per-directory save/restore of files, cursors, splits and the
+      tree, explicit both ways (`Space S`, `:session`). (0.30.0)
 
 - [x] Modal editor core: event-driven zero-idle-CPU loop, single-syscall
       frames, UTF-8-correct movement/rendering, friendly CLI. (0.1.0)

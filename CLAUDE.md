@@ -178,6 +178,7 @@ Source is `src/`, one responsibility per module:
 | `complete.zig` | Buffer-word completion candidates: identifiers harvested from the open buffers (the fallback when no server answers). |
 | `snippet.zig` | LSP snippet parsing: `$1`, `${1:placeholder}`, `${1|a,b|}`, `$0`, escapes → plain text + tabstops. |
 | `recent.zig`  | The recently-opened list behind the startup screen (XDG state file). |
+| `session.zig` | Per-directory sessions: the open files + cursors, the split layout and the tree's state, serialised to an XDG state file. |
 | `remote.zig`  | Editing over SSH: `ssh://user@host/path` parsing, read/write/list via one `ssh` per operation. |
 | `lsp.zig`     | Minimal LSP client: JSON-RPC over a server's stdio (diagnostics, hover, goto, completion, signature help; incremental or full doc sync per the server's capabilities). |
 | `treesitter.zig` | Tree-sitter highlighting via the vendored C runtime + grammar (incremental parse, visible-range `highlights.scm` query, language injections, `#match?`/`#eq?` predicates, `indents.scm`; compiled queries + predicate regexes shared process-wide). |
@@ -513,7 +514,9 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   references, `l s` document symbols, `l S` workspace symbols, `l d` line
   diagnostic, `l D` all diagnostics, `l f` format);
   `Space g` = Git (`g d` inline diff,
-  `g s` side-by-side, `g l` line diff); `Space e` file explorer, `Space n` a new empty
+  `g s` side-by-side, `g l` line diff); `Space S` = Session for this
+  working directory (`S s` save, `S l` load, `S d` delete — also
+  `:session save|load|delete`); `Space e` file explorer, `Space n` a new empty
   buffer (AstroNvim's `<leader>n`; the buffer it replaces stays open),
   `Space c` close buffer,
   `Space w` write, `Space q` quit. In a picker: type to filter, `Ctrl-n`/`Ctrl-p` or
@@ -720,6 +723,23 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   third window, and each split view re-tiles in its own orientation. All of
   them reflect the file as last saved, like the gutter signs; all refresh on
   `:w` (a weave with no changes left simply closes).
+- **Sessions (`Space S`, `:session`):** the open files with their cursors,
+  the split layout and whether the tree was open, saved per working directory
+  under `$XDG_STATE_HOME/zedit/sessions/<hash of the cwd>` (the cwd itself is
+  stored inside and checked, so a hash collision cannot restore the wrong
+  project). Restoring reopens the files, remakes the splits and gives window
+  *i* the *i*-th file — a three-pane session comes back as three panes showing
+  what they showed, not the same buffer three times. Both directions are
+  **explicit**: nothing is saved on exit and nothing is restored on launch, so
+  the "never do work the user did not ask for" rule holds. A restore refuses
+  while any buffer is unsaved (naming it) rather than closing over the work,
+  a file that has since disappeared is skipped and counted in the message
+  rather than being fatal, and an unknown directive in the file is ignored so
+  a session written by a later version still restores what this one
+  understands. Only a *visible* file's cursor comes back: the editor keeps a
+  cursor per window, not per buffer, so a buffer on screen nowhere has none to
+  restore (it is still saved, for when there are enough panes). The file cap
+  is 200, which bounds what a malformed session can make the parser allocate.
 - **Startup screen:** launched with no file, zedit shows the recently-opened
   list (files and directories, newest first) with the leaf name first and the
   location dimmed and middle-elided. `j`/`k` or arrows select, `Enter` opens,

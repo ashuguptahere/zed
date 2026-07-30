@@ -286,6 +286,7 @@ test {
     _ = @import("config.zig");
     _ = @import("git.zig");
     _ = @import("recent.zig");
+    _ = @import("session.zig");
     _ = @import("remote.zig");
     _ = @import("snippet.zig");
     _ = @import("complete.zig");

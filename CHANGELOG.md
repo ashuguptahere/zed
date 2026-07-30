@@ -2,6 +2,42 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.30.0 - 2026-07-30
+
+### Added
+
+- **Sessions** (`Space S s` / `l` / `d`, `:session save|load|delete`): the
+  open files with their cursors, the split layout and whether the file tree
+  was open, saved per working directory under
+  `$XDG_STATE_HOME/zedit/sessions/<hash of the cwd>`. The cwd is stored inside
+  the file and checked on load, so a hash collision cannot restore the wrong
+  project, and unknown directives are skipped so a session written by a later
+  version still restores what this one understands.
+
+  Restoring reopens the files, remakes the splits and gives window *i* the
+  *i*-th file — a three-pane session comes back as three panes showing what
+  they showed, not the same buffer three times.
+
+  Both directions are explicit: nothing is saved on exit and nothing is
+  restored on launch, keeping the promise that zedit never does work the user
+  did not ask for. A load refuses while any buffer is unsaved and names it,
+  rather than closing over the work; a file that has since disappeared is
+  skipped and counted in the message rather than being fatal; and the 200-file
+  cap bounds what a malformed session can make the parser allocate.
+
+### Fixed
+
+- **The pty test harness dropped the tail of a long burst.** `Session.send`
+  ignored `write`'s return value, and a pty master can accept less than it was
+  given when the slave has not drained — the mouse suite's boundary sweep
+  sends 2 KB in one call. It now loops, polling for writability between
+  attempts. Not reproduced locally (no partial write was observed even on half
+  a core), so this is not confirmed to be the CI-only failure that is still
+  open — but ignoring a write's return value is a bug wherever it appears, and
+  a dropped keystroke would look exactly like an editor fault on whichever
+  machine happened to schedule it that way. The editor's own `Terminal.write`
+  was already correct.
+
 ## 0.29.0 - 2026-07-30
 
 ### Added

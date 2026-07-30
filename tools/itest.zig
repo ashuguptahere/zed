@@ -30,6 +30,7 @@ const scenarios = .{
     .{ "cpu", @import("scenarios/cpu.zig") },
     .{ "wrap", @import("scenarios/wrap.zig") },
     .{ "undotree", @import("scenarios/undotree.zig") },
+    .{ "session", @import("scenarios/session.zig") },
 };
 
 /// Whether suite `name` was asked for: everything when no filter was given.

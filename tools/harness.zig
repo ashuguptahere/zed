@@ -102,8 +102,29 @@ pub const Session = struct {
         return .{ .master = master, .pid = pid, .out = .empty, .gpa = gpa };
     }
 
+    /// Write every byte, looping over short writes. A pty master can accept
+    /// less than it was given when the slave has not drained yet, and the
+    /// bursts here run to a couple of kilobytes — ignoring the return value
+    /// silently dropped the tail of one, which is a dropped keystroke that
+    /// looks like an editor bug on whichever machine happens to schedule it
+    /// that way.
     pub fn send(self: *Session, bytes: []const u8) void {
-        _ = c.write(self.master, bytes.ptr, bytes.len);
+        var off: usize = 0;
+        while (off < bytes.len) {
+            const n = c.write(self.master, bytes.ptr + off, bytes.len - off);
+            if (n > 0) {
+                off += @intCast(n);
+                continue;
+            }
+            // EINTR/EAGAIN: give the reader a moment and try again. Anything
+            // else (the child is gone) ends the write rather than spinning.
+            const err = std.posix.errno(n);
+            if (err != .INTR and err != .AGAIN) return;
+            // Wait for the slave to make room, the same way `drain` waits for
+            // output: poll rather than spin.
+            var pfd = [_]c.pollfd{.{ .fd = self.master, .events = c.POLLOUT, .revents = 0 }};
+            _ = c.poll(&pfd, 1, 50);
+        }
     }
 
     /// Resize the pty, which sends the child a real SIGWINCH — the only way to

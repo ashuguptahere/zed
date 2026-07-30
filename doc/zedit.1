@@ -744,6 +744,20 @@ return focus to the buffer,
 .B q
 close.
 .TP
+.B Space S
+This working directory's session:
+.B s
+save the open files, their cursors, the split layout and whether the tree was
+open;
+.B l
+load it back;
+.B d
+delete it. Also
+.BR ":session save|load|delete" .
+Nothing is saved on exit or restored on launch — both directions are asked
+for. A load refuses while any buffer is unsaved, and a file that has since
+disappeared is skipped and counted rather than being fatal.
+.TP
 .B Space f u
 The undo tree in a picker (what
 .B :undolist

@@ -81,7 +81,9 @@
   which-key menus: `Space f f` find files, `Space f w` find words (regex grep,
   same syntax as `/`),
   `Space f b` buffers, `Space f t` themes, `Space f u` the undo tree;
-  `Space n` a new empty buffer; `Space b …` buffers (picker,
+  `Space n` a new empty buffer; `Space S …` sessions (save/load/delete this
+  directory's open files, cursors, splits and tree state — explicit both ways,
+  never on launch or exit); `Space b …` buffers (picker,
   next/previous, close others); `Space u …` UI toggles (wrap, numbers, inline
   diagnostics, tabs, autoindent, completion, format-on-save, mouse — flipped
   for the session, the config file untouched); `Space l …` language tools — one

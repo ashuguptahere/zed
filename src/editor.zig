@@ -30,6 +30,7 @@ const treesitter = @import("treesitter.zig");
 const config = @import("config.zig");
 const cli = @import("cli.zig");
 const recent = @import("recent.zig");
+const session = @import("session.zig");
 const snippet = @import("snippet.zig");
 const remote = @import("remote.zig");
 const regex = @import("regex.zig");
@@ -154,6 +155,7 @@ const Await = enum {
     space_git, // <space>g — the Git group (diff views)
     space_buffer, // <space>b — the Buffers group (picker, next/prev, close)
     space_ui, // <space>u — the UI-toggles group
+    space_session, // <space>S — save/load/delete this directory's session
     surround_add_char, // ys{motion}{char} / visual S{char}
     surround_delete, // ds{char}
     surround_change_from, // cs{old}...
@@ -1769,6 +1771,7 @@ pub const Editor = struct {
                     'g' => self.await_arg = .space_git,
                     'u' => self.await_arg = .space_ui,
                     'n' => self.newBuffer(), // AstroNvim's <leader>n
+                    'S' => self.await_arg = .space_session,
                     'e' => self.sidebarToggle(), // file explorer (AstroNvim <leader>e)
                     'w' => _ = try self.write(""),
                     'q' => self.doQuit(),
@@ -1783,6 +1786,15 @@ pub const Editor = struct {
                     'n' => self.cycleDoc(true, 1), // next buffer (]b)
                     'p' => self.cycleDoc(false, 1), // previous buffer ([b)
                     'c' => self.closeOthers(), // AstroNvim's <leader>bc
+                    else => {},
+                };
+            },
+            .space_session => {
+                self.resetPending();
+                if (k == .char) switch (k.char) {
+                    's' => self.sessionSave(),
+                    'l' => self.sessionLoad(),
+                    'd' => self.sessionDelete(),
                     else => {},
                 };
             },
@@ -5722,8 +5734,8 @@ pub const Editor = struct {
     const command_names = [_][]const u8{
         "bdelete", "bnext",  "bprevious", "buffers",  "close", "diff",   "earlier",
         "edit",    "format", "later",     "ldiff",    "ls",    "only",   "quit",
-        "quitall", "split",  "theme",     "undolist", "vdiff", "vsplit", "wall",
-        "wq",      "write",  "x",
+        "quitall", "session", "split",   "theme",    "undolist", "vdiff", "vsplit",
+        "wall",    "wq",     "write",     "x",
     };
 
     fn wildCommands(self: *Editor, prefix: []const u8) void {
@@ -5833,6 +5845,14 @@ pub const Editor = struct {
             self.closeWindow();
         } else if (eql(cmd, "on") or eql(cmd, "only")) {
             self.onlyWindow();
+        } else if (eql(cmd, "session")) {
+            if (eql(arg, "save")) {
+                self.sessionSave();
+            } else if (eql(arg, "load")) {
+                self.sessionLoad();
+            } else if (eql(arg, "delete")) {
+                self.sessionDelete();
+            } else self.setStatus("usage: :session save | load | delete", .{});
         } else if (eql(cmd, "bn") or eql(cmd, "bnext")) {
             self.cycleDoc(true, 1);
         } else if (eql(cmd, "bp") or eql(cmd, "bprev") or eql(cmd, "bprevious")) {
@@ -7476,6 +7496,133 @@ pub const Editor = struct {
         }
         self.mode = .picker;
         self.refilter();
+    }
+
+    // === sessions ==========================================================
+
+    /// `Space S s` / `:session save` — remember this directory's open files,
+    /// their cursors, the split layout and whether the tree was open. Only
+    /// file-backed documents go in: an unnamed buffer has nothing to reopen,
+    /// and a diff snapshot is derived state that rebuilds itself.
+    fn sessionSave(self: *Editor) void {
+        const cwd = std.process.currentPathAlloc(self.io, self.gpa) catch
+            return self.setStatus("cannot read the working directory", .{});
+        defer self.gpa.free(cwd);
+        self.saveViewport(); // the active window's cursor lives in the mirror
+
+        var s = session.Session{
+            .gpa = self.gpa,
+            .windows = self.wins.items.len,
+            .split_vertical = self.split_vertical,
+            .sidebar = self.sb_open,
+        };
+        defer s.deinit();
+        for (self.docs.items) |doc| {
+            if (doc.diff_of != null) continue; // an index snapshot, not a file
+            const path = doc.buf.path orelse continue;
+            if (doc == self.d) s.active = s.entries.items.len;
+            // A cursor belongs to a *window*, not to a document: take it from
+            // the first window showing this one (saveViewport above put the
+            // active window's back), and 0,0 for a buffer on screen nowhere.
+            var cy: usize = 0;
+            var cx: usize = 0;
+            for (self.wins.items) |w| {
+                if (w.doc != doc) continue;
+                cy = w.cy;
+                cx = w.cx;
+                break;
+            }
+            const owned = self.gpa.dupe(u8, path) catch break;
+            s.entries.append(self.gpa, .{ .path = owned, .line = cy, .col = cx }) catch {
+                self.gpa.free(owned);
+                break;
+            };
+        }
+        if (s.entries.items.len == 0) return self.setStatus("nothing to save: no files open", .{});
+        session.save(self.io, cwd, &s) catch |err|
+            return self.setStatus("could not save the session: {s}", .{@errorName(err)});
+        self.setStatus("session saved ({d} file{s})", .{
+            s.entries.items.len,
+            if (s.entries.items.len == 1) "" else "s",
+        });
+    }
+
+    /// `Space S l` / `:session load` — reopen what was saved here. Refuses
+    /// while anything is unsaved rather than closing over the user's work,
+    /// and a file that has since disappeared is skipped, not fatal.
+    fn sessionLoad(self: *Editor) void {
+        const cwd = std.process.currentPathAlloc(self.io, self.gpa) catch
+            return self.setStatus("cannot read the working directory", .{});
+        defer self.gpa.free(cwd);
+        for (self.docs.items) |doc| {
+            if (doc.buf.dirty) return self.setStatus("no write since last change: {s}", .{docLabel(doc)});
+        }
+        var s = session.load(self.gpa, self.io, cwd) orelse
+            return self.setStatus("no session saved for this directory", .{});
+        defer s.deinit();
+
+        self.onlyWindow(); // one window to open into; splits are remade below
+        var opened: std.ArrayList(*Doc) = .empty;
+        defer opened.deinit(self.gpa);
+        var missing: usize = 0;
+        var active: usize = 0; // index into `opened`
+        for (s.entries.items, 0..) |entry, i| {
+            if (std.Io.Dir.cwd().access(self.io, entry.path, .{})) |_| {} else |_| {
+                missing += 1;
+                continue;
+            }
+            self.openFile(entry.path, 0);
+            if (i == s.active) active = opened.items.len; // its file may be gone
+            opened.append(self.gpa, self.d) catch break;
+        }
+        if (opened.items.len == 0) return self.setStatus("session files are all gone", .{});
+        if (active >= opened.items.len) active = 0;
+
+        // Remake the splits, then give window i the i-th file — a two-pane
+        // session comes back as two panes showing what it showed, not the
+        // same buffer twice.
+        var made: usize = 1;
+        while (made < s.windows and made < opened.items.len) : (made += 1) self.splitWindow(s.split_vertical);
+        if (self.wins.items.len > 1) self.split_vertical = s.split_vertical;
+        for (self.wins.items, 0..) |w, i| w.doc = opened.items[@min(i, opened.items.len - 1)];
+
+        // Focus the window holding the saved active file (the first one, when
+        // there are fewer windows than files), and put its cursor back. Only
+        // a *visible* file's cursor can be restored: the editor keeps a cursor
+        // per window, not per buffer, so a buffer on screen nowhere has none.
+        self.cur = self.wins.items[@min(active, self.wins.items.len - 1)];
+        self.d = self.cur.doc; // loadDoc's precondition: swap from the right doc
+        self.buf = &self.d.buf;
+        self.loadDoc(opened.items[active]);
+        self.cur.doc = opened.items[active];
+        const entry = s.entries.items[@min(s.active, s.entries.items.len - 1)];
+        self.cy = @min(entry.line, self.buf.lineCount() -| 1);
+        self.cx = @min(entry.col, self.curLine().len);
+        self.goal_col = self.cx;
+        self.saveViewport();
+        if (s.sidebar and !self.sb_open) self.sidebarToggle();
+        self.sb_focus = false;
+        self.clearExtra();
+        self.placeAt(self.cy);
+        self.prev_valid = false;
+        const n = opened.items.len;
+        if (missing > 0) {
+            self.setStatus("session restored: {d} file{s}, {d} gone", .{ n, if (n == 1) "" else "s", missing });
+        } else {
+            self.setStatus("session restored ({d} file{s})", .{ n, if (n == 1) "" else "s" });
+        }
+    }
+
+    /// `Space S d` / `:session delete` — forget this directory's session.
+    fn sessionDelete(self: *Editor) void {
+        const cwd = std.process.currentPathAlloc(self.io, self.gpa) catch
+            return self.setStatus("cannot read the working directory", .{});
+        defer self.gpa.free(cwd);
+        if (session.delete(self.io, cwd)) {
+            self.setStatus("session deleted", .{});
+        } else {
+            self.setStatus("no session saved for this directory", .{});
+        }
     }
 
     /// `Space u …` — flip a boolean setting for this session and say so. The
@@ -9335,10 +9482,18 @@ pub const Editor = struct {
         .{ .key = "g", .desc = "Git \u{2026}" },
         .{ .key = "u", .desc = "UI toggles \u{2026}" },
         .{ .key = "n", .desc = "new buffer" },
+        .{ .key = "S", .desc = "session \u{2026}" },
         .{ .key = "e", .desc = "explorer" },
         .{ .key = "c", .desc = "close buffer" },
         .{ .key = "w", .desc = "write (save)" },
         .{ .key = "q", .desc = "quit" },
+    };
+    /// `Space S` — the session for this working directory. Explicit both
+    /// ways: nothing is saved or restored unless a key says so.
+    const session_keys = [_]WhichKey{
+        .{ .key = "s", .desc = "save session" },
+        .{ .key = "l", .desc = "load session" },
+        .{ .key = "d", .desc = "delete session" },
     };
     /// `Space u` — the settings a user flips while working. Each is the config
     /// key of the same name, read afresh every frame, so flipping it needs no
@@ -9814,6 +9969,7 @@ pub const Editor = struct {
             .space_git => .{ .title = " SPACE g", .keys = &git_keys },
             .space_buffer => .{ .title = " SPACE b", .keys = &buffer_keys },
             .space_ui => .{ .title = " SPACE u", .keys = &ui_keys },
+            .space_session => .{ .title = " SPACE S", .keys = &session_keys },
             else => null,
         };
     }
