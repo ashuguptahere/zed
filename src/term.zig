@@ -183,7 +183,7 @@ pub const Terminal = struct {
     }
 
     /// Which descriptors became readable while blocked in `waitReady`.
-    pub const Ready = struct { input: bool, other: bool };
+    pub const Ready = struct { input: bool, other: bool, extra: bool = false };
 
     /// Block (consuming no CPU) until stdin or `other` (e.g. a language server)
     /// is readable, or a signal fires. Both fields are false when interrupted —
@@ -197,19 +197,34 @@ pub const Terminal = struct {
     /// Block until input (or `other`) is readable. `timeout_ms` of -1 blocks
     /// forever — the idle case, costing zero CPU; a non-negative value is used
     /// only while something is actually scheduled (the completion debounce).
-    pub fn waitReady(self: *Terminal, other: ?posix.fd_t, timeout_ms: i32) Error!Ready {
-        var fds: [2]posix.pollfd = undefined;
+    /// `other` is the language server's stdout, `extra` an embedded terminal's
+    /// pty. Both are optional, and an absent one costs nothing — the editor
+    /// still blocks on just stdin when neither is running.
+    pub fn waitReady(self: *Terminal, other: ?posix.fd_t, extra: ?posix.fd_t, timeout_ms: i32) Error!Ready {
+        var fds: [3]posix.pollfd = undefined;
         fds[0] = .{ .fd = self.in, .events = posix.POLL.IN, .revents = 0 };
         var n: posix.nfds_t = 1;
+        var other_i: ?usize = null;
+        var extra_i: ?usize = null;
         if (other) |o| {
-            fds[1] = .{ .fd = o, .events = posix.POLL.IN, .revents = 0 };
-            n = 2;
+            fds[n] = .{ .fd = o, .events = posix.POLL.IN, .revents = 0 };
+            other_i = n;
+            n += 1;
+        }
+        if (extra) |x| {
+            fds[n] = .{ .fd = x, .events = posix.POLL.IN, .revents = 0 };
+            extra_i = n;
+            n += 1;
         }
         const rc = posix.system.poll(&fds, n, timeout_ms);
         return switch (posix.system.errno(rc)) {
             .SUCCESS => .{
                 .input = (fds[0].revents & posix.POLL.IN) != 0,
-                .other = n == 2 and (fds[1].revents & posix.POLL.IN) != 0,
+                .other = if (other_i) |i| (fds[i].revents & posix.POLL.IN) != 0 else false,
+                // POLLHUP too: a shell that exits makes its pty readable-then-
+                // hung-up, and the loop must wake to reap it rather than
+                // blocking forever on a dead child.
+                .extra = if (extra_i) |i| (fds[i].revents & (posix.POLL.IN | posix.POLL.HUP)) != 0 else false,
             },
             .INTR => .{ .input = false, .other = false },
             else => |e| posix.unexpectedErrno(e),
@@ -235,3 +250,151 @@ pub const Terminal = struct {
         return n > 0 and (fds[0].revents & posix.POLL.IN) != 0;
     }
 };
+
+// === child pseudo-terminals =================================================
+//
+// The embedded terminal (`Space t`) runs a shell on its own pty: zedit is the
+// terminal emulator for it, exactly as the outer terminal is for zedit. All
+// of that is OS-specific, so it lives here rather than in `vt.zig`, which
+// stays a pure state machine.
+
+const c = @cImport({
+    @cDefine("_GNU_SOURCE", "1"); // posix_openpt / grantpt / ptsname
+    @cInclude("stdlib.h");
+    @cInclude("unistd.h");
+    @cInclude("fcntl.h");
+    @cInclude("sys/ioctl.h");
+    @cInclude("signal.h");
+    @cInclude("sys/wait.h");
+});
+
+/// A child process on a pty: read its output from `fd`, write keys to it,
+/// and reap it when it exits.
+pub const Child = struct {
+    fd: posix.fd_t,
+    pid: posix.pid_t,
+    /// Set once `reap` has seen it exit; the fd is closed at that point.
+    exited: bool = false,
+    /// The pty reported end-of-file (EIO on Linux): the child's side is gone
+    /// even if it has not been reaped yet.
+    hung_up: bool = false,
+
+    /// Whatever the child has written, or an empty slice when nothing is
+    /// ready. A closed pty (the shell exited) reads as empty and is noticed
+    /// by `reap`.
+    pub fn read(self: *Child, buf: []u8) []u8 {
+        if (self.exited) return buf[0..0];
+        const n = c.read(self.fd, buf.ptr, buf.len);
+        // A pty master whose slave is gone reports EIO on Linux and a plain
+        // end-of-file on macOS/the BSDs. Either way the fd would stay
+        // permanently ready, so poll would return at once on every pass and
+        // the editor would spin until the child became reapable — which is
+        // the zero-idle-CPU promise broken. On Linux `waitpid` wins that race
+        // in practice (the pty scenario cannot force the other order), so
+        // this guard earns its place on the other platforms.
+        if (n < 0) {
+            if (posix.errno(n) == .IO) self.hung_up = true;
+            return buf[0..0];
+        }
+        if (n == 0) self.hung_up = true;
+        return buf[0..@intCast(n)];
+    }
+
+    pub fn write(self: *Child, bytes: []const u8) void {
+        if (self.exited) return;
+        var off: usize = 0;
+        while (off < bytes.len) {
+            const n = c.write(self.fd, bytes.ptr + off, bytes.len - off);
+            if (n > 0) {
+                off += @intCast(n);
+                continue;
+            }
+            const err = posix.errno(n);
+            if (err != .INTR) return; // EAGAIN on a full pty: drop, do not block the editor
+        }
+    }
+
+    /// Tell the child its window changed, which is what makes a shell redraw
+    /// its prompt at the new width (SIGWINCH is delivered by the kernel).
+    pub fn resize(self: *Child, rows: u16, cols: u16) void {
+        if (self.exited) return;
+        var ws = c.winsize{ .ws_row = rows, .ws_col = cols, .ws_xpixel = 0, .ws_ypixel = 0 };
+        _ = c.ioctl(self.fd, c.TIOCSWINSZ, &ws);
+    }
+
+    /// True the first time the child is found to have exited (non-blocking).
+    /// The fd is closed here, so the poll loop stops waking on it.
+    pub fn reap(self: *Child) bool {
+        if (self.exited) return false;
+        var status: c_int = 0;
+        const done = c.waitpid(self.pid, &status, c.WNOHANG) == self.pid;
+        // A hung-up pty counts as finished even before the child is reapable:
+        // there is nothing more to read and nowhere to write, and leaving the
+        // fd in the poll set would busy-loop.
+        if (!done and !self.hung_up) return false;
+        self.exited = true;
+        _ = c.close(self.fd);
+        return true;
+    }
+
+    /// Ask the child to go away, then reap it. SIGHUP is what a terminal
+    /// sends when its window closes, so a shell exits cleanly.
+    pub fn close(self: *Child) void {
+        if (self.exited) return;
+        _ = c.kill(self.pid, c.SIGHUP);
+        var status: c_int = 0;
+        _ = c.waitpid(self.pid, &status, c.WNOHANG);
+        self.exited = true;
+        _ = c.close(self.fd);
+    }
+};
+
+pub const SpawnError = error{ OpenPt, GrantPt, Fork };
+
+/// Run `argv` on a fresh pty of the given size. `argv` must be
+/// null-terminated pointers; `cwd` is where the child starts.
+pub fn spawnChild(argv: [*:null]const ?[*:0]const u8, cwd: ?[*:0]const u8, rows: u16, cols: u16) SpawnError!Child {
+    const master = c.posix_openpt(c.O_RDWR | c.O_NOCTTY);
+    if (master < 0) return error.OpenPt;
+    if (c.grantpt(master) != 0 or c.unlockpt(master) != 0) {
+        _ = c.close(master);
+        return error.GrantPt;
+    }
+    const pid = c.fork();
+    if (pid < 0) {
+        _ = c.close(master);
+        return error.Fork;
+    }
+    if (pid == 0) {
+        // The child: give it the slave as its controlling terminal, then exec.
+        _ = c.setsid();
+        const slave = c.open(c.ptsname(master), c.O_RDWR);
+        _ = c.ioctl(slave, c.TIOCSCTTY, @as(c_int, 0));
+        _ = c.dup2(slave, 0);
+        _ = c.dup2(slave, 1);
+        _ = c.dup2(slave, 2);
+        if (slave > 2) _ = c.close(slave);
+        _ = c.close(master);
+        // A terminal zedit can actually emulate. Claiming xterm-256color
+        // would invite the alternate screen and mouse reporting, which
+        // `vt.zig` does not implement.
+        _ = c.setenv("TERM", "xterm", 1);
+        if (cwd) |d| _ = c.chdir(d);
+        _ = c.execvp(argv[0].?, @ptrCast(argv));
+        c._exit(127);
+    }
+    var ws = c.winsize{ .ws_row = rows, .ws_col = cols, .ws_xpixel = 0, .ws_ypixel = 0 };
+    _ = c.ioctl(master, c.TIOCSWINSZ, &ws);
+    // Non-blocking, so a read with nothing ready returns instead of stalling
+    // the editor's single-threaded loop.
+    _ = c.fcntl(master, c.F_SETFL, c.O_NONBLOCK);
+    return .{ .fd = master, .pid = pid };
+}
+
+/// The user's login shell, or `/bin/sh` when `$SHELL` says nothing.
+pub fn userShell() [*:0]const u8 {
+    if (std.c.getenv("SHELL")) |sh| {
+        if (std.mem.sliceTo(sh, 0).len > 0) return sh;
+    }
+    return "/bin/sh";
+}

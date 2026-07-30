@@ -2,6 +2,59 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.31.0 - 2026-07-30
+
+### Added
+
+- **An embedded terminal** (`Space t`, `:terminal`): a real shell on its own
+  pty in a horizontal split, with zedit as its terminal emulator. No more
+  leaving the editor to run a command — one of the "one app, not five" goals.
+
+  `vt.zig` is the emulator and is deliberately **pure** — bytes in, a grid of
+  styled cells out, no pty and no rendering — so the state machine is
+  unit-testable, which is the only way something this fiddly stays correct
+  (26 tests). It covers the C0 controls, cursor movement, erase, insert and
+  delete of lines and characters, scrolling regions, xterm's deferred wrap (so
+  a line exactly as wide as the window does not scroll a row early),
+  double-width characters, UTF-8 split across reads, and SGR colour: the 16
+  ANSI colours, the 256-colour cube and 24-bit truecolour. Escapes it does not
+  know are consumed and dropped rather than printed — the difference between
+  an unsupported feature and a screen of garbage.
+
+  `term.zig` owns the OS half: `posix_openpt` + fork + exec of `$SHELL`,
+  window-size propagation (so the shell redraws its prompt when the split
+  changes), and reaping.
+
+  Modes follow nvim exactly: keys go to the child in **Terminal** mode,
+  `Ctrl-\ Ctrl-n` returns to normal, `i`/`a`/`o` go back in. A second
+  `Space t` focuses the shell already open rather than stacking another. The
+  grid is read-only to buffer commands, so it can never go dirty and block
+  `:q`, and an exited shell keeps its last output on screen until any key
+  dismisses the window.
+
+  The child is told `TERM=xterm`, not `xterm-256color`, on purpose: claiming
+  the latter invites the alternate screen and mouse reporting that `vt.zig`
+  does not implement.
+
+### Security
+
+- Everything the shell writes is untrusted input. Escape sequences become
+  emulator state rather than text, and a C1 control that reaches the grid
+  renders as `?` through the same sanitizer as buffer content — pinned by a
+  scenario that has the child print a raw U+009B (the 8-bit CSI) and asserts
+  the byte never reaches the outer terminal.
+
+### Performance
+
+- The shell's pty is polled alongside stdin and the language server
+  (`waitReady` now takes all three fds), so an idle shell still costs **zero
+  CPU** — measured through `/proc` in the scenario, both at the prompt and
+  after the shell exits. A pty that reports end-of-file before its child is
+  reapable is treated as finished, because leaving it in the poll set would
+  spin the loop; on Linux `waitpid` wins that race in practice, so that guard
+  is for macOS and the BSDs and is not exercised by CI (recorded in TODO.md
+  rather than claimed as covered).
+
 ## 0.30.0 - 2026-07-30
 
 ### Added

@@ -31,6 +31,7 @@ const config = @import("config.zig");
 const cli = @import("cli.zig");
 const recent = @import("recent.zig");
 const session = @import("session.zig");
+const vt = @import("vt.zig");
 const snippet = @import("snippet.zig");
 const remote = @import("remote.zig");
 const regex = @import("regex.zig");
@@ -75,6 +76,7 @@ pub const Mode = enum {
     visual_block,
     command,
     picker,
+    terminal, // keys go to the embedded shell (nvim's Terminal mode)
 
     fn label(self: Mode) []const u8 {
         return switch (self) {
@@ -85,6 +87,7 @@ pub const Mode = enum {
             .visual_block => "V-BLOCK",
             .command => "COMMAND",
             .picker => "PICKER",
+            .terminal => "TERMINAL",
         };
     }
 };
@@ -194,6 +197,10 @@ const Doc = struct {
     diff_of: ?*Doc = null, // side-by-side index snapshot: the worktree doc it mirrors
     diff_hunks: []git.Hunk = &.{}, // set on the index snapshot: aligns the pair's panes
     line_diff: ?git.LineDiff = null, // `Space g l`: the in-buffer weave of old lines
+    /// An embedded shell (`Space t t`). When set, the window renders this
+    /// grid instead of the buffer, and keys go to the child while the editor
+    /// is in terminal mode.
+    shell: ?Shell = null,
     lang: syntax.Language,
     history: undo.History,
     marks: [26]?Pos = [_]?Pos{null} ** 26,
@@ -213,6 +220,22 @@ const Doc = struct {
 /// A viewport onto a document. The *active* window's viewport is mirrored on
 /// the Editor (`cy/cx/goal_col/top/left`); `g*` is its screen region, recomputed
 /// by the layout each frame.
+/// A shell on its own pty, plus the screen zedit emulates for it. The two
+/// always move together — feeding output, resizing, and dying — so they are
+/// one struct rather than two fields on Doc.
+const Shell = struct {
+    child: term.Child,
+    screen: vt.Screen,
+    /// Set when the child has exited: the grid is kept so its last output is
+    /// still readable, and any key closes the window.
+    done: bool = false,
+
+    fn deinit(self: *Shell) void {
+        self.child.close();
+        self.screen.deinit();
+    }
+};
+
 const Win = struct {
     doc: *Doc,
     cy: usize = 0,
@@ -536,6 +559,9 @@ pub const Editor = struct {
     paste_carry_len: usize = 0,
 
     quit: bool = false,
+    /// Terminal mode saw `Ctrl-\`, waiting to see whether `Ctrl-n` follows
+    /// (nvim's escape pair). Any other key sends both to the child.
+    term_escape: bool = false,
     // One read's worth of raw input. Sized so a full-window mouse drag (mode
     // 1002 reports one ~13-byte sequence per cell crossed, ~900 bytes across
     // an 80-column window) arrives in a single read and costs a single frame.
@@ -573,6 +599,7 @@ pub const Editor = struct {
         doc.ts_styles.deinit(gpa);
         doc.ts_line_starts.deinit(gpa);
         if (doc.lsp) |*c| c.deinit();
+        if (doc.shell) |*s| s.deinit();
     }
 
     pub fn init(gpa: Allocator, io: std.Io, t: *term.Terminal, buf: buffer.Buffer, lsp_cmd: ?[]const u8) !Editor {
@@ -762,7 +789,7 @@ pub const Editor = struct {
                 }
             }
             const lsp_fd: ?std.posix.fd_t = if (self.lsp) |*c| (if (c.alive) c.out_fd else null) else null;
-            const ready = try self.term.waitReady(lsp_fd, self.pollTimeout());
+            const ready = try self.term.waitReady(lsp_fd, self.termFd(), self.pollTimeout());
             if (self.completionDue()) {
                 self.fireDue();
                 needs_render = true;
@@ -778,11 +805,16 @@ pub const Editor = struct {
                 try self.consumeLspResults();
                 needs_render = true;
             }
+            if (ready.extra and self.pumpTerminal()) needs_render = true;
             if (ready.input) {
                 const chunk = try self.readInput();
                 if (chunk.len > 0) {
                     try self.processInput(chunk);
                     self.syncLsp();
+                    // A key sent to the shell is echoed back straight away;
+                    // draining here shows it in the same frame instead of the
+                    // next wake-up, which is what makes typing feel local.
+                    _ = self.pumpTerminal();
                     needs_render = true;
                 }
             }
@@ -1043,7 +1075,9 @@ pub const Editor = struct {
                 switch (self.mode) {
                     .normal, .insert, .visual, .visual_line, .visual_block => self.mouseScroll(self.wheelWin(m), up),
                     .picker => self.scrollPreview(if (up) -3 else 3),
-                    .command => {},
+                    // The grid has no scrollback to scroll through; a wheel
+                    // notch there is inert rather than moving the file behind.
+                    .command, .terminal => {},
                 }
                 return;
             },
@@ -1070,7 +1104,7 @@ pub const Editor = struct {
                 self.showcmd_done = false;
             },
         }
-        try self.handleKey(k);
+        try self.handleKey(k, raw);
         if (!self.in_dot) self.dotCapturePost();
         self.showcmdSettle();
     }
@@ -1103,7 +1137,7 @@ pub const Editor = struct {
     fn showcmdPush(self: *Editor, raw: []const u8) void {
         switch (self.mode) {
             .normal, .visual, .visual_line, .visual_block => {},
-            .insert, .command, .picker => return,
+            .insert, .command, .picker, .terminal => return,
         }
         if (self.showcmd_done) { // the previous command is still displayed
             self.showcmd_len = 0;
@@ -1140,7 +1174,7 @@ pub const Editor = struct {
             .normal, .visual, .visual_line, .visual_block => if (self.atNeutral()) {
                 self.showcmd_done = self.showcmd_len > 0;
             },
-            .insert, .command, .picker => {
+            .insert, .command, .picker, .terminal => {
                 self.showcmd_len = 0;
                 self.showcmd_done = false;
             },
@@ -1318,7 +1352,7 @@ pub const Editor = struct {
                 self.ins_visual = from_insert; // nvim's Insert Visual
             },
             .visual, .visual_line, .visual_block => {}, // already selecting: extend
-            .command, .picker => return,
+            .command, .picker, .terminal => return,
         }
         if (self.drag_word) |anchor| return self.dragWord(anchor, .{ .row = trow, .col = tcol });
         self.cy = hit.row;
@@ -1429,7 +1463,7 @@ pub const Editor = struct {
         }
         switch (self.mode) {
             .normal, .insert, .visual, .visual_line, .visual_block => self.dot_temp.appendSlice(self.gpa, raw) catch {},
-            .command, .picker => {},
+            .command, .picker, .terminal => {},
         }
     }
 
@@ -1446,7 +1480,7 @@ pub const Editor = struct {
             self.await_arg == .none and self.pending_register == null;
     }
 
-    fn handleKey(self: *Editor, k: key.Key) !void {
+    fn handleKey(self: *Editor, k: key.Key, raw: []const u8) !void {
         self.status.clearRetainingCapacity();
         if (self.dashboard and self.mode == .normal) {
             // Handled keys stay on the screen; anything else dismisses it and
@@ -1458,6 +1492,7 @@ pub const Editor = struct {
         // focus, so `Space` works the same in both places.
         if (self.sb_focus and self.mode == .normal and self.await_arg == .none) return self.sidebarKey(k);
         switch (self.mode) {
+            .terminal => self.terminalKey(k, raw),
             .normal => try self.normalKey(k),
             .insert => try self.insertKey(k),
             .visual, .visual_line, .visual_block => {
@@ -1485,6 +1520,20 @@ pub const Editor = struct {
 
     fn normalKey(self: *Editor, k: key.Key) !void {
         if (self.await_arg != .none) return self.awaitKey(k);
+        if (self.cur.doc.shell) |*sh| {
+            // An exited shell's grid stays up so its last output is readable;
+            // the next key dismisses it (nvim's rule for a finished :terminal).
+            if (sh.done) return self.closeTerminal();
+            // Every insert-entering key means the same thing over a grid there
+            // is no cursor to place in: start typing at the shell.
+            if (k == .char) switch (k.char) {
+                'i', 'a', 'I', 'A', 'o', 'O' => {
+                    self.mode = .terminal;
+                    return self.setStatus("terminal", .{});
+                },
+                else => {},
+            };
+        }
         if (self.operator != .none) return self.operatorPendingKey(k);
         if (self.extra.items.len > 0) {
             if (try self.multiNormal(k)) return;
@@ -1772,6 +1821,7 @@ pub const Editor = struct {
                     'u' => self.await_arg = .space_ui,
                     'n' => self.newBuffer(), // AstroNvim's <leader>n
                     'S' => self.await_arg = .space_session,
+                    't' => self.openTerminal(), // AstroNvim's <leader>t
                     'e' => self.sidebarToggle(), // file explorer (AstroNvim <leader>e)
                     'w' => _ = try self.write(""),
                     'q' => self.doQuit(),
@@ -5734,8 +5784,8 @@ pub const Editor = struct {
     const command_names = [_][]const u8{
         "bdelete", "bnext",  "bprevious", "buffers",  "close", "diff",   "earlier",
         "edit",    "format", "later",     "ldiff",    "ls",    "only",   "quit",
-        "quitall", "session", "split",   "theme",    "undolist", "vdiff", "vsplit",
-        "wall",    "wq",     "write",     "x",
+        "quitall", "session", "split",    "terminal", "theme", "undolist", "vdiff",
+        "vsplit",  "wall",    "wq",       "write",    "x",
     };
 
     fn wildCommands(self: *Editor, prefix: []const u8) void {
@@ -5845,6 +5895,8 @@ pub const Editor = struct {
             self.closeWindow();
         } else if (eql(cmd, "on") or eql(cmd, "only")) {
             self.onlyWindow();
+        } else if (eql(cmd, "term") or eql(cmd, "terminal")) {
+            self.openTerminal();
         } else if (eql(cmd, "session")) {
             if (eql(arg, "save")) {
                 self.sessionSave();
@@ -6236,6 +6288,8 @@ pub const Editor = struct {
     fn rejectReadOnly(self: *Editor) bool {
         if (self.d.diff_of != null) {
             self.setStatus("index snapshot is read-only", .{});
+        } else if (self.d.shell != null) {
+            self.setStatus("this is a terminal — i types into it", .{});
         } else if (self.d.read_only) {
             self.setStatus("diff view is read-only", .{});
         } else return false;
@@ -7498,6 +7552,170 @@ pub const Editor = struct {
         self.refilter();
     }
 
+    // === the embedded terminal =============================================
+
+    /// The pty of a *visible* shell, for the poll loop. Only one is polled —
+    /// the active window's — which keeps the loop's fd set fixed and means a
+    /// backgrounded shell costs nothing until it is looked at again.
+    fn termFd(self: *Editor) ?std.posix.fd_t {
+        const sh = if (self.cur.doc.shell) |*s| s else return null;
+        return if (sh.done) null else sh.child.fd;
+    }
+
+    /// `Space t t` / `:terminal` — a shell in a horizontal split, in Terminal
+    /// mode so typing goes straight to it. Opening one while a shell window is
+    /// already visible focuses that instead of stacking another (VS Code's
+    /// rule, and the same "toggle, don't stack" the diff views follow).
+    fn openTerminal(self: *Editor) void {
+        for (self.wins.items) |w| {
+            if (w.doc.shell == null) continue;
+            self.focusWin(w);
+            self.mode = .terminal;
+            return self.setStatus("terminal", .{});
+        }
+        const buf = buffer.Buffer.initEmpty(self.gpa) catch return self.setStatus("out of memory", .{});
+        const doc = makeDoc(self.gpa, buf) catch {
+            var b = buf;
+            b.deinit();
+            return self.setStatus("out of memory", .{});
+        };
+        doc.name = self.gpa.dupe(u8, "[terminal]") catch null;
+        doc.read_only = true; // nothing edits the grid through buffer commands
+        self.docs.append(self.gpa, doc) catch {
+            doc.buf.deinit();
+            freeDocState(doc, self.gpa);
+            self.gpa.destroy(doc);
+            return self.setStatus("out of memory", .{});
+        };
+        self.splitWindow(false); // horizontal, below
+        self.focusDoc(doc);
+        self.layout(); // the new window's size, before the shell is told it
+        const rows: u16 = @intCast(@max(1, self.winTextRows(self.cur)));
+        const cols: u16 = @intCast(@max(1, winTextCols(self.cur)));
+        var argv = [_:null]?[*:0]const u8{ term.userShell(), null };
+        const child = term.spawnChild(&argv, null, rows, cols) catch |err| {
+            self.closeWindow();
+            self.destroyDoc(doc);
+            return self.setStatus("could not start a shell: {s}", .{@errorName(err)});
+        };
+        const screen = vt.Screen.init(self.gpa, rows, cols) catch {
+            var ch = child;
+            ch.close();
+            self.closeWindow();
+            self.destroyDoc(doc);
+            return self.setStatus("out of memory", .{});
+        };
+        doc.shell = .{ .child = child, .screen = screen };
+        self.mode = .terminal;
+        self.setStatus("terminal — Ctrl-\\ Ctrl-n for normal mode", .{});
+    }
+
+    /// Drain whatever the shell has written into its grid. Returns true when
+    /// something changed, so the loop knows to render.
+    fn pumpTerminal(self: *Editor) bool {
+        const sh = if (self.cur.doc.shell) |*s| s else return false;
+        if (sh.done) return false;
+        var buf: [8192]u8 = undefined;
+        var any = false;
+        // Read until the pty is empty: one wake-up can carry a screenful, and
+        // stopping after 8 KB would leave the rest for the *next* key.
+        while (true) {
+            const chunk = sh.child.read(&buf);
+            if (chunk.len == 0) break;
+            sh.screen.feed(chunk);
+            any = true;
+            if (chunk.len < buf.len) break;
+        }
+        if (sh.child.reap()) {
+            sh.done = true;
+            any = true;
+            if (self.mode == .terminal) self.mode = .normal;
+            self.setStatus("[process exited] — any key closes this window", .{});
+        }
+        return any;
+    }
+
+    /// Keep the shell's idea of its window in step with the split's.
+    fn syncTerminalSize(self: *Editor, w: *Win) void {
+        const sh = if (w.doc.shell) |*s| s else return;
+        if (sh.done) return;
+        const rows: u16 = @intCast(@max(1, self.winTextRows(w)));
+        const cols: u16 = @intCast(@max(1, winTextCols(w)));
+        if (rows == sh.screen.rows and cols == sh.screen.cols) return;
+        sh.screen.resize(rows, cols) catch return;
+        sh.child.resize(rows, cols);
+    }
+
+    /// Close the shell window and its document.
+    fn closeTerminal(self: *Editor) void {
+        const doc = self.cur.doc;
+        if (doc.shell == null) return;
+        self.mode = .normal;
+        if (self.wins.items.len > 1) {
+            self.closeWindow();
+        } else {
+            // The only window: leave a real buffer behind rather than nothing.
+            const repl = self.makeEmptyDoc() orelse return;
+            self.loadDoc(repl);
+            self.cur.doc = repl;
+        }
+        for (self.wins.items) |w| {
+            if (w.doc == doc) return; // still shown elsewhere: keep it alive
+        }
+        self.destroyDoc(doc);
+        self.clearExtra();
+        self.placeAt(self.cy);
+    }
+
+    /// Terminal mode: every key is the child's, except nvim's `Ctrl-\ Ctrl-n`
+    /// which returns to normal mode without disturbing the shell.
+    fn terminalKey(self: *Editor, k: key.Key, raw: []const u8) void {
+        const sh = if (self.cur.doc.shell) |*s| s else {
+            self.mode = .normal;
+            return;
+        };
+        if (sh.done) return self.closeTerminal();
+        // `Ctrl-\` is byte 0x1c, which `key.zig` does not decode as a ctrl
+        // letter (its range stops at 0x1a), so the raw byte is what to match.
+        const ctrl_backslash = raw.len == 1 and raw[0] == 0x1c;
+        if (self.term_escape) {
+            self.term_escape = false;
+            if (k == .ctrl and k.ctrl == 'n') {
+                self.mode = .normal;
+                return self.setStatus("normal mode — i returns to the terminal", .{});
+            }
+            sh.child.write("\x1c"); // not the pair: the child gets its Ctrl-\
+        }
+        if (ctrl_backslash) {
+            self.term_escape = true;
+            return;
+        }
+        sh.child.write(termBytes(k, raw));
+    }
+
+    /// What a key looks like on the wire to a child process. Most keys are
+    /// their own bytes; the special ones get the sequences a `TERM=xterm`
+    /// program expects, which is what zedit tells the child it is.
+    fn termBytes(k: key.Key, raw: []const u8) []const u8 {
+        return switch (k) {
+            .up => "\x1b[A",
+            .down => "\x1b[B",
+            .right => "\x1b[C",
+            .left => "\x1b[D",
+            .home => "\x1b[H",
+            .end => "\x1b[F",
+            .page_up => "\x1b[5~",
+            .page_down => "\x1b[6~",
+            .delete => "\x1b[3~",
+            .backspace => "\x7f",
+            .enter => "\r",
+            .tab => "\t",
+            .shift_tab => "\x1b[Z",
+            .escape => "\x1b",
+            else => raw, // text and control keys: their own bytes
+        };
+    }
+
     // === sessions ==========================================================
 
     /// `Space S s` / `:session save` — remember this directory's open files,
@@ -7863,7 +8081,7 @@ pub const Editor = struct {
             // Blockwise visual reaches one column past the last character, so
             // a block can be built one wider than the short line under it and
             // `$` can mean "past every line's end" (nvim-verified).
-            .visual_block, .insert, .command, .picker => line.len,
+            .visual_block, .insert, .command, .picker, .terminal => line.len,
         };
     }
 
@@ -9198,6 +9416,11 @@ pub const Editor = struct {
     }
 
     fn renderWindow(self: *Editor, w: *Win) !void {
+        if (w.doc.shell != null) {
+            try self.renderShell(w);
+            if (self.wins.items.len > 1) try self.emitWinStatus(w, self.buildView(w));
+            return;
+        }
         const th = theme.current;
         const view = self.buildView(w);
         const text_rows = self.winTextRows(w);
@@ -9237,6 +9460,50 @@ pub const Editor = struct {
             }
         }
         if (self.wins.items.len > 1) try self.emitWinStatus(w, view);
+    }
+
+    /// The embedded shell's grid: one screen row per grid row, cells emitted
+    /// with the child's own colours. Everything the child wrote is untrusted,
+    /// so codepoints go through the same control-character rule as buffer
+    /// text — `vt.zig` has already turned escapes into state rather than
+    /// leaving them in the grid, and this is the second line of defence.
+    fn renderShell(self: *Editor, w: *Win) !void {
+        const th = theme.current;
+        const sh = &w.doc.shell.?;
+        self.syncTerminalSize(w);
+        const rows = self.winTextRows(w);
+        var y: usize = 0;
+        while (y < rows) : (y += 1) {
+            self.beginSeg(w.gy + y, w.gx);
+            try self.emitFmt("\x1b[{d};{d}H", .{ w.gy + y, w.gx });
+            var x: usize = 0;
+            var last: ?vt.Attr = null;
+            while (x < w.gw) : (x += 1) {
+                const c = sh.screen.at(y, x);
+                if (last == null or !c.attr.eql(last.?)) {
+                    // reverse video swaps the pair, which is how a shell draws
+                    // its selection and a `less` status line.
+                    const fg = c.attr.fg orelse th.fg;
+                    const bg = c.attr.bg orelse th.bg;
+                    try self.setFg(if (c.attr.reverse) bg else (if (c.attr.dim) mixColor(bg, fg, 60) else fg));
+                    try self.setBg(if (c.attr.reverse) fg else bg);
+                    last = c.attr;
+                }
+                if (c.wide_tail) continue; // drawn by the wide cell before it
+                if (c.cp == ' ') {
+                    try self.emit(" ");
+                } else if (isControlCp(c.cp)) {
+                    try self.emit("?");
+                } else {
+                    var b: [4]u8 = undefined;
+                    const n = std.unicode.utf8Encode(c.cp, &b) catch {
+                        try self.emit("?");
+                        continue;
+                    };
+                    try self.emit(b[0..n]);
+                }
+            }
+        }
     }
 
     /// A virtual filler row in a diff pane: where the other side has lines
@@ -9483,6 +9750,7 @@ pub const Editor = struct {
         .{ .key = "u", .desc = "UI toggles \u{2026}" },
         .{ .key = "n", .desc = "new buffer" },
         .{ .key = "S", .desc = "session \u{2026}" },
+        .{ .key = "t", .desc = "terminal" },
         .{ .key = "e", .desc = "explorer" },
         .{ .key = "c", .desc = "close buffer" },
         .{ .key = "w", .desc = "write (save)" },
@@ -10689,6 +10957,7 @@ pub const Editor = struct {
             .insert => th.mode_insert,
             .visual, .visual_line, .visual_block => th.mode_visual,
             .command, .picker => th.mode_command,
+            .terminal => th.mode_insert, // typing goes somewhere: insert's colour
         };
     }
 

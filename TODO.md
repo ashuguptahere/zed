@@ -51,7 +51,15 @@ behind the roadmap items.
        keeps a cursor per window, not per buffer — that model would have to
        change first), named sessions beyond the one per directory, and the
        jumplist/marks.
-6. [ ] **Embedded terminal** — a VT emulator in a window. Large, multi-batch.
+6. [ ] **Terminal polish.** The shell landed in 0.31.0. Not there yet:
+       scrollback (the grid is exactly the window, so output that scrolls off
+       is gone), the alternate screen (a full-screen program draws over the
+       shell's output instead of restoring it on exit), mouse and
+       bracketed-paste forwarding, more than one terminal at a time, and
+       `TERM=xterm-256color` — which needs the two above first. The
+       `hung_up` guard in `term.zig` is for the platforms whose pty reports
+       EOF before the child is reapable; on Linux `waitpid` wins that race,
+       so CI never exercises it.
 7. [ ] **Debugger** — a DAP client (breakpoints, stepping, variables).
        Large, multi-batch. No package management (agreed with the owner).
 
@@ -161,6 +169,9 @@ there is nothing to change there.
       existed with no key. (0.29.0)
 - [x] Sessions: per-directory save/restore of files, cursors, splits and the
       tree, explicit both ways (`Space S`, `:session`). (0.30.0)
+- [x] Embedded terminal: a shell on its own pty in a split, a pure
+      unit-tested VT emulator (`vt.zig`), nvim's mode split, zero idle
+      CPU. (0.31.0)
 
 - [x] Modal editor core: event-driven zero-idle-CPU loop, single-syscall
       frames, UTF-8-correct movement/rendering, friendly CLI. (0.1.0)

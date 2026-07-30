@@ -161,7 +161,7 @@ Source is `src/`, one responsibility per module:
 | `main.zig`    | Composition root: CLI → logging → buffer → terminal → editor; failure handling. |
 | `cli.zig`     | Argument parsing and the help/version text. |
 | `log.zig`     | File logging (custom `std.log` sink) and the `Span` profiling primitive. |
-| `term.zig`    | POSIX terminal control: raw mode, alternate screen, bracketed paste, window size, event-driven input. |
+| `term.zig`    | POSIX terminal control: raw mode, alternate screen, bracketed paste, window size, event-driven input, and the child pty behind the embedded terminal. |
 | `key.zig`     | Decoding raw input bytes into `Key` events (text, arrows, navigation). |
 | `unicode.zig` | UTF-8 decoding, codepoint boundaries, display width. |
 | `buffer.zig`  | The document: two-phase zero-copy load (`loadPartial` indexes a head so the screen can paint, `loadRest` fills the tail), a lazy `u32` line index over one shared buffer, per-line storage materialised on the first edit, save, UTF-8-aware edits. |
@@ -178,6 +178,7 @@ Source is `src/`, one responsibility per module:
 | `complete.zig` | Buffer-word completion candidates: identifiers harvested from the open buffers (the fallback when no server answers). |
 | `snippet.zig` | LSP snippet parsing: `$1`, `${1:placeholder}`, `${1|a,b|}`, `$0`, escapes → plain text + tabstops. |
 | `recent.zig`  | The recently-opened list behind the startup screen (XDG state file). |
+| `vt.zig`      | Terminal emulator: bytes from a child process in, a grid of styled cells out (pure, unit-tested — no pty, no rendering). |
 | `session.zig` | Per-directory sessions: the open files + cursors, the split layout and the tree's state, serialised to an XDG state file. |
 | `remote.zig`  | Editing over SSH: `ssh://user@host/path` parsing, read/write/list via one `ssh` per operation. |
 | `lsp.zig`     | Minimal LSP client: JSON-RPC over a server's stdio (diagnostics, hover, goto, completion, signature help; incremental or full doc sync per the server's capabilities). |
@@ -514,7 +515,7 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   references, `l s` document symbols, `l S` workspace symbols, `l d` line
   diagnostic, `l D` all diagnostics, `l f` format);
   `Space g` = Git (`g d` inline diff,
-  `g s` side-by-side, `g l` line diff); `Space S` = Session for this
+  `g s` side-by-side, `g l` line diff); `Space t` = a terminal; `Space S` = Session for this
   working directory (`S s` save, `S l` load, `S d` delete — also
   `:session save|load|delete`); `Space e` file explorer, `Space n` a new empty
   buffer (AstroNvim's `<leader>n`; the buffer it replaces stays open),
@@ -723,6 +724,29 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   third window, and each split view re-tiles in its own orientation. All of
   them reflect the file as last saved, like the gutter signs; all refresh on
   `:w` (a weave with no changes left simply closes).
+- **Embedded terminal (`Space t`, `:terminal`):** a real shell on its own pty
+  in a horizontal split, with zedit as its terminal emulator. `vt.zig` is the
+  emulator — a pure state machine (grid in cells, no pty, no rendering) so the
+  parser is unit-testable, covering the C0 controls, cursor movement, erase,
+  insert/delete of lines and characters, scrolling regions, xterm's deferred
+  wrap, and SGR colour (the 16 ANSI colours, the 256-cube and truecolour);
+  `term.zig` owns the OS half (`posix_openpt` + fork + exec, resize, reap).
+  Modes follow nvim: keys go to the child in **Terminal** mode, `Ctrl-\`
+  `Ctrl-n` returns to normal, and `i`/`a`/`o` go back in. The child is told
+  `TERM=xterm`, deliberately not `xterm-256color`, because claiming the latter
+  invites the alternate screen and mouse reporting that `vt.zig` does not
+  implement. A second `Space t` focuses the shell already open rather than
+  stacking another. The grid is read-only to buffer commands (`dd` answers
+  "this is a terminal — i types into it") so it can never go dirty and block
+  `:q`, and an exited shell keeps its last output on screen until any key
+  dismisses the window. Everything the child writes is untrusted: escapes
+  become emulator state rather than text, and a C1 control that survives into
+  the grid renders as `?` through the same sanitizer as buffer content.
+  The pty is polled alongside stdin and the language server (`waitReady`
+  takes all three), so an idle shell still costs zero CPU — pty-verified,
+  including after the shell exits. Absent by design: scrollback, the
+  alternate screen (a full-screen program draws over the shell's output
+  instead of restoring it), and any mouse or bracketed-paste mode of its own.
 - **Sessions (`Space S`, `:session`):** the open files with their cursors,
   the split layout and whether the tree was open, saved per working directory
   under `$XDG_STATE_HOME/zedit/sessions/<hash of the cwd>` (the cwd itself is

@@ -81,7 +81,9 @@
   which-key menus: `Space f f` find files, `Space f w` find words (regex grep,
   same syntax as `/`),
   `Space f b` buffers, `Space f t` themes, `Space f u` the undo tree;
-  `Space n` a new empty buffer; `Space S …` sessions (save/load/delete this
+  `Space n` a new empty buffer; `Space t` an **embedded terminal** (a real
+  shell in a split — nvim's mode split, `Ctrl-\ Ctrl-n` back to normal);
+  `Space S …` sessions (save/load/delete this
   directory's open files, cursors, splits and tree state — explicit both ways,
   never on launch or exit); `Space b …` buffers (picker,
   next/previous, close others); `Space u …` UI toggles (wrap, numbers, inline

@@ -744,6 +744,18 @@ return focus to the buffer,
 .B q
 close.
 .TP
+.B Space t
+An embedded terminal: a shell on its own pty in a horizontal split, opened in
+Terminal mode so typing goes to it.
+.B Ctrl-\e\\ Ctrl-n
+returns to normal mode and
+.B i
+goes back in. A second
+.B Space t
+focuses the shell already open rather than starting another; an exited shell
+keeps its last output until any key closes the window. Also
+.BR :terminal .
+.TP
 .B Space S
 This working directory's session:
 .B s

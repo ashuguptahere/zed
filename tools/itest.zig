@@ -31,6 +31,7 @@ const scenarios = .{
     .{ "wrap", @import("scenarios/wrap.zig") },
     .{ "undotree", @import("scenarios/undotree.zig") },
     .{ "session", @import("scenarios/session.zig") },
+    .{ "terminal", @import("scenarios/terminal.zig") },
 };
 
 /// Whether suite `name` was asked for: everything when no filter was given.
