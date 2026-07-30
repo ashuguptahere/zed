@@ -99,7 +99,8 @@ const help_text =
     \\  -h, --help           Show this help and exit
     \\  -v, --version        Show version and exit
     \\  -l, --log <path>     Write diagnostic logs to <path>
-    \\  -s, --lsp <cmd>      Language server command (e.g. "zls"); defaults per filetype
+    \\  -s, --lsp <cmd>      Language server command (e.g. "zls"); defaults per filetype,
+    \\                       empty ("") starts none
     \\  -D, --dap <cmd>      Debug adapter command (e.g. "lldb-dap"); defaults per filetype
     \\  -c, --config <path>  Use <path> instead of ~/.config/zedit/config
     \\  -t, --tutor          Open the interactive tutorial (like vimtutor)

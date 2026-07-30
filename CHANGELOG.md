@@ -2,6 +2,25 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.33.4 - 2026-07-31
+
+### Changed
+
+- **Editing test cases start no language server.** `runEdit` passes
+  `--lsp ""`, which was already understood as "no server" but undocumented.
+  Motions, operators and indent queries have nothing to do with LSP, yet
+  opening a file launched whatever server was installed for its filetype — so
+  the answer depended on the machine. That is exactly how the Rust indent case
+  passed on a workstation with no servers and hung on CI, whose image ships
+  rust-analyzer.
+
+  Verified with rust-analyzer actually installed: the whole suite is green,
+  and re-planting the blocking-handshake bug now leaves `ts-indent#r1`
+  **passing** where it failed before, because no server starts at all. The
+  editing cases give the same answer on any machine.
+- `--lsp ""` documented in `--help` and the man page as the way to start no
+  server.
+
 ## 0.33.3 - 2026-07-30
 
 ### Changed

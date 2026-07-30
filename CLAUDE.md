@@ -217,6 +217,13 @@ zig build itest -- git sidebar  # ... just those suites (the full run is 10+ min
 zig build bench -Doptimize=ReleaseFast   # benchmark vs helix/nvim (if installed)
 ```
 
+**Keep pty cases hermetic.** An editing case must not depend on what is
+installed on the machine running it: `runEdit` passes `--lsp ""` so no
+language server starts, because opening a file otherwise launches whatever
+server exists for its filetype. A Rust indent case that never mentioned LSP
+hung on CI for months of commits for exactly this reason. Scenarios that
+*are* about LSP spawn the mock explicitly.
+
 **Assert the outcome, not the schedule.** A pty check that waits a fixed
 number of milliseconds and then looks encodes how fast the machine is; CI is
 slower than a workstation, so such a test goes red for reasons that have
@@ -274,6 +281,8 @@ itest` builds `zedit` plus a `mock_lsp` server, then runs the `itest` harness:
 - `tools/harness.zig` — the pty harness (`Session.spawn`/`drain`/`send`, output
   capture + ANSI stripping, temp dirs, file helpers, `/proc` CPU sampling).
 - `tools/mock_lsp.zig` — a stub language server for the LSP scenario.
+  (Both `itest` runs and the scenarios use fixed `/tmp/zedit_it_*` paths, so
+  two suites must never run at once — they clobber each other's files.)
 - `tools/mock_dap.zig` — a stub debug adapter for the debug scenario, so the
   suite needs no lldb-dap or debugpy installed anywhere.
 - `tools/itest.zig` — the runner (argv[4..] filters suites by name; a failing

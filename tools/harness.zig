@@ -484,7 +484,13 @@ pub const EditRun = struct {
 
 fn runEdit(ctx: *Ctx, target: []const u8, initial: []const u8, chunks: []const []const u8) EditRun {
     writeFile(ctx.io, target, initial);
-    var s = Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, target } }) catch
+    // `--lsp ""` starts no language server. Editing cases test motions,
+    // operators and indent queries — not LSP — but opening a file otherwise
+    // launches whatever server happens to be installed for its filetype, so
+    // the result depended on the machine. That is precisely how the Rust
+    // indent case passed on a workstation with no servers and hung on CI,
+    // whose image ships rust-analyzer. Hermetic now: same answer everywhere.
+    var s = Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "--lsp", "", target } }) catch
         return .{
             .text = ctx.gpa.dupe(u8, "") catch unreachable,
             .tail = ctx.gpa.dupe(u8, "spawn failed") catch unreachable,
