@@ -210,6 +210,7 @@ const Doc = struct {
     git_signs: git.Signs,
     lsp: ?lsp.Client = null,
     lsp_rev: u64 = 0,
+    lsp_opened: bool = false,
     ts: ?treesitter.Highlighter = null,
     ts_styles: std.ArrayList(syntax.Style) = .empty,
     ts_line_starts: std.ArrayList(usize) = .empty,
@@ -539,6 +540,9 @@ pub const Editor = struct {
     dap_cmd: ?[]const u8 = null, // --dap: the debug adapter, else a per-language default
     lsp: ?lsp.Client = null,
     lsp_rev: u64 = 0, // buffer revision last sent via didChange
+    /// The handshake has completed and the post-handshake requests have gone
+    /// out. Reset with the document, since each has its own server.
+    lsp_opened: bool = false,
     // completion popup (insert mode)
     comp_open: bool = false,
     comp_filtered: std.ArrayList(usize) = .empty, // indices into the active candidate list
@@ -4703,6 +4707,7 @@ pub const Editor = struct {
         std.mem.swap(git.Signs, &self.git_signs, &doc.git_signs);
         std.mem.swap(?lsp.Client, &self.lsp, &doc.lsp);
         std.mem.swap(u64, &self.lsp_rev, &doc.lsp_rev);
+        std.mem.swap(bool, &self.lsp_opened, &doc.lsp_opened);
         std.mem.swap(?treesitter.Highlighter, &self.ts, &doc.ts);
         std.mem.swap(std.ArrayList(syntax.Style), &self.ts_styles, &doc.ts_styles);
         std.mem.swap(std.ArrayList(usize), &self.ts_line_starts, &doc.ts_line_starts);
@@ -6493,7 +6498,11 @@ pub const Editor = struct {
         self.lsp = lsp.Client.start(self.gpa, self.io, argv_store[0..argc], cwd, uri_buf.items, langId(self.lang), content);
         if (self.lsp) |*c| {
             self.lsp_rev = self.buf.revision;
-            c.requestInlayHints(self.buf.lineCount());
+            _ = c;
+            // No request may go out yet: the handshake is asynchronous now, so
+            // `initialize` has not been answered and a real server rejects
+            // anything sent before `initialized`. The first inlay-hint request
+            // is made by `consumeLspResults` the moment the server is ready.
             self.setStatus("language server started", .{});
         } else if (self.lsp_cmd == null) {
             // This filetype has a known server and it is not installed: say so,
@@ -6525,6 +6534,12 @@ pub const Editor = struct {
     /// completion list (which opens the popup).
     fn consumeLspResults(self: *Editor) !void {
         var client = if (self.lsp) |*c| c else return;
+        // The handshake just landed: ask for the things that could not be
+        // asked at spawn time. Once only — `syncLsp` refreshes hints per edit.
+        if (client.ready() and !self.lsp_opened) {
+            self.lsp_opened = true;
+            client.requestInlayHints(self.buf.lineCount());
+        }
         if (client.takeHover()) |text| {
             defer self.gpa.free(text);
             const line_end = std.mem.indexOfScalar(u8, text, '\n') orelse text.len;
@@ -6966,8 +6981,26 @@ pub const Editor = struct {
     /// server when one is running, else the words already in the open buffers.
     /// A server that answers with an empty list falls back the same way, in
     /// `consumeLspResults`.
+    /// The language server is spawned but has not finished its handshake — so
+    /// it is neither usable yet nor absent. See `requestCompletion`.
+    fn lspStarting(self: *Editor) bool {
+        const c = if (self.lsp) |*cl| cl else return false;
+        return c.handshaking();
+    }
+
     fn requestCompletion(self: *Editor) void {
         self.comp_due_ms = null;
+        // A server still in its handshake is not the same as no server. The
+        // handshake stopped blocking in 0.33.0, which opened a window where a
+        // request fired here was dropped and nothing ever asked again — type
+        // fast enough after opening a file and the completion you asked for
+        // simply never came. Wait for it instead. Bounded: a server that dies
+        // stops being alive, and the buffer-word fallback takes over.
+        if (self.lspStarting()) {
+            self.due_kind = .completion;
+            self.comp_due_ms = log.nowMs() + 30;
+            return;
+        }
         const client = self.liveLsp() orelse return self.bufferComplete();
         self.syncLsp(); // the server must see the text this completes against
         client.requestCompletion(self.cy, self.charCol());
@@ -7074,7 +7107,9 @@ pub const Editor = struct {
     fn armCompletion(self: *Editor) void {
         if (!config.settings.auto_completion) return;
         if (self.mode != .insert) return;
-        if (self.liveLsp() == null and !config.settings.buffer_completion) return;
+        // A server mid-handshake counts as a server here: it is about to be
+        // one, and refusing to arm the timer is how the request went missing.
+        if (self.liveLsp() == null and !self.lspStarting() and !config.settings.buffer_completion) return;
         if (self.completionPrefix().len == 0) {
             self.comp_due_ms = null;
             return;

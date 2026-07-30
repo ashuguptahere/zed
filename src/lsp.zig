@@ -255,6 +255,13 @@ pub const Client = struct {
         return self.t.alive;
     }
 
+    /// Still starting up: spawned and alive, but the server has not answered
+    /// `initialize` yet, so anything sent would be rejected. Distinct from
+    /// "no server" — the caller should wait, not fall back.
+    pub fn handshaking(self: *const Client) bool {
+        return self.t.alive and !self.init_done;
+    }
+
     /// Alive *and* past the handshake. Anything that sends a request must
     /// check this, not `alive`: the handshake no longer blocks, so there is a
     /// window at startup where the server exists but will reject traffic.

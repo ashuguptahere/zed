@@ -60,6 +60,43 @@ fn onPath(ctx: *h.Ctx, name: []const u8) bool {
 }
 
 pub fn run(ctx: *h.Ctx) !void {
+    // --- a request made while the server is still starting is not lost -------
+    // The handshake stopped blocking in 0.33.0, which opened a window where a
+    // completion fired before `initialize` came back was dropped with nothing
+    // to ask again. With the buffer-word fallback off, that is silence: type
+    // fast after opening a file and the popup never comes. The request must
+    // wait for the handshake instead.
+    {
+        const dir = try h.tempDir(ctx.gpa);
+        defer ctx.gpa.free(dir);
+        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const cfg = h.join(ctx, dir, "cfg");
+        defer ctx.gpa.free(cfg);
+        h.writeFile(ctx.io, cfg, "buffer_completion = false\n");
+        const src = h.join(ctx, dir, "m.zig");
+        defer ctx.gpa.free(src);
+        h.writeFile(ctx.io, src, "const x = 1;\n");
+        const cmd = try std.fmt.allocPrint(ctx.gpa, "{s} --slow-init=900", .{ctx.mock});
+        defer ctx.gpa.free(cmd);
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ ctx.zedit, "--config", "cfg", "--lsp", cmd, "m.zig" },
+            .cwd = dir,
+            .term = "xterm-256color",
+        });
+        defer s.finish();
+        s.drain(300); // deliberately less than the server needs to answer
+        s.send("Gomock"); // the debounce fires while it is still handshaking
+        s.drain(2000);
+        var scr = try h.Screen.init(ctx.gpa, 24, 80);
+        defer scr.deinit();
+        scr.apply(s.out.items);
+        ctx.check("a completion asked for during the handshake still arrives",
+            popupHas(ctx, &scr, "mockComplete"));
+        s.send("\x1b:q!\r");
+        s.drain(300);
+    }
+
+
     const dir = try h.tempDir(ctx.gpa);
     defer ctx.gpa.free(dir);
     defer h.removeTree(ctx.gpa, ctx.io, dir);

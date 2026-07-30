@@ -914,7 +914,12 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   cursor with the active parameter emphasized (`Ctrl-p` cycles overloads, with
   an `(i/n)` counter; dismissed with `Esc`). Edits are sent as incremental
   `didChange` ranges when the server advertises it, else full-document.
-  **The handshake never blocks.** `initialize` is sent at spawn and the reply
+  **The handshake never blocks.** A server that is *starting* counts as a
+  server, not as none: a completion asked for in that window waits and retries
+  rather than being dropped (`lspStarting`), and no request is sent before
+  `initialize` is answered — the first inlay-hint request waits for readiness
+  (`lsp_opened`).
+   `initialize` is sent at spawn and the reply
   is picked up by the ordinary poll loop, which then sends `initialized` and
   `didOpen`; until it lands, `Client.ready()` is false and every request path
   treats the server as absent. It used to wait up to four seconds inline —

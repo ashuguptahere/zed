@@ -2,6 +2,26 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.33.2 - 2026-07-30
+
+### Fixed
+
+Two consequences of making the LSP handshake asynchronous in 0.33.0, both
+found by CI failing on the audit commit.
+
+- **A completion asked for while the server was still starting was dropped and
+  never retried.** `liveLsp()` treats a mid-handshake server as no server, so
+  `armCompletion` did not even arm the debounce and `requestCompletion` fell
+  through to the buffer-word fallback — which is silence when
+  `buffer_completion = false`. Type fast enough after opening a file and the
+  popup simply never came. A server that is starting now counts as a server:
+  the request waits and retries every 30 ms until the handshake lands, and a
+  server that dies stops being alive so the fallback still takes over.
+- **The first inlay-hint request went out before `initialize` was answered** —
+  a protocol violation a real server may reject, harmless only because the
+  mock does not care. It is now made the moment the server becomes ready
+  (`lsp_opened`, swapped per document like `lsp_rev`).
+
 ## 0.33.1 - 2026-07-30
 
 ### Changed
