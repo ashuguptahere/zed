@@ -834,7 +834,10 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   worked through. `:cclose`, `:cnext`/`:cprev`, `:cfirst`/`:clast` and
   `:cc {n}` round it out. The list is editor state, not per-document, and the
   entries own their strings — they outlive the picker, and the files they name
-  need not be open. `openFile` takes a **0-based row** while an entry's line
+  need not be open. The list is **sorted by file then line** when a picker
+  fills it: results arrive in project-walk order, which is the filesystem's,
+  so an unsorted list walked the same matches in a different sequence on a
+  different machine (CI caught exactly that). `openFile` takes a **0-based row** while an entry's line
   is 1-based; both this and the debugger's stop location got that wrong at
   first, and `placeAt`'s clamp to the last row hid it whenever the target sat
   near the end of a file.
