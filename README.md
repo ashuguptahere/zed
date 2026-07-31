@@ -90,7 +90,7 @@
   creates the directories on the way); `Space d …` a **debugger** (breakpoints,
   start/continue, step over/into/out — DAP, so `lldb-dap`, `debugpy` and
   `dlv dap` all work); `Space t` an **embedded terminal** (a real
-  shell in a split — nvim's mode split, `Ctrl-\ Ctrl-n` back to normal, with
+  shell in a split — nvim's mode split, `Ctrl-\`` to toggle it open and shut, `Ctrl-\ Ctrl-n` back to normal, with
   5000 rows of scrollback the wheel and `Ctrl-u`/`Ctrl-d` page through);
   `Space S …` sessions (save/load/delete this
   directory's open files, cursors, splits and tree state — explicit both ways,
@@ -169,7 +169,7 @@
   (`Ctrl-d`/`Ctrl-u` or the wheel scroll it) — `zedit <dir>` opens into it
 - **A powerline title bar** along the top (VS Code-style, even for one file):
   the explorer's header over the sidebar, one tab per open buffer beside it —
-  the active tab accent-coloured, unsaved ones dotted; click a tab to switch
+  the active tab accent-coloured, unsaved ones dotted; click a tab to switch or its `✕` to close it
   (config `buffer_tabs = false` removes the row and puts the filename back in
   the statusline)
 - **Git diff views**: `Space g d` inline unified diff (coloured +/- lines) in

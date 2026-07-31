@@ -325,9 +325,19 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   (counted: `3fa` lands on the third, `d2fa` multiplies the counts),
   `%`, `{ }` (paragraph, jump motions), `H M L`, `Ctrl-d/u/f/b`,
   arrows/Home/End/PageUp/Down (arrows and `<BS>` take counts like
-  `h j k l`; Home/End ignore them — nvim-probed). With soft wrap on, `gj`/`gk` step a *screen*
-  row and `g0`/`g$` reach the ends of one, while `j`/`k`/`0`/`$` keep their
-  buffer-line meaning (vim's split). `H M L`, `Ctrl-d/u/f/b` and the wheel all
+  `h j k l`; Home/End ignore them — nvim-probed). With soft wrap on, `j`/`k` step a *screen* row **on a line that actually
+  wraps** —
+  a deliberate divergence from vim, where they always move a buffer line: on
+  wrapped prose vim's rule reads as the cursor skipping, because one press
+  crosses however many rows the line happened to fill. `gj`/`gk` still work
+  and are now the same thing. Only as a *cursor* motion: with an operator
+  pending they stay linewise, so `dj` takes two whole lines rather than a
+  screen row's worth of characters. The gate is the *current* line rather
+  than "wrap is on", because on a one-row line the two are the same movement
+  except that the screen form is charwise and exact, and would quietly drop
+  the goal column a `k` after a click past a short line's end depends on.
+  `g0`/`g$` reach the ends of a screen row,
+  while `0`/`$` keep their buffer-line meaning. `H M L`, `Ctrl-d/u/f/b` and the wheel all
   count screen rows, so they land where they look like they should on wrapped
   text. The normal-mode cursor never sits past the
   last character (vim's rule), so `$x`/`$dh`/`$d{` act on it. A jump landing
@@ -896,7 +906,11 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   ones dim on `status_bg` with thin separators between them, unsaved marked
   with `●`. `nerd_font = false` degrades to the flat look (no separator
   glyphs, zero width budgeted for them). While the bar is up the filename
-  leaves the statusline (see below). **Clicking a tab** switches to that
+  leaves the statusline (see below). **Clicking a tab's `✕`** closes that buffer (a terminal tab ends its
+  shell); the box is always drawn rather than shown on hover, because hover
+  needs mouse mode 1003, which reports every pointer movement and would wake
+  an idle editor thousands of times a minute — two columns cost nothing.
+  **Clicking a tab** switches to that
   buffer — the renderer and `tabAt` share one geometry helper (`tabArea` +
   `tabCells`), so a tab can never be drawn at one place and clicked at
   another; a click on the EXPLORER segment focuses the tree (see the

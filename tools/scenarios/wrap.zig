@@ -77,8 +77,11 @@ pub fn run(ctx: *h.Ctx) !void {
         .{ .name = "g$ ends at the last character of the screen row", .keys = &.{ "g$", "x" }, .a = seg - 1, .b = seg },
         // `g0` from the far end of the line goes to the start of its row.
         .{ .name = "g0 returns to the first character of the screen row", .keys = &.{ "$", "g0", "x" }, .a = seg, .b = seg - 1 },
-        // plain `j` still moves a whole buffer line, as in vim.
-        .{ .name = "j still moves by buffer line, not screen row", .keys = &.{ "j", "x" }, .a = seg, .b = seg },
+        // `j` walks a *screen* row with wrap on — a deliberate divergence from
+        // vim, where it always moves a buffer line. From column 0 of a line
+        // that fills two rows, one `j` lands on the first B, exactly as `gj`
+        // does; vim would have gone to the next buffer line entirely.
+        .{ .name = "j steps a screen row with wrap on", .keys = &.{ "j", "x" }, .a = seg, .b = seg - 1 },
     };
     for (cases) |cs| {
         h.writeFile(ctx.io, path, content.items);
@@ -94,13 +97,34 @@ pub fn run(ctx: *h.Ctx) !void {
         defer want.deinit(ctx.gpa);
         try want.appendNTimes(ctx.gpa, 'A', cs.a);
         try want.appendNTimes(ctx.gpa, 'B', cs.b);
-        // The `j` case deletes from the *second* line instead.
-        try want.appendSlice(ctx.gpa, if (cs.a == seg and cs.b == seg) "\necond\n" else "\nsecond\n");
+        // Every case now edits the wrapped line itself.
+        try want.appendSlice(ctx.gpa, "\nsecond\n");
         const got = h.readFile(ctx.gpa, ctx.io, path);
         defer ctx.gpa.free(got);
         const ok = std.mem.eql(u8, got, want.items);
         if (!ok) std.debug.print("       got  \"{f}\"\n", .{std.zig.fmtString(got)});
         ctx.check(cs.name, ok);
+    }
+
+    // --- an operator keeps `j` linewise -----------------------------------
+    // The cursor moves by screen row now, but `dj` must still take two whole
+    // lines: a charwise `j` would delete a row's worth of characters instead,
+    // which is what `dgj` does in vim and is not what anyone means by `dj`.
+    {
+        h.writeFile(ctx.io, path, content.items);
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "--lsp", "", "long.txt" }, .cwd = dir });
+        defer s.finish();
+        s.drain(400);
+        s.send("dj"); // the wrapped line and the one after it
+        s.drain(300);
+        s.send(":wq\r");
+        s.drain(400);
+        const got = h.readFile(ctx.gpa, ctx.io, path);
+        defer ctx.gpa.free(got);
+        // Linewise takes both lines. A charwise `j` (which is what the cursor
+        // motion now is) would have deleted from the start of the wrapped line
+        // to the same column one row down, leaving "second" behind.
+        ctx.check("dj is still linewise with wrap on", std.mem.indexOf(u8, got, "second") == null);
     }
 
     // --- word breaks, indent retention, wrap_column ------------------------

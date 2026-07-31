@@ -2,6 +2,36 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.39.0 - 2026-07-31
+
+### Added
+
+- **`Ctrl-\`` toggles the terminal**, open and shut, from either mode — VS
+  Code's and Zed's key. It is whatever the terminal sends for it (NUL), which
+  is also `Ctrl-Space` and `Ctrl-@`: indistinguishable on the wire, and none
+  of them was bound to anything.
+- **A `✕` on every buffer tab**, clicked to close that buffer (a terminal tab
+  ends its shell). Always drawn rather than appearing on hover: hover needs
+  mouse mode 1003, which reports *every* pointer movement and would wake an
+  idle editor thousands of times a minute — against the whole design. Two
+  columns cost nothing.
+
+### Changed
+
+- **`j`/`k` step a screen row when soft wrap is on**, rather than a buffer
+  line. A deliberate divergence from vim: on wrapped prose its rule reads as
+  the cursor skipping, because one press crosses however many rows the line
+  happened to fill. `gj`/`gk` still work and are now the same thing. Only as a
+  cursor motion — with an operator pending they stay linewise, so `dj` still
+  takes two whole lines rather than a screen row's worth of characters.
+
+### Fixed
+
+- **The theme picker did not apply the theme selected when it opened**, only
+  ones reached with the arrow keys — so the first entry was named but never
+  shown. The preview now runs on every refilter, which covers opening and
+  typing to narrow the list as well as moving.
+
 ## 0.38.0 - 2026-07-31
 
 ### Fixed

@@ -1172,7 +1172,10 @@ fn lineDiffWrapGeometry(ctx: *h.Ctx) !void {
     s.drain(500);
     s.send(" gl");
     s.drain(700);
-    s.send("jjj"); // one -> wrapped line -> THREE -> four
+    // Reach the fourth buffer line without depending on what `j` counts: with
+    // soft wrap on it now walks *screen* rows, so `jjj` would stop inside the
+    // wrapped line. What this checks is the cursor's screen row, not `j`.
+    s.send("4G");
     s.drain(300);
     var scr = try snapshot(ctx, &s);
     defer scr.deinit();

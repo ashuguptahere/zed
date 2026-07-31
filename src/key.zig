@@ -52,6 +52,11 @@ pub fn decode(bytes: []const u8) Decoded {
         '\r', '\n' => .{ .key = .enter, .consumed = 1 },
         '\t' => .{ .key = .tab, .consumed = 1 },
         0x7f, 0x08 => .{ .key = .backspace, .consumed = 1 },
+        // NUL is what a terminal sends for Ctrl-Space, Ctrl-@ and — on most
+        // of them — Ctrl-` too, since backtick masks to zero. They are
+        // indistinguishable on the wire, so they are one key here, spelled
+        // with a space because that is the one a user is most likely to name.
+        0x00 => .{ .key = .{ .ctrl = ' ' }, .consumed = 1 },
         0x01...0x07, 0x0b, 0x0c, 0x0e...0x1a => .{ .key = .{ .ctrl = b - 1 + 'a' }, .consumed = 1 },
         else => decodeChar(bytes),
     };
@@ -175,6 +180,8 @@ test "decode ascii char" {
 
 test "decode control keys" {
     try std.testing.expectEqual(Key{ .ctrl = 'c' }, decode(&[_]u8{0x03}).key);
+    // Ctrl-` / Ctrl-Space / Ctrl-@ all arrive as NUL.
+    try std.testing.expectEqual(Key{ .ctrl = ' ' }, decode(&[_]u8{0x00}).key);
     try std.testing.expectEqual(Key.enter, decode("\r").key);
     try std.testing.expectEqual(Key.backspace, decode(&[_]u8{0x7f}).key);
     try std.testing.expectEqual(Key.escape, decode(&[_]u8{0x1b}).key);

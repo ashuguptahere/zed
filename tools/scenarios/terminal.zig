@@ -131,6 +131,32 @@ pub fn run(ctx: *h.Ctx) !void {
         s.drain(500);
     }
 
+    // --- Ctrl-backtick toggles it, from either mode -------------------------
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ "env", shell_env, ps1_env, ctx.zedit, "f.txt" },
+            .cwd = dir,
+            .term = "xterm-256color",
+        });
+        defer s.finish();
+        s.drain(700);
+        var m = s.mark();
+        s.send("\x00"); // Ctrl-` (NUL, as every terminal sends it)
+        s.drain(1200);
+        ctx.check("Ctrl-backtick opens the terminal", s.containsPlainSince(ctx.gpa, m, "TERMINAL"));
+        // And closes it again from inside, without leaving Terminal mode first.
+        m = s.mark();
+        s.send("\x00");
+        s.drain(800);
+        ctx.check("Ctrl-backtick closes it from inside", !s.containsPlainSince(ctx.gpa, m, "TERMINAL"));
+        m = s.mark();
+        s.send(":ls" ++ CR);
+        s.drain(500);
+        ctx.check("closing it removes the buffer", !s.containsPlainSince(ctx.gpa, m, "[terminal]"));
+        s.send(":q!" ++ CR);
+        s.drain(400);
+    }
+
     // --- scrollback: output that scrolled away is still reachable -----------
     {
         var s = try h.Session.spawn(ctx.gpa, .{

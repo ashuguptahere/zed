@@ -28,6 +28,57 @@ fn rowHas(ctx: *h.Ctx, scr: *h.Screen, row: usize, needle: []const u8) bool {
 }
 
 pub fn run(ctx: *h.Ctx) !void {
+    // --- the tab close box ---------------------------------------------------
+    {
+        const dir = try h.tempDir(ctx.gpa);
+        defer ctx.gpa.free(dir);
+        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const a = h.join(ctx, dir, "aa.txt");
+        defer ctx.gpa.free(a);
+        const b = h.join(ctx, dir, "bb.txt");
+        defer ctx.gpa.free(b);
+        h.writeFile(ctx.io, a, "one\n");
+        h.writeFile(ctx.io, b, "two\n");
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ ctx.zedit, "--lsp", "", "aa.txt" },
+            .cwd = dir,
+            .term = "xterm-256color",
+        });
+        defer s.finish();
+        s.drain(600);
+        s.send(":e bb.txt\r");
+        s.drain(500);
+        ctx.check("every tab carries a close box", s.contains("\u{2715}"));
+
+        // Find the ✕ of the first tab and click it.
+        var scr = try h.Screen.init(ctx.gpa, 24, 80);
+        defer scr.deinit();
+        scr.apply(s.out.items);
+        const row1 = try scr.rowText(ctx.gpa, 1);
+        defer ctx.gpa.free(row1);
+        const cross = std.mem.indexOf(u8, row1, "\u{2715}") orelse {
+            ctx.check("a close box is on the tab row", false);
+            return;
+        };
+        // `rowText` is UTF-8; the cross is one cell, so count codepoints up to it.
+        var col: usize = 1;
+        var bi: usize = 0;
+        while (bi < cross) : (col += 1) bi += std.unicode.utf8ByteSequenceLength(row1[bi]) catch 1;
+        var click: [32]u8 = undefined;
+        const press = try std.fmt.bufPrint(&click, "\x1b[<0;{d};1M", .{col});
+        var rel: [32]u8 = undefined;
+        const release = try std.fmt.bufPrint(&rel, "\x1b[<0;{d};1m", .{col});
+        const m = s.mark();
+        s.send(press);
+        s.send(release);
+        s.drain(700);
+        ctx.check("clicking a tab's close box closes that buffer",
+            !s.containsPlainSince(ctx.gpa, m, "aa.txt"));
+        s.send(":qa!\r");
+        s.drain(400);
+    }
+
+
     const dir = try h.tempDir(ctx.gpa);
     defer ctx.gpa.free(dir);
     defer h.removeTree(ctx.gpa, ctx.io, dir);

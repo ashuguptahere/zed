@@ -1260,7 +1260,9 @@ pub const Editor = struct {
         if (self.dashboard) return; // the startup screen owns the keyboard
         if (self.mode == .normal or self.mode == .insert) {
             if (tabsVisible() and m.row == 1) {
-                if (self.tabAt(m.col)) |doc| {
+                if (self.tabAt(m.col)) |hit| {
+                    if (hit.close) return self.closeTab(hit.doc);
+                    const doc = hit.doc;
                     if (doc == self.d) return;
                     self.addJump();
                     self.focusDoc(doc);
@@ -1431,8 +1433,10 @@ pub const Editor = struct {
     /// preview pane stay inert, so terminal text selection keeps working there.
     fn pickerClick(self: *Editor, m: key.Mouse) !void {
         if (tabsVisible() and m.row == 1) {
-            if (self.tabAt(m.col)) |doc| {
+            if (self.tabAt(m.col)) |hit| {
                 self.closePicker();
+                if (hit.close) return self.closeTab(hit.doc);
+                const doc = hit.doc;
                 if (doc != self.d) {
                     self.addJump();
                     self.focusDoc(doc);
@@ -1581,6 +1585,10 @@ pub const Editor = struct {
             }
             return;
         }
+        // VS Code's terminal toggle. The key is whatever the terminal sends
+        // for Ctrl-backtick (NUL), which is also Ctrl-Space — they cannot be
+        // told apart on the wire, and neither was bound to anything.
+        if (k == .ctrl and k.ctrl == ' ') return self.toggleTerminal();
         if (self.cur.doc.shell) |*sh| {
             // Reading back through what a command printed is the main reason
             // to leave Terminal mode, so the paging keys do that here rather
@@ -1641,8 +1649,25 @@ pub const Editor = struct {
             'h' => self.doMotion(self.repeatMotion(.left)),
             'l' => self.doMotion(self.repeatMotion(.right)),
             ' ' => self.await_arg = .space_leader, // which-key leader
-            'j' => self.doMotion(self.vertical(false, self.eff())),
-            'k' => self.doMotion(self.vertical(true, self.eff())),
+            // With soft wrap on, `j`/`k` walk *screen* rows — a deliberate
+            // divergence from vim, where they always move a buffer line and
+            // `gj`/`gk` do this. On wrapped prose vim's rule feels like the
+            // cursor skipping, which is what it looks like: one press crosses
+            // however many rows the line happened to fill. `gj`/`gk` still
+            // work and are now simply the same thing.
+            //
+            // Only as a *cursor* motion: with an operator pending they stay
+            // linewise, because `dj` must delete two whole lines rather than a
+            // screen row's worth of characters (`screenVertical` is charwise,
+            // which is also why vim's own `dgj` is charwise).
+            'j' => self.doMotion(if (self.wrappedHere())
+                self.screenVertical(false, self.eff())
+            else
+                self.vertical(false, self.eff())),
+            'k' => self.doMotion(if (self.wrappedHere())
+                self.screenVertical(true, self.eff())
+            else
+                self.vertical(true, self.eff())),
             '0' => self.doMotion(.{ .pos = .{ .row = self.cy, .col = 0 }, .kind = .exclusive, .col_mode = .exact }),
             '^', '_' => self.doMotion(.{ .pos = .{ .row = self.cy, .col = motion.firstNonBlank(self.curLine()) }, .kind = .exclusive, .col_mode = .exact }),
             '$' => self.doMotion(self.endOfLineMotion()),
@@ -2436,6 +2461,25 @@ pub const Editor = struct {
         return .{ .pos = .{ .row = row, .col = 0 }, .kind = .linewise, .col_mode = .keep_goal };
     }
 
+    /// Whether `j`/`k` should walk screen rows: soft wrap is on, the cursor is
+    /// on a line that actually fills more than one row, and no operator is
+    /// pending.
+    ///
+    /// The gate is the *current* line rather than "wrap is on", because on a
+    /// line that occupies one row the two are the same movement — except that
+    /// `screenVertical` is charwise and exact, so it would quietly drop the
+    /// goal column that `k` after a click past a short line's end depends on.
+    /// Narrowing it to lines that really wrap fixes what the wrapped view got
+    /// wrong without touching everything else.
+    ///
+    /// An operator keeps the linewise form: `dj` must take two whole lines,
+    /// not a screen row's worth of characters.
+    fn wrappedHere(self: *Editor) bool {
+        if (self.operator != .none or !self.wrapping()) return false;
+        if (self.textCols() == 0) return false;
+        return self.lineLayout(self.cy).n > 1;
+    }
+
     /// `gj` / `gk`: down or up one *screen* row, keeping the column within the
     /// row — so a wrapped line is walked a row at a time instead of skipped
     /// whole. On a line that does not wrap (or with soft wrap off) they are
@@ -2457,7 +2501,9 @@ pub const Editor = struct {
                     seg -= 1;
                 } else {
                     if (row == 0) break;
-                    row -= 1;
+                    // A closed fold is one row here too: land on its header
+                    // rather than inside something that is not drawn.
+                    row = self.d.folds.prevVisible(row - 1);
                     wl = self.lineLayout(row);
                     seg = wl.n - 1;
                 }
@@ -2465,14 +2511,20 @@ pub const Editor = struct {
                 if (seg + 1 < wl.n) {
                     seg += 1;
                 } else {
-                    if (row + 1 >= self.buf.lineCount()) break;
-                    row += 1;
+                    const last = self.buf.lineCount() - 1;
+                    const from = if (self.d.folds.closedAt(row)) |f| f.end else row;
+                    if (from >= last) break;
+                    row = self.d.folds.nextVisible(from + 1, last);
                     wl = self.lineLayout(row);
                     seg = 0;
                 }
             }
         }
         const target = wl.starts[seg] + (screen_col -| wl.pad(seg));
+        // Nowhere to go is a *failed* motion, which is what stops a macro
+        // replay at the end of the buffer — `vertical` has always reported it
+        // and `j`/`k` now come through here.
+        if (row == self.cy and seg == here.seg and n > 0) self.failed = true;
         return .{
             .pos = .{ .row = row, .col = byteAtDisplayCol(self.buf.line(row), target) },
             .kind = .exclusive,
@@ -4480,6 +4532,10 @@ pub const Editor = struct {
     }
 
     fn refilter(self: *Editor) void {
+        // Whatever ends up selected is what the theme picker shows — on
+        // opening and while typing, not only when the arrows move. The first
+        // theme in the list was being named but not applied.
+        defer self.previewTheme();
         var sp = log.Span.start();
         if (self.picker_kind == .grep) {
             const gq = self.picker_query.items;
@@ -8130,6 +8186,43 @@ pub const Editor = struct {
         } else self.setStatus("scrolled back {d} lines", .{sh.screen.back});
     }
 
+    /// A click on a tab's `✕`. Closing the *active* buffer is the ordinary
+    /// close; closing another one must not disturb where you are, so it is
+    /// focused, closed, and focus returns to where it was — unless that was
+    /// the buffer just closed.
+    fn closeTab(self: *Editor, doc: *Doc) void {
+        if (doc.shell != null) { // a terminal tab: end the shell
+            const was = self.cur;
+            self.focusDoc(doc);
+            self.closeTerminal();
+            if (self.winIndex(was) < self.wins.items.len) self.cur = was;
+            return;
+        }
+        if (doc == self.d) return self.closeDoc(false);
+        const keep = self.d;
+        self.focusDoc(doc);
+        self.closeDoc(false);
+        // `closeDoc` refuses a dirty buffer and says so; only go back when it
+        // actually went.
+        for (self.docs.items) |d| {
+            if (d == doc) return; // still open: the close was refused
+        }
+        self.focusDoc(keep);
+        self.clampCursor();
+    }
+
+    /// Ctrl-backtick — open the terminal, or close it if one is showing.
+    /// VS Code's and Zed's rule: one key both ways, from either mode.
+    fn toggleTerminal(self: *Editor) void {
+        for (self.wins.items) |w| {
+            if (w.doc.shell == null) continue;
+            self.focusWin(w);
+            self.closeTerminal();
+            return;
+        }
+        self.openTerminal();
+    }
+
     /// Drain whatever the shell has written into its grid. Returns true when
     /// something changed, so the loop knows to render.
     fn pumpTerminal(self: *Editor) bool {
@@ -8197,6 +8290,8 @@ pub const Editor = struct {
         if (sh.done) return self.closeTerminal();
         // `Ctrl-\` is byte 0x1c, which `key.zig` does not decode as a ctrl
         // letter (its range stops at 0x1a), so the raw byte is what to match.
+        // The same toggle closes it from inside, as in VS Code.
+        if (k == .ctrl and k.ctrl == ' ') return self.toggleTerminal();
         const ctrl_backslash = raw.len == 1 and raw[0] == 0x1c;
         if (self.term_escape) {
             self.term_escape = false;
@@ -10657,10 +10752,20 @@ pub const Editor = struct {
     /// The screen width one tab occupies, including its trailing powerline
     /// separator. The renderer and the click hit-test both use this, so a tab
     /// can never be drawn at one place and clicked at another.
+    /// The cells a tab occupies: a leading space, the name, the dirty dot when
+    /// there is one, then the close box (`close_cells`) and the separator.
     fn tabCells(doc: *Doc) usize {
         const name = std.fs.path.basename(docLabel(doc));
-        return 2 + unicode.displayWidth(name) + @as(usize, if (doc.buf.dirty) 2 else 0) + sepCells();
+        return 2 + unicode.displayWidth(name) + @as(usize, if (doc.buf.dirty) 2 else 0) +
+            close_cells + sepCells();
     }
+
+    /// ` ✕` — the click target that closes a buffer, VS Code's and Zed's tab
+    /// button. Always drawn rather than shown on hover: hovering needs mouse
+    /// mode 1003, which reports *every* pointer movement and would wake the
+    /// editor thousands of times while it should be idle. A visible button
+    /// costs two columns and no wake-ups.
+    const close_cells: usize = 2;
 
     /// Where the tabs live on row 1: their first column and the width they
     /// may use — the text area, beside the sidebar's columns. Shared by the
@@ -10674,13 +10779,21 @@ pub const Editor = struct {
 
     /// The document whose tab covers 1-based screen column `col`, if any.
     /// Clicks on the EXPLORER segment or the filler resolve to null.
-    fn tabAt(self: *Editor, col: usize) ?*Doc {
+    /// What a click on the tab row lands on: a buffer, and whether it hit that
+    /// tab's close box rather than its name.
+    const TabHit = struct { doc: *Doc, close: bool };
+
+    fn tabAt(self: *Editor, col: usize) ?TabHit {
         const area = self.tabArea();
         var x = area.x0;
         for (self.docs.items) |doc| {
             const w = tabCells(doc);
             if (x + w > area.x0 + area.w) break;
-            if (col >= x and col < x + w) return doc;
+            if (col >= x and col < x + w) {
+                // The close box is the two cells before the separator.
+                const box_start = x + w - sepCells() - close_cells;
+                return .{ .doc = doc, .close = col >= box_start };
+            }
             x += w;
         }
         return null;
@@ -10733,6 +10846,7 @@ pub const Editor = struct {
             try self.emit(" ");
             try self.emitSanitized(std.fs.path.basename(docLabel(doc)));
             if (doc.buf.dirty) try self.emit(" \u{25CF}");
+            try self.emit(" \u{2715}"); // ✕ — click it to close this buffer
             try self.emit(" ");
             used += w;
             if (sepCells() > 0) {
