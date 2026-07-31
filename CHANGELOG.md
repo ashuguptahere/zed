@@ -2,6 +2,22 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.36.0 - 2026-07-31
+
+### Added
+
+- **Terminal scrollback**, 5000 rows. The wheel in Terminal mode and
+  `Ctrl-u`/`Ctrl-d` in normal mode over the window page through output that
+  has scrolled away — before this, anything past the top of the split was
+  simply gone.
+
+  Only rows leaving the top of the *screen* become history: a scrolling
+  region's rows are a full-screen program redrawing in place, and keeping them
+  would fill the history with redraw noise. Any new output snaps the view back
+  to live, which is what every terminal does and what stops a scrolled-back
+  view silently missing a command's output. A width change drops the history
+  rather than reinterpreting rows of the old width as the new one.
+
 ## 0.35.2 - 2026-07-31
 
 ### Fixed

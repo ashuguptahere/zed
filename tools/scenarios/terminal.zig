@@ -131,6 +131,68 @@ pub fn run(ctx: *h.Ctx) !void {
         s.drain(500);
     }
 
+    // --- scrollback: output that scrolled away is still reachable -----------
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ "env", shell_env, ps1_env, ctx.zedit, "f.txt" },
+            .cwd = dir,
+            .term = "xterm-256color",
+        });
+        defer s.finish();
+        s.drain(700);
+        s.send(" t");
+        s.drain(1200);
+        // Print far more lines than the split can show, with a marker at the
+        // very top that must have scrolled away.
+        s.send("printf 'TOPMARK\\n'; i=0; while [ $i -lt 60 ]; do echo \"line$i\"; i=$((i+1)); done" ++ CR);
+        s.drain(2000);
+        var m = s.mark();
+        ctx.check("the newest output is on screen", s.containsPlainSince(ctx.gpa, m -| 4000, "line59"));
+        var scr = try h.Screen.init(ctx.gpa, 24, 80);
+        scr.apply(s.out.items);
+        var top_visible = false;
+        var r: usize = 1;
+        while (r <= scr.rows) : (r += 1) {
+            const rt = try scr.rowText(ctx.gpa, r);
+            defer ctx.gpa.free(rt);
+            if (std.mem.indexOf(u8, rt, "TOPMARK") != null) top_visible = true;
+        }
+        scr.deinit();
+        ctx.check("the oldest output has scrolled off", !top_visible);
+
+        // Ctrl-\ Ctrl-n, then page back until the marker reappears.
+        s.send(CTRL_BACKSLASH ++ CTRL_N);
+        s.drain(500);
+        var found = false;
+        var tries: usize = 0;
+        while (tries < 20 and !found) : (tries += 1) {
+            s.send("\x15"); // Ctrl-u
+            s.drain(250);
+            var back = try h.Screen.init(ctx.gpa, 24, 80);
+            defer back.deinit();
+            back.apply(s.out.items);
+            var rr: usize = 1;
+            while (rr <= back.rows) : (rr += 1) {
+                const rt = try back.rowText(ctx.gpa, rr);
+                defer ctx.gpa.free(rt);
+                if (std.mem.indexOf(u8, rt, "TOPMARK") != null) found = true;
+            }
+        }
+        ctx.check("paging back reaches output that scrolled away", found);
+        m = s.mark();
+        // Enough forward pages to undo however many back pages it took above.
+        var d: usize = 0;
+        while (d < 30) : (d += 1) {
+            s.send("\x04"); // Ctrl-d
+            s.drain(60);
+        }
+        s.drain(600);
+        ctx.check("paging forward returns to the live output",
+            s.containsPlainSince(ctx.gpa, m, "live") or s.containsPlainSince(ctx.gpa, m, "already at the live"));
+        s.send(":qa!" ++ CR);
+        s.drain(500);
+    }
+
     // --- an open shell must not cost CPU while it sits at its prompt --------
     // The whole editor is built on blocking in poll(2); adding a third fd to
     // that set must not turn the loop into a spin. An exited-but-unreaped pty

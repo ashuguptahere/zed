@@ -1114,9 +1114,9 @@ pub const Editor = struct {
                 switch (self.mode) {
                     .normal, .insert, .visual, .visual_line, .visual_block => self.mouseScroll(self.wheelWin(m), up),
                     .picker => self.scrollPreview(if (up) -3 else 3),
-                    // The grid has no scrollback to scroll through; a wheel
-                    // notch there is inert rather than moving the file behind.
-                    .command, .terminal => {},
+                    // Over a shell, the wheel walks its scrollback.
+                    .terminal => self.shellScroll(up, 3),
+                    .command => {},
                 }
                 return;
             },
@@ -1579,6 +1579,13 @@ pub const Editor = struct {
             return;
         }
         if (self.cur.doc.shell) |*sh| {
+            // Reading back through what a command printed is the main reason
+            // to leave Terminal mode, so the paging keys do that here rather
+            // than moving a cursor the grid does not have.
+            if (k == .ctrl and (k.ctrl == 'u' or k.ctrl == 'd') and !sh.done) {
+                self.shellScroll(k.ctrl == 'u', self.winTextRows(self.cur) / 2);
+                return;
+            }
             // An exited shell's grid stays up so its last output is readable;
             // the next key dismisses it (nvim's rule for a finished :terminal).
             if (sh.done) return self.closeTerminal();
@@ -8076,6 +8083,23 @@ pub const Editor = struct {
         self.setStatus("terminal — Ctrl-\\ Ctrl-n for normal mode", .{});
     }
 
+    /// Walk the shell's scrollback. Used by the wheel in Terminal mode and by
+    /// `Ctrl-u`/`Ctrl-d` in normal mode over a terminal window, which is where
+    /// a reader who has stopped typing will reach for it.
+    fn shellScroll(self: *Editor, back: bool, rows: usize) void {
+        const sh = if (self.cur.doc.shell) |*s| s else return;
+        if (!sh.screen.scrollView(rows, back)) {
+            if (back) {
+                self.setStatus("top of the scrollback", .{});
+            } else self.setStatus("already at the live output", .{});
+            return;
+        }
+        self.prev_valid = false;
+        if (sh.screen.back == 0) {
+            self.setStatus("live", .{});
+        } else self.setStatus("scrolled back {d} lines", .{sh.screen.back});
+    }
+
     /// Drain whatever the shell has written into its grid. Returns true when
     /// something changed, so the loop knows to render.
     fn pumpTerminal(self: *Editor) bool {
@@ -9967,7 +9991,7 @@ pub const Editor = struct {
             var x: usize = 0;
             var last: ?vt.Attr = null;
             while (x < w.gw) : (x += 1) {
-                const c = sh.screen.at(y, x);
+                const c = sh.screen.viewAt(y, x);
                 if (last == null or !c.attr.eql(last.?)) {
                     // reverse video swaps the pair, which is how a shell draws
                     // its selection and a `less` status line.

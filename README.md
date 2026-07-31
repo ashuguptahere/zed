@@ -90,7 +90,8 @@
   creates the directories on the way); `Space d …` a **debugger** (breakpoints,
   start/continue, step over/into/out — DAP, so `lldb-dap`, `debugpy` and
   `dlv dap` all work); `Space t` an **embedded terminal** (a real
-  shell in a split — nvim's mode split, `Ctrl-\ Ctrl-n` back to normal);
+  shell in a split — nvim's mode split, `Ctrl-\ Ctrl-n` back to normal, with
+  5000 rows of scrollback the wheel and `Ctrl-u`/`Ctrl-d` page through);
   `Space S …` sessions (save/load/delete this
   directory's open files, cursors, splits and tree state — explicit both ways,
   never on launch or exit); `Space b …` buffers (picker,

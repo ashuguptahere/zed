@@ -801,7 +801,13 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   the grid renders as `?` through the same sanitizer as buffer content.
   The pty is polled alongside stdin and the language server (`waitReady`
   takes all three), so an idle shell still costs zero CPU — pty-verified,
-  including after the shell exits. Absent by design: scrollback, the
+  including after the shell exits. Reading back: the wheel in Terminal mode,
+  and `Ctrl-u`/`Ctrl-d` in normal mode over the window, page through a
+  **scrollback** of 5000 rows — rows that leave the top of the *screen*, not a
+  scrolling region's (those are a full-screen program redrawing in place, and
+  keeping them would fill the history with noise). Any new output snaps the
+  view back to live, and a width change drops the history rather than
+  reinterpreting rows of the old width. Absent by design: the
   alternate screen (a full-screen program draws over the shell's output
   instead of restoring it), and any mouse or bracketed-paste mode of its own.
 - **Folds (`zf`, `zo`/`zc`/`za`, `zR`/`zM`, `zd`/`zE`):** `zf{motion}`

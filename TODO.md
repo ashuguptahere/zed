@@ -43,9 +43,8 @@ behind the roadmap items.
        keeps a cursor per window, not per buffer — that model would have to
        change first), named sessions beyond the one per directory, and the
        jumplist/marks.
-6. [ ] **Terminal polish.** The shell landed in 0.31.0. Not there yet:
-       scrollback (the grid is exactly the window, so output that scrolls off
-       is gone), the alternate screen (a full-screen program draws over the
+6. [ ] **Terminal polish.** The shell landed in 0.31.0, scrollback in 0.36.0. Not there yet:
+       the alternate screen (a full-screen program draws over the
        shell's output instead of restoring it on exit), mouse and
        bracketed-paste forwarding, more than one terminal at a time, and
        `TERM=xterm-256color` — which needs the two above first. The

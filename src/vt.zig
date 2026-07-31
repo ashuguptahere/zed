@@ -10,7 +10,7 @@
 //! consumed and dropped rather than printed, which is the difference between
 //! an unsupported feature and a screen full of garbage.
 //!
-//! Deliberately absent (see TODO.md): scrollback, the alternate screen — so a
+//! Deliberately absent (see TODO.md): the alternate screen — so a
 //! full-screen program run inside draws over the shell's output rather than
 //! restoring it on exit — and any mouse or bracketed-paste mode of its own.
 //! Mode sets (`CSI ? … h/l`, including DECTCEM's cursor hiding) are parsed and
@@ -73,9 +73,21 @@ const max_params = 16;
 
 const State = enum { ground, esc, csi, osc, osc_esc, charset };
 
+/// Rows kept after they scroll off the top. A terminal is for reading recent
+/// output, not archiving it, so the history is capped and the oldest rows are
+/// dropped — bounded memory whatever a runaway command does.
+pub const max_scrollback = 5000;
+
 pub const Screen = struct {
     gpa: std.mem.Allocator,
     cells: []Cell,
+    /// Scrolled-off rows, oldest first, `cols` cells each.
+    history: std.ArrayList(Cell) = .empty,
+    hist_rows: usize = 0,
+    /// How many rows back the *view* is. 0 is live, and any new output snaps
+    /// back to live — which is what every terminal does, and what stops a
+    /// scrolled-back view silently missing a command's output.
+    back: usize = 0,
     rows: usize,
     cols: usize,
     cx: usize = 0,
@@ -109,6 +121,41 @@ pub const Screen = struct {
 
     pub fn deinit(self: *Screen) void {
         self.gpa.free(self.cells);
+        self.history.deinit(self.gpa);
+    }
+
+    /// A cell as the *viewer* sees it, which is the grid when live and the
+    /// history when scrolled back.
+    pub fn viewAt(self: *const Screen, row: usize, col: usize) Cell {
+        if (row >= self.rows or col >= self.cols) return .{};
+        if (self.back == 0) return self.at(row, col);
+        const abs = self.hist_rows + row - self.back; // may land in either
+        if (abs < self.hist_rows) return self.history.items[abs * self.cols + col];
+        return self.at(abs - self.hist_rows, col);
+    }
+
+    /// Scroll the view `n` rows back through the history (or forward toward
+    /// live with `back = false`). Returns true when it actually moved.
+    pub fn scrollView(self: *Screen, n: usize, back: bool) bool {
+        const was = self.back;
+        if (back) {
+            self.back = @min(self.back + n, self.hist_rows);
+        } else self.back -|= n;
+        return self.back != was;
+    }
+
+    /// Push the row about to be lost into the history.
+    fn remember(self: *Screen, row: usize) void {
+        if (max_scrollback == 0) return;
+        const start = row * self.cols;
+        self.history.appendSlice(self.gpa, self.cells[start .. start + self.cols]) catch return;
+        self.hist_rows += 1;
+        if (self.hist_rows > max_scrollback) {
+            const drop = self.hist_rows - max_scrollback;
+            self.history.replaceRange(self.gpa, 0, drop * self.cols, &.{}) catch return;
+            self.hist_rows -= drop;
+            self.back -|= drop; // the view keeps pointing at the same text
+        }
     }
 
     pub fn at(self: *const Screen, row: usize, col: usize) Cell {
@@ -136,6 +183,14 @@ pub const Screen = struct {
         }
         self.gpa.free(self.cells);
         self.cells = fresh;
+        // The history's rows are `cols` cells wide, so a width change would
+        // reinterpret them as garbage. Reflowing needs per-row "this
+        // continued" state the grid does not keep, so it is dropped instead.
+        if (c != self.cols) {
+            self.history.clearRetainingCapacity();
+            self.hist_rows = 0;
+            self.back = 0;
+        }
         self.rows = r;
         self.cols = c;
         self.top = 0;
@@ -148,6 +203,7 @@ pub const Screen = struct {
     // === feeding ===========================================================
 
     pub fn feed(self: *Screen, bytes: []const u8) void {
+        if (bytes.len > 0) self.back = 0; // new output snaps the view to live
         for (bytes) |b| self.feedByte(b);
     }
 
@@ -251,6 +307,14 @@ pub const Screen = struct {
 
     fn scrollUp(self: *Screen, n: usize) void {
         const count = @min(n, self.bot - self.top + 1);
+        // Only rows leaving the top of the *screen* are history. A scrolling
+        // region's rows are being rewritten in place by a full-screen program,
+        // not scrolled away, so keeping them would fill the history with
+        // redraw noise.
+        if (self.top == 0) {
+            var k: usize = 0;
+            while (k < count) : (k += 1) self.remember(k);
+        }
         var y = self.top;
         while (y + count <= self.bot) : (y += 1) {
             const dst = y * self.cols;
@@ -824,6 +888,79 @@ test "resize keeps the top-left contents and clamps the cursor" {
     try expectRow(&s, 0, "hell");
     try expectRow(&s, 1, "worl");
     try testing.expect(s.cy < 2 and s.cx < 4);
+}
+
+test "rows that scroll off the top go into the history" {
+    var s = try Screen.init(testing.allocator, 3, 8);
+    defer s.deinit();
+    s.feed("one\r\ntwo\r\nthree\r\nfour\r\nfive");
+    // The screen shows the last three; the first two are history.
+    try expectRow(&s, 0, "three");
+    try testing.expectEqual(@as(usize, 2), s.hist_rows);
+    // Scrolled back one row, the view starts a line earlier.
+    try testing.expect(s.scrollView(1, true));
+    try testing.expectEqual(@as(u21, 't'), s.viewAt(0, 0).cp); // "two"
+    try testing.expectEqual(@as(u21, 'w'), s.viewAt(0, 1).cp);
+    try testing.expect(s.scrollView(1, true));
+    try testing.expectEqual(@as(u21, 'o'), s.viewAt(0, 0).cp); // "one"
+}
+
+test "the view cannot scroll past the oldest row or past live" {
+    var s = try Screen.init(testing.allocator, 2, 6);
+    defer s.deinit();
+    s.feed("a\r\nb\r\nc");
+    try testing.expectEqual(@as(usize, 1), s.hist_rows);
+    try testing.expect(s.scrollView(99, true));
+    try testing.expectEqual(@as(usize, 1), s.back); // clamped to what exists
+    try testing.expect(!s.scrollView(1, true)); // already as far back as it goes
+    try testing.expect(s.scrollView(99, false));
+    try testing.expectEqual(@as(usize, 0), s.back);
+    try testing.expect(!s.scrollView(1, false));
+}
+
+test "new output snaps the view back to live" {
+    var s = try Screen.init(testing.allocator, 2, 6);
+    defer s.deinit();
+    s.feed("a\r\nb\r\nc");
+    _ = s.scrollView(1, true);
+    try testing.expect(s.back > 0);
+    s.feed("d");
+    try testing.expectEqual(@as(usize, 0), s.back);
+}
+
+test "a scrolling region's rows are not history" {
+    var s = try Screen.init(testing.allocator, 4, 6);
+    defer s.deinit();
+    s.feed("1\r\n2\r\n3\r\n4");
+    const before = s.hist_rows;
+    s.feed("\x1b[2;4r\x1b[4;1H\nx"); // scroll inside rows 2..4
+    try testing.expectEqual(before, s.hist_rows); // redraw noise, not history
+}
+
+test "the history is capped" {
+    var s = try Screen.init(testing.allocator, 2, 4);
+    defer s.deinit();
+    var i: usize = 0;
+    while (i < max_scrollback + 50) : (i += 1) s.feed("x\r\n");
+    try testing.expectEqual(max_scrollback, s.hist_rows);
+    try testing.expectEqual(max_scrollback * s.cols, s.history.items.len);
+}
+
+test "a width change drops the history rather than misreading it" {
+    var s = try Screen.init(testing.allocator, 2, 8);
+    defer s.deinit();
+    s.feed("a\r\nb\r\nc");
+    try testing.expect(s.hist_rows > 0);
+    try s.resize(2, 12);
+    try testing.expectEqual(@as(usize, 0), s.hist_rows);
+}
+
+test "viewAt is the grid when live" {
+    var s = try Screen.init(testing.allocator, 2, 6);
+    defer s.deinit();
+    s.feed("hi");
+    try testing.expectEqual(s.at(0, 0).cp, s.viewAt(0, 0).cp);
+    try testing.expectEqual(s.at(0, 1).cp, s.viewAt(0, 1).cp);
 }
 
 test "an erase after setting a background paints that background" {

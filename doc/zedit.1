@@ -784,7 +784,13 @@ returns to normal mode and
 goes back in. A second
 .B Space t
 focuses the shell already open rather than starting another; an exited shell
-keeps its last output until any key closes the window. Also
+keeps its last output until any key closes the window. Output that scrolls off
+the top is kept: 5000 rows of scrollback, paged with the wheel in Terminal mode
+or
+.B Ctrl-u
+and
+.B Ctrl-d
+in normal mode. Also
 .BR :terminal .
 .TP
 .B zf\fImotion\fP
