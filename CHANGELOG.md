@@ -2,6 +2,42 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.35.0 - 2026-07-31
+
+### Added
+
+- **Folds** (`zf{motion}`, `zo`/`zc`/`za`, `zR`/`zM`, `zd`/`zE`). A closed
+  fold draws as one row — `▸ N lines: text`, the header's own text with what
+  it hides — and its body is simply not drawn. Nesting resolves to the
+  outermost closed fold, since that is the header on screen.
+
+  `j`/`k` treat a closed fold as a single line: landing on its header, and
+  stepping off from the line after its end, so escaping one takes a press
+  rather than one press per hidden line, and the cursor can never sit on a row
+  that is not drawn.
+
+  Folding is not editing — it works on a read-only buffer (folding a diff view
+  to read it is reasonable) and never marks one dirty. Folds move with the
+  text: `buffer.zig` records every line insertion and removal and the editor
+  drains that log into each document's fold set, so a fold keeps covering the
+  same lines when an edit above shifts them, and is dropped when its lines go.
+
+  Absent: `foldmethod`/`foldlevel`, automatic tree-sitter or LSP fold
+  providers, a fold column, and persistence — though `zf` over a structural
+  object (`zfaf`) folds a function today, since `af` is already a text object.
+
+### Fixed
+
+- **A count typed after an operator was dropped by the char motions.** `d3j`
+  deleted two lines where nvim deletes four; `d2fa` was right, because the
+  find motions went through a *different* count helper. There were two
+  functions spelling "the count" — one multiplying the counts and one not —
+  and the motions used the wrong one. Now there is one. Pinned by three
+  `vim_compat` cases (`d3j`, `d2j`, `2d3j`) generated from real nvim.
+
+  Found while building `zf`: `zf3j` folded two lines instead of four, which is
+  the same bug seen from a new angle.
+
 ## 0.34.0 - 2026-07-31
 
 ### Added

@@ -166,7 +166,11 @@ Ground truth: `/home/origo/Desktop/zed/CLAUDE.md` (note: the on-disk version is 
 - **Global/ex commands (`:g`, `:v`, `:normal`, general `{range}cmd`)** — the command line only knows `:w :q :e :bn :split :{n}` etc.; no ex address machinery to hang `:g/pat/d` or `:'<,'>normal @q` on — **med** (depends on regex landing first)
 - **Changelist (`g;`/`g,`) and `''`** — ~~the jumplist~~ is **DONE** (`Ctrl-o`/`Ctrl-i`, cross-buffer, recording `G`/search/marks/`%`/buffer switches/`gd`, nvim-pinned), but there is no *change* list and no `''` back-to-previous-position — **med**
 - **smartindent and the `=` operator** — ~~autoindent~~ is **DONE** (vim's copy rule plus the grammar's `@indent.begin` for 7 languages), but there is no smartindent, no `@indent.end`/`@indent.dedent`/`@indent.align`, and no `=` re-indent operator — **med**
-- **Folding (`zf zo zc za`, foldexpr)** — no fold support of any kind, despite tree-sitter and LSP (both of which Neovim uses as fold providers) already being in-tree — **med**
+- ~~**Folding (`zf zo zc za`)**~~ — **DONE** for manual folds (`zf{motion}`,
+  `zo`/`zc`/`za`, `zR`/`zM`, `zd`/`zE`, nesting, folds that move with edits;
+  `zf` over a structural object folds a function, since `af` is a text
+  object). No `foldexpr`/`foldmethod`, no automatic tree-sitter or LSP fold
+  providers, and no fold column — **low**
 - **Missing text objects: `it`/`at` (tags), `is`/`as` (sentence)** — ~~`ip`/`ap` and the `{` `}` motions~~ are **DONE**; the `(` `)` sentence motions are not — **med** for `it/at` (the HTML grammar is already vendored), low for sentences
 - **`gq`/`gw` formatting ('textwidth')** — no reflow operator; painful for prose/comments/markdown — **med**
 - **Spell checking ('spell', `]s`, `z=`)** — absent — **low**
@@ -180,7 +184,10 @@ Ground truth: `/home/origo/Desktop/zed/CLAUDE.md` (note: the on-disk version is 
 - **Autocommands / user hooks / key remapping** — ~~format-on-save~~ is **DONE** as a setting (`format_on_save`, on by default), but there is still no keybinding customization and no general filetype/event hook (`FileType`, `BufWritePre`); by design there is no scripting — **med** (keymap remapping is the commonly missed subset)
 - ~~**Terminal buffer (`:terminal`)**~~ — **DONE** (`Space t` / `:terminal`: a real shell on its own pty in a split, `vt.zig` emulating it, nvim's Terminal-mode split with `Ctrl-\ Ctrl-n`); no scrollback and no alternate screen yet — **low**
 - ~~**System clipboard (`"+`/`"*` registers)**~~ — **DONE** (OSC 52 out, bracketed paste in; works over SSH)
-- **Quickfix/location list (`:copen`, `]q`, `:cnext`)** — grep/diagnostics only exist as transient pickers/signs; no persistent, walkable result list — **med**
+- ~~**Quickfix list (`:copen`, `]q`, `:cnext`)**~~ — **DONE** (`Ctrl-q` from
+  the grep/references/diagnostics pickers, `]q`/`[q`, `:copen` and the `:c*`
+  family). There is no *location* list (the per-window variant) and no
+  `:cfile`/`:grep` populating it from an external command — **low**
 - ~~**Soft line wrap ('wrap')**~~ — **DONE** (`soft_wrap` on by default, `↳` marker, word breaks, `wrap_indent`, `wrap_column`, `gj`/`gk`/`g0`/`g$`)
 - **`Ctrl-a`/`Ctrl-x` number increment** — absent — **low**
 

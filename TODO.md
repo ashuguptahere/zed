@@ -172,6 +172,9 @@ there is nothing to change there.
 - [x] The LSP handshake made asynchronous — a slow server no longer freezes
       the editor; `Space n` became a New group (buffer/file/folder);
       `doc/COMPARISON.md` re-verified end to end. (0.33.0)
+- [x] Folds: `zf`/`zo`/`zc`/`za`/`zR`/`zM`/`zd`/`zE`, nesting, folds that
+      move with edits; fixed a counted-operator bug (`d3j`) found on the
+      way. (0.35.0)
 - [x] Quickfix list: `Ctrl-q` from a picker, `]q`/`[q`, `:copen` and the
       `:c*` family; fixed an off-by-one in the debugger's stop line found on
       the way. (0.34.0)

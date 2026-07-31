@@ -283,6 +283,8 @@
      Space b    Buffers menu: picker, next/previous, close others
      Space f u  the undo tree, as a picker you can jump around in
      Space n    new: b buffer, f file, d folder (a path makes the dirs)
+     zf{motion} fold those lines away ( zo  opens,  za  toggles,
+                zR  opens every fold,  zd  removes one)
      Ctrl-q     in a picker: keep every result in the quickfix list,
                 then walk them with  ]q  and  [q  ( :copen  lists them)
      Space d    debug: b a breakpoint, c start/continue, n/i/o step

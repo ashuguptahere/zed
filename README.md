@@ -81,6 +81,9 @@
   which-key menus: `Space f f` find files, `Space f w` find words (regex grep,
   same syntax as `/`),
   `Space f b` buffers, `Space f t` themes, `Space f u` the undo tree;
+  **Folds**: `zf{motion}` collapses a range to one row, `zo`/`zc`/`za` open
+  and close, `zR`/`zM` all of them — and `j`/`k` step over a closed fold as
+  though it were one line;
   `Ctrl-q` in a picker sends every result to the **quickfix list** (`]q`/`[q`
   to walk it, `:copen` to see it);
   `Space n …` new buffer / file / folder (a path like `src/net/http.zig`

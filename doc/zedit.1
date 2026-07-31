@@ -787,6 +787,27 @@ focuses the shell already open rather than starting another; an exited shell
 keeps its last output until any key closes the window. Also
 .BR :terminal .
 .TP
+.B zf\fImotion\fP
+Fold the lines the motion covered into one row.
+.B zo
+opens the fold under the cursor,
+.B zc
+closes it,
+.B za
+toggles it,
+.B zR
+and
+.B zM
+open and close every fold, and
+.B zd
+and
+.B zE
+remove one or all. A closed fold counts as a single line to
+.B j
+and
+.BR k .
+Folding never changes the text, so it works on read-only buffers too.
+.TP
 .B ]q\fR, \fP[q
 Walk the quickfix list, wrapping at both ends and taking a count. Fill it with
 .B Ctrl-q

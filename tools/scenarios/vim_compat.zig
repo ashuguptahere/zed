@@ -54,6 +54,13 @@ pub fn run(ctx: *h.Ctx) !void {
     h.case(ctx, target, "nvim#3 dw on last word stops at newline", &.{ "wdw", ":wq", CR }, "foo  bar\n", "foo  \n");
     h.case(ctx, target, "nvim#4 dw from mid-word", &.{ "ldw", ":wq", CR }, "foo bar\n", "fbar\n");
     h.case(ctx, target, "nvim#5 dw sole word + dot repeat", &.{ "dwj.", ":wq", CR }, "foo\nbar\n", "\n\n");
+    // A count typed *after* the operator multiplies the one before it, which
+    // char motions were dropping: `d3j` took two lines where nvim takes four.
+    // All three pinned against `nvim -u NONE -i NONE -n --headless`.
+    const eight = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\n";
+    h.case(ctx, target, "nvim#cnt1 d3j counts the lines below", &.{ "jd3j", ":wq", CR }, eight, "l1\nl6\nl7\nl8\n");
+    h.case(ctx, target, "nvim#cnt2 d2j", &.{ "jd2j", ":wq", CR }, eight, "l1\nl5\nl6\nl7\nl8\n");
+    h.case(ctx, target, "nvim#cnt3 2d3j multiplies both counts", &.{ "j2d3j", ":wq", CR }, eight, "l1\n");
     h.case(ctx, target, "nvim#6 d$ empties the line, keeps it", &.{ "d$", ":wq", CR }, "abc def\n", "\n");
     h.case(ctx, target, "nvim#7 2dw", &.{ "2dw", ":wq", CR }, "one two three\n", "three\n");
     h.case(ctx, target, "nvim#8 x then $p pastes after EOL char", &.{ "x$p", ":wq", CR }, "hello\n", "elloh\n");

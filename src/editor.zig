@@ -34,6 +34,7 @@ const session = @import("session.zig");
 const vt = @import("vt.zig");
 const dap = @import("dap.zig");
 const quickfix = @import("quickfix.zig");
+const fold = @import("fold.zig");
 const snippet = @import("snippet.zig");
 const remote = @import("remote.zig");
 const regex = @import("regex.zig");
@@ -129,7 +130,7 @@ const WildItem = struct { text: []u8, show: usize };
 const SbEntry = struct { path: []u8, depth: u8, is_dir: bool, expanded: bool };
 const sidebar_width: usize = 28;
 
-const Operator = enum { none, delete, change, yank, indent_right, indent_left, comment, surround };
+const Operator = enum { none, delete, change, yank, indent_right, indent_left, comment, surround, fold };
 
 /// What the next key supplies an argument for.
 const Await = enum {
@@ -147,6 +148,7 @@ const Await = enum {
     register, // "{a-z}
     g_prefix, // g then ...
     z_prefix, // Z then Z/Q
+    fold_prefix, // z then a fold command (f o c a R M d E)
     bracket_next, // ] then d (next diagnostic)
     bracket_prev, // [ then d (previous diagnostic)
     ctrl_w, // Ctrl-w then a window command
@@ -203,6 +205,8 @@ const Doc = struct {
     line_diff: ?git.LineDiff = null, // `Space g l`: the in-buffer weave of old lines
     /// The quickfix list view: Enter on a line jumps to that entry.
     qf_view: bool = false,
+    /// Folded line ranges. Per document, because a fold is about *this* text.
+    folds: fold.Set,
     /// An embedded shell (`Space t t`). When set, the window renders this
     /// grid instead of the buffer, and keys go to the child while the editor
     /// is in terminal mode.
@@ -280,6 +284,7 @@ const View = struct {
     gutter: usize,
     cols: usize, // text width = gw - gutter
     wrap: bool, // soft wrap (off for diff-pair panes: it breaks row alignment)
+    folds: *const fold.Set, // closed ranges collapse to a single header row
 };
 
 pub const Editor = struct {
@@ -603,6 +608,7 @@ pub const Editor = struct {
             .lang = syntax.detect(b.path),
             .history = undo.History.init(gpa),
             .git_signs = git.Signs.init(gpa),
+            .folds = .{ .gpa = gpa },
         };
         return doc;
     }
@@ -617,6 +623,7 @@ pub const Editor = struct {
         if (doc.line_diff) |*ld| ld.deinit(gpa);
         doc.history.deinit();
         doc.git_signs.deinit();
+        doc.folds.deinit();
         if (doc.ts) |*t| t.deinit();
         doc.ts_styles.deinit(gpa);
         doc.ts_line_starts.deinit(gpa);
@@ -1137,6 +1144,7 @@ pub const Editor = struct {
             },
         }
         try self.handleKey(k, raw);
+        self.settleFolds();
         if (!self.in_dot) self.dotCapturePost();
         self.showcmdSettle();
     }
@@ -1705,6 +1713,7 @@ pub const Editor = struct {
             ':' => self.enterCmd(.ex),
             '.' => try self.repeatDot(),
             'Z' => self.await_arg = .z_prefix,
+            'z' => self.await_arg = .fold_prefix,
             else => self.resetPending(),
         }
     }
@@ -1794,9 +1803,9 @@ pub const Editor = struct {
                     self.timeTravel(self.eff(), false); // g+: one state newer
                     self.resetPending();
                 } else if (k == .char and k.char == 'j')
-                    self.doMotion(self.screenVertical(false, self.total()))
+                    self.doMotion(self.screenVertical(false, self.eff()))
                 else if (k == .char and k.char == 'k')
-                    self.doMotion(self.screenVertical(true, self.total()))
+                    self.doMotion(self.screenVertical(true, self.eff()))
                 else if (k == .char and k.char == '0')
                     self.doMotion(self.screenLineEdge(false))
                 else if (k == .char and k.char == '$')
@@ -1811,6 +1820,26 @@ pub const Editor = struct {
                     self.quit = true;
                 }
                 self.resetPending();
+            },
+            .fold_prefix => {
+                // A leading count belongs to the operator that follows, as it
+                // does for `d`/`y`: `3zfj` is `zf3j`.
+                const n = self.count;
+                self.resetPending();
+                if (k == .char) switch (k.char) {
+                    'f' => {
+                        self.operator = .fold; // zf{motion}
+                        self.count = n;
+                    },
+                    'o' => self.foldSet(false),
+                    'c' => self.foldSet(true),
+                    'a' => self.foldToggle(),
+                    'R' => self.foldAll(false),
+                    'M' => self.foldAll(true),
+                    'd' => self.foldDelete(),
+                    'E' => self.foldClear(),
+                    else => {},
+                };
             },
             .bracket_next, .bracket_prev => {
                 if (k == .char and k.char == 'd') self.gotoDiagnostic(a == .bracket_next);
@@ -2048,8 +2077,8 @@ pub const Editor = struct {
         switch (k) {
             .left => self.doMotion(self.repeatMotion(.left)),
             .right => self.doMotion(self.repeatMotion(.right)),
-            .up => self.doMotion(self.vertical(true, self.total())),
-            .down => self.doMotion(self.vertical(false, self.total())),
+            .up => self.doMotion(self.vertical(true, self.eff())),
+            .down => self.doMotion(self.vertical(false, self.eff())),
             .escape => self.resetPending(),
             else => self.resetPending(),
         }
@@ -2063,13 +2092,14 @@ pub const Editor = struct {
             .indent_right => c == '>',
             .indent_left => c == '<',
             .comment => c == 'c', // gcc
+            .fold => c == 'f', // zff folds this line's... nothing; vim has no zff
             .surround => false, // handled by the 's' intercept (yss)
             .none => false,
         };
     }
 
     fn applyLinewiseOperator(self: *Editor) void {
-        const n = self.total();
+        const n = self.eff();
         const top = self.cy;
         const bot = @min(self.cy + n - 1, self.buf.lineCount() - 1);
         self.applyOperator(self.operator, .{ .lines = true, .top = top, .bot = bot });
@@ -2172,7 +2202,7 @@ pub const Editor = struct {
         if (c == 'a') return self.treeListItemSpan(around);
         if (c == 'C') return self.treeCommentSpan(around);
         if (c == 'p') { // paragraph: a linewise object (nvim-verified)
-            const r = motion.paraObject(self.buf, self.cy, around, self.total());
+            const r = motion.paraObject(self.buf, self.cy, around, self.eff());
             return .{ .lines = true, .top = r.top, .bot = r.bot };
         }
         const obj: ?motion.Span = switch (c) {
@@ -2369,7 +2399,29 @@ pub const Editor = struct {
     }
 
     fn vertical(self: *Editor, up: bool, n: usize) MotionResult {
-        const row = if (up) (if (self.cy > n) self.cy - n else 0) else @min(self.cy + n, self.buf.lineCount() - 1);
+        const last = self.buf.lineCount() - 1;
+        var row = self.cy;
+        if (self.d.folds.len() == 0) {
+            row = if (up) (if (self.cy > n) self.cy - n else 0) else @min(self.cy + n, last);
+        } else {
+            // A closed fold is one line to `j`/`k`: stepping onto it lands on
+            // its header, and stepping off it starts from the line after its
+            // end — otherwise `j` would take `end - start` presses to escape
+            // something drawn as a single row.
+            var i: usize = 0;
+            while (i < n) : (i += 1) {
+                const f = self.d.folds.closedAt(row);
+                if (up) {
+                    const from = if (f) |x| x.start else row;
+                    if (from == 0) break;
+                    row = self.d.folds.prevVisible(from - 1);
+                } else {
+                    const from = if (f) |x| x.end else row;
+                    if (from >= last) break;
+                    row = self.d.folds.nextVisible(from + 1, last);
+                }
+            }
+        }
         if (row == self.cy and n > 0) self.failed = true; // no line to move to
         return .{ .pos = .{ .row = row, .col = 0 }, .kind = .linewise, .col_mode = .keep_goal };
     }
@@ -2480,7 +2532,7 @@ pub const Editor = struct {
         var p = self.cursor();
         var prev = p;
         var i: usize = 0;
-        const n = if (self.operator != .none) self.total() else self.eff();
+        const n = if (self.operator != .none) self.eff() else self.eff();
         while (i < n) : (i += 1) {
             prev = p;
             p = switch (which) {
@@ -2512,7 +2564,7 @@ pub const Editor = struct {
         // steps back one, so the intermediate searches must not be
         // till-adjusted or they would stall on the character before each hit.
         var col = self.cx;
-        var n = self.total(); // vim multiplies `2d3fa`: count before × after
+        var n = self.eff(); // vim multiplies `2d3fa`: count before × after
         while (n > 0) : (n -= 1) {
             col = motion.findChar(line, col, ch, forward, false) orelse {
                 self.failed = true; // vim's find fails outright, count and all
@@ -2543,11 +2595,15 @@ pub const Editor = struct {
     // === operator application ==============================================
 
     fn applyOperator(self: *Editor, op: Operator, span: Span) void {
-        if (op != .yank and self.rejectReadOnly()) return;
+        // `y` and `zf` only look at the text, so a read-only buffer allows
+        // both — folding a diff view to read it is entirely reasonable.
+        if (op != .yank and op != .fold and self.rejectReadOnly()) return;
         switch (op) {
             .indent_right => return self.indent(span, true),
             .indent_left => return self.indent(span, false),
             .comment => return self.toggleComment(span),
+            // A fold covers whole lines whatever the motion was, like `>`.
+            .fold => return self.foldCreate(span.top, span.bot),
             else => {},
         }
         const text = self.extract(span) catch return;
@@ -7686,6 +7742,75 @@ pub const Editor = struct {
         self.refilter();
     }
 
+    // === folds =============================================================
+
+    /// `zf{motion}` — fold the lines the motion covered, closed, and put the
+    /// cursor on the header so it is not left inside something invisible.
+    fn foldCreate(self: *Editor, top: usize, bot: usize) void {
+        if (bot <= top) return self.setStatus("a fold needs more than one line", .{});
+        self.d.folds.add(top, bot);
+        self.cy = top;
+        self.updateGoal();
+        self.prev_valid = false;
+        self.setStatus("folded {d} lines", .{bot - top + 1});
+    }
+
+    fn foldSet(self: *Editor, closed: bool) void {
+        if (!self.d.folds.setClosed(self.cy, closed))
+            return self.setStatus("no fold here", .{});
+        self.afterFoldChange();
+    }
+
+    fn foldToggle(self: *Editor) void {
+        if (!self.d.folds.toggle(self.cy)) return self.setStatus("no fold here", .{});
+        self.afterFoldChange();
+    }
+
+    fn foldAll(self: *Editor, closed: bool) void {
+        if (self.d.folds.len() == 0) return self.setStatus("no folds", .{});
+        self.d.folds.setAll(closed);
+        self.afterFoldChange();
+        self.setStatus("{s} {d} folds", .{ if (closed) "closed" else "opened", self.d.folds.len() });
+    }
+
+    fn foldDelete(self: *Editor) void {
+        if (!self.d.folds.removeAt(self.cy)) return self.setStatus("no fold here", .{});
+        self.afterFoldChange();
+        self.setStatus("fold removed", .{});
+    }
+
+    fn foldClear(self: *Editor) void {
+        const n = self.d.folds.len();
+        if (n == 0) return self.setStatus("no folds", .{});
+        self.d.folds.clear();
+        self.afterFoldChange();
+        self.setStatus("removed {d} folds", .{n});
+    }
+
+    /// Move every document's folds by the lines its buffer just gained or
+    /// lost, so a fold keeps covering the same text. Every document, not just
+    /// the active one: a workspace edit from a language server rewrites files
+    /// that are open but not on screen.
+    fn settleFolds(self: *Editor) void {
+        for (self.docs.items) |doc| {
+            const edits = doc.buf.takeLineEdits();
+            if (edits.len == 0) continue;
+            // The active document's folds live on the Doc either way — only
+            // the buffer is mirrored on the Editor.
+            for (edits) |ed| doc.folds.shift(ed.at, ed.delta);
+            doc.buf.clearLineEdits();
+            if (doc == self.d) self.cy = doc.folds.prevVisible(self.cy);
+        }
+    }
+
+    /// The cursor must never sit on a hidden line, and the whole frame changes
+    /// when a fold opens or closes.
+    fn afterFoldChange(self: *Editor) void {
+        self.cy = self.d.folds.prevVisible(self.cy);
+        self.clampCursor();
+        self.prev_valid = false;
+    }
+
     // === the quickfix list =================================================
 
     /// `]q` / `[q` — walk the list, opening each entry where it points. The
@@ -8384,11 +8509,17 @@ pub const Editor = struct {
         self.resetPending();
     }
 
+    /// The count a command should act on: the one typed before the operator
+    /// times the one typed after it, which is vim's rule (`2d3j` is six lines
+    /// below the cursor, not two or three). Outside operator-pending mode
+    /// `count2` is always 0, so this is just the leading count.
+    ///
+    /// There used to be a second helper returning only `count`, and the char
+    /// motions used it — so `d3j` deleted two lines where vim deletes four,
+    /// while `d2fa` (which went through the other one) was right. One
+    /// function now, because two spellings of "the count" is exactly how they
+    /// drifted apart.
     fn eff(self: *Editor) usize {
-        return if (self.count == 0) 1 else self.count;
-    }
-
-    fn total(self: *Editor) usize {
         const a = if (self.count == 0) 1 else self.count;
         const b = if (self.count2 == 0) 1 else self.count2;
         return a * b;
@@ -9447,6 +9578,7 @@ pub const Editor = struct {
             .gutter = g,
             .cols = cols,
             .wrap = wrap,
+            .folds = &doc.folds,
         };
         return .{
             .buf = &doc.buf,
@@ -9463,6 +9595,7 @@ pub const Editor = struct {
             .gutter = g,
             .cols = cols,
             .wrap = wrap,
+            .folds = &doc.folds,
         };
     }
 
@@ -9562,6 +9695,8 @@ pub const Editor = struct {
     /// first two are hunk-driven, so there is no closed form for the inverse.
     const RowSlot = union(enum) {
         line: struct { row: usize, seg: usize },
+        /// A closed fold's header: one row standing in for `lines` of text.
+        folded: struct { row: usize, lines: usize },
         filler, // a diff-pair virtual row: the other side has lines this one lacks
         woven: []const u8, // a line-diff old line, drawn above the line that replaced it
         past_eof, // a `~` row
@@ -9640,6 +9775,12 @@ pub const Editor = struct {
             rw.file_row += 1;
             return .past_eof;
         }
+        // A closed fold is one row: draw its header and step over the body.
+        if (view.folds.closedAt(rw.file_row)) |fd| {
+            rw.file_row = fd.end + 1;
+            rw.seg = 0;
+            return .{ .folded = .{ .row = fd.start, .lines = fd.end - fd.start + 1 } };
+        }
         const row = rw.file_row;
         const seg = rw.seg;
         if (seg == 0) {
@@ -9705,6 +9846,9 @@ pub const Editor = struct {
             .line => |l| l.row,
             .filler => @min(git.rowAtOrAfter(rw.pair.?.hunks, rw.new_side, rw.dtop + want), last),
             .woven => @min(rw.vrow, last),
+            // Clicking a fold lands on its header, which is the only line of
+            // it on screen — the body has no cell to have been clicked.
+            .folded => |f| f.row,
             .past_eof => last,
         };
         const seg: usize = switch (slot) {
@@ -9778,6 +9922,7 @@ pub const Editor = struct {
                     try self.emit("~");
                     try self.emitSpaces(w.gw - 1);
                 },
+                .folded => |f| try self.emitFoldRow(&view, f.row, f.lines),
                 .line => |l| {
                     const is_cur = view.active and l.row == view.cy;
                     var row_bg = if (is_cur) th.cursorline else th.bg;
@@ -9844,6 +9989,36 @@ pub const Editor = struct {
                 }
             }
         }
+    }
+
+    /// A closed fold, as one row: the line number of its header, then the
+    /// header's own text with a count of what it hides. Vim's `foldtext`
+    /// shape, dimmed and on the cursorline background when the cursor is on
+    /// it, so a fold reads as a summary rather than as content.
+    fn emitFoldRow(self: *Editor, view: *const View, row: usize, lines: usize) !void {
+        const th = theme.current;
+        const is_cur = view.active and view.cy >= row and view.cy < row + lines;
+        try self.setBg(if (is_cur) th.cursorline else th.bg);
+        try self.emitGutter(view, row);
+        try self.setFg(th.fg_dim);
+        var used: usize = 0;
+        var buf: [48]u8 = undefined;
+        const head = std.fmt.bufPrint(&buf, "\u{25B8} {d} lines: ", .{lines}) catch "\u{25B8} ";
+        try self.emit(head);
+        used += unicode.displayWidth(head);
+        // The header's own text, leading blanks trimmed: what the fold is
+        // *of* matters more than how it was indented.
+        const text = std.mem.trimStart(u8, view.buf.line(row), " \t");
+        var i: usize = 0;
+        while (i < text.len and used < view.cols) {
+            const d = unicode.decode(text[i..]);
+            const cw = unicode.width(d.cp);
+            if (used + cw > view.cols) break;
+            try self.emit(if (isControlCp(d.cp) or invalidDecode(d)) "?" else text[i .. i + d.len]);
+            used += cw;
+            i += d.len;
+        }
+        if (used < view.cols) try self.emitSpaces(view.cols - used);
     }
 
     /// A virtual filler row in a diff pane: where the other side has lines

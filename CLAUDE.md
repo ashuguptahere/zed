@@ -181,6 +181,7 @@ Source is `src/`, one responsibility per module:
 | `jsonrpc.zig` | The `Content-Length`-framed JSON transport `lsp.zig` and `dap.zig` share: framing only, with control inverted (`nextFrame`) so each caller stays an ordinary loop. |
 | `dap.zig`     | Debug Adapter Protocol client: launch, breakpoints, stop/step, the stack frame the program stopped in; plus the breakpoint set, which outlives a session. |
 | `vt.zig`      | Terminal emulator: bytes from a child process in, a grid of styled cells out (pure, unit-tested — no pty, no rendering). |
+| `fold.zig`    | Folds: which line ranges are collapsed, which rows that hides, and how they move when the text does. |
 | `quickfix.zig`| The quickfix list: file positions kept so `]q`/`[q` can walk them long after the picker that found them is gone. |
 | `session.zig` | Per-directory sessions: the open files + cursors, the split layout and the tree's state, serialised to an XDG state file. |
 | `remote.zig`  | Editing over SSH: `ssh://user@host/path` parsing, read/write/list via one `ssh` per operation. |
@@ -793,6 +794,25 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   including after the shell exits. Absent by design: scrollback, the
   alternate screen (a full-screen program draws over the shell's output
   instead of restoring it), and any mouse or bracketed-paste mode of its own.
+- **Folds (`zf`, `zo`/`zc`/`za`, `zR`/`zM`, `zd`/`zE`):** `zf{motion}`
+  collapses the lines the motion covered into a single header row —
+  `▸ N lines: text`, the header's own text with what it hides — and the body
+  is simply not drawn. `zo` opens, `zc` closes, `za` toggles, `zR`/`zM` act on
+  every fold, `zd` removes the innermost one and `zE` all of them. Nesting
+  works: `closedAt` returns the *outermost* closed fold covering a row,
+  because that is the header on screen. `j`/`k` treat a closed fold as one
+  line — landing on its header, and stepping off from the line after its end —
+  so escaping a fold takes one press, not one per hidden line, and the cursor
+  can never sit on a row that is not drawn. Folding is not editing: it works
+  on a read-only buffer (folding a diff view to read it is reasonable) and
+  never marks one dirty. Folds move with the text: `buffer.zig` *records* each
+  line insertion and removal (`LineEdit`, three call sites — `splitLine`,
+  `insertLineAt`, `removeLineAt`) and the editor drains that log into every
+  document's fold set after each key, so a fold keeps covering the same lines
+  when an edit above it shifts them and is dropped when its lines are deleted.
+  The rules are unit-tested in `fold.zig` away from any screen. No
+  `foldmethod`/`foldlevel` settings, no fold column, and no persistence —
+  vim loses manual folds on close too.
 - **Quickfix list (`Ctrl-q`, `]q`/`[q`, `:copen`):** a picker finds things and
   then forgets them; the quickfix list keeps them. `Ctrl-q` in the grep,
   references or diagnostics picker sends **every** result to the list

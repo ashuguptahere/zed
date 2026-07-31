@@ -70,6 +70,9 @@ pub const Buffer = struct {
     source: ?[]u8,
     path: ?[]u8,
     dirty: bool,
+    /// Line insertions/removals since the last `takeLineEdits`, so folds (and
+    /// anything else anchored to a line number) can move with the text.
+    line_edits: std.ArrayList(LineEdit) = .empty,
     /// Bumped on every content mutation; lets observers (LSP, tree-sitter)
     /// cheaply detect when a resync is needed.
     revision: u64,
@@ -118,7 +121,18 @@ pub const Buffer = struct {
         return .{ .gpa = gpa, .lines = lines, .offsets = .empty, .source = null, .path = null, .dirty = false, .revision = 0, .final_newline = true, .emptied = true, .pure_borrowed = false, .has_cr = false };
     }
 
+    /// Hand over the line changes recorded since the last call, clearing the
+    /// log. Returns a slice valid until the next buffer edit.
+    pub fn takeLineEdits(self: *Buffer) []const LineEdit {
+        return self.line_edits.items;
+    }
+
+    pub fn clearLineEdits(self: *Buffer) void {
+        self.line_edits.clearRetainingCapacity();
+    }
+
     pub fn deinit(self: *Buffer) void {
+        self.line_edits.deinit(self.gpa);
         self.offsets.deinit(self.gpa);
         for (self.lines.items) |*l| l.free(self.gpa);
         self.lines.deinit(self.gpa);
@@ -420,7 +434,12 @@ pub const Buffer = struct {
 
     /// Split the line at (row, col) into two, as the Enter key does. A
     /// borrowed line splits into two borrowed slices — no copies.
+    /// A line inserted or removed, for anything anchored to line numbers.
+    /// The buffer only *records* these; it does not know what they are for.
+    pub const LineEdit = struct { at: usize, delta: i64 };
+
     pub fn splitLine(self: *Buffer, row: usize, col: usize) !void {
+        self.line_edits.append(self.gpa, .{ .at = row + 1, .delta = 1 }) catch {};
         try self.materialize();
         switch (self.lines.items[row]) {
             .borrowed => |s| {
@@ -532,6 +551,7 @@ pub const Buffer = struct {
 
     /// Insert a new line (copying `bytes`) at index `at`.
     pub fn insertLineAt(self: *Buffer, at: usize, bytes: []const u8) !void {
+        self.line_edits.append(self.gpa, .{ .at = at, .delta = 1 }) catch {};
         try self.materialize();
         var new_line: std.ArrayList(u8) = .empty;
         errdefer new_line.deinit(self.gpa);
@@ -545,6 +565,7 @@ pub const Buffer = struct {
 
     /// Remove line `at`, always leaving at least one (empty) line.
     pub fn removeLineAt(self: *Buffer, at: usize) void {
+        self.line_edits.append(self.gpa, .{ .at = at, .delta = -1 }) catch {};
         self.materialize() catch return;
         var removed = self.lines.orderedRemove(at);
         removed.free(self.gpa);
