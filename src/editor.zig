@@ -1594,7 +1594,7 @@ pub const Editor = struct {
             // to leave Terminal mode, so the paging keys do that here rather
             // than moving a cursor the grid does not have.
             if (k == .ctrl and (k.ctrl == 'u' or k.ctrl == 'd') and !sh.done) {
-                self.shellScroll(k.ctrl == 'u', self.winTextRows(self.cur) / 2);
+                self.shellScroll(k.ctrl == 'u', self.shellRows(self.cur) / 2);
                 return;
             }
             // An exited shell's grid stays up so its last output is readable;
@@ -1673,9 +1673,9 @@ pub const Editor = struct {
             '$' => self.doMotion(self.endOfLineMotion()),
             'w' => self.doMotion(self.repeatWord(.f, false)),
             'W' => self.doMotion(self.repeatWord(.f, true)),
-            'b' => self.doMotion(self.repeatWord(.b, false)),
+            'b' => self.selectWord(.b, false),
             'B' => self.doMotion(self.repeatWord(.b, true)),
-            'e' => self.doMotion(self.repeatWord(.e, false)),
+            'e' => self.selectWord(.e, false),
             'E' => self.doMotion(self.repeatWord(.e, true)),
             'G' => self.doMotion(self.gotoLineMotion(if (self.count > 0) self.count - 1 else self.buf.lineCount() - 1)),
             '%' => if (motion.matchPair(self.buf, self.cursor())) |p| {
@@ -3477,6 +3477,25 @@ pub const Editor = struct {
     }
 
     // === visual mode =======================================================
+
+    /// `e` / `b` in normal mode: move, and leave the word travelled over
+    /// *selected* — Helix's habit, where a motion tells you what it covered
+    /// before you decide what to do with it. Only these two keys: Helix's
+    /// model is that every motion selects, which would change what `d`, `.`,
+    /// visual mode and four hundred nvim-pinned checks all mean.
+    ///
+    /// From an existing selection it extends, so `ee` reaches two words. With
+    /// an operator pending it is the plain motion, because `de` must delete
+    /// the word rather than select it first.
+    fn selectWord(self: *Editor, kind: WordKind, big: bool) void {
+        if (self.operator != .none) return self.doMotion(self.repeatWord(kind, big));
+        const anchor = if (self.mode == .visual) self.vstart else self.cursor();
+        self.doMotion(self.repeatWord(kind, big));
+        if (self.mode != .visual) self.mode = .visual;
+        self.vstart = anchor;
+        self.vb_dollar = false;
+        self.ins_visual = false;
+    }
 
     fn enterVisual(self: *Editor, m: Mode) void {
         self.mode = m;
@@ -8136,17 +8155,44 @@ pub const Editor = struct {
     /// mode so typing goes straight to it. Opening one while a shell window is
     /// already visible focuses that instead of stacking another (VS Code's
     /// rule, and the same "toggle, don't stack" the diff views follow).
-    fn openTerminal(self: *Editor) void {
-        for (self.wins.items) |w| {
-            if (w.doc.shell == null) continue;
-            self.focusWin(w);
-            self.mode = .terminal;
-            return self.setStatus("terminal", .{});
+    /// The next free terminal name: t1, t2, t3 … Reusing a number that has
+    /// been closed keeps the list short and stable, which is what a name is
+    /// for — `t7` beside `t2` with nothing between them reads as a bug.
+    fn nextTerminalName(self: *Editor) [8]u8 {
+        var n: usize = 1;
+        outer: while (n < 999) : (n += 1) {
+            var want: [8]u8 = undefined;
+            const s = std.fmt.bufPrint(&want, "t{d}", .{n}) catch break;
+            for (self.docs.items) |doc| {
+                if (doc.shell == null) continue;
+                if (std.mem.eql(u8, doc.name orelse "", s)) continue :outer;
+            }
+            var out: [8]u8 = [_]u8{0} ** 8;
+            @memcpy(out[0..s.len], s);
+            return out;
         }
+        return [_]u8{ 't', '1', 0, 0, 0, 0, 0, 0 };
+    }
+
+    /// Open *another* terminal. Several can be up at once, and the row above
+    /// them names each one — VS Code's and Zed's panel, where the terminals
+    /// are their own list rather than buffers mixed in with the files.
+    fn openTerminal(self: *Editor) void {
+        // Already showing one: add the new terminal to that pane rather than
+        // splitting the window again.
+        const existing: ?*Win = blk: {
+            for (self.wins.items) |w| {
+                if (w.doc.shell != null) break :blk w;
+            }
+            break :blk null;
+        };
         const doc = self.makeEmptyDoc() orelse return self.setStatus("out of memory", .{});
-        doc.name = self.gpa.dupe(u8, "[terminal]") catch null;
+        const nb = self.nextTerminalName();
+        doc.name = self.gpa.dupe(u8, std.mem.sliceTo(&nb, 0)) catch null;
         doc.read_only = true; // nothing edits the grid through buffer commands
-        self.splitWindow(false); // horizontal, below
+        if (existing) |w| {
+            self.focusWin(w); // reuse the pane the terminals live in
+        } else self.splitWindow(false); // horizontal, below
         self.focusDoc(doc);
         self.layout(); // the new window's size, before the shell is told it
         const rows: u16 = @intCast(@max(1, self.winTextRows(self.cur)));
@@ -8249,10 +8295,16 @@ pub const Editor = struct {
     }
 
     /// Keep the shell's idea of its window in step with the split's.
+    /// Rows the shell's grid gets: the window's text rows less the tab row
+    /// above it.
+    fn shellRows(self: *Editor, w: *Win) usize {
+        return self.winTextRows(w) -| 1;
+    }
+
     fn syncTerminalSize(self: *Editor, w: *Win) void {
         const sh = if (w.doc.shell) |*s| s else return;
         if (sh.done) return;
-        const rows: u16 = @intCast(@max(1, self.winTextRows(w)));
+        const rows: u16 = @intCast(@max(1, self.shellRows(w)));
         const cols: u16 = @intCast(@max(1, winTextCols(w)));
         if (rows == sh.screen.rows and cols == sh.screen.cols) return;
         sh.screen.resize(rows, cols) catch return;
@@ -10055,6 +10107,7 @@ pub const Editor = struct {
 
     fn renderWindow(self: *Editor, w: *Win) !void {
         if (w.doc.shell != null) {
+            try self.renderTerminalTabs(w);
             try self.renderShell(w);
             if (self.wins.items.len > 1) try self.emitWinStatus(w, self.buildView(w));
             return;
@@ -10110,11 +10163,12 @@ pub const Editor = struct {
         const th = theme.current;
         const sh = &w.doc.shell.?;
         self.syncTerminalSize(w);
-        const rows = self.winTextRows(w);
+        const rows = self.shellRows(w);
         var y: usize = 0;
         while (y < rows) : (y += 1) {
-            self.beginSeg(w.gy + y, w.gx);
-            try self.emitFmt("\x1b[{d};{d}H", .{ w.gy + y, w.gx });
+            // Row `w.gy` is the terminals' tab row, so the grid starts below it.
+            self.beginSeg(w.gy + 1 + y, w.gx);
+            try self.emitFmt("\x1b[{d};{d}H", .{ w.gy + 1 + y, w.gx });
             var x: usize = 0;
             var last: ?vt.Attr = null;
             while (x < w.gw) : (x += 1) {
@@ -10143,6 +10197,48 @@ pub const Editor = struct {
                 }
             }
         }
+    }
+
+    /// The terminals' own tab row, on the first line of the pane they share —
+    /// VS Code's and Zed's panel, where terminals are their own list rather
+    /// than buffers mixed in with the open files. Each is named `t1`, `t2`, …
+    /// and carries the same `✕` the buffer tabs do.
+    fn renderTerminalTabs(self: *Editor, w: *Win) !void {
+        const th = theme.current;
+        self.beginSeg(w.gy, w.gx);
+        try self.emitFmt("\x1b[{d};{d}H", .{ w.gy, w.gx });
+        var used: usize = 0;
+        for (self.docs.items) |doc| {
+            if (doc.shell == null) continue;
+            const name = doc.name orelse "t?";
+            const cells = 2 + unicode.displayWidth(name) + close_cells;
+            if (used + cells > w.gw) break;
+            const here = doc == w.doc;
+            try self.setBg(if (here) th.mode_normal else th.status_bg);
+            try self.setFg(if (here) th.bg else th.fg_dim);
+            try self.emit(" ");
+            try self.emitSanitized(name);
+            try self.emit(" \u{2715} ");
+            used += cells;
+        }
+        try self.setBg(th.status_bg);
+        try self.emitSpaces(w.gw -| used);
+    }
+
+    /// Which terminal a click on that row lands on, and whether it hit the
+    /// close box. Shares the geometry above, so a tab cannot be drawn in one
+    /// place and clicked in another.
+    fn terminalTabAt(self: *Editor, w: *Win, col: usize) ?TabHit {
+        var x = w.gx;
+        for (self.docs.items) |doc| {
+            if (doc.shell == null) continue;
+            const name = doc.name orelse "t?";
+            const cells = 2 + unicode.displayWidth(name) + close_cells;
+            if (x + cells > w.gx + w.gw) break;
+            if (col >= x and col < x + cells) return .{ .doc = doc, .close = col >= x + cells - close_cells };
+            x += cells;
+        }
+        return null;
     }
 
     /// A closed fold, as one row: the line number of its header, then the
@@ -10787,6 +10883,7 @@ pub const Editor = struct {
         const area = self.tabArea();
         var x = area.x0;
         for (self.docs.items) |doc| {
+            if (doc.shell != null) continue; // terminals have their own row
             const w = tabCells(doc);
             if (x + w > area.x0 + area.w) break;
             if (col >= x and col < x + w) {
@@ -10838,6 +10935,7 @@ pub const Editor = struct {
 
         var used: usize = 0;
         for (self.docs.items, 0..) |doc, i| {
+            if (doc.shell != null) continue; // terminals get their own row
             const w = tabCells(doc);
             if (used + w > area.w) break;
             const bg = self.tabBg(doc);
@@ -11706,6 +11804,15 @@ pub const Editor = struct {
             const blk = self.cmdBlock();
             row = blk.top + blk.cur_row - blk.first;
             col = blk.cur_col + 1;
+        } else if (self.cur.doc.shell) |*sh| {
+            // In a terminal the caret belongs to the *shell*, not to the empty
+            // scratch buffer behind the grid — otherwise it sits at the
+            // window's top-left corner while you type at the prompt, which is
+            // exactly where it is not. Scrolled back through the history, the
+            // live cursor moves down the view by however far back it is.
+            const r = sh.screen.cy + sh.screen.back;
+            row = self.cur.gy + 1 + @min(r, self.shellRows(self.cur) -| 1);
+            col = self.cur.gx + @min(sh.screen.cx, self.cur.gw -| 1);
         } else if (self.sb_focus) {
             // On the sidebar's selected row.
             row = sb_tree_top + (self.sb_sel -| self.sb_scroll);

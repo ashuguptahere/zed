@@ -80,12 +80,28 @@ pub fn run(ctx: *h.Ctx) !void {
         s.drain(500);
         ctx.check("i re-enters the terminal", s.containsPlainSince(ctx.gpa, m, "TERMINAL"));
 
-        // A second Space t focuses the shell already open rather than stacking
-        // another one — so :ls still shows exactly one terminal buffer.
+        // A second Space t opens *another* terminal in the same pane, named in
+        // sequence, and the row above them lists both.
         s.send(CTRL_BACKSLASH ++ CTRL_N);
         s.drain(400);
         s.send(" t");
-        s.drain(700);
+        s.drain(1200);
+        var scr2 = try h.Screen.init(ctx.gpa, 24, 80);
+        defer scr2.deinit();
+        scr2.apply(s.out.items);
+        var tabs_row: []u8 = &.{};
+        var rr: usize = 1;
+        while (rr <= scr2.rows) : (rr += 1) {
+            const rt = try scr2.rowText(ctx.gpa, rr);
+            if (std.mem.indexOf(u8, rt, "t1") != null and std.mem.indexOf(u8, rt, "t2") != null) {
+                if (tabs_row.len > 0) ctx.gpa.free(tabs_row);
+                tabs_row = rt;
+            } else ctx.gpa.free(rt);
+        }
+        defer if (tabs_row.len > 0) ctx.gpa.free(tabs_row);
+        ctx.check("a second terminal is opened and both are named", tabs_row.len > 0);
+        ctx.check("the terminal tabs carry a close box",
+            tabs_row.len > 0 and std.mem.indexOf(u8, tabs_row, "\u{2715}") != null);
         s.send(CTRL_BACKSLASH ++ CTRL_N);
         s.drain(400);
         m = s.mark();
@@ -93,10 +109,8 @@ pub fn run(ctx: *h.Ctx) !void {
         s.drain(500);
         const listing = try s.plainSince(ctx.gpa, m);
         defer ctx.gpa.free(listing);
-        ctx.check("a second Space t does not stack another terminal",
-            std.mem.indexOf(u8, listing, "[terminal]") != null and
-                std.mem.indexOf(u8, listing, "f.txt") != null and
-                std.mem.count(u8, listing, "[terminal]") == 1);
+        ctx.check("the file is still listed beside them",
+            std.mem.indexOf(u8, listing, "f.txt") != null);
         s.send(":qa!" ++ CR);
         s.drain(600);
     }
@@ -129,6 +143,34 @@ pub fn run(ctx: *h.Ctx) !void {
         ctx.check("the file is editable after the terminal closes", std.mem.eql(u8, got, "lpha\nbeta\n"));
         s.send(":qa!" ++ CR);
         s.drain(500);
+    }
+
+    // --- the caret sits where you are typing --------------------------------
+    // It belongs to the shell, not to the empty scratch buffer behind the
+    // grid: without that it parks at the window's top-left corner while the
+    // prompt is somewhere else entirely.
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ "env", shell_env, ps1_env, ctx.zedit, "f.txt" },
+            .cwd = dir,
+            .term = "xterm-256color",
+        });
+        defer s.finish();
+        s.drain(700);
+        s.send(" t");
+        s.drain(1200);
+        s.send("echo hi");
+        s.drain(800);
+        var scr = try h.Screen.init(ctx.gpa, 24, 80);
+        defer scr.deinit();
+        scr.apply(s.out.items);
+        // The cell before the caret is the last character typed.
+        const left = if (scr.cur_col > 1) scr.at(scr.cur_row, scr.cur_col - 1).cp else 0;
+        ctx.check("the caret follows what is typed in the terminal", left == 'i');
+        s.send(CTRL_BACKSLASH ++ CTRL_N);
+        s.drain(400);
+        s.send(":qa!" ++ CR);
+        s.drain(400);
     }
 
     // --- Ctrl-backtick toggles it, from either mode -------------------------

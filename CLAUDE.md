@@ -424,6 +424,12 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   `v`, an operator, a plain click) returns to **insert** where it left the
   cursor, so typing continues (`ins_visual`, cleared by `enterVisual` so it
   can never outlive its selection).
+- **Selecting motions (Helix-style):** `e` and `b` in normal mode move *and*
+  leave what they travelled over selected, so the next key acts on it (`ed`
+  deletes the word, `ee` reaches two). Only these two: Helix's model is that
+  every motion selects, which would change what `d`, `.`, visual mode and four
+  hundred nvim-pinned checks all mean. With an operator pending they are plain
+  motions, because `de` must delete the word rather than select it and wait.
 - **Operators:** `d` `c` `y`, `> <` (indent), doubled `dd cc yy >> <<`; `D C Y`,
   `x X s S`, `r` `~` `J`. `cw`/`cW` act like `ce`/`cE`.
 - **Structural objects (tree-sitter):** `af`/`if` select a function (whole, or
@@ -804,8 +810,11 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   `Ctrl-n` returns to normal, and `i`/`a`/`o` go back in. The child is told
   `TERM=xterm`, deliberately not `xterm-256color`, because claiming the latter
   invites the alternate screen and mouse reporting that `vt.zig` does not
-  implement. A second `Space t` focuses the shell already open rather than
-  stacking another. The grid is read-only to buffer commands (`dd` answers
+  implement. Several terminals can be open at once, named `t1`, `t2`, … and listed on
+  their **own tab row** across the top of the pane they share — VS Code's and
+  Zed's panel, where terminals are their own list rather than buffers mixed in
+  with the files (they are kept out of the buffer tabline for the same
+  reason). Each tab carries the same `✕`, and `Space t` adds another. The grid is read-only to buffer commands (`dd` answers
   "this is a terminal — i types into it") so it can never go dirty and block
   `:q`, and an exited shell keeps its last output on screen until any key
   dismisses the window. Everything the child writes is untrusted: escapes

@@ -11,6 +11,18 @@ const target = "/tmp/zedit_it_extra.txt";
 
 pub fn run(ctx: *h.Ctx) !void {
     // --- surround ---
+    // Helix-style `e`/`b`: the motion leaves what it travelled over selected,
+    // so the next key acts on it. Only these two — Helix selects with every
+    // motion, which would change what `d`, `.` and visual mode all mean.
+    const words = "alpha beta gamma delta\n";
+    h.case(ctx, target, "e selects the word it moved over", &.{ "ed", ":wq", CR }, words, " beta gamma delta\n");
+    h.case(ctx, target, "a second e extends the selection", &.{ "eed", ":wq", CR }, words, " gamma delta\n");
+    h.case(ctx, target, "b selects backwards", &.{ "wbd", ":wq", CR }, words, "eta gamma delta\n");
+    // With an operator pending they stay plain motions: `de` deletes the word
+    // rather than selecting it and waiting.
+    h.case(ctx, target, "de is still the operator form", &.{ "de", ":wq", CR }, words, " beta gamma delta\n");
+    h.case(ctx, target, "d2e takes two words", &.{ "d2e", ":wq", CR }, words, " gamma delta\n");
+
     h.case(ctx, target, "ysiw) wraps word", &.{ "ysiw)", ":wq", CR }, "foo bar\n", "(foo) bar\n");
     h.case(ctx, target, "cs\"' changes", &.{ "cs\"'", ":wq", CR }, "say \"hi\"\n", "say 'hi'\n");
     h.case(ctx, target, "ds( deletes pair", &.{ "ds(", ":wq", CR }, "(abc)\n", "abc\n");

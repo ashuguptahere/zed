@@ -2,6 +2,29 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.40.0 - 2026-07-31
+
+### Fixed
+
+- **The caret sat in the wrong place in a terminal.** It was drawn at the
+  empty scratch buffer's cursor rather than the shell's, so it parked at the
+  window's top-left corner while the prompt — and your typing — was elsewhere.
+
+### Added
+
+- **`e` and `b` leave a selection**, Helix-style: the motion moves and the
+  word it travelled over stays selected, so `ed` deletes it and `ee` reaches
+  two. Only these two keys — Helix's model is that *every* motion selects,
+  which would change what `d`, `.`, visual mode and four hundred nvim-pinned
+  checks all mean. With an operator pending they are plain motions, so `de`
+  still deletes the word rather than selecting it and waiting.
+- **Several terminals at once**, named `t1`, `t2`, … on their **own tab row**
+  across the top of the pane they share — VS Code's and Zed's panel, where
+  terminals are a list of their own rather than buffers mixed in with the
+  files. They are kept out of the buffer tabline for the same reason, and each
+  tab carries the `✕`. `Space t` adds another; `Ctrl-\`` still toggles the
+  pane.
+
 ## 0.39.0 - 2026-07-31
 
 ### Added
