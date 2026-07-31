@@ -2,6 +2,25 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.35.2 - 2026-07-31
+
+### Fixed
+
+- **The quickfix list is sorted by file, then line.** A picker's results
+  arrive in project-walk order, which is the filesystem's — so `]q` visited
+  the same three matches in a different sequence on a different machine, and
+  CI failed on `quickfix: ]q crosses into the next file` while every local run
+  passed. Walking a list is a file-by-file activity, so that is the order now,
+  and it is the same everywhere.
+
+  Not reproduced locally: ext4 hashes directory entries, so creating the test
+  files in either order still walks them alphabetically here. The sort is
+  right on its own merits — a defined order beats a filesystem's — but CI is
+  the confirmation that it was the cause.
+- A failure was annotated twice under GitHub Actions: the child process emits
+  its own `::error::` and the parallel driver printed the child's output
+  verbatim *and* emitted again. Only the child does now.
+
 ## 0.35.1 - 2026-07-31
 
 ### Performance

@@ -85,6 +85,23 @@ pub const List = struct {
         return self.current();
     }
 
+    /// Put the entries in file order, then line order. A picker's results
+    /// arrive in whatever order the project walk produced them, which is the
+    /// filesystem's and therefore differs between machines — `]q` would visit
+    /// the same three matches in a different sequence on a different box.
+    /// Walking a list is a file-by-file activity, so that is the order.
+    pub fn sort(self: *List) void {
+        std.mem.sort(Entry, self.entries.items, {}, struct {
+            fn less(_: void, a: Entry, b: Entry) bool {
+                const c = std.mem.order(u8, a.path, b.path);
+                if (c != .eq) return c == .lt;
+                if (a.line != b.line) return a.line < b.line;
+                return a.col < b.col;
+            }
+        }.less);
+        self.idx = 0;
+    }
+
     /// Jump straight to an entry (`:cc 3`, or a click in the list window).
     pub fn goTo(self: *List, i: usize) ?Entry {
         if (i >= self.entries.items.len) return null;
@@ -160,6 +177,19 @@ test "goTo picks an entry and refuses one past the end" {
     try testing.expectEqualStrings("third", l.goTo(2).?.text);
     try testing.expect(l.goTo(3) == null);
     try testing.expectEqualStrings("third", l.current().?.text); // unchanged by the refusal
+}
+
+test "sorting puts the entries in file then line order" {
+    var l = List{ .gpa = testing.allocator };
+    defer l.deinit();
+    l.add("/b.zig", 5, 0, "b5");
+    l.add("/a.zig", 20, 0, "a20");
+    l.add("/a.zig", 3, 0, "a3");
+    l.sort();
+    try testing.expectEqualStrings("a3", l.entries.items[0].text);
+    try testing.expectEqualStrings("a20", l.entries.items[1].text);
+    try testing.expectEqualStrings("b5", l.entries.items[2].text);
+    try testing.expectEqual(@as(usize, 0), l.idx); // and back to the start
 }
 
 test "clearing frees the entries and resets the cursor" {

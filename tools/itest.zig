@@ -170,9 +170,10 @@ fn emitFailures(out: []const u8) void {
     var it = std.mem.splitScalar(u8, out, '\n');
     while (it.next()) |line| {
         if (!std.mem.startsWith(u8, line, "  - ")) continue;
+        // Only the name: the child already emitted its own `::error::` when
+        // running under Actions, and its output was printed verbatim above —
+        // emitting again put every failure in the annotations twice.
         std.debug.print("{s}\n", .{line});
-        if (std.c.getenv("GITHUB_ACTIONS") != null)
-            std.debug.print("::error title=itest::{s}\n", .{line[4..]});
     }
 }
 

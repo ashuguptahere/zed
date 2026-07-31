@@ -7848,6 +7848,9 @@ pub const Editor = struct {
             if (path.len == 0) continue;
             self.qf.add(path, it.line, 0, text);
         }
+        // The walk hands results back in filesystem order; `]q` should visit
+        // them in file order, the same on every machine.
+        self.qf.sort();
         self.closePicker();
         if (self.qf.len() == 0) return self.setStatus("no results to keep", .{});
         self.setStatus("{d} {s} result{s} in the quickfix list — ]q / [q to walk them", .{
