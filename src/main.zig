@@ -290,6 +290,8 @@ test {
     _ = @import("vt.zig");
     _ = @import("jsonrpc.zig");
     _ = @import("dap.zig");
+    _ = @import("quickfix.zig");
+    _ = @import("fold.zig");
     _ = @import("remote.zig");
     _ = @import("snippet.zig");
     _ = @import("complete.zig");

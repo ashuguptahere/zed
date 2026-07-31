@@ -2,6 +2,36 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.34.0 - 2026-07-31
+
+### Added
+
+- **A quickfix list** (`Ctrl-q`, `]q`/`[q`, `:copen`). A picker finds things
+  and then forgets them — choose one result and the rest are gone. The
+  quickfix list is the other half: `Ctrl-q` in the grep, references or
+  diagnostics picker keeps **every** result (Telescope's binding), `]q`/`[q`
+  walk them counted and wrapping, and each jump goes in the jumplist so
+  `Ctrl-o` comes back.
+
+  `:copen` shows the list in a horizontal split as a read-only report where
+  `Enter` opens the entry under the cursor — in the window *above* the list,
+  vim's rule, because replacing the list with the file would lose the very
+  thing being worked through. `:cclose`, `:cnext`/`:cprev`,
+  `:cfirst`/`:clast` and `:cc {n}` round it out.
+
+  The stepping rules are unit-tested away from the editor (`quickfix.zig`);
+  entries own their strings, so they outlive the picker and the files they
+  name need not be open.
+
+### Fixed
+
+- **The debugger put the cursor one line below where the program stopped.**
+  `openFile` takes a 0-based row while DAP counts from 1, and `placeAt`'s
+  clamp to the last row hid it whenever the stop was near the end of a file —
+  which is why the existing test, asserting the *message*, never saw it. Found
+  while making the same mistake in the quickfix jump; both are fixed and both
+  are now pinned by a check on where the cursor actually lands.
+
 ## 0.33.4 - 2026-07-31
 
 ### Changed

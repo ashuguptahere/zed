@@ -33,6 +33,7 @@ const recent = @import("recent.zig");
 const session = @import("session.zig");
 const vt = @import("vt.zig");
 const dap = @import("dap.zig");
+const quickfix = @import("quickfix.zig");
 const snippet = @import("snippet.zig");
 const remote = @import("remote.zig");
 const regex = @import("regex.zig");
@@ -200,6 +201,8 @@ const Doc = struct {
     diff_of: ?*Doc = null, // side-by-side index snapshot: the worktree doc it mirrors
     diff_hunks: []git.Hunk = &.{}, // set on the index snapshot: aligns the pair's panes
     line_diff: ?git.LineDiff = null, // `Space g l`: the in-buffer weave of old lines
+    /// The quickfix list view: Enter on a line jumps to that entry.
+    qf_view: bool = false,
     /// An embedded shell (`Space t t`). When set, the window renders this
     /// grid instead of the buffer, and keys go to the child while the editor
     /// is in terminal mode.
@@ -575,6 +578,9 @@ pub const Editor = struct {
     /// it belongs to (cleared as soon as it runs on).
     dbg_line: ?usize = null,
     breakpoints: dap.Breakpoints,
+    /// The quickfix list: results kept so they can be walked with `]q`/`[q`
+    /// long after the picker that found them is gone.
+    qf: quickfix.List,
     /// Terminal mode saw `Ctrl-\`, waiting to see whether `Ctrl-n` follows
     /// (nvim's escape pair). Any other key sends both to the child.
     term_escape: bool = false,
@@ -640,6 +646,7 @@ pub const Editor = struct {
             .sb_expanded = std.StringHashMap(void).init(gpa),
             .recents = .{ .gpa = gpa },
             .breakpoints = .{ .gpa = gpa },
+            .qf = .{ .gpa = gpa },
             .lang = syntax.detect(doc.buf.path),
             .git_signs = git.Signs.init(gpa),
             .lsp_cmd = lsp_cmd,
@@ -705,6 +712,7 @@ pub const Editor = struct {
         self.sb_prefill.deinit(self.gpa);
         if (self.dbg) |*d| d.deinit();
         self.breakpoints.deinit();
+        self.qf.deinit();
         var xit = self.sb_expanded.keyIterator();
         while (xit.next()) |k| self.gpa.free(k.*);
         self.sb_expanded.deinit();
@@ -1544,6 +1552,24 @@ pub const Editor = struct {
 
     fn normalKey(self: *Editor, k: key.Key) !void {
         if (self.await_arg != .none) return self.awaitKey(k);
+        // Enter in the quickfix window jumps to the entry on the cursor's
+        // line, as in vim. Everything else there behaves like any read-only
+        // buffer, so `j`/`k`/`/` all still work to find the one you want.
+        if (self.cur.doc.qf_view and k == .enter) {
+            if (self.qf.goTo(self.cy)) |entry| {
+                // vim opens the entry in the window *above* the list and
+                // leaves the list up — replacing the list with the file would
+                // lose the very thing being worked through. With no other
+                // window there is nowhere else to go, so it opens in place.
+                for (self.wins.items) |w| {
+                    if (w.doc.qf_view) continue;
+                    self.focusWin(w);
+                    break;
+                }
+                self.qfJump(entry);
+            }
+            return;
+        }
         if (self.cur.doc.shell) |*sh| {
             // An exited shell's grid stays up so its last output is readable;
             // the next key dismisses it (nvim's rule for a finished :terminal).
@@ -1790,6 +1816,7 @@ pub const Editor = struct {
                 if (k == .char and k.char == 'd') self.gotoDiagnostic(a == .bracket_next);
                 if (k == .char and k.char == 'b') self.cycleDoc(a == .bracket_next, self.eff()); // ]b / [b buffers
                 if (k == .char and k.char == 'f') self.gotoFunction(a == .bracket_next); // ]f / [f functions
+                if (k == .char and k.char == 'q') self.qfStep(a == .bracket_next, self.eff()); // ]q / [q quickfix
                 self.resetPending();
             },
             .ctrl_w => {
@@ -4588,6 +4615,8 @@ pub const Editor = struct {
     }
 
     fn pickerKey(self: *Editor, k: key.Key) !void {
+        // Telescope's binding: keep every result instead of choosing one.
+        if (k == .ctrl and k.ctrl == 'q') return self.qfFromPicker();
         switch (k) {
             .escape => self.closePicker(),
             .enter => try self.pickerOpen(),
@@ -4844,6 +4873,11 @@ pub const Editor = struct {
 
     /// Open `path` in the active window: focus its doc if already open, else
     /// load it into a new doc (with its own LSP/tree-sitter/undo).
+    ///
+    /// `line` is a **0-based row**, as `placeAt` takes — not the 1-based line
+    /// number a user or a protocol talks in. Both the quickfix list and the
+    /// debugger got that wrong, and `placeAt`'s clamp to the last row hid it
+    /// whenever the target was near the end of the file.
     fn openFile(self: *Editor, path: []const u8, line: usize) void {
         self.addJump();
         self.noteRecent(path, .file);
@@ -5830,7 +5864,8 @@ pub const Editor = struct {
     /// Every completable command, by its full name (all are also accepted
     /// spelled out by execEx; the short forms still work typed by hand).
     const command_names = [_][]const u8{
-        "bdelete", "bnext",  "bprevious", "buffers",  "close", "debug", "diff",   "earlier",
+        "bdelete", "bnext",   "bprevious", "buffers", "cclose", "cfirst", "clast", "close",
+        "cnext",   "copen",   "cprev",     "debug",   "diff",   "earlier",
         "edit",    "format", "later",     "ldiff",    "ls",    "only",   "quit",
         "quitall", "session", "split",    "terminal", "theme", "undolist", "vdiff",
         "vsplit",  "wall",    "wq",       "write",    "x",
@@ -5943,6 +5978,22 @@ pub const Editor = struct {
             self.closeWindow();
         } else if (eql(cmd, "on") or eql(cmd, "only")) {
             self.onlyWindow();
+        } else if (eql(cmd, "copen") or eql(cmd, "cope")) {
+            self.qfOpen();
+        } else if (eql(cmd, "cclose") or eql(cmd, "ccl")) {
+            self.qfClose();
+        } else if (eql(cmd, "cnext") or eql(cmd, "cn")) {
+            self.qfStep(true, 1);
+        } else if (eql(cmd, "cprev") or eql(cmd, "cp") or eql(cmd, "cprevious")) {
+            self.qfStep(false, 1);
+        } else if (eql(cmd, "cfirst") or eql(cmd, "cfir")) {
+            if (self.qf.goTo(0)) |x| self.qfJump(x) else self.setStatus("quickfix list is empty", .{});
+        } else if (eql(cmd, "clast") or eql(cmd, "cla")) {
+            if (self.qf.goTo(self.qf.len() -| 1)) |x| self.qfJump(x) else self.setStatus("quickfix list is empty", .{});
+        } else if (eql(cmd, "cc")) {
+            const n = std.fmt.parseInt(usize, arg, 10) catch 0;
+            if (n == 0) return self.setStatus("usage: :cc <n>", .{});
+            if (self.qf.goTo(n - 1)) |x| self.qfJump(x) else self.setStatus("no entry {d}", .{n});
         } else if (eql(cmd, "debug")) {
             self.startDebug(arg);
         } else if (eql(cmd, "term") or eql(cmd, "terminal")) {
@@ -7635,6 +7686,93 @@ pub const Editor = struct {
         self.refilter();
     }
 
+    // === the quickfix list =================================================
+
+    /// `]q` / `[q` — walk the list, opening each entry where it points. The
+    /// jump is a jump: `Ctrl-o` comes back.
+    fn qfStep(self: *Editor, forward: bool, count: usize) void {
+        if (self.qf.len() == 0) return self.setStatus("quickfix list is empty", .{});
+        const entry = self.qf.step(forward, count) orelse return;
+        self.qfJump(entry);
+    }
+
+    fn qfJump(self: *Editor, entry: quickfix.Entry) void {
+        self.addJump();
+        self.openFile(entry.path, entry.line - 1); // 1-based entry -> 0-based row
+        self.cx = @min(entry.col, self.curLine().len);
+        self.updateGoal();
+        self.setStatus("({d} of {d}) {s}", .{ self.qf.idx + 1, self.qf.len(), docLabel(self.d) });
+    }
+
+    /// `Ctrl-q` in a picker — keep every result that names a file position,
+    /// instead of choosing one and losing the rest. Telescope's binding, and
+    /// the reason the quickfix list exists at all.
+    fn qfFromPicker(self: *Editor) void {
+        const what: []const u8 = switch (self.picker_kind) {
+            .grep => "grep",
+            .reference => "references",
+            .diagnostic => "diagnostics",
+            else => return self.setStatus("nothing here to send to the quickfix list", .{}),
+        };
+        self.qf.clear();
+        self.qf.setTitle(what);
+        for (self.picker_filtered.items) |idx| {
+            const it = self.picker_items.items[idx];
+            const path = self.picker_text.items[it.path_at .. it.path_at + it.path_len];
+            const text = self.picker_text.items[it.display_at .. it.display_at + it.display_len];
+            if (path.len == 0) continue;
+            self.qf.add(path, it.line, 0, text);
+        }
+        self.closePicker();
+        if (self.qf.len() == 0) return self.setStatus("no results to keep", .{});
+        self.setStatus("{d} {s} result{s} in the quickfix list — ]q / [q to walk them", .{
+            self.qf.len(), what, if (self.qf.len() == 1) "" else "s",
+        });
+    }
+
+    /// `:copen` — the list as a read-only scratch in a horizontal split, one
+    /// line per entry. Enter on a line jumps to it, as in vim.
+    fn qfOpen(self: *Editor) void {
+        if (self.qf.len() == 0)
+            return self.setStatus("quickfix list is empty (Ctrl-q in a picker)", .{});
+        for (self.wins.items) |w| { // already up: focus it rather than stacking
+            if (w.doc.qf_view) {
+                self.focusWin(w);
+                return;
+            }
+        }
+        var text: std.ArrayList(u8) = .empty;
+        defer text.deinit(self.gpa);
+        for (self.qf.entries.items) |it| {
+            const rel = self.cwdRelative(it.path) orelse it.path;
+            text.print(self.gpa, "{s}:{d}: {s}\n", .{ rel, it.line, it.text }) catch break;
+        }
+        var label: [128]u8 = undefined;
+        const name = std.fmt.bufPrint(&label, "[quickfix] {s}", .{self.qf.title.items}) catch "[quickfix]";
+        self.openScratch(name, text.items, .none, false);
+        if (!self.d.read_only) return; // openScratch failed and said so
+        self.d.qf_view = true;
+        self.placeAt(self.qf.idx);
+        self.setStatus("{d} entries — Enter jumps, :cclose closes", .{self.qf.len()});
+    }
+
+    fn qfClose(self: *Editor) void {
+        for (self.wins.items) |w| {
+            if (!w.doc.qf_view) continue;
+            const doc = w.doc;
+            self.focusWin(w);
+            if (self.wins.items.len > 1) self.closeWindow() else return self.setStatus("cannot close last window", .{});
+            for (self.wins.items) |other| {
+                if (other.doc == doc) return; // still shown somewhere
+            }
+            self.destroyDoc(doc);
+            self.clearExtra();
+            self.placeAt(self.cy);
+            return;
+        }
+        self.setStatus("no quickfix window", .{});
+    }
+
     // === the debugger ======================================================
 
     fn dbgFd(self: *Editor) ?std.posix.fd_t {
@@ -7748,7 +7886,7 @@ pub const Editor = struct {
             .stopped => {
                 if (d.where) |w| {
                     if (w.path.len > 0) {
-                        self.openFile(w.path, w.line);
+                        self.openFile(w.path, w.line - 1); // DAP counts from 1
                         self.dbg_line = w.line;
                         self.setStatus("stopped ({s}) at {s}:{d}", .{ w.reason, docLabel(self.d), w.line });
                     }

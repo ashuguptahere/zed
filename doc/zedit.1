@@ -787,6 +787,18 @@ focuses the shell already open rather than starting another; an exited shell
 keeps its last output until any key closes the window. Also
 .BR :terminal .
 .TP
+.B ]q\fR, \fP[q
+Walk the quickfix list, wrapping at both ends and taking a count. Fill it with
+.B Ctrl-q
+in the grep, references or diagnostics picker, which keeps every result
+instead of choosing one.
+.B :copen
+shows the list in a split where
+.B Enter
+opens the entry under the cursor (in the window above, so the list stays);
+.BR :cclose ", " :cnext ", " :cprev ", " :cfirst ", " :clast " and " ":cc {n}"
+round it out.
+.TP
 .B Space n
 New:
 .B b

@@ -283,6 +283,8 @@
      Space b    Buffers menu: picker, next/previous, close others
      Space f u  the undo tree, as a picker you can jump around in
      Space n    new: b buffer, f file, d folder (a path makes the dirs)
+     Ctrl-q     in a picker: keep every result in the quickfix list,
+                then walk them with  ]q  and  [q  ( :copen  lists them)
      Space d    debug: b a breakpoint, c start/continue, n/i/o step
      Space t    a terminal: a real shell in a split below
      Space S    this directory's session: s save, l load, d delete

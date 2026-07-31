@@ -95,6 +95,22 @@ pub fn run(ctx: *h.Ctx) !void {
             s.containsPlainSince(ctx.gpa, m, "stopped (breakpoint)") and
                 s.containsPlainSince(ctx.gpa, m, "prog.c:4"));
         ctx.check("the stopped line is marked in the gutter", s.contains(AMBER ++ DOT));
+        // And the cursor is really *on* that line, not merely reported as
+        // being there: `openFile` takes a 0-based row while DAP counts from 1,
+        // and the clamp to the last row hides the difference near a file's end.
+        m = s.mark();
+        s.send("x:w" ++ CR);
+        s.drain(600);
+        {
+            const got = h.readFile(ctx.gpa, ctx.io, f);
+            defer ctx.gpa.free(got);
+            // Line 4 is "    int c = a + b;" — deleting one character there
+            // leaves three leading spaces.
+            ctx.check("the cursor sits on the stopped line",
+                std.mem.indexOf(u8, got, "\n   int c = a + b;\n") != null);
+        }
+        s.send("u"); // put it back before the steps below
+        s.drain(300);
 
         // Each step moves one line on, and the message follows it.
         m = s.mark();

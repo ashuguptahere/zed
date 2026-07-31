@@ -181,6 +181,7 @@ Source is `src/`, one responsibility per module:
 | `jsonrpc.zig` | The `Content-Length`-framed JSON transport `lsp.zig` and `dap.zig` share: framing only, with control inverted (`nextFrame`) so each caller stays an ordinary loop. |
 | `dap.zig`     | Debug Adapter Protocol client: launch, breakpoints, stop/step, the stack frame the program stopped in; plus the breakpoint set, which outlives a session. |
 | `vt.zig`      | Terminal emulator: bytes from a child process in, a grid of styled cells out (pure, unit-tested — no pty, no rendering). |
+| `quickfix.zig`| The quickfix list: file positions kept so `]q`/`[q` can walk them long after the picker that found them is gone. |
 | `session.zig` | Per-directory sessions: the open files + cursors, the split layout and the tree's state, serialised to an XDG state file. |
 | `remote.zig`  | Editing over SSH: `ssh://user@host/path` parsing, read/write/list via one `ssh` per operation. |
 | `lsp.zig`     | Minimal LSP client: JSON-RPC over a server's stdio (diagnostics, hover, goto, completion, signature help; incremental or full doc sync per the server's capabilities). |
@@ -792,6 +793,21 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   including after the shell exits. Absent by design: scrollback, the
   alternate screen (a full-screen program draws over the shell's output
   instead of restoring it), and any mouse or bracketed-paste mode of its own.
+- **Quickfix list (`Ctrl-q`, `]q`/`[q`, `:copen`):** a picker finds things and
+  then forgets them; the quickfix list keeps them. `Ctrl-q` in the grep,
+  references or diagnostics picker sends **every** result to the list
+  (Telescope's binding), `]q`/`[q` walk it — counted, wrapping at both ends,
+  each jump recorded in the jumplist so `Ctrl-o` comes back — and `:copen`
+  shows it in a horizontal split as a read-only report where `Enter` opens the
+  entry under the cursor. The list window is opened *in the window above it*,
+  vim's rule: replacing the list with the file would lose the very thing being
+  worked through. `:cclose`, `:cnext`/`:cprev`, `:cfirst`/`:clast` and
+  `:cc {n}` round it out. The list is editor state, not per-document, and the
+  entries own their strings — they outlive the picker, and the files they name
+  need not be open. `openFile` takes a **0-based row** while an entry's line
+  is 1-based; both this and the debugger's stop location got that wrong at
+  first, and `placeAt`'s clamp to the last row hid it whenever the target sat
+  near the end of a file.
 - **Sessions (`Space S`, `:session`):** the open files with their cursors,
   the split layout and whether the tree was open, saved per working directory
   under `$XDG_STATE_HOME/zedit/sessions/<hash of the cwd>` (the cwd itself is

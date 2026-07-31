@@ -81,6 +81,8 @@
   which-key menus: `Space f f` find files, `Space f w` find words (regex grep,
   same syntax as `/`),
   `Space f b` buffers, `Space f t` themes, `Space f u` the undo tree;
+  `Ctrl-q` in a picker sends every result to the **quickfix list** (`]q`/`[q`
+  to walk it, `:copen` to see it);
   `Space n …` new buffer / file / folder (a path like `src/net/http.zig`
   creates the directories on the way); `Space d …` a **debugger** (breakpoints,
   start/continue, step over/into/out — DAP, so `lldb-dap`, `debugpy` and
