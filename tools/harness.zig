@@ -440,6 +440,13 @@ pub fn removeFile(io: std.Io, path: []const u8) void {
     std.Io.Dir.cwd().deleteFile(io, path) catch {};
 }
 
+/// A monotonic millisecond clock, for reporting how long each suite took.
+pub fn nowMs() i64 {
+    var ts: std.posix.timespec = undefined;
+    if (std.posix.system.errno(std.posix.system.clock_gettime(std.posix.CLOCK.MONOTONIC, &ts)) != .SUCCESS) return 0;
+    return @as(i64, @intCast(ts.sec)) * 1000 + @divTrunc(@as(i64, @intCast(ts.nsec)), std.time.ns_per_ms);
+}
+
 /// `dir/name` as one allocation (caller frees with `ctx.gpa`).
 pub fn join(ctx: *Ctx, dir: []const u8, name: []const u8) []u8 {
     return std.fmt.allocPrint(ctx.gpa, "{s}/{s}", .{ dir, name }) catch unreachable;

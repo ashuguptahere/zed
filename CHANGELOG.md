@@ -2,6 +2,30 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.35.1 - 2026-07-31
+
+### Performance
+
+- **`zig build itest` runs the suites in parallel: 714 s → 127 s (5.6×).**
+  Each suite becomes a child process (12 at a time, reported as it lands);
+  a child is just this binary with a suite name, so the serial path is still
+  what runs a suite. Safe because the suites are independent — every fixed
+  `/tmp/zedit_it_*` path belongs to exactly one of them. The floor is now the
+  longest single suite (`vim_compat`, ~126 s).
+
+  Measured first, and the first attempt was wrong: the hypothesis was that
+  the run was mostly fixed sleeping (8.7 minutes of `drain()` calls on paper),
+  so `drain` was made settle-aware — return once output stops rather than
+  burn the budget. That made it **slower** (968 s) and broke a `mouse` check.
+  Two reasons: the old `drain` counts `poll` *calls*, not elapsed
+  milliseconds, so a busy drain already returned in microseconds; and
+  `mousetime` double-click chaining needs the gap between sends to be real
+  wall time. Reverted. The cost was never sleeping — it is 283 pty editor
+  spawns in `vim_compat` alone.
+
+- Per-suite timings (`--- name: N checks in M ms`) and a total in the summary,
+  which is what made the above measurable at all.
+
 ## 0.35.0 - 2026-07-31
 
 ### Added

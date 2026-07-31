@@ -214,8 +214,8 @@ zig build                       # debug build -> zig-out/bin/zedit (host only)
 zig build -Doptimize=ReleaseFast
 zig build run -- [file]         # run the editor
 zig build test                  # unit tests (pure logic; no tty needed)
-zig build itest                 # pty integration tests (drives the built editor)
-zig build itest -- git sidebar  # ... just those suites (the full run is 10+ min)
+zig build itest                 # pty integration tests (~2 min, suites in parallel)
+zig build itest -- git sidebar  # ... just those suites, serially, in-process
 zig build bench -Doptimize=ReleaseFast   # benchmark vs helix/nvim (if installed)
 ```
 
@@ -287,7 +287,17 @@ itest` builds `zedit` plus a `mock_lsp` server, then runs the `itest` harness:
   two suites must never run at once — they clobber each other's files.)
 - `tools/mock_dap.zig` — a stub debug adapter for the debug scenario, so the
   suite needs no lldb-dap or debugpy installed anywhere.
-- `tools/itest.zig` — the runner (argv[4..] filters suites by name; a failing
+- `tools/itest.zig` — the runner. With **no filter** it farms each suite out
+  to a child process, 12 at a time, and reports each as it lands; with a
+  filter it runs those suites serially in-process, which is also what a child
+  does. The suites are independent (each owns its own `/tmp/zedit_it_*`
+  files), so this is safe — but it does mean **two full runs must never
+  overlap**, since both would use those same paths. Parallelism took the run
+  from 714 s to 127 s; the floor is now the longest single suite
+  (`vim_compat`, 283 checks, ~126 s), because the cost is process startup, not
+  waiting: `drain` gives its budget back as soon as output flows. Per-suite
+  timings print as `--- name: N checks in M ms`, which is how that was
+  found. (argv[4..] filters suites by name; a failing
   run reprints every failed check as `suite: name` at the **tail**, because a
   CI log is read and pasted from the bottom, where the per-check `[FAIL]` line
   has long scrolled away — and under `GITHUB_ACTIONS` also emits each as a

@@ -172,6 +172,8 @@ there is nothing to change there.
 - [x] The LSP handshake made asynchronous — a slow server no longer freezes
       the editor; `Space n` became a New group (buffer/file/folder);
       `doc/COMPARISON.md` re-verified end to end. (0.33.0)
+- [x] itest suites run in parallel (714 s -> 127 s) with per-suite
+      timings. (0.35.1)
 - [x] Folds: `zf`/`zo`/`zc`/`za`/`zR`/`zM`/`zd`/`zE`, nesting, folds that
       move with edits; fixed a counted-operator bug (`d3j`) found on the
       way. (0.35.0)
