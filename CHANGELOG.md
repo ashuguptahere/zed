@@ -2,6 +2,24 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.37.0 - 2026-07-31
+
+### Added
+
+- **The theme picker previews live and remembers the choice.** Moving the
+  selection repaints the editor in that theme rather than only naming it,
+  `Esc` puts back the one that was showing before the picker opened, and
+  `Enter` writes `theme = <name>` to the config file — before this a chosen
+  theme was lost on restart, which is a setting that does not work.
+
+  The write edits one line and leaves the rest alone: comments, blank lines
+  and every other setting survive, because the config is the user's file and
+  not ours to regenerate. A commented-out `# theme = …` is left as it is and
+  the real setting appended — uncommenting someone's line would change more
+  than the one thing they asked for. The rewrite is a pure function
+  (`config.setKeyIn`) with its own tests, including where one key is a prefix
+  of another (`wrap` vs `wrap_column`).
+
 ## 0.36.0 - 2026-07-31
 
 ### Added

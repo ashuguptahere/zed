@@ -238,6 +238,12 @@ pub const Session = struct {
     /// Whether `needle` appears in the output produced since `from` (ANSI
     /// stripped) — lets a test assert on one frame instead of the whole
     /// session, e.g. that an indicator appears and then disappears.
+    /// Raw bytes since `from` — for matching escape sequences themselves
+    /// (a colour a theme emits), which the plain-text helpers strip out.
+    pub fn containsSince(self: *Session, from: usize, needle: []const u8) bool {
+        return std.mem.indexOf(u8, self.out.items[@min(from, self.out.items.len)..], needle) != null;
+    }
+
     pub fn containsPlainSince(self: *Session, gpa: std.mem.Allocator, from: usize, needle: []const u8) bool {
         const p = self.plainSince(gpa, from) catch return false;
         defer gpa.free(p);

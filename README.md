@@ -185,7 +185,9 @@
   closes its view, and the three views swap for each other per file — plus
   the always-on gutter change signs
 - **Themes**: `tokyonight` (default), `gruvbox`, `catppuccin`, `nord`,
-  `onedark` — set in the config, switch live with `:theme <name>` or `Space f t`
+  `onedark` — set in the config, switch live with `:theme <name>` or the
+  `Space f t` picker, which previews each theme as you move and saves the one
+  you pick so it survives a restart
 - AstroNvim/Helix-style look: true-colour syntax highlighting (tree-sitter for
   Zig/C/Python/JSON/JS/TS/Rust/Go/HTML/Markdown, a built-in lexer otherwise),
   a powerline statusline, relative+absolute line numbers, cursorline, indent

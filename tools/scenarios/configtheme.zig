@@ -86,6 +86,71 @@ fn renderedSettings(ctx: *h.Ctx) !void {
 }
 
 pub fn run(ctx: *h.Ctx) !void {
+    // --- the theme picker previews live, restores on cancel, and persists ---
+    {
+        const dir = try h.tempDir(ctx.gpa);
+        defer ctx.gpa.free(dir);
+        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const f = h.join(ctx, dir, "t.txt");
+        defer ctx.gpa.free(f);
+        h.writeFile(ctx.io, f, "alpha\n");
+        const xdg = try std.fmt.allocPrint(ctx.gpa, "XDG_CONFIG_HOME={s}/cfg", .{dir});
+        defer ctx.gpa.free(xdg);
+        const cfg_file = h.join(ctx, dir, "cfg/zedit/config");
+        defer ctx.gpa.free(cfg_file);
+
+        {
+            var s = try h.Session.spawn(ctx.gpa, .{
+                .argv = &.{ "env", xdg, ctx.zedit, "--lsp", "", "t.txt" },
+                .cwd = dir,
+                .term = "xterm-256color",
+            });
+            defer s.finish();
+            s.drain(600);
+            var m = s.mark();
+            s.send(" ft"); // the theme picker
+            s.drain(500);
+            s.send("\x1b[B"); // move down one: gruvbox
+            s.drain(500);
+            ctx.check("moving in the theme picker repaints in that theme",
+                s.containsSince(m, GRUVBOX_BG));
+            // Cancelling puts back what was showing before.
+            m = s.mark();
+            s.send("\x1b");
+            s.drain(500);
+            ctx.check("cancelling the picker restores the previous theme",
+                !s.containsSince(m, GRUVBOX_BG));
+            // Choose it for real this time.
+            m = s.mark();
+            s.send(" ft");
+            s.drain(400);
+            s.send("\x1b[B\r");
+            s.drain(600);
+            ctx.check("choosing a theme says it was saved", s.containsPlainSince(ctx.gpa, m, "saved"));
+            s.send(":q!\r");
+            s.drain(300);
+        }
+        const written = h.readFile(ctx.gpa, ctx.io, cfg_file);
+        defer ctx.gpa.free(written);
+        ctx.check("the choice is written to the config",
+            std.mem.indexOf(u8, written, "theme = gruvbox") != null);
+
+        // And a fresh session comes up in it.
+        {
+            var s = try h.Session.spawn(ctx.gpa, .{
+                .argv = &.{ "env", xdg, ctx.zedit, "--lsp", "", "t.txt" },
+                .cwd = dir,
+                .term = "xterm-256color",
+            });
+            defer s.finish();
+            s.drain(700);
+            ctx.check("the theme survives a restart", s.contains(GRUVBOX_BG));
+            s.send(":q!\r");
+            s.drain(300);
+        }
+    }
+
+
     try renderedSettings(ctx);
 
     const dir = try h.tempDir(ctx.gpa);

@@ -586,6 +586,9 @@ pub const Editor = struct {
     /// The quickfix list: results kept so they can be walked with `]q`/`[q`
     /// long after the picker that found them is gone.
     qf: quickfix.List,
+    /// The theme that was active when the theme picker opened, to put back if
+    /// the preview is cancelled.
+    theme_before: []const u8 = "tokyonight",
     /// Terminal mode saw `Ctrl-\`, waiting to see whether `Ctrl-n` follows
     /// (nvim's escape pair). Any other key sends both to the child.
     term_escape: bool = false,
@@ -4273,7 +4276,18 @@ pub const Editor = struct {
     }
 
     /// Populate the picker with the built-in theme names and open it.
+    /// The theme picker shows the theme, not its name: moving the selection
+    /// repaints the whole editor in it. Cancelling puts back the one that was
+    /// active when the picker opened — a preview you cannot undo is a trap.
+    fn previewTheme(self: *Editor) void {
+        if (self.picker_kind != .theme) return;
+        if (self.picker_filtered.items.len == 0) return;
+        const it = self.picker_items.items[self.picker_filtered.items[self.picker_sel]];
+        if (theme.set(self.itemPath(it))) self.prev_valid = false;
+    }
+
     fn openThemePicker(self: *Editor) void {
+        self.theme_before = theme.current_name;
         self.startPicker(.theme);
         for (theme.themes) |t| {
             self.addPickItem(t.name, t.name, 0);
@@ -4319,6 +4333,13 @@ pub const Editor = struct {
     }
 
     fn closePicker(self: *Editor) void {
+        // A cancelled theme preview goes back to what was on screen before it
+        // opened. `pickerOpen` re-applies the chosen theme straight after this
+        // returns, so Enter is unaffected.
+        if (self.picker_kind == .theme and !std.mem.eql(u8, theme.current_name, self.theme_before)) {
+            _ = theme.set(self.theme_before);
+            self.prev_valid = false;
+        }
         self.freePicker();
         self.mode = .normal;
     }
@@ -4670,6 +4691,7 @@ pub const Editor = struct {
 
     fn selDelta(self: *Editor, down: bool) void {
         if (self.picker_filtered.items.len == 0) return;
+        defer self.previewTheme(); // themes apply as the selection moves
         if (down) {
             if (self.picker_sel + 1 < self.picker_filtered.items.len) self.picker_sel += 1;
         } else {
@@ -4765,7 +4787,15 @@ pub const Editor = struct {
             @memcpy(name_buf[0..n], tp[0..n]);
             self.closePicker();
             _ = theme.set(name_buf[0..n]);
-            self.setStatus("theme: {s}", .{name_buf[0..n]});
+            self.theme_before = theme.current_name; // chosen: nothing to restore
+            self.prev_valid = false;
+            // Remember it: a theme picked and lost on restart is a setting
+            // that does not work.
+            config.saveKey(self.gpa, self.io, "theme", name_buf[0..n]) catch |err| {
+                self.setStatus("theme: {s} (not saved: {s})", .{ name_buf[0..n], @errorName(err) });
+                return;
+            };
+            self.setStatus("theme: {s} — saved", .{name_buf[0..n]});
             return;
         }
         if (self.picker_kind == .buffer) {

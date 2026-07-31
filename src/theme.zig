@@ -275,12 +275,17 @@ pub const themes = [_]struct { name: []const u8, palette: *const Theme }{
 /// copy `theme.current` at the top of each render pass).
 pub var current: Theme = tokyonight;
 
+/// The active theme's name — needed to restore a cancelled preview and to
+/// write the choice back to the config.
+pub var current_name: []const u8 = "tokyonight";
+
 /// Switch the active theme by name. Returns false (keeping the current theme)
 /// for unknown names.
 pub fn set(name: []const u8) bool {
     for (themes) |t| {
         if (std.mem.eql(u8, t.name, name)) {
             current = t.palette.*;
+            current_name = t.name; // a static string: outlives any caller buffer
             return true;
         }
     }

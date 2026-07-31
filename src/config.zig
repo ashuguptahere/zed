@@ -268,6 +268,54 @@ pub fn apply(text: []const u8) void {
     }
 }
 
+/// Rewrite `key`'s value in `text`, keeping every other line — comments and
+/// settings alike. The config file is the user's, not ours to regenerate, so
+/// a setting the editor changes is edited in place; one that is not there yet
+/// is appended with a note saying who wrote it.
+///
+/// A commented-out line for the key (`# theme = nord`) is left alone and the
+/// real setting added: uncommenting someone's line would change more than the
+/// one thing they asked for.
+pub fn setKeyIn(gpa: std.mem.Allocator, text: []const u8, key: []const u8, value: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    var replaced = false;
+    var it = std.mem.splitScalar(u8, text, '\n');
+    var first = true;
+    while (it.next()) |line| {
+        if (!first) try out.append(gpa, '\n');
+        first = false;
+        const trimmed = std.mem.trimStart(u8, line, " \t");
+        const is_key = !std.mem.startsWith(u8, trimmed, "#") and
+            std.mem.startsWith(u8, trimmed, key) and
+            std.mem.indexOfScalar(u8, trimmed, '=') != null and
+            std.mem.eql(u8, std.mem.trimEnd(u8, trimmed[0..std.mem.indexOfScalar(u8, trimmed, '=').?], " \t"), key);
+        if (is_key and !replaced) {
+            try out.print(gpa, "{s} = {s}", .{ key, value });
+            replaced = true;
+        } else try out.appendSlice(gpa, line);
+    }
+    if (!replaced) {
+        if (out.items.len > 0 and out.items[out.items.len - 1] != '\n') try out.append(gpa, '\n');
+        try out.print(gpa, "{s} = {s}\n", .{ key, value });
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+/// Persist one setting to the config file `load` used, creating it (and its
+/// directory) from the annotated default text when there is none yet.
+pub fn saveKey(gpa: std.mem.Allocator, io: std.Io, key: []const u8, value: []const u8) !void {
+    var pbuf: [512]u8 = undefined;
+    const path = loaded_from orelse (standardPath(&pbuf) orelse return error.NoConfigPath);
+    const existing = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(1 << 20)) catch
+        try gpa.dupe(u8, default_text);
+    defer gpa.free(existing);
+    const updated = try setKeyIn(gpa, existing, key, value);
+    defer gpa.free(updated);
+    if (std.fs.path.dirname(path)) |dir| std.Io.Dir.cwd().createDirPath(io, dir) catch {};
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = updated });
+}
+
 /// An XDG base-directory path, built into `buf`: `$env_var/zedit/leaf`, or
 /// `$HOME/home_fallback/zedit/leaf` when the variable is unset or empty. Null
 /// when neither env var exists. (libc getenv — the editor links libc for
@@ -292,9 +340,15 @@ fn standardPath(buf: []u8) ?[]const u8 {
 /// apply it. Best-effort: a missing or unreadable file just means defaults —
 /// but the caller learns whether it loaded, so an explicit `--config` that
 /// cannot be read can be reported instead of silently ignored.
+/// Where `load` read from, so `saveKey` writes back to the same file — a
+/// `--config` session must not silently edit the standard one instead.
+var loaded_from: ?[]const u8 = null;
+var loaded_buf: [512]u8 = undefined;
+
 pub fn load(gpa: std.mem.Allocator, io: std.Io, override: ?[]const u8) bool {
     var pbuf: [512]u8 = undefined;
     const path = override orelse (standardPath(&pbuf) orelse return false);
+    loaded_from = std.fmt.bufPrint(&loaded_buf, "{s}", .{path}) catch null;
     const text = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(1 << 20)) catch |err| {
         std.log.scoped(.config).info("config not loaded: {s}: {s}", .{ path, @errorName(err) });
         return false;
@@ -373,4 +427,54 @@ test "default config text applies cleanly to defaults" {
     apply(default_text);
     try std.testing.expectEqual(@as(usize, 4), settings.tab_width);
     try std.testing.expectEqual(true, settings.nerd_font);
+}
+
+const testing = std.testing;
+
+fn expectSet(text: []const u8, key: []const u8, value: []const u8, want: []const u8) !void {
+    const got = try setKeyIn(testing.allocator, text, key, value);
+    defer testing.allocator.free(got);
+    try testing.expectEqualStrings(want, got);
+}
+
+test "setting an existing key rewrites just that line" {
+    try expectSet("theme = nord\ntab_width = 4\n", "theme", "gruvbox", "theme = gruvbox\ntab_width = 4\n");
+}
+
+test "comments and other settings survive untouched" {
+    try expectSet(
+        "# my config\n\ntheme = nord   # the old one\n# trailing note\nmouse = false\n",
+        "theme",
+        "onedark",
+        "# my config\n\ntheme = onedark\n# trailing note\nmouse = false\n",
+    );
+}
+
+test "a missing key is appended" {
+    try expectSet("tab_width = 2\n", "theme", "nord", "tab_width = 2\ntheme = nord\n");
+}
+
+test "appending to a file with no trailing newline still starts a line" {
+    try expectSet("tab_width = 2", "theme", "nord", "tab_width = 2\ntheme = nord\n");
+}
+
+test "an empty file just gets the setting" {
+    try expectSet("", "theme", "nord", "theme = nord\n");
+}
+
+test "a commented-out key is left alone and the setting added" {
+    // Uncommenting someone's line would change more than the one thing asked.
+    try expectSet("# theme = nord\n", "theme", "gruvbox", "# theme = nord\ntheme = gruvbox\n");
+}
+
+test "a key that is a prefix of another is not mistaken for it" {
+    try expectSet("wrap_column = 80\nwrap = true\n", "wrap", "false", "wrap_column = 80\nwrap = false\n");
+}
+
+test "indented settings are recognised and normalised" {
+    try expectSet("   theme = nord\n", "theme", "nord2", "theme = nord2\n");
+}
+
+test "only the first occurrence is rewritten" {
+    try expectSet("theme = a\ntheme = b\n", "theme", "c", "theme = c\ntheme = b\n");
 }

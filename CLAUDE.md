@@ -1007,7 +1007,15 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 
 The renderer aims for an AstroNvim/Helix look: true-colour themes in
 `theme.zig` (Tokyo Night default, plus Gruvbox, Catppuccin Mocha, Nord and One
-Dark — set in the config, or live via `:theme` / the `Space f t` picker), a
+Dark — set in the config, or live via `:theme` / the `Space f t` picker,
+which **previews as you move**: the editor repaints in each theme, `Esc` puts
+back the one that was showing, and `Enter` writes `theme = <name>` to the
+config so the choice survives a restart. The write edits that one line and
+leaves comments, blank lines and every other setting alone — the config is
+the user's file, not ours to regenerate — and a commented-out
+`# theme = …` is left as it is with the real setting appended, since
+uncommenting someone's line changes more than the one thing they asked for
+(`config.setKeyIn`, unit-tested including `wrap` vs `wrap_column`)), a
 powerline title bar (EXPLORER segment + buffer tabs, see above) and statusline
 (coloured mode block, separators, the command as typed
 right-aligned beside the position — vim's 'showcmd', capturing the *decoded*
