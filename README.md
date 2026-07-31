@@ -169,7 +169,8 @@
   (`Ctrl-d`/`Ctrl-u` or the wheel scroll it) — `zedit <dir>` opens into it
 - **A powerline title bar** along the top (VS Code-style, even for one file):
   the explorer's header over the sidebar, one tab per open buffer beside it —
-  the active tab accent-coloured, unsaved ones dotted; click a tab to switch or its `✕` to close it
+  each tab a flat box with the active one accent-coloured and unsaved ones
+  dotted; click a tab to switch or its `✕` to close it
   (config `buffer_tabs = false` removes the row and puts the filename back in
   the statusline)
 - **Git diff views**: `Space g d` inline unified diff (coloured +/- lines) in

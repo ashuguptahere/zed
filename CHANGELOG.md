@@ -2,6 +2,17 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.40.1 - 2026-07-31
+
+### Changed
+
+- **Buffer tabs are flat boxes**, the same shape the terminal tabs use, rather
+  than powerline segments separated by arrows. The colour change already reads
+  as the boundary, and an arrow between every pair made a row of tabs look
+  like a breadcrumb trail rather than a set of them. The EXPLORER header keeps
+  its separator — that is a transition *into* the tabs, not one between them.
+  `sepRightThin` goes with the change, having lost its only caller.
+
 ## 0.40.0 - 2026-07-31
 
 ### Fixed

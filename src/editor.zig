@@ -52,11 +52,6 @@ fn sepRight() []const u8 {
 fn sepLeft() []const u8 {
     return if (config.settings.nerd_font) "\u{E0B2}" else "";
 }
-/// The thin variant, for a transition between two same-coloured segments
-/// (adjacent inactive tabs in the title bar).
-fn sepRightThin() []const u8 {
-    return if (config.settings.nerd_font) "\u{E0B1}" else "";
-}
 /// Cells one powerline separator occupies — 0 in flat (`nerd_font = false`)
 /// mode, where the glyphs are empty strings. Width budgets must use this
 /// rather than a hardcoded 1 or the row is painted short of its edge.
@@ -10850,10 +10845,16 @@ pub const Editor = struct {
     /// can never be drawn at one place and clicked at another.
     /// The cells a tab occupies: a leading space, the name, the dirty dot when
     /// there is one, then the close box (`close_cells`) and the separator.
+    /// A buffer tab is a flat box — a padded run of its own background, the
+    /// same shape the terminal tabs use. No powerline separator between them:
+    /// the colour change already reads as the boundary, and an arrow between
+    /// every pair made a row of tabs look like a breadcrumb trail rather than
+    /// a set of them. The EXPLORER header keeps its separator, since that is
+    /// a transition *into* the tabs rather than one between them.
     fn tabCells(doc: *Doc) usize {
         const name = std.fs.path.basename(docLabel(doc));
         return 2 + unicode.displayWidth(name) + @as(usize, if (doc.buf.dirty) 2 else 0) +
-            close_cells + sepCells();
+            close_cells;
     }
 
     /// ` ✕` — the click target that closes a buffer, VS Code's and Zed's tab
@@ -10887,8 +10888,8 @@ pub const Editor = struct {
             const w = tabCells(doc);
             if (x + w > area.x0 + area.w) break;
             if (col >= x and col < x + w) {
-                // The close box is the two cells before the separator.
-                const box_start = x + w - sepCells() - close_cells;
+                // The close box is the last two cells of the tab.
+                const box_start = x + w - close_cells;
                 return .{ .doc = doc, .close = col >= box_start };
             }
             x += w;
@@ -10934,7 +10935,7 @@ pub const Editor = struct {
         }
 
         var used: usize = 0;
-        for (self.docs.items, 0..) |doc, i| {
+        for (self.docs.items) |doc| {
             if (doc.shell != null) continue; // terminals get their own row
             const w = tabCells(doc);
             if (used + w > area.w) break;
@@ -10947,22 +10948,6 @@ pub const Editor = struct {
             try self.emit(" \u{2715}"); // ✕ — click it to close this buffer
             try self.emit(" ");
             used += w;
-            if (sepCells() > 0) {
-                // The transition cell: a solid arrow between different
-                // colours, a thin chevron between same-coloured tabs.
-                const next_bg = if (i + 1 < self.docs.items.len and used + tabCells(self.docs.items[i + 1]) <= area.w)
-                    self.tabBg(self.docs.items[i + 1])
-                else
-                    th.status_bg; // the filler
-                if (bg.r == next_bg.r and bg.g == next_bg.g and bg.b == next_bg.b) {
-                    try self.setFg(th.fg_dim);
-                    try self.emit(sepRightThin());
-                } else {
-                    try self.setBg(next_bg);
-                    try self.setFg(bg);
-                    try self.emit(sepRight());
-                }
-            }
         }
 
         try self.setBg(th.status_bg);

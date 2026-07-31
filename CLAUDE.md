@@ -911,10 +911,15 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   file): an "EXPLORER" segment spanning the sidebar's columns when it is open
   (accent bg while the tree has focus, else the statusline segment colours,
   ending in a powerline separator), then one tab per open buffer over the
-  text area — the active tab an accent segment (`mode_normal` bg), inactive
-  ones dim on `status_bg` with thin separators between them, unsaved marked
-  with `●`. `nerd_font = false` degrades to the flat look (no separator
-  glyphs, zero width budgeted for them). While the bar is up the filename
+  text area — each a **flat box**, a padded run of its own background, the
+  same shape the terminal tabs use: no powerline separator between them,
+  because the colour change already reads as the boundary and an arrow
+  between every pair made a row of tabs look like a breadcrumb trail rather
+  than a set of them. (The EXPLORER header keeps its separator, being a
+  transition *into* the tabs rather than one between them.) The active tab is
+  an accent segment (`mode_normal` bg), inactive ones dim on `status_bg`,
+  unsaved marked with `●`. `nerd_font = false` still degrades the header
+  separator and the statusline to the flat look. While the bar is up the filename
   leaves the statusline (see below). **Clicking a tab's `✕`** closes that buffer (a terminal tab ends its
   shell); the box is always drawn rather than shown on hover, because hover
   needs mouse mode 1003, which reports every pointer movement and would wake
