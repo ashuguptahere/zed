@@ -1271,6 +1271,16 @@ pub const Editor = struct {
             if (self.inSidebar(m.col)) return self.sbClick(m.row, m.col);
         }
         const w = self.winAt(m.row, m.col) orelse return; // status rows, cmdline: inert
+        // A shell pane's first row is the terminals' own tab row.
+        if (w.doc.shell != null and m.row == w.gy) {
+            if (self.terminalTabAt(w, m.col)) |hit| {
+                if (hit.close) return self.closeTab(hit.doc);
+                self.focusWin(w);
+                self.focusDoc(hit.doc);
+                self.mode = .terminal;
+            }
+            return;
+        }
         try self.clickTo(w, self.winHit(w, m.row, m.col), count);
     }
 
@@ -8232,13 +8242,7 @@ pub const Editor = struct {
     /// focused, closed, and focus returns to where it was — unless that was
     /// the buffer just closed.
     fn closeTab(self: *Editor, doc: *Doc) void {
-        if (doc.shell != null) { // a terminal tab: end the shell
-            const was = self.cur;
-            self.focusDoc(doc);
-            self.closeTerminal();
-            if (self.winIndex(was) < self.wins.items.len) self.cur = was;
-            return;
-        }
+        if (doc.shell != null) return self.closeTerminalDoc(doc);
         if (doc == self.d) return self.closeDoc(false);
         const keep = self.d;
         self.focusDoc(doc);
@@ -8284,7 +8288,11 @@ pub const Editor = struct {
             sh.done = true;
             any = true;
             if (self.mode == .terminal) self.mode = .normal;
-            self.setStatus("[process exited] — any key closes this window", .{});
+            // `exit` at the prompt closes the terminal, as it does in VS Code
+            // and Zed — waiting for a keypress to dismiss a dead shell is a
+            // second thing to do for something already finished.
+            self.closeTerminalDoc(self.cur.doc);
+            self.setStatus("terminal closed", .{});
         }
         return any;
     }
@@ -8306,10 +8314,37 @@ pub const Editor = struct {
         sh.child.resize(rows, cols);
     }
 
-    /// Close the shell window and its document.
+    /// Close the terminal showing in the active window.
     fn closeTerminal(self: *Editor) void {
-        const doc = self.cur.doc;
+        self.closeTerminalDoc(self.cur.doc);
+    }
+
+    /// Close one terminal. With others still open the pane stays and shows a
+    /// sibling — closing the whole panel because one of several finished is
+    /// not what a tab row implies. The last one takes the pane with it.
+    fn closeTerminalDoc(self: *Editor, doc: *Doc) void {
         if (doc.shell == null) return;
+        var sibling: ?*Doc = null;
+        for (self.docs.items) |d| {
+            if (d != doc and d.shell != null) sibling = d;
+        }
+        if (sibling) |next| {
+            for (self.wins.items) |w| {
+                if (w.doc == doc) w.doc = next;
+            }
+            if (self.d == doc) self.loadDoc(next);
+            self.destroyDoc(doc);
+            self.clearExtra();
+            self.placeAt(0);
+            return;
+        }
+        // The last terminal: the pane goes with it.
+        const was_active = self.cur.doc == doc;
+        if (!was_active) {
+            for (self.wins.items) |w| {
+                if (w.doc == doc) self.focusWin(w);
+            }
+        }
         self.mode = .normal;
         if (self.wins.items.len > 1) {
             self.closeWindow();
@@ -10918,20 +10953,13 @@ pub const Editor = struct {
         if (self.sb_open and config.settings.sidebar == .left) {
             // The EXPLORER segment spans the sidebar width, ending in a
             // separator that transitions into the first tab's colour.
-            const shown = @min(hdr.len, sb_w -| sepCells());
+            // A flat box, like the tabs beside it: the colour change is the
+            // boundary, so the arrow that used to end the header is gone too.
+            const shown = @min(hdr.len, sb_w);
             try self.setBg(hdr_bg);
             try self.setFg(hdr_fg);
             try self.emit(hdr[0..shown]);
-            try self.emitSpaces(sb_w -| sepCells() -| shown);
-            if (sepCells() > 0) {
-                const first_bg = if (self.docs.items.len > 0 and tabCells(self.docs.items[0]) <= area.w)
-                    self.tabBg(self.docs.items[0])
-                else
-                    th.status_bg;
-                try self.setBg(first_bg);
-                try self.setFg(hdr_bg);
-                try self.emit(sepRight());
-            }
+            try self.emitSpaces(sb_w -| shown);
         }
 
         var used: usize = 0;

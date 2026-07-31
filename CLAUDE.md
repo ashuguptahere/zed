@@ -814,7 +814,11 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   their **own tab row** across the top of the pane they share — VS Code's and
   Zed's panel, where terminals are their own list rather than buffers mixed in
   with the files (they are kept out of the buffer tabline for the same
-  reason). Each tab carries the same `✕`, and `Space t` adds another. The grid is read-only to buffer commands (`dd` answers
+  reason). Each tab carries the same `✕` — clicking it closes that terminal,
+  and the pane stays as long as another is open — and `Space t` adds another.
+  A shell that exits (`exit` at the prompt) closes its terminal on the spot,
+  as in VS Code and Zed: waiting for a keypress to dismiss something already
+  finished is a second thing to do for no reason. The grid is read-only to buffer commands (`dd` answers
   "this is a terminal — i types into it") so it can never go dirty and block
   `:q`, and an exited shell keeps its last output on screen until any key
   dismisses the window. Everything the child writes is untrusted: escapes
@@ -909,14 +913,15 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 - **Title bar:** one powerline row across the top (config `buffer_tabs`,
   default on — always shown while enabled, VS Code-style, even for a single
   file): an "EXPLORER" segment spanning the sidebar's columns when it is open
-  (accent bg while the tree has focus, else the statusline segment colours,
-  ending in a powerline separator), then one tab per open buffer over the
+  (accent bg while the tree has focus, else the statusline segment colours —
+  a flat box like the tabs beside it, with no separator glyph: the colour
+  change is the boundary), then one tab per open buffer over the
   text area — each a **flat box**, a padded run of its own background, the
   same shape the terminal tabs use: no powerline separator between them,
   because the colour change already reads as the boundary and an arrow
   between every pair made a row of tabs look like a breadcrumb trail rather
   than a set of them. (The EXPLORER header keeps its separator, being a
-  transition *into* the tabs rather than one between them.) The active tab is
+  The active tab is
   an accent segment (`mode_normal` bg), inactive ones dim on `status_bg`,
   unsaved marked with `●`. `nerd_font = false` still degrades the header
   separator and the statusline to the flat look. While the bar is up the filename

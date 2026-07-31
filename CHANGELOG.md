@@ -2,6 +2,25 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.40.2 - 2026-07-31
+
+### Fixed
+
+- **A terminal tab's `✕` did nothing.** The hit-test was written and never
+  wired to a click — dead code that looked like a feature. Clicking it now
+  closes that terminal, and the pane stays as long as another is open.
+- **`exit` at the prompt now closes the terminal**, instead of leaving a dead
+  shell on screen waiting for a keypress to dismiss it. VS Code's and Zed's
+  behaviour, and one less thing to do for something already finished.
+
+### Changed
+
+- **The EXPLORER header is a flat box**, matching the tabs beside it — the
+  powerline arrow that ended it is gone, since the colour change is the
+  boundary.
+- Closing one of several terminals switches the pane to a sibling rather than
+  taking the whole pane down; only the last one closes it.
+
 ## 0.40.1 - 2026-07-31
 
 ### Changed

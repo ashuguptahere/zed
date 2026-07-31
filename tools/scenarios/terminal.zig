@@ -127,20 +127,18 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send(" t");
         s.drain(1200);
         var m = s.mark();
-        s.send("exit" ++ CR);
+        s.send("exit" ++ CR); // `exit` closes the terminal, as in VS Code
         s.drain(1500);
-        ctx.check("an exited shell says so", s.containsPlainSince(ctx.gpa, m, "process exited"));
-        m = s.mark();
-        s.send("x"); // any key closes the window
-        s.drain(700);
-        ctx.check("a key closes the finished terminal", s.containsPlainSince(ctx.gpa, m, "alpha"));
-        // The window is gone and the file is editable again: `x` here edits.
+        ctx.check("exit closes the terminal by itself", s.containsPlainSince(ctx.gpa, m, "terminal closed"));
+        ctx.check("and the file is back on screen", s.containsPlainSince(ctx.gpa, m, "alpha"));
+        // No keypress needed to dismiss it: `x` here edits the file.
         m = s.mark();
         s.send("x:w" ++ CR);
         s.drain(700);
         const got = h.readFile(ctx.gpa, ctx.io, f);
         defer ctx.gpa.free(got);
-        ctx.check("the file is editable after the terminal closes", std.mem.eql(u8, got, "lpha\nbeta\n"));
+        ctx.check("the file is editable straight after the shell exits",
+            std.mem.eql(u8, got, "lpha\nbeta\n"));
         s.send(":qa!" ++ CR);
         s.drain(500);
     }
@@ -197,6 +195,70 @@ pub fn run(ctx: *h.Ctx) !void {
         ctx.check("closing it removes the buffer", !s.containsPlainSince(ctx.gpa, m, "[terminal]"));
         s.send(":q!" ++ CR);
         s.drain(400);
+    }
+
+    // --- the terminal tab's close box actually closes it --------------------
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ "env", shell_env, ps1_env, ctx.zedit, "f.txt" },
+            .cwd = dir,
+            .term = "xterm-256color",
+        });
+        defer s.finish();
+        s.drain(700);
+        s.send(" t");
+        s.drain(1200);
+        s.send(CTRL_BACKSLASH ++ CTRL_N);
+        s.drain(400);
+        s.send(" t"); // a second terminal, so closing one leaves the pane up
+        s.drain(1200);
+        s.send(CTRL_BACKSLASH ++ CTRL_N);
+        s.drain(400);
+        // Find t1's ✕ on the terminals' tab row and click it.
+        var scr = try h.Screen.init(ctx.gpa, 24, 80);
+        defer scr.deinit();
+        scr.apply(s.out.items);
+        var trow: usize = 0;
+        var tcol: usize = 0;
+        var r: usize = 1;
+        while (r <= scr.rows) : (r += 1) {
+            const rt = try scr.rowText(ctx.gpa, r);
+            defer ctx.gpa.free(rt);
+            const at = std.mem.indexOf(u8, rt, "t1") orelse continue;
+            const cross = std.mem.indexOfPos(u8, rt, at, "\u{2715}") orelse continue;
+            trow = r;
+            var col: usize = 1;
+            var bi: usize = 0;
+            while (bi < cross) : (col += 1) bi += std.unicode.utf8ByteSequenceLength(rt[bi]) catch 1;
+            tcol = col;
+            break;
+        }
+        ctx.check("the terminal tab row shows a close box", trow != 0);
+        if (trow != 0) {
+            var pb: [32]u8 = undefined;
+            var rb: [32]u8 = undefined;
+            const m = s.mark();
+            s.send(try std.fmt.bufPrint(&pb, "\x1b[<0;{d};{d}M", .{ tcol, trow }));
+            s.send(try std.fmt.bufPrint(&rb, "\x1b[<0;{d};{d}m", .{ tcol, trow }));
+            s.drain(900);
+            var after = try h.Screen.init(ctx.gpa, 24, 80);
+            defer after.deinit();
+            after.apply(s.out.items);
+            var still_t1 = false;
+            var has_t2 = false;
+            var rr: usize = 1;
+            while (rr <= after.rows) : (rr += 1) {
+                const rt = try after.rowText(ctx.gpa, rr);
+                defer ctx.gpa.free(rt);
+                if (std.mem.indexOf(u8, rt, "t1") != null) still_t1 = true;
+                if (std.mem.indexOf(u8, rt, "t2") != null) has_t2 = true;
+            }
+            ctx.check("clicking it closes that terminal", !still_t1);
+            ctx.check("and the pane stays for the other one", has_t2);
+            _ = m;
+        }
+        s.send(":qa!" ++ CR);
+        s.drain(500);
     }
 
     // --- scrollback: output that scrolled away is still reachable -----------
