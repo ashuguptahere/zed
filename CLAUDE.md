@@ -345,8 +345,10 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   true)` counts the rows that belong to no buffer line — a diff pair's fillers
   and the line view's woven old lines — because a viewport step that ignored
   them travelled a different distance whenever it crossed a hunk, which is the
-  jumping a scroll past a change showed. Cursor motions (`Ctrl-d/u/f/b`,
-  `H`/`M`/`L`) keep `display = false` and vim's line-based meaning (owner's choice over nvim's drag-at-the-edge rule, which stranded
+  jumping a scroll past a change showed. The paging motions (`Ctrl-d/u/f/b`) count those rows too, as of 0.38.0 — a
+  half-page that ignored them travelled a different distance depending on
+  whether it crossed a hunk, which is the same jumping the wheel had. `H`/`M`/`L`
+  keep `display = false` and vim's line-based meaning (owner's choice over nvim's drag-at-the-edge rule, which stranded
   the cursor at the bottom of the page; at the top or bottom of the file
   nothing moves at all). The scroll runs on the `Win` (`mouseScroll` saves the
   active window's mirrored viewport out and loads it back, and
@@ -1340,19 +1342,16 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   its tail can never be scrolled into — the display-space top is the fix
   here too. The weave's
   anchors are buffer rows fixed at the last save (exactly the signs' model):
-  unsaved edits shift lines out from under them until `:w`, its virtual rows
-  render unwrapped (clipped, always from column 0), and the wheel and
-  `Ctrl-d/u/f/b` still
-  count buffer lines, so a step across a woven block moves the view
-  further than it looks. A click in either view resolves through the same row
+  unsaved edits shift lines out from under them until `:w`, and its virtual rows
+  render unwrapped (clipped, always from column 0). A click in either view
+  resolves through the same row
   walk the renderer used, so it lands on the line it looks like — but a click
   on a virtual row (a pair's filler, a woven old line) snaps to the nearest
-  real line, since those rows live in no buffer. The wheel scrolls the window
-  under the pointer, but its step is still counted in *buffer* lines there:
-  `winLineAfterRows` branches only on soft wrap, so a notch that crosses a
-  woven block or a pair's fillers moves the view further than three rows —
-  the same gap `Ctrl-d/u/f/b` has, and the same fix (`lineAtScreenRow`'s
-  hunk-aware walk).
+  real line, since those rows live in no buffer. Scrolling counts what is on
+  screen: the wheel since 0.28.0 and `Ctrl-d/u/f/b` since 0.38.0 both step
+  *display* rows, so a notch or a half-page that crosses a woven block or a
+  pair's fillers travels the same distance as one that does not. `H`/`M`/`L`
+  still count buffer lines, keeping vim's meaning.
 - Remote editing is whole-file over ssh: every read/write moves the entire file
   (no partial or incremental transfer), there is no remote LSP/tree-sitter
   beyond what the local process computes on the fetched text, no remote git

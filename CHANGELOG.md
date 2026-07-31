@@ -2,6 +2,32 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.38.0 - 2026-07-31
+
+### Fixed
+
+- **`Ctrl-d`/`Ctrl-u`/`Ctrl-f`/`Ctrl-b` no longer jump across a hunk in the
+  diff views.** They counted buffer lines, so a half-page that crossed a
+  deletion travelled further than one that did not — the same jumping the
+  wheel had, fixed for the wheel in 0.28.0 and left in the paging keys. They
+  now step *display* rows, counting a diff pair's filler rows and the line
+  view's woven old lines because those are on screen. `H`/`M`/`L` keep vim's
+  line-based meaning.
+
+  `winLineAfterRows` is gone with it: a wrapper whose one caller now passes
+  the opposite argument.
+
+### Changed
+
+- The check that a `Ctrl-d` keeps both diff panes level asserted it *via a
+  named line*, so it failed as soon as the motion's distance changed — for a
+  reason that had nothing to do with alignment. It now asserts the invariant
+  directly: whatever is on screen, a line present on both sides sits on one
+  row in both panes.
+- `doc/COMPARISON.md`-style staleness in `CLAUDE.md`: the known-gaps entry
+  still described the wheel as counting buffer lines, three releases after
+  that was fixed.
+
 ## 0.37.0 - 2026-07-31
 
 ### Added

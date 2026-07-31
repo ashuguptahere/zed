@@ -8504,14 +8504,6 @@ pub const Editor = struct {
         self.goal_col = displayCol(self.curLine(), self.cx);
     }
 
-    /// The buffer line `n` screen rows away from `row` in window `w`. With soft
-    /// wrap a tall line is worth several rows, so a page covers fewer lines
-    /// than there are rows on screen — which is what makes `Ctrl-f` land where
-    /// it looks like it should.
-    fn winLineAfterRows(self: *Editor, w: *Win, row: usize, n: usize, up: bool) usize {
-        return self.winStepRows(w, row, n, up, false);
-    }
-
     /// Step `n` screen rows from buffer line `row`. `display` also counts the
     /// rows that belong to no buffer line — a diff pair's fillers and the line
     /// view's woven old lines — which is what a *viewport* step must do: with
@@ -8556,8 +8548,18 @@ pub const Editor = struct {
         return rows;
     }
 
+    /// The buffer line `n` screen rows away, for the paging motions. With soft
+    /// wrap a tall line is worth several rows, so a page covers fewer lines
+    /// than there are rows on screen — which is what makes `Ctrl-f` land where
+    /// it looks like it should.
+    ///
+    /// `display = true`, so a diff pair's filler rows and the line view's woven
+    /// rows count too: they are on screen, and a half-page that ignored them
+    /// travelled a different distance depending on whether it crossed a hunk —
+    /// the jumping a scroll past a change shows. The wheel was fixed for this
+    /// in 0.28.0 and the paging keys were left behind.
     fn lineAfterRows(self: *Editor, row: usize, n: usize, up: bool) usize {
-        return self.winLineAfterRows(self.cur, row, n, up);
+        return self.winStepRows(self.cur, row, n, up, true);
     }
 
     fn pageMove(self: *Editor, up: bool) void {

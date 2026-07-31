@@ -164,8 +164,24 @@ fn wheelOverVirtualRows(ctx: *h.Ctx) !void {
         ctx.check("and the notch after it is three rows again", std.mem.indexOf(u8, top, "L12") != null);
         ctx.gpa.free(top);
         scr.deinit();
-        s.send(":q!" ++ "\r");
+        // The paging keys count the same rows the wheel does: `Ctrl-d` is half
+        // a *screen*, so the woven block's rows cost it those too. The cursor
+        // is what a single Ctrl-d moves (the view only follows when the cursor
+        // would leave it), so mark where it lands.
+        //
+        // From L01, half a 22-row screen is 11 rows: four lines, then L09 —
+        // worth five, its own row plus the four woven above it — then three
+        // more. That is L12. Counting buffer lines instead would reach L16.
+        s.send("gg");
         s.drain(300);
+        s.send("\x04x"); // Ctrl-d, then mark the line it landed on
+        s.drain(400);
+        s.send(":wq" ++ "\r");
+        s.drain(600);
+        const after = h.readFile(ctx.gpa, ctx.io, f);
+        defer ctx.gpa.free(after);
+        ctx.check("Ctrl-d counts a woven block's rows", std.mem.indexOf(u8, after, "\n12\n") != null);
+        ctx.check("and does not overshoot as buffer lines would", std.mem.indexOf(u8, after, "\n16\n") == null);
     }
 
     // --- the side-by-side pair (fillers in the worktree pane) ---------------
@@ -443,14 +459,32 @@ fn sideLockstep(ctx: *h.Ctx) !void {
     {
         var scr = try snapshot(ctx, &s);
         defer scr.deinit();
+        // Levelness, not a particular line: whichever lines are on screen,
+        // a line present on both sides must sit on one row in both panes.
+        // Naming a line here made the check depend on how far `Ctrl-d`
+        // travels, which is exactly what changed when the paging motions
+        // started counting a pair's filler rows.
         var paired = false;
+        var lopsided = false;
         var row: usize = 2;
         while (row <= 22) : (row += 1) {
-            const c = rowCount(&scr, ctx.gpa, row, "L20");
-            if (c > 0) paired = c == 2; // on screen: must be level in both panes
-            if (c > 0) break;
+            var li: usize = 1;
+            while (li <= 40) : (li += 1) {
+                var lab: [8]u8 = undefined;
+                const label = std.fmt.bufPrint(&lab, "L{d:0>2}", .{li}) catch continue;
+                switch (rowCount(&scr, ctx.gpa, row, label)) {
+                    2 => paired = true, // level in both panes
+                    1 => {
+                        // One side only is fine for a line the other lacks
+                        // (a deletion or an addition), but "L20" exists on
+                        // both sides, so a lone one would mean a skew.
+                        if (li != 5 and li != 2) lopsided = true;
+                    },
+                    else => {},
+                }
+            }
         }
-        ctx.check("Ctrl-d in the worktree pane scrolls both panes", paired);
+        ctx.check("Ctrl-d in the worktree pane scrolls both panes", paired and !lopsided);
     }
 
     s.send("\x17w"); // focus the index pane
