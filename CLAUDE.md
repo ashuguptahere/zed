@@ -327,7 +327,11 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   (counted: `3fa` lands on the third, `d2fa` multiplies the counts),
   `%`, `{ }` (paragraph, jump motions), `H M L`, `Ctrl-d/u/f/b`,
   arrows/Home/End/PageUp/Down (arrows and `<BS>` take counts like
-  `h j k l`; Home/End ignore them — nvim-probed). With soft wrap on, `j`/`k` step a *screen* row **on a line that actually
+  `h j k l`; Home/End ignore them — nvim-probed). Counts work **inside visual
+  mode** too (`v3l`, `v2j`, `v3w`; `v3G` is a line number, not a repeat).
+  nvim's `'startofline'` is off, so `G`, `gg`, `{n}G`, `H`, `M`, `L` and a
+  linewise delete (`dd`, `dj`, `Vd`) all keep the cursor's **display column**
+  rather than snapping to the first non-blank — `nvim#sol1`-`sol12`. With soft wrap on, `j`/`k` step a *screen* row **on a line that actually
   wraps** —
   a deliberate divergence from vim, where they always move a buffer line: on
   wrapped prose vim's rule reads as the cursor skipping, because one press
@@ -456,7 +460,12 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   `i( i[ i{ i< i" i' i\`` and `a…` variants (plus `b`/`B` aliases), e.g.
   `ciw`, `di"`, `da(`, `dap`. Objects work in visual mode too (`vip`, `vi(` —
   paragraph objects switch the selection to V-LINE, as vim does).
-- **Registers/paste:** `"a` selects a register (in visual mode too); `p`/`P`
+- **Registers/paste:** `"a` selects a register (in visual mode too). In
+  *visual* mode `p`/`P` **replace the selection** with the register, and what
+  was replaced becomes the unnamed register — all four register-kind ×
+  selection-kind combinations nvim-pinned (`nvim#vp1`-`vp8`), including a
+  linewise register dropped into a charwise selection, which splits the line.
+  In normal mode `p`/`P`
   paste it back the way it was taken — charwise, linewise, or **blockwise** as
   a rectangle: one register line per buffer line at one display column,
   padding a line too short to reach it, growing the file when the block
@@ -1234,15 +1243,9 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
 - Vim gaps: paragraph objects/motions treat only truly empty lines as
   boundaries (vim's rule; `nroff`-style paragraph macros in `'paragraphs'`
   aren't supported), and there are no sentence objects (`is`/`as`, `(`/`)`).
-  `[count]` before an *insert* command (`3a`, `3i`, `3A`, blockwise `3A`) is
-  not implemented: vim types the text that many times, zedit types it once
-  (`3a` `X` Esc on "abc" gives nvim "aXXXbc", zedit "aXbc"). `p`/`P` in
-  **visual** mode (replace the selection with a register) is missing for
-  every selection kind. `G`/`gg` go to the line's first non-blank where nvim
-  keeps the cursor's column (its `'startofline'` is off by default), which
-  reaches every jump that lands on a new line. A **bare** `/` or `?` (Enter
-  on an empty pattern) clears the last pattern where vim repeats it, and now
-  also stops a macro replay as a failed search would. Dot-repeat and macros
+  `[count]` before a *blockwise* `3A`/`3I` still inserts once; the plain
+  family (`3a`, `3i`, `3A`, `3I`, `3o`, `3O`) types the text `[count]` times
+  as vim does (`nvim#ic1`-`ic10`). Dot-repeat and macros
   are otherwise nvim-pinned (the `nvim#dm*` tranche in `vim_compat`), counted
   repeats included as far as a *leading* count goes: `[count].` replaces it
   rather than re-running the change, which is what the operator+click case
@@ -1265,12 +1268,7 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   whitespace/punctuation/word/hiragana/katakana/CJK rather than vim's whole
   `utf_class` table; and a wrapped line taller than the whole screen shows
   the rows around the cursor (nvim's own behaviour there is a full-screen
-  redraw that was not pinned). A **linewise** visual
-  operator leaves the cursor in the wrong column (measured, pre-dates the
-  mouse work and visible without it — `9lVd`): `Vd` puts it at column 0 where
-  nvim keeps the column it had, and `Vy` keeps the column where nvim moves it
-  to 0. Insert Visual inherits both, so a `V`+operator gesture begun in insert
-  resumes typing at zedit's column, not nvim's. In-buffer search/`:s` are regex, but the syntax is
+  redraw that was not pinned). In-buffer search/`:s` are regex, but the syntax is
   modern ("very magic"-like), not vim's magic mode — `\(` groups etc. differ.
 - Highlighting is a per-line lexer (no cross-line block comments; a handful of
   languages). Tree-sitter is the upgrade path now that deps are allowed.

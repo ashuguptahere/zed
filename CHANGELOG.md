@@ -2,6 +2,40 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.45.0 - 2026-08-01
+
+Every vim gap on the tracker, each probed against real nvim before and after,
+and pinned with 40 new cases in `vim_compat`.
+
+### Added
+
+- **`p`/`P` in visual mode** replace the selection with a register — missing
+  entirely before, for every selection kind. All four combinations of register
+  kind and selection kind follow nvim, including a linewise register dropped
+  into a charwise selection, which splits the line into "text before", the
+  register's lines, and "text after". What was replaced becomes the unnamed
+  register, so a following `p` pastes it.
+- **`[count]` before an insert command** types the text that many times:
+  `3a`, `3i`, `3A`, `3I`, and `3o`/`3O`, which bring their own lines. The
+  whole typed text repeats, newlines included, and `.` repeats the counted
+  insert whole.
+- **Counts inside visual mode.** `v3l`, `v2j`, `v3w`, `v2e` moved *one*: the
+  digits fell through to the motion dispatch and were never accumulated.
+  `v3G` is a line number, not a repeat. (Found while fixing the yank column —
+  it was not on the list.)
+
+### Fixed
+
+- **The cursor column on a linewise jump or delete.** nvim's `'startofline'`
+  is off by default, so `G`, `gg`, `{n}G`, `H`, `M`, `L`, `dd`, `dj` and `Vd`
+  all keep the cursor's display column (clamped to the new line) rather than
+  snapping to the first non-blank.
+- **A linewise visual yank's column**: column 0, unless the cursor was already
+  the top end of the selection — `Vy` and `Vjy` go to 0, `Vky` and `Vjoy`
+  keep it. zedit had it exactly backwards.
+- **A bare `/` or `?`** now repeats the last pattern in the direction just
+  given, instead of doing nothing (which also stopped a macro replaying one).
+
 ## 0.44.5 - 2026-08-01
 
 ### Added

@@ -330,6 +330,16 @@ pub const Editor = struct {
 
     // visual
     vstart: Pos = .{ .row = 0, .col = 0 },
+    /// Set for the duration of one `visualOperator` call: a linewise yank
+    /// lands the cursor differently depending on which end it was on.
+    /// `[count]` before an insert command (`3a`, `3i`, `3A`, `3I`, `3o`, `3O`):
+    /// vim types the text that many times. The anchor is where the session
+    /// started, so the text can be read back out of the buffer on Esc.
+    ins_count: usize = 1,
+    ins_anchor: Pos = .{ .row = 0, .col = 0 },
+    ins_open_line: bool = false, // `o`/`O`: each repeat brings its own line
+    yank_from_visual: bool = false,
+    yank_cursor_was_top: bool = false,
     // `$` was pressed in blockwise visual: the block reaches each line's own
     // end rather than a fixed column, and keeps doing so as `j`/`k` grow it.
     vb_dollar: bool = false,
@@ -2662,7 +2672,12 @@ pub const Editor = struct {
 
     fn gotoLineMotion(self: *Editor, row: usize) MotionResult {
         if (self.operator == .none) self.addJump(); // jump-motion, not an operator target
-        return .{ .pos = .{ .row = @min(row, self.buf.lineCount() - 1), .col = 0 }, .kind = .linewise, .col_mode = .first_non_blank };
+        // The column is kept, not reset to the first non-blank: nvim's
+        // 'startofline' is off by default, so `G`, `gg`, `{n}G`, `H`, `M` and
+        // `L` all land in the same screen column they left (clamped to the
+        // new line). vim's default is the other way; this follows nvim,
+        // which is what the whole keymap is pinned to.
+        return .{ .pos = .{ .row = @min(row, self.buf.lineCount() - 1), .col = 0 }, .kind = .linewise, .col_mode = .keep_goal };
     }
 
     fn repeatWord(self: *Editor, which: WordKind, big: bool) MotionResult {
@@ -2750,6 +2765,14 @@ pub const Editor = struct {
         if (op == .yank) {
             if (span.lines) {
                 self.cy = @min(span.top, self.buf.lineCount() - 1);
+                // `yy`/`yj` keep the column; a *visual* linewise yank sends
+                // the cursor to column 0 unless it was already the top end of
+                // the selection (nvim, probed: `Vy` and `Vjy` give column 0,
+                // `Vky` and `Vjoy` keep it).
+                if (self.yank_from_visual and !self.yank_cursor_was_top) {
+                    self.cx = 0;
+                    self.goal_col = 0;
+                } else self.clampCursor();
             } else {
                 self.setCursor(span.start);
             }
@@ -2806,7 +2829,9 @@ pub const Editor = struct {
             const count = span.bot - span.top + 1;
             while (i < count) : (i += 1) self.buf.removeLineAt(span.top);
             const row = @min(span.top, self.buf.lineCount() - 1);
-            return .{ .row = row, .col = motion.firstNonBlank(self.buf.line(row)) };
+            // Same 'startofline' rule: the cursor keeps its screen column on
+            // whatever line moved up into its place.
+            return .{ .row = row, .col = byteAtDisplayCol(self.buf.line(row), self.goal_col) };
         }
         if (span.start.row == span.end.row) {
             self.buf.deleteInLine(span.start.row, span.start.col, span.end.col) catch {};
@@ -3153,7 +3178,64 @@ pub const Editor = struct {
         self.pushUndo();
         self.setCursor(pos);
         self.mode = .insert;
+        self.beginInsertCount(false);
         self.resetPending();
+    }
+
+    /// Remember what an insert session was entered with, so Esc can repeat the
+    /// typed text `[count]` times. Called after the cursor is in place: the
+    /// anchor is where typing starts.
+    fn beginInsertCount(self: *Editor, open_line: bool) void {
+        self.ins_count = self.eff();
+        self.ins_anchor = self.cursor();
+        self.ins_open_line = open_line;
+    }
+
+    /// The text typed during the session, read straight out of the buffer
+    /// between the anchor and the cursor. Null when the cursor moved somewhere
+    /// the anchor cannot describe (backwards, or into another line above it) —
+    /// vim splits the change on a mid-insert move anyway.
+    fn insertedText(self: *Editor) ?[]u8 {
+        const a = self.ins_anchor;
+        const c = self.cursor();
+        if (cmpPos(a, c) > 0) return null;
+        if (a.row >= self.buf.lineCount() or c.row >= self.buf.lineCount()) return null;
+        var out: std.ArrayList(u8) = .empty;
+        if (a.row == c.row) {
+            const line = self.buf.line(a.row);
+            if (a.col > line.len or c.col > line.len) return null;
+            out.appendSlice(self.gpa, line[a.col..c.col]) catch return null;
+        } else {
+            const first = self.buf.line(a.row);
+            if (a.col > first.len) return null;
+            out.appendSlice(self.gpa, first[a.col..]) catch return null;
+            var r = a.row + 1;
+            while (r < c.row) : (r += 1) {
+                out.append(self.gpa, '\n') catch return null;
+                out.appendSlice(self.gpa, self.buf.line(r)) catch return null;
+            }
+            const last = self.buf.line(c.row);
+            if (c.col > last.len) return null;
+            out.append(self.gpa, '\n') catch return null;
+            out.appendSlice(self.gpa, last[0..c.col]) catch return null;
+        }
+        return out.toOwnedSlice(self.gpa) catch null;
+    }
+
+    /// On Esc: type the session's text the remaining `[count] - 1` times, as
+    /// vim does. `o`/`O` repeat the *line*, so each copy starts a new one.
+    fn repeatInsertCount(self: *Editor) void {
+        if (self.ins_count <= 1) return;
+        const n = self.ins_count;
+        self.ins_count = 1; // never repeat a repeat
+        const text = self.insertedText() orelse return;
+        defer self.gpa.free(text);
+        if (text.len == 0 and !self.ins_open_line) return;
+        var i: usize = 1;
+        while (i < n) : (i += 1) {
+            if (self.ins_open_line) self.insertTextAt(self.cy, self.cx, "\n");
+            self.insertTextAt(self.cy, self.cx, text);
+        }
     }
 
     fn openLine(self: *Editor, below: bool) !void {
@@ -3171,6 +3253,7 @@ pub const Editor = struct {
         self.updateGoal();
         self.ai_row = if (config.settings.autoindent) at else null;
         self.mode = .insert;
+        self.beginInsertCount(true); // `o`/`O`: each repeat brings its own line
         self.resetPending();
     }
 
@@ -3327,6 +3410,7 @@ pub const Editor = struct {
         switch (k) {
             .escape => {
                 self.stripBlankAutoIndent(was_ai);
+                self.repeatInsertCount();
                 self.mode = .normal;
                 self.comp_open = false;
                 self.sig_open = false;
@@ -3601,19 +3685,36 @@ pub const Editor = struct {
             .down => .{ .char = 'j' },
             else => k,
         };
+        // A count in visual mode: `v3l`, `v2j`, `v3w` all extend by that many,
+        // exactly as the same motions do with an operator. Digits were falling
+        // through to the motion dispatch, so every count moved one.
+        if (kk == .char and (kk.char >= '1' and kk.char <= '9' or (kk.char == '0' and self.count > 0))) {
+            self.count = self.count * 10 + @as(usize, @intCast(kk.char - '0'));
+            return;
+        }
+        const n = self.eff();
+        defer {
+            // Whatever the key was, it has had its count.
+            self.count = 0;
+            self.count2 = 0;
+        }
         switch (kk) {
             .escape => self.mode = .normal,
             .char => |c| switch (c) {
-                'h' => self.cx = unicode.prevBoundary(self.curLine(), self.cx),
-                'l', ' ' => {
+                'h' => for (0..n) |_| {
+                    self.cx = unicode.prevBoundary(self.curLine(), self.cx);
+                },
+                'l', ' ' => for (0..n) |_| {
                     const line = self.curLine();
                     if (self.cx < line.len) self.cx = unicode.nextBoundary(line, self.cx);
                 },
-                'j' => if (self.cy + 1 < self.buf.lineCount()) {
+                'j' => for (0..n) |_| {
+                    if (self.cy + 1 >= self.buf.lineCount()) break;
                     self.cy += 1;
                     self.cx = byteAtDisplayCol(self.curLine(), self.goal_col);
                 },
-                'k' => if (self.cy > 0) {
+                'k' => for (0..n) |_| {
+                    if (self.cy == 0) break;
                     self.cy -= 1;
                     self.cx = byteAtDisplayCol(self.curLine(), self.goal_col);
                 },
@@ -3628,13 +3729,18 @@ pub const Editor = struct {
                     self.cx = self.columnLimit(self.curLine());
                     if (self.mode == .visual_block) self.vb_dollar = true;
                 },
-                'w' => self.setCursorKeep(motion.wordForward(self.buf, self.cursor(), false)),
-                'W' => self.setCursorKeep(motion.wordForward(self.buf, self.cursor(), true)),
-                'b' => self.setCursorKeep(motion.wordBackward(self.buf, self.cursor(), false)),
-                'e' => self.setCursorKeep(motion.wordEnd(self.buf, self.cursor(), false)),
-                'G' => self.setCursorKeep(.{ .row = self.buf.lineCount() - 1, .col = 0 }),
+                'w' => for (0..n) |_| self.setCursorKeep(motion.wordForward(self.buf, self.cursor(), false)),
+                'W' => for (0..n) |_| self.setCursorKeep(motion.wordForward(self.buf, self.cursor(), true)),
+                'b' => for (0..n) |_| self.setCursorKeep(motion.wordBackward(self.buf, self.cursor(), false)),
+                'e' => for (0..n) |_| self.setCursorKeep(motion.wordEnd(self.buf, self.cursor(), false)),
+                // `{n}G` is a line number, not a repeat.
+                'G' => self.setCursorKeep(.{
+                    .row = if (self.count > 0) @min(self.count - 1, self.buf.lineCount() - 1) else self.buf.lineCount() - 1,
+                    .col = 0,
+                }),
                 'g' => self.setCursorKeep(.{ .row = 0, .col = 0 }),
                 '%' => if (motion.matchPair(self.buf, self.cursor())) |p| self.setCursorKeep(p),
+                'p', 'P' => try self.visualPaste(),
                 'o' => {
                     const tmp = self.vstart;
                     self.vstart = self.cursor();
@@ -3770,7 +3876,99 @@ pub const Editor = struct {
             span = .{ .lines = false, .start = start, .end = end };
         }
         self.mode = .normal;
+        self.yank_from_visual = true;
+        self.yank_cursor_was_top = a.row > b.row; // the anchor is below: the cursor is the top end
         self.applyOperator(op, span);
+        self.yank_from_visual = false;
+        self.resetPending();
+    }
+
+    /// Visual `p`/`P`: replace the selection with a register, and put what was
+    /// replaced into the unnamed register (vim's rule, probed — a following
+    /// `p` pastes the text that was overwritten).
+    ///
+    /// Four combinations, all nvim-probed: the register's kind and the
+    /// selection's kind each being charwise or linewise. A linewise register
+    /// dropped into a charwise selection *splits* the line, so the text before
+    /// the selection, the register's lines and the text after it end up on
+    /// lines of their own.
+    fn visualPaste(self: *Editor) !void {
+        if (self.rejectReadOnly()) return;
+        const reg = self.registers.get(self.pending_register) orelse {
+            self.mode = .normal;
+            self.resetPending();
+            return;
+        };
+        // Copy it out first: deleting the selection overwrites the unnamed
+        // register, which is usually the one being pasted from.
+        const text = self.gpa.dupe(u8, reg.text) catch return;
+        defer self.gpa.free(text);
+        const kind = reg.kind;
+
+        const linewise_sel = self.mode == .visual_line;
+        const a = self.vstart;
+        const b = self.cursor();
+        var span: Span = undefined;
+        if (linewise_sel) {
+            span = .{ .lines = true, .top = @min(a.row, b.row), .bot = @max(a.row, b.row) };
+        } else {
+            var start = a;
+            var end = b;
+            if (cmpPos(end, start) < 0) {
+                start = b;
+                end = a;
+            }
+            end = .{ .row = end.row, .col = unicode.nextBoundary(self.buf.line(end.row), end.col) };
+            span = .{ .lines = false, .start = start, .end = end };
+        }
+        self.mode = .normal;
+        self.pushUndo();
+
+        // What is being replaced becomes the unnamed register.
+        const replaced = self.extract(span) catch null;
+        if (replaced) |r| {
+            defer self.gpa.free(r);
+            self.yankTo(r, if (span.lines) .linewise else .charwise, 0);
+        }
+
+        const at = self.deleteSpan(span);
+        const body = trimTrailingNewline(text);
+        if (linewise_sel) {
+            // The selected lines are gone; the register goes in their place,
+            // as lines either way — a charwise register becomes one line.
+            var row = span.top;
+            var it = std.mem.splitScalar(u8, body, '\n');
+            while (it.next()) |ln| {
+                self.buf.insertLineAt(row, ln) catch break;
+                row += 1;
+            }
+            self.cy = @min(span.top, self.buf.lineCount() -| 1);
+            self.cx = 0;
+            self.goal_col = 0;
+        } else if (kind == .linewise) {
+            // A charwise hole with linewise text: break the line open around
+            // it and drop the register's lines in between.
+            self.cy = at.row;
+            self.cx = at.col;
+            self.buf.splitLine(at.row, at.col) catch {};
+            var row = at.row + 1;
+            var it = std.mem.splitScalar(u8, body, '\n');
+            while (it.next()) |ln| {
+                self.buf.insertLineAt(row, ln) catch break;
+                row += 1;
+            }
+            self.cy = @min(at.row + 1, self.buf.lineCount() -| 1);
+            self.cx = 0;
+            self.goal_col = 0;
+        } else {
+            self.cy = at.row;
+            self.cx = at.col;
+            _ = self.spliceCharwise(text, at.col);
+            self.cy = at.row;
+            self.cx = at.col;
+            self.updateGoal();
+        }
+        self.clampCursor();
         self.resetPending();
     }
 
@@ -4194,7 +4392,15 @@ pub const Editor = struct {
     // === search ============================================================
 
     fn runSearch(self: *Editor, query: []const u8, forward: bool) void {
-        if (query.len == 0) return;
+        // A bare `/` or `?` repeats the last pattern in the *new* direction —
+        // vim's rule. It used to do nothing, which also made a macro replaying
+        // one stop as a failed search would.
+        if (query.len == 0) {
+            if (self.last_search.items.len == 0) return;
+            self.last_search_forward = forward;
+            if (!self.jumpSearch(forward)) self.failed = true;
+            return;
+        }
         self.last_search.clearRetainingCapacity();
         self.last_search.appendSlice(self.gpa, query) catch {};
         self.last_search_forward = forward;
@@ -5867,7 +6073,13 @@ pub const Editor = struct {
                     // Ctrl-o returns to where the search began.
                     .search_forward, .search_backward => {
                         self.addJumpAt(self.d, self.search_origin);
-                        if (!self.search_hit) self.failed = true; // E486: no match
+                        // A bare `/` or `?` repeats the last pattern, in the
+                        // direction just given (vim's rule). The incremental
+                        // preview has nothing to show for an empty pattern, so
+                        // the jump only happens here, on commit.
+                        if (self.cmd.items.len == 0) {
+                            self.runSearch("", kind == .search_forward);
+                        } else if (!self.search_hit) self.failed = true; // E486: no match
                     },
                     .rename => self.lspRename(),
                     .new_file, .new_dir => self.createEntry(kind == .new_dir),

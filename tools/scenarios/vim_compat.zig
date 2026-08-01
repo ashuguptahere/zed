@@ -507,6 +507,65 @@ fn dotAndMacros(ctx: *h.Ctx) void {
     const two_lines = "foo\nbar\n";
     // Counts: `.` alone re-uses the recorded one, and a fresh count *replaces*
     // it rather than multiplying the repeat.
+    // --- 'startofline' is off in nvim: the column survives a linewise jump
+    //     or a linewise delete, rather than snapping to the first non-blank.
+    const four = "abcdefghijkl\nsecond line here\nthird line xx\nfourth\n";
+    const MARK = "i@";
+    h.case(ctx, target, "nvim#sol1 G keeps the column", &.{ "2G", "9l", "G", MARK, ESC, ":wq", CR }, four, "abcdefghijkl\nsecond line here\nthird line xx\nfourt@h\n");
+    h.case(ctx, target, "nvim#sol2 gg keeps the column", &.{ "3G", "9l", "gg", MARK, ESC, ":wq", CR }, four, "abcdefghi@jkl\nsecond line here\nthird line xx\nfourth\n");
+    h.case(ctx, target, "nvim#sol3 {n}G keeps the column", &.{ "9l", "3G", MARK, ESC, ":wq", CR }, four, "abcdefghijkl\nsecond line here\nthird lin@e xx\nfourth\n");
+    h.case(ctx, target, "nvim#sol4 H keeps the column", &.{ "3G", "9l", "H", MARK, ESC, ":wq", CR }, four, "abcdefghi@jkl\nsecond line here\nthird line xx\nfourth\n");
+    h.case(ctx, target, "nvim#sol5 L keeps the column", &.{ "9l", "L", MARK, ESC, ":wq", CR }, four, "abcdefghijkl\nsecond line here\nthird line xx\nfourt@h\n");
+    h.case(ctx, target, "nvim#sol6 dd keeps the column", &.{ "9l", "dd", MARK, ESC, ":wq", CR }, four, "second li@ne here\nthird line xx\nfourth\n");
+    h.case(ctx, target, "nvim#sol7 dj keeps the column", &.{ "9l", "dj", MARK, ESC, ":wq", CR }, four, "third lin@e xx\nfourth\n");
+    h.case(ctx, target, "nvim#sol8 Vd keeps the column", &.{ "9l", "V", "d", MARK, ESC, ":wq", CR }, four, "second li@ne here\nthird line xx\nfourth\n");
+    h.case(ctx, target, "nvim#sol9 the column clamps to a shorter line", &.{ "9l", "V", "d", MARK, ESC, ":wq", CR }, "abcdefghijkl\nab\ncd\n", "a@b\ncd\n");
+    // A linewise visual yank goes to column 0 unless the cursor was already
+    // the top end of the selection.
+    h.case(ctx, target, "nvim#sol10 Vy goes to column 0", &.{ "9l", "V", "y", MARK, ESC, ":wq", CR }, four, "@abcdefghijkl\nsecond line here\nthird line xx\nfourth\n");
+    h.case(ctx, target, "nvim#sol11 Vky keeps the column", &.{ "2G", "9l", "V", "k", "y", MARK, ESC, ":wq", CR }, four, "abcdefghi@jkl\nsecond line here\nthird line xx\nfourth\n");
+    h.case(ctx, target, "nvim#sol12 yy keeps the column", &.{ "9l", "yy", MARK, ESC, ":wq", CR }, four, "abcdefghi@jkl\nsecond line here\nthird line xx\nfourth\n");
+
+    // --- counts inside visual mode: digits were falling through to the
+    //     motion dispatch, so every count moved one.
+    h.case(ctx, target, "nvim#vc1 v3h", &.{ "9l", "v", "3h", "d", ":wq", CR }, four, "abcdefkl\nsecond line here\nthird line xx\nfourth\n");
+    h.case(ctx, target, "nvim#vc2 v3l", &.{ "2l", "v", "3l", "d", ":wq", CR }, four, "abghijkl\nsecond line here\nthird line xx\nfourth\n");
+    h.case(ctx, target, "nvim#vc3 v2j", &.{ "v", "2j", "d", ":wq", CR }, four, "hird line xx\nfourth\n");
+    h.case(ctx, target, "nvim#vc4 v3w", &.{ "v", "3w", "d", ":wq", CR }, "aa bb cc dd ee ff\n", "d ee ff\n");
+    h.case(ctx, target, "nvim#vc5 v3G is a line number, not a repeat", &.{ "v", "3G", "d", ":wq", CR }, four, "hird line xx\nfourth\n");
+    h.case(ctx, target, "nvim#vc6 a bare 0 in visual is still a motion", &.{ "5l", "v", "0", "d", ":wq", CR }, four, "ghijkl\nsecond line here\nthird line xx\nfourth\n");
+
+    // --- [count] before an insert command types the text that many times.
+    h.case(ctx, target, "nvim#ic1 3a", &.{ "3a", "X", ESC, ":wq", CR }, "abc\n", "aXXXbc\n");
+    h.case(ctx, target, "nvim#ic2 3i", &.{ "3i", "X", ESC, ":wq", CR }, "abc\n", "XXXabc\n");
+    h.case(ctx, target, "nvim#ic3 3A", &.{ "3A", "X", ESC, ":wq", CR }, "abc\n", "abcXXX\n");
+    h.case(ctx, target, "nvim#ic4 3I", &.{ "3I", "X", ESC, ":wq", CR }, "  abc\n", "  XXXabc\n");
+    h.case(ctx, target, "nvim#ic5 3o brings its own lines", &.{ "3o", "X", ESC, ":wq", CR }, "abc\n", "abc\nX\nX\nX\n");
+    h.case(ctx, target, "nvim#ic6 3O brings its own lines", &.{ "3O", "X", ESC, ":wq", CR }, "abc\n", "X\nX\nX\nabc\n");
+    h.case(ctx, target, "nvim#ic7 the whole typed text repeats", &.{ "2a", "xy", ESC, ":wq", CR }, "abc\n", "axyxybc\n");
+    h.case(ctx, target, "nvim#ic8 a newline typed inside it repeats too", &.{ "3a", "X\rY", ESC, ":wq", CR }, "abc\n", "aX\nYX\nYX\nYbc\n");
+    h.case(ctx, target, "nvim#ic9 . repeats the counted insert whole", &.{ "3a", "X", ESC, ".", ":wq", CR }, "abc\n", "aXXXXXXbc\n");
+    h.case(ctx, target, "nvim#ic10 3s still substitutes three and inserts once", &.{ "3s", "X", ESC, ":wq", CR }, "abcdef\n", "Xdef\n");
+
+    // --- visual p/P replaces the selection, and what it replaced becomes the
+    //     unnamed register.
+    const abcd = "aaa\nbbb\nccc\nddd\n";
+    h.case(ctx, target, "nvim#vp1 charwise register into a charwise selection", &.{ "ylj", "v", "l", "p", ":wq", CR }, abcd, "aaa\nab\nccc\nddd\n");
+    h.case(ctx, target, "nvim#vp2 linewise register into a charwise selection splits the line", &.{ "yy", "j", "v", "l", "p", ":wq", CR }, abcd, "aaa\n\naaa\nb\nccc\nddd\n");
+    h.case(ctx, target, "nvim#vp3 charwise register into a linewise selection", &.{ "yl", "j", "V", "p", ":wq", CR }, abcd, "aaa\na\nccc\nddd\n");
+    h.case(ctx, target, "nvim#vp4 linewise register into a linewise selection", &.{ "yy", "j", "V", "p", ":wq", CR }, abcd, "aaa\naaa\nccc\nddd\n");
+    h.case(ctx, target, "nvim#vp5 a two-line selection", &.{ "yy", "j", "V", "j", "p", ":wq", CR }, abcd, "aaa\naaa\nddd\n");
+    h.case(ctx, target, "nvim#vp6 what was replaced becomes the unnamed register", &.{ "yy", "j", "V", "p", "j", "p", ":wq", CR }, abcd, "aaa\naaa\nccc\nbbb\nddd\n");
+    h.case(ctx, target, "nvim#vp7 visual P is visual p", &.{ "yy", "j", "V", "P", ":wq", CR }, abcd, "aaa\naaa\nccc\nddd\n");
+    h.case(ctx, target, "nvim#vp8 the cursor lands on the pasted text", &.{ "yy", "j", "V", "p", MARK, ESC, ":wq", CR }, abcd, "aaa\n@aaa\nccc\nddd\n");
+
+    // --- a bare `/` or `?` repeats the last pattern in the new direction.
+    const xs = "one X two\nthree X four\nfive X six\n";
+    h.case(ctx, target, "nvim#bs1 bare / repeats", &.{ "/X", CR, "/", CR, "x", ":wq", CR }, xs, "one X two\nthree  four\nfive X six\n");
+    h.case(ctx, target, "nvim#bs2 bare / twice walks on", &.{ "/X", CR, "/", CR, "/", CR, "x", ":wq", CR }, xs, "one X two\nthree X four\nfive  six\n");
+    h.case(ctx, target, "nvim#bs3 bare ? repeats backwards", &.{ "G", "?X", CR, "?", CR, "x", ":wq", CR }, xs, "one  two\nthree X four\nfive X six\n");
+    h.case(ctx, target, "nvim#bs4 with no pattern yet it does nothing", &.{ "/", CR, "x", ":wq", CR }, xs, "ne X two\nthree X four\nfive X six\n");
+
     // Visual mode has no `dd`: `d` deletes the selection and returns to
     // normal, so a second `d` arms a *new* operator and the next motion
     // completes it. Reported as "d then j deletes more lines"; it is what nvim

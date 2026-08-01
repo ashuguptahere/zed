@@ -93,15 +93,6 @@ there is nothing to change there.
 - [ ] Side-by-side diff: a leading deletion gap taller than the window shows
       only its tail (the pane top is a buffer row, clamped to keep the cursor
       on screen; a display-space pane top would make the whole gap reachable).
-- [ ] `[count]` before an insert command (`3a`, `3A`, `3i`, and blockwise
-      `3A`) types the text that many times in vim; zedit types it once
-      (nvim: `3a` `X` Esc on "abc" → "aXXXbc", zedit → "aXbc"). The whole
-      family shares one rule — repeat the insert session's text on Esc — so
-      it wants doing once, with its own nvim-pinned tranche.
-- [ ] `p`/`P` in visual mode (replace the selection with a register) is not
-      implemented at all — no selection kind, blockwise included (nvim:
-      `<C-v>jly` `jj0` `vl` `p` gives "11cd" / "22efgh"; zedit leaves the
-      buffer untouched). Separate from the rectangular paste, which is done.
 - [ ] Pasting a block *into* the middle of a tab resolves to the tab's own
       boundary instead of splitting the tab into spaces. Probed with
       `tabstop=4` on "11\n22\nabcd\n\tZ": `<C-v>jly` `jjl` `P` gives nvim
@@ -118,16 +109,6 @@ there is nothing to change there.
       `2` in `f2` or `r2` without parsing the command. Fixing it means
       capturing the count beside the keys at record time — its own tranche,
       with the `[count]`-before-insert family above.
-- [ ] A bare `/` or `?` (Enter on an empty pattern) clears the last search
-      where vim repeats it (nvim: `/X` then `qq` `/` Enter `x` `q` `gg0` `@q`
-      deletes the X on line 1; zedit's replay finds nothing and — since the
-      empty commit now counts as a failed search — stops before the `x`).
-      Two lines in `searchPreview`, but it wants the nvim-pinned case that
-      goes with it.
-- [ ] `G`/`gg` go to the line's first non-blank; nvim keeps the cursor's
-      column (its `'startofline'` is off by default). Probed: on
-      "foo\nbarbaz", `ll` `G` `x` gives "babaz" in nvim, "arbaz" in zedit.
-      Affects every jump that lands on a new line, so it wants its own pass.
 - [ ] Tree-sitter depth, the rest of it: `@indent.end`/`@indent.dedent`
       (a Python `return` should dedent; nvim-treesitter does) and
       `@indent.align` (align a wrapped expression to its opening paren), an
@@ -145,16 +126,19 @@ there is nothing to change there.
       Alt), edge auto-scroll while dragging (needs a repeat timer; the
       completion debounce is the only timer zedit arms), drag-to-resize
       splits.
-- [ ] A linewise visual operator leaves the cursor in the wrong column
-      (found while reviewing the mouse work, pre-dates it, reproduces without
-      the mouse): nvim keeps the column across `Vd` and moves it to 0 across
-      `Vy`; zedit does the opposite for both. Needs its own nvim-pinned
-      tranche in `vim_compat`, since `dd`/`cc`/`>` and the operator-pending
-      path share the rule.
 - [ ] More nvim ground-truth test tranches (the linewise-visual cursor column
       above; operator-pending `gj`/`gk`; sentence objects).
 
 ## Done (chronological)
+
+- [x] The vim gaps, all five, each nvim-probed and pinned (40 new cases):
+      'startofline' off so `G`/`gg`/`{n}G`/`H`/`M`/`L` and a linewise delete
+      keep the display column; a linewise visual yank's column rule; counts
+      inside visual mode (`v3l`, `v2j`, `v3w` — digits were falling through
+      to the motion dispatch and every count moved one); `[count]` before an
+      insert command; `p`/`P` in visual mode replacing the selection, with
+      the replaced text becoming the unnamed register; and a bare `/` or `?`
+      repeating the last pattern.
 
 - [x] The picker as a floating window (`ui.centered`, border + `Esc to close`,
       click-outside dismisses, centred over the text not the tree), `ui.zig`
