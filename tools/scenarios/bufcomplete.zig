@@ -320,4 +320,53 @@ pub fn run(ctx: *h.Ctx) !void {
         defer scr.deinit();
         ctx.check("the nearest word wins the candidate cap", popupHas(ctx, &scr, "zzz_nearby"));
     }
+
+    // One Esc leaves insert mode even with the popup up. This is the only
+    // check in the suite that deliberately types *slower* than the debounce:
+    // `sendKeys` uses 90 ms gaps, just under `completion_delay_ms`, so every
+    // other editing test types faster than a human and never sees a popup at
+    // all. Pausing is what a person does, and before this the second Esc was
+    // needed only when they had.
+    {
+        const edir = try h.tempDir(ctx.gpa);
+        defer ctx.gpa.free(edir);
+        defer h.removeTree(ctx.gpa, ctx.io, edir);
+        const f = h.join(ctx, edir, "esc.txt");
+        defer ctx.gpa.free(f);
+        h.writeFile(ctx.io, f, "alphabet\nbeta\n");
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "--lsp", "", "esc.txt" }, .cwd = edir, .cols = 90 });
+        defer s.finish();
+        s.drain(600);
+        s.send("oalp");
+        // Wait for the popup rather than assuming a delay: it is armed by the
+        // debounce, and the deadline is what makes this hold on a slow CI box.
+        var popped = false;
+        const until = h.nowMs() + 5000;
+        while (h.nowMs() < until and !popped) {
+            s.drain(150);
+            var scr = try h.Screen.init(ctx.gpa, 24, 90);
+            defer scr.deinit();
+            scr.apply(s.out.items);
+            var r: usize = 1;
+            while (r <= 24) : (r += 1) {
+                const t = try scr.rowText(ctx.gpa, r);
+                defer ctx.gpa.free(t);
+                // The popup row carries the candidate; the buffer line the
+                // cursor is on carries only what was typed.
+                if (std.mem.indexOf(u8, t, "alphabet") != null and r > 2) popped = true;
+            }
+        }
+        ctx.check("the completion popup opens after a typing pause", popped);
+        const m = s.mark();
+        s.send("\x1b"); // one Esc
+        s.drain(400);
+        ctx.check("one Esc leaves insert mode with the popup up",
+            s.containsPlainSince(ctx.gpa, m, "NORMAL"));
+        // And it really is normal mode: `x` edits rather than typing.
+        s.send("x:wq\r");
+        s.drain(600);
+        const got = h.readFile(ctx.gpa, ctx.io, f);
+        defer ctx.gpa.free(got);
+        ctx.check("the next key acts in normal mode", std.mem.eql(u8, got, "alphabet\nal\nbeta\n"));
+    }
 }

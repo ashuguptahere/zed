@@ -3397,8 +3397,17 @@ pub const Editor = struct {
                 return false;
             },
             .escape => {
+                // Dismiss the popup *and* let Esc through to leave insert
+                // mode. A deliberate divergence from vim and nvim, where Esc
+                // with a popup up only closes the popup: there, the popup is
+                // something you asked for with Ctrl-n, so eating the key is
+                // fair. Here it appears on its own after a typing pause, so
+                // "press Esc, be in normal mode" would hold or not depending
+                // on how long you paused — which is not a rule anyone can
+                // keep in their head. The snippet session above already
+                // falls through for the same reason.
                 self.comp_open = false;
-                return true; // dismiss only; stay in insert mode
+                return false;
             },
             .char, .backspace, .delete => return false, // edit, then re-filter
             else => {

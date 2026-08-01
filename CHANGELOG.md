@@ -2,6 +2,20 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.46.0 - 2026-08-01
+
+### Changed
+
+- **One `Esc` always leaves insert mode**, even with the completion popup up.
+  It used to close the popup and stay, which is vim's and nvim's rule — but
+  there the popup is something you asked for with `Ctrl-n`, so eating the key
+  is fair. Here it opens by itself after a typing pause, so whether one `Esc`
+  was enough depended on how long you had paused: under `completion_delay_ms`
+  it worked, over it you needed two. The suite could not see this at all —
+  `sendKeys` types at 90 ms, just under the debounce, so every editing test
+  types faster than a human and never raises a popup. The new case in
+  `bufcomplete` deliberately types slower and waits for the popup first.
+
 ## 0.45.1 - 2026-08-01
 
 ### Added

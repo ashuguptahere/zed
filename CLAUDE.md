@@ -1049,7 +1049,14 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   it is armed *only* while typing, so an idle editor still blocks in `poll(2)`
   at zero CPU; `auto_completion = false` restores manual-only behaviour.
   `Ctrl-n` requests it on demand either way (popup: `Ctrl-n`/`Ctrl-p` or
-  arrows to move, **`Tab`** to accept, `Esc` to dismiss). `Enter` is a
+  arrows to move, **`Tab`** to accept, `Esc` to dismiss — and `Esc` **also
+  leaves insert mode**, a deliberate divergence from vim and nvim, where it
+  only closes the popup. There the popup is something you asked for with
+  `Ctrl-n`, so eating the key is fair; here it appears by itself after a
+  typing pause, which made "press Esc, be in normal mode" true or false
+  depending on how long you had paused. The suite could not see it either:
+  `sendKeys` types at 90 ms, just under `completion_delay_ms`, so every other
+  editing test types faster than a human and never raises a popup at all). `Enter` is a
   newline, never an accept — typing a word that happens to raise the popup and
   pressing Enter for a new line must not silently insert whatever was
   highlighted (VS Code's `acceptSuggestionOnEnter: off`, and helix's rule). **With no

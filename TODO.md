@@ -131,6 +131,11 @@ there is nothing to change there.
 
 ## Done (chronological)
 
+- [x] One Esc always leaves insert mode, popup or no popup. The old rule was
+      vim's, but zedit's popup is automatic rather than asked for, so whether
+      one Esc sufficed depended on how long the typist had paused. The suite
+      types under the debounce and could never have caught it.
+
 - [x] `[count]` before a blockwise `A`/`I`, the last of the vim gaps: every
       caret types the text that many times. The repeat has to happen before
       the multi-caret Esc collapses them, which is the only moment they are
