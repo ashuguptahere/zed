@@ -5546,8 +5546,11 @@ pub const Editor = struct {
             try self.emitSpaces(lay.body_w - cut.cells);
         }
 
-        const promptw = klabel.len + 1;
-        try self.emitFmt("\x1b[{d};{d}H", .{ top, body_x + promptw + unicode.displayWidth(self.picker_query.items) });
+        // The width the prompt *actually* took, not a second guess at it: in a
+        // floating box the prompt is a two-cell caret, not the picker's name,
+        // and recomputing it here put the caret six columns from the text it
+        // was supposed to be sitting after.
+        try self.emitFmt("\x1b[{d};{d}H", .{ top, body_x + label_w + unicode.displayWidth(self.picker_query.items) });
         try self.emit(ansi.show_cursor);
     }
 

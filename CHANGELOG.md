@@ -2,6 +2,17 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.44.4 - 2026-08-01
+
+### Fixed
+
+- **The picker's caret sat six columns past the text being typed.** The
+  cursor-placement line recomputed the prompt's width as "the picker's name
+  plus a space" instead of taking the width the renderer had actually drawn —
+  which inside a floating box is a two-cell caret. Two pieces of code deriving
+  the same number separately, which is the bug the shared layout exists to
+  prevent; it now uses the renderer's own value.
+
 ## 0.44.3 - 2026-08-01
 
 ### Fixed

@@ -942,6 +942,24 @@ fn cellFilled(ctx: *h.Ctx, s: *h.Session, row: usize, col: usize) bool {
     return cp != ' ' and cp != 0;
 }
 
+/// Where the terminal was left told to put its caret: the cursor-position
+/// escape immediately before the last "show cursor". Parsed from the raw
+/// stream because that *is* the thing under test — a Screen model would
+/// replay it and agree with itself.
+fn cursorAt(s: *h.Session) ?Cell {
+    const out = s.out.items;
+    const show = "\x1b[?25h";
+    const at = std.mem.lastIndexOf(u8, out, show) orelse return null;
+    const head = out[0..at];
+    const esc = std.mem.lastIndexOf(u8, head, "\x1b[") orelse return null;
+    const body = head[esc + 2 ..];
+    if (body.len == 0 or body[body.len - 1] != 'H') return null;
+    var it = std.mem.splitScalar(u8, body[0 .. body.len - 1], ';');
+    const row = std.fmt.parseInt(usize, it.next() orelse return null, 10) catch return null;
+    const col = std.fmt.parseInt(usize, it.next() orelse return null, 10) catch return null;
+    return .{ .row = row, .col = col };
+}
+
 /// An SGR press+release at a cell.
 fn clickAt(s: *h.Session, ctx: *h.Ctx, c: Cell) void {
     var buf: [64]u8 = undefined;
@@ -1070,6 +1088,41 @@ fn pickerClicks(ctx: *h.Ctx) !void {
             defer ctx.gpa.free(status);
             ctx.check("the statusline survives a picker with a long preview",
                 std.mem.indexOf(u8, status, "overflow_") == null);
+        }
+        s.send("\x1b:qa!\r");
+        s.drain(300);
+    }
+
+    // The caret sits after the text you typed. The prompt's width was being
+    // recomputed at the cursor-placement line instead of taken from what the
+    // renderer actually drew, so in a floating box — where the prompt is a
+    // two-cell caret rather than the picker's name — it sat six columns past
+    // the query.
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "alpha.txt" }, .cwd = dir, .cols = 110 });
+        defer s.finish();
+        s.drain(600);
+        s.send(" ff");
+        s.drain(800);
+        var box: ?h.Rect = null;
+        {
+            const until = h.nowMs() + 6000;
+            while (h.nowMs() < until and box == null) {
+                box = boxRect(ctx, &s);
+                if (box == null) s.drain(150);
+            }
+        }
+        if (box) |bx| {
+            // The query starts at the inside of the box plus the two-cell
+            // caret, so after N characters the cursor is N cells further on.
+            const query_x = bx.x + 1 + 2;
+            for ([_][]const u8{ "a", "b", "c" }, 1..) |ch, n| {
+                s.send(ch);
+                s.drain(400);
+                const cur = cursorAt(&s);
+                ctx.check("the picker caret sits just after the typed query",
+                    cur != null and cur.?.col == query_x + n);
+            }
         }
         s.send("\x1b:qa!\r");
         s.drain(300);
