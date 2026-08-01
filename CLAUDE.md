@@ -832,7 +832,16 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   scrolling region's (those are a full-screen program redrawing in place, and
   keeping them would fill the history with noise). Any new output snaps the
   view back to live, and a width change drops the history rather than
-  reinterpreting rows of the old width. Absent by design: the
+  reinterpreting rows of the old width. **Queries are answered.** A shell asks what terminal it is talking to, and
+  one that never replies is not a slow terminal but a broken one: fish sends
+  XTGETTCAP as a device-control string (`ESC P +q<hex> ST`) and a Primary
+  Device Attributes report (`ESC [ c`), and with neither handled the DCS
+  payload printed on screen as `+q696e646e` while fish waited ten seconds for
+  the DA answer and then disabled features. DCS is now consumed (and XTGETTCAP
+  answered "no such capability", which is faster than a timeout), and
+  `ESC[c`/`ESC[>c`/`ESC[5n`/`ESC[6n` get proper replies. `vt.zig` stays free
+  of I/O: it accumulates the answer in `reply`, and the editor writes it to
+  the pty after each feed. Absent by design: the
   alternate screen (a full-screen program draws over the shell's output
   instead of restoring it), and any mouse or bracketed-paste mode of its own.
 - **Folds (`zf`, `zo`/`zc`/`za`, `zR`/`zM`, `zd`/`zE`):** `zf{motion}`

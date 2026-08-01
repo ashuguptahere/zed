@@ -8281,6 +8281,15 @@ pub const Editor = struct {
             const chunk = sh.child.read(&buf);
             if (chunk.len == 0) break;
             sh.screen.feed(chunk);
+            // Queries the child sent get their answers written straight back:
+            // a shell that asks what terminal this is and hears nothing waits
+            // out its timeout (fish gives it ten seconds) and then turns
+            // features off.
+            const reply = sh.screen.takeReply();
+            if (reply.len > 0) {
+                sh.child.write(reply);
+                sh.screen.clearReply();
+            }
             any = true;
             if (chunk.len < buf.len) break;
         }

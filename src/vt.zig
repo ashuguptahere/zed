@@ -71,7 +71,7 @@ fn xterm256(n: u8) Color {
 
 const max_params = 16;
 
-const State = enum { ground, esc, csi, osc, osc_esc, charset };
+const State = enum { ground, esc, csi, osc, osc_esc, dcs, dcs_esc, charset };
 
 /// Rows kept after they scroll off the top. A terminal is for reading recent
 /// output, not archiving it, so the history is capped and the oldest rows are
@@ -81,6 +81,13 @@ pub const max_scrollback = 5000;
 pub const Screen = struct {
     gpa: std.mem.Allocator,
     cells: []Cell,
+    /// Bytes the child is waiting to read back: answers to the queries it
+    /// sent. A terminal that never replies is not a slow terminal, it is a
+    /// broken one — fish waits ten seconds for a Device Attributes report and
+    /// then disables features, which is what "the terminal is unusable" was.
+    /// The editor drains this into the pty after every feed; keeping it here
+    /// rather than writing directly leaves this module free of I/O.
+    reply: std.ArrayList(u8) = .empty,
     /// Scrolled-off rows, oldest first, `cols` cells each.
     history: std.ArrayList(Cell) = .empty,
     hist_rows: usize = 0,
@@ -107,6 +114,10 @@ pub const Screen = struct {
     nparams: usize = 0,
     param_digits: bool = false, // a digit seen since the last ';'
     priv: u8 = 0, // the '?' / '>' of a private CSI
+    /// The DCS payload, capped: a request longer than this is not one we
+    /// answer, and a hostile stream must not grow the buffer without bound.
+    dcs: [64]u8 = undefined,
+    dcs_len: usize = 0,
     utf8: [4]u8 = undefined,
     utf8_len: usize = 0,
     need: usize = 0, // bytes the pending UTF-8 sequence still wants
@@ -122,6 +133,16 @@ pub const Screen = struct {
     pub fn deinit(self: *Screen) void {
         self.gpa.free(self.cells);
         self.history.deinit(self.gpa);
+        self.reply.deinit(self.gpa);
+    }
+
+    /// Hand over whatever the child should read back, clearing the buffer.
+    pub fn takeReply(self: *Screen) []const u8 {
+        return self.reply.items;
+    }
+
+    pub fn clearReply(self: *Screen) void {
+        self.reply.clearRetainingCapacity();
     }
 
     /// A cell as the *viewer* sees it, which is the grid when live and the
@@ -219,6 +240,19 @@ pub const Screen = struct {
                 if (b == 0x1b) self.state = .osc_esc;
             },
             .osc_esc => self.state = if (b == '\\') .ground else .osc,
+            // A device-control string: `ESC P … ST`. The payload is a request
+            // in a private encoding (fish sends XTGETTCAP as `+q<hex>`), and
+            // it must be *consumed* — letting it fall through printed
+            // `+q696e646e` across the screen, which is what the garbage was.
+            .dcs => {
+                if (b == 0x07) self.answerDcs();
+                if (b == 0x1b) self.state = .dcs_esc else if (b != 0x07) self.dcsPush(b);
+            },
+            .dcs_esc => {
+                if (b == '\\') {
+                    self.answerDcs();
+                } else self.state = .dcs;
+            },
             .charset => self.state = .ground, // ESC ( B and friends: one byte, dropped
         }
     }
@@ -350,6 +384,10 @@ pub const Screen = struct {
         switch (b) {
             '[' => self.state = .csi,
             ']' => self.state = .osc,
+            'P' => {
+                self.state = .dcs;
+                self.dcs_len = 0;
+            },
             '(', ')', '*', '+' => self.state = .charset,
             '7' => {
                 self.saved = .{ .cx = self.cx, .cy = self.cy, .attr = self.attr };
@@ -417,6 +455,24 @@ pub const Screen = struct {
     /// A CSI parameter, where absent *or zero* means the default — the rule
     /// for the cursor-motion and scroll finals. `param0` is for the ones
     /// where zero is a value of its own (SGR, ED, EL).
+    fn dcsPush(self: *Screen, b: u8) void {
+        if (self.dcs_len < self.dcs.len) {
+            self.dcs[self.dcs_len] = b;
+            self.dcs_len += 1;
+        }
+    }
+
+    /// Answer a device-control string. Only XTGETTCAP (`+q…`) is understood,
+    /// and the answer is "I do not have that capability" — `DCS 0 + r ST`.
+    /// Saying so immediately is the point: a querier that gets no reply at all
+    /// waits out its timeout before giving up.
+    fn answerDcs(self: *Screen) void {
+        if (self.dcs_len >= 2 and self.dcs[0] == '+' and self.dcs[1] == 'q')
+            self.reply.appendSlice(self.gpa, "\x1bP0+r\x1b\\") catch {};
+        self.dcs_len = 0;
+        self.state = .ground;
+    }
+
     fn param(self: *const Screen, i: usize, default: u32) u32 {
         if (i >= self.nparams) return default;
         const v = self.params[i];
@@ -486,6 +542,26 @@ pub const Screen = struct {
                 }
                 self.cx = 0;
                 self.cy = self.top;
+            },
+            'c' => {
+                // Device Attributes. `ESC[?1;2c` is what xterm answers for a
+                // VT100 with an advanced video option — and `TERM=xterm` is
+                // what the child was told it is talking to.
+                if (self.priv == 0 or self.priv == '?') {
+                    self.reply.appendSlice(self.gpa, "\x1b[?1;2c") catch {};
+                } else if (self.priv == '>') {
+                    // Secondary DA: terminal id 0, version 10, no cartridge.
+                    self.reply.appendSlice(self.gpa, "\x1b[>0;10;0c") catch {};
+                }
+            },
+            'n' => switch (self.param0(0)) {
+                5 => self.reply.appendSlice(self.gpa, "\x1b[0n") catch {}, // "terminal OK"
+                6 => { // cursor position report, 1-based
+                    var buf: [32]u8 = undefined;
+                    const s = std.fmt.bufPrint(&buf, "\x1b[{d};{d}R", .{ self.cy + 1, self.cx + 1 }) catch return;
+                    self.reply.appendSlice(self.gpa, s) catch {};
+                },
+                else => {},
             },
             's' => self.saved = .{ .cx = self.cx, .cy = self.cy, .attr = self.attr },
             'u' => {
@@ -961,6 +1037,72 @@ test "viewAt is the grid when live" {
     s.feed("hi");
     try testing.expectEqual(s.at(0, 0).cp, s.viewAt(0, 0).cp);
     try testing.expectEqual(s.at(0, 1).cp, s.viewAt(0, 1).cp);
+}
+
+test "a device-control string is consumed, not printed" {
+    var s = try Screen.init(testing.allocator, 2, 40);
+    defer s.deinit();
+    // fish's XTGETTCAP: DCS +q <hex> ST. Its payload used to land on screen.
+    s.feed("A\x1bP+q696e646e\x1b\\B");
+    try expectRow(&s, 0, "AB");
+}
+
+test "XTGETTCAP is answered rather than left to time out" {
+    var s = try Screen.init(testing.allocator, 2, 40);
+    defer s.deinit();
+    s.feed("\x1bP+q71756572792d6f732d6e616d65\x1b\\");
+    try testing.expectEqualStrings("\x1bP0+r\x1b\\", s.takeReply());
+}
+
+test "a DCS terminated by BEL is consumed too" {
+    var s = try Screen.init(testing.allocator, 2, 40);
+    defer s.deinit();
+    s.feed("x\x1bP+q6162\x07y");
+    try expectRow(&s, 0, "xy");
+}
+
+test "primary device attributes are answered" {
+    var s = try Screen.init(testing.allocator, 2, 20);
+    defer s.deinit();
+    s.feed("\x1b[c");
+    try testing.expectEqualStrings("\x1b[?1;2c", s.takeReply());
+    s.clearReply();
+    s.feed("\x1b[0c"); // the same question, spelled with an explicit 0
+    try testing.expectEqualStrings("\x1b[?1;2c", s.takeReply());
+}
+
+test "secondary device attributes are answered separately" {
+    var s = try Screen.init(testing.allocator, 2, 20);
+    defer s.deinit();
+    s.feed("\x1b[>c");
+    try testing.expectEqualStrings("\x1b[>0;10;0c", s.takeReply());
+}
+
+test "a cursor position report says where the cursor is" {
+    var s = try Screen.init(testing.allocator, 5, 20);
+    defer s.deinit();
+    s.feed("\r\nabc"); // row 2, after three characters
+    s.feed("\x1b[6n");
+    try testing.expectEqualStrings("\x1b[2;4R", s.takeReply()); // 1-based
+}
+
+test "a status report answers OK" {
+    var s = try Screen.init(testing.allocator, 2, 20);
+    defer s.deinit();
+    s.feed("\x1b[5n");
+    try testing.expectEqualStrings("\x1b[0n", s.takeReply());
+}
+
+test "an oversized DCS payload cannot grow the buffer" {
+    var s = try Screen.init(testing.allocator, 2, 20);
+    defer s.deinit();
+    var big: std.ArrayList(u8) = .empty;
+    defer big.deinit(testing.allocator);
+    try big.appendSlice(testing.allocator, "\x1bP+q");
+    for (0..5000) |_| try big.append(testing.allocator, 'a');
+    try big.appendSlice(testing.allocator, "\x1b\\ok");
+    s.feed(big.items);
+    try expectRow(&s, 0, "ok"); // nothing of the payload reached the screen
 }
 
 test "an erase after setting a background paints that background" {

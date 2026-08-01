@@ -2,6 +2,27 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.41.0 - 2026-08-01
+
+### Fixed
+
+- **The terminal answers the questions a shell asks it.** This is the
+  "hashes and unusable" report, and it was two separate holes in `vt.zig`:
+
+  - **Device-control strings were never handled.** fish queries terminfo
+    capabilities with XTGETTCAP — `ESC P +q<hex> ST` — and with no DCS state
+    the payload fell through to ground and was *printed*, which is where
+    `+q696e646e` and `+q71756572792d6f732d6e616d65` came from. DCS is now
+    consumed, and XTGETTCAP is answered `DCS 0 + r ST` ("no such capability"),
+    which is immediate where silence costs a timeout.
+  - **Device Attributes went unanswered.** fish waits ten seconds for a reply
+    to `ESC [ c` before giving up and disabling features — the terminal
+    looking frozen. `ESC[c` and `ESC[>c` now answer as xterm does, and
+    `ESC[5n`/`ESC[6n` report status and cursor position.
+
+  `vt.zig` stays free of I/O: replies accumulate in a buffer the editor drains
+  into the pty after each read.
+
 ## 0.40.2 - 2026-07-31
 
 ### Fixed

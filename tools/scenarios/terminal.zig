@@ -197,6 +197,43 @@ pub fn run(ctx: *h.Ctx) !void {
         s.drain(400);
     }
 
+    // --- terminal queries are answered, not printed -------------------------
+    // fish asks the terminal what it is: XTGETTCAP as a device-control string
+    // (`ESC P +q<hex> ST`) and a Primary Device Attributes report (`ESC [ c`).
+    // Neither was handled — the DCS payload landed on screen as `+q696e646e`
+    // and the DA query got no answer, so fish waited ten seconds and then
+    // turned features off. The bytes come from a file so the shell's own echo
+    // of the command cannot be mistaken for them.
+    {
+        const seq = h.join(ctx, dir, "seq");
+        defer ctx.gpa.free(seq);
+        h.writeFile(ctx.io, seq, "\x1bP+q696e646e\x1b\\\x1b[cREADY\n");
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ "env", shell_env, ps1_env, ctx.zedit, "f.txt" },
+            .cwd = dir,
+            .term = "xterm-256color",
+        });
+        defer s.finish();
+        s.drain(700);
+        s.send(" t");
+        s.drain(1200);
+        s.send("cat seq" ++ CR);
+        s.drain(1500);
+        const m = s.mark();
+        s.send("echo MARKER" ++ CR);
+        s.drain(1500);
+        const seen = try s.plainSince(ctx.gpa, m -| 3000);
+        defer ctx.gpa.free(seen);
+        ctx.check("a device-control payload never reaches the screen",
+            std.mem.indexOf(u8, seen, "696e646e") == null);
+        ctx.check("the shell is still responsive after querying",
+            s.containsPlainSince(ctx.gpa, m, "MARKER"));
+        s.send(CTRL_BACKSLASH ++ CTRL_N);
+        s.drain(300);
+        s.send(":qa!" ++ CR);
+        s.drain(400);
+    }
+
     // --- the terminal tab's close box actually closes it --------------------
     {
         var s = try h.Session.spawn(ctx.gpa, .{
