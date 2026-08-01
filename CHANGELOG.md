@@ -2,6 +2,18 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.42.1 - 2026-08-01
+
+### Changed
+
+- CI and release workflows move off actions pinned to the deprecated Node 20
+  runtime, which GitHub is currently forcing onto Node 24 and will eventually
+  stop shimming: `actions/checkout` v4 → v7, `actions/upload-artifact` v4 →
+  v7, `actions/download-artifact` v4 → v8, `softprops/action-gh-release` v2 →
+  v3. `mlugg/setup-zig` stays at v2, which is its newest major and still
+  targets Node 20 — nothing to move to yet, so that one deprecation warning
+  remains.
+
 ## 0.42.0 - 2026-08-01
 
 ### Added

@@ -22,7 +22,7 @@ jobs:
           - x86_64-macos
           - aarch64-macos
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
@@ -32,7 +32,7 @@ jobs:
         run: |
           tar -C zig-out -czf zedit-${{ github.ref_name }}-${{ matrix.target }}.tar.gz \
             bin/zedit share/man/man1/zedit.1
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: zedit-${{ matrix.target }}
           path: zedit-*.tar.gz
@@ -41,10 +41,10 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: zedit-*.tar.gz
           generate_release_notes: true
