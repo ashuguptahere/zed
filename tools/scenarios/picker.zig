@@ -154,13 +154,33 @@ pub fn run(ctx: *h.Ctx) !void {
         });
         defer s.finish();
         s.drain(900);
+        // The grammar is compiled and the preview parsed *after* the picker's
+        // first frame, so wait for the highlighting rather than for a fixed
+        // number of milliseconds — that budget is a guess about how fast the
+        // machine is, and CI is slower than a workstation.
+        {
+            const until = h.nowMs() + 8000;
+            while (h.nowMs() < until and
+                !(s.contains(KEYWORD) and s.containsPlain(ctx.gpa, "const std"))) s.drain(200);
+        }
         ctx.check("preview is tree-sitter highlighted", s.contains(KEYWORD) and
             s.containsPlain(ctx.gpa, "const std"));
 
+        // Page to the end. How many presses that takes depends on how tall the
+        // preview is, which the floating box changed — so press until the last
+        // line shows or the deadline says it never will, rather than assuming
+        // a count.
         var m = s.mark();
-        s.send("\x04\x04\x04\x04\x04"); // Ctrl-d pages the preview to the end
-        s.drain(700);
-        ctx.check("Ctrl-d scrolls the preview", s.containsPlainSince(ctx.gpa, m, "DEEP_MARKER"));
+        var reached = false;
+        {
+            const until = h.nowMs() + 8000;
+            while (h.nowMs() < until and !reached) {
+                s.send("\x04"); // Ctrl-d
+                s.drain(250);
+                reached = s.containsPlainSince(ctx.gpa, m, "DEEP_MARKER");
+            }
+        }
+        ctx.check("Ctrl-d scrolls the preview", reached);
 
         m = s.mark();
         s.send("\x15\x15\x15\x15\x15\x15"); // Ctrl-u back to the top

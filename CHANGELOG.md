@@ -6,6 +6,10 @@ Notable changes to zedit. Dates are commit dates.
 
 ### Fixed
 
+- Two preview tests assumed a fixed number of `Ctrl-d` presses reached the end
+  of the file and a fixed wait was enough for tree-sitter to warm. The
+  floating box made the preview shorter, so the count no longer reached; both
+  now press (and wait) until the outcome arrives or a deadline passes.
 - The floating-picker click tests keyed on a *filename* being the selected
   result. Results arrive in project-walk order, which is the filesystem's and
   so differs between machines — the row that is selected on a workstation is
