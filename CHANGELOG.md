@@ -2,6 +2,20 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.44.3 - 2026-08-01
+
+### Fixed
+
+- **The picker's preview painted straight through the bottom of its own box**,
+  over the border and the statusline, whenever the previewed file was longer
+  than the box was tall. The preview is told how many rows it has and it was
+  still being handed the *screen* height, which was right when the picker
+  filled the screen and wrong the moment it started floating. It now stops at
+  the box's own bottom edge. The test that was supposed to cover this only
+  looked for the corner glyph — which was still there, with the edge between
+  the corners overwritten — so it now checks that nothing the picker draws
+  lands on or below that edge.
+
 ## 0.44.2 - 2026-08-01
 
 ### Fixed

@@ -5526,7 +5526,11 @@ pub const Editor = struct {
 
         // The status row (`pickerLayout` already kept it out of the list) is
         // the bottom one, so the preview stops a row short of it.
-        if (wants_preview) try self.renderPreview(prev_x, prev_w, top, rows -| @as(usize, @intFromBool(lay.status)));
+        // The preview's last row. Inside a floating box that is the box's own
+        // bottom edge, not the screen's — passing the screen height painted
+        // the preview straight through the border and over the statusline.
+        const prev_bot = if (lay.box != null) top + visible else rows -| @as(usize, @intFromBool(lay.status));
+        if (wants_preview) try self.renderPreview(prev_x, prev_w, top, prev_bot);
 
         // A status message set while the picker is up — the `zedit <dir>`
         // scope hint, a remote listing's file count — paints that row dim:

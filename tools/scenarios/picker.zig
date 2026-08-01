@@ -1004,6 +1004,77 @@ fn pickerClicks(ctx: *h.Ctx) !void {
         s.drain(200);
     }
 
+    // Nothing the picker draws may leave its box. The preview is the one that
+    // can: it is told how many rows it has, and handing it the *screen*
+    // height painted it straight through the bottom border and over the
+    // statusline. A file longer than the box is what shows that.
+    {
+        const dir2 = try h.tempDir(ctx.gpa);
+        defer ctx.gpa.free(dir2);
+        defer h.removeTree(ctx.gpa, ctx.io, dir2);
+        const long = try std.fmt.allocPrint(ctx.gpa, "{s}/big.zig", .{dir2});
+        defer ctx.gpa.free(long);
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(ctx.gpa);
+        var n: usize = 0;
+        while (n < 90) : (n += 1) {
+            var lb: [48]u8 = undefined;
+            try body.appendSlice(ctx.gpa, std.fmt.bufPrint(&lb, "pub fn overflow_{d}() void {{}}\n", .{n}) catch break);
+        }
+        h.writeFile(ctx.io, long, body.items);
+
+        // Edit a *different*, short file: the editor renders behind the box, so
+        // previewing the file you are already looking at would put "overflow_"
+        // on screen legitimately and the leak check would prove nothing.
+        const small = try std.fmt.allocPrint(ctx.gpa, "{s}/small.txt", .{dir2});
+        defer ctx.gpa.free(small);
+        h.writeFile(ctx.io, small, "just one line\n");
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "small.txt" }, .cwd = dir2, .cols = 110, .term = "xterm-256color" });
+        defer s.finish();
+        s.drain(700);
+        s.send(" ff");
+        s.drain(600);
+        s.send("big"); // select big.zig whatever order the walk returned
+        s.drain(900);
+        var box: ?h.Rect = null;
+        {
+            const until = h.nowMs() + 6000;
+            while (h.nowMs() < until and box == null) {
+                box = boxRect(ctx, &s);
+                if (box == null) s.drain(150);
+            }
+        }
+        ctx.check("the picker box is drawn", box != null);
+        if (box) |bx| {
+            var scr = try h.Screen.init(ctx.gpa, 24, 110);
+            defer scr.deinit();
+            scr.apply(s.out.items);
+            // Every cell of the bottom edge is border or hint — never a line
+            // of the previewed file.
+            const edge = try scr.rowText(ctx.gpa, bx.y + bx.h - 1);
+            defer ctx.gpa.free(edge);
+            ctx.check("the preview does not paint through the bottom border",
+                std.mem.indexOf(u8, edge, "overflow_") == null and
+                    std.mem.indexOf(u8, edge, "Esc to close") != null);
+            // And nothing of it is below the box at all.
+            var leaked = false;
+            var r: usize = bx.y + bx.h;
+            while (r <= 24) : (r += 1) {
+                const t = try scr.rowText(ctx.gpa, r);
+                defer ctx.gpa.free(t);
+                if (std.mem.indexOf(u8, t, "overflow_") != null) leaked = true;
+            }
+            ctx.check("nothing the picker draws lands below its box", !leaked);
+            // The editor's statusline is still the editor's.
+            const status = try scr.rowText(ctx.gpa, 24);
+            defer ctx.gpa.free(status);
+            ctx.check("the statusline survives a picker with a long preview",
+                std.mem.indexOf(u8, status, "overflow_") == null);
+        }
+        s.send("\x1b:qa!\r");
+        s.drain(300);
+    }
+
     // Explorer + result-row clicks, and the inert areas, in one session.
     {
         var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "." }, .cwd = dir, .cols = 110 });
