@@ -358,12 +358,17 @@ fn bufferClose(ctx: *h.Ctx) !void {
         var m = s.mark();
         s.send(" ");
         s.drain(300);
-        ctx.check("Space lists the new group", s.containsPlainSince(ctx.gpa, m, "new "));
+        // The label says "file/folder", not just "new": a user hunting for how to
+        // create a file scans for the word "file" and must find it here.
+        ctx.check("Space lists the new group by what it makes",
+            s.containsPlainSince(ctx.gpa, m, "New file/folder"));
         m = s.mark();
         s.send("n");
         s.drain(400);
-        ctx.check("Space n lists buffer/file/folder", s.containsPlainSince(ctx.gpa, m, "new buffer") and
-            s.containsPlainSince(ctx.gpa, m, "new file") and s.containsPlainSince(ctx.gpa, m, "new folder"));
+        ctx.check("Space n lists file/folder/buffer, and says a path is allowed",
+            s.containsPlainSince(ctx.gpa, m, "New empty buffer") and
+            s.containsPlainSince(ctx.gpa, m, "New file (a/b/c.zig ok)") and
+            s.containsPlainSince(ctx.gpa, m, "New folder (a/b/c ok)"));
         s.send("b");
         s.drain(400);
         m = s.mark();
@@ -551,6 +556,112 @@ fn bufferClose(ctx: *h.Ctx) !void {
         ctx.check("a split reuses the saved proportions", restored == 7);
         s.send(":q!\r:q!\r");
         s.drain(400);
+    }
+
+    // 8. Ctrl-h/j/k/l move focus directionally (AstroNvim's window keys), and
+    //    the explorer is one of the places they reach. They are 0x08 and 0x0a
+    //    on the wire, so the check that matters most is the one below: that
+    //    Backspace and Enter still mean Backspace and Enter.
+    {
+        h.writeFile(ctx.io, one, "aaa\nbbb\nccc\nddd\n");
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ ctx.zedit, "--lsp", "", "one.txt" },
+            .cwd = dir,
+            .term = "xterm-256color",
+        });
+        defer s.finish();
+        s.drain(600);
+        s.send(":split\r");
+        s.drain(500);
+        // Two stacked windows, focus on the lower one. Ctrl-k goes up, and the
+        // proof is which window's cursor a following `j` moves.
+        s.send("\x0b"); // Ctrl-k
+        s.drain(300);
+        s.send("jj"); // move the upper window's cursor to line 3
+        s.drain(300);
+        s.send("\x0a"); // Ctrl-j, back down
+        s.drain(300);
+        s.send("x"); // delete a char at the lower window's cursor (still line 1)
+        s.drain(300);
+        s.send(":w\r");
+        s.drain(500);
+        const got = h.readFile(ctx.gpa, ctx.io, one);
+        defer ctx.gpa.free(got);
+        ctx.check("Ctrl-k and Ctrl-j move focus between stacked windows",
+            std.mem.eql(u8, got, "aa\nbbb\nccc\nddd\n"));
+
+        // Into the tree and back out. While the tree has focus a `j` walks it,
+        // so the buffer's cursor must not move.
+        s.send(" e\x1b"); // open the tree, unfocus it
+        s.drain(600);
+        s.send("\x08j"); // Ctrl-h into the tree, then j
+        s.drain(400);
+        s.send("\x0c"); // Ctrl-l back out
+        s.drain(300);
+        s.send("x:w\r"); // deletes at the *buffer* cursor, still line 1
+        s.drain(500);
+        const got2 = h.readFile(ctx.gpa, ctx.io, one);
+        defer ctx.gpa.free(got2);
+        ctx.check("Ctrl-h focuses the explorer and Ctrl-l comes back",
+            std.mem.eql(u8, got2, "a\nbbb\nccc\nddd\n"));
+        s.send(":q!\r:q!\r");
+        s.drain(400);
+    }
+
+    // 9. The regression guard for the above: Ctrl-h and Ctrl-j are only window
+    //    keys in normal mode. In insert mode they are the control codes they
+    //    have always been, so Backspace and Enter are untouched.
+    {
+        h.writeFile(ctx.io, one, "");
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ ctx.zedit, "--lsp", "", "one.txt" },
+            .cwd = dir,
+            .term = "xterm-256color",
+        });
+        defer s.finish();
+        s.drain(600);
+        s.send("iab\x08c"); // insert "ab", Ctrl-h (backspace), then "c"
+        s.drain(300);
+        s.send("\x0ad"); // Ctrl-j (newline), then "d"
+        s.drain(300);
+        s.send("\x7f"); // Backspace proper
+        s.drain(300);
+        s.send("e\x1b:w\r");
+        s.drain(600);
+        const got = h.readFile(ctx.gpa, ctx.io, one);
+        defer ctx.gpa.free(got);
+        ctx.check("in insert mode Ctrl-h backspaces and Ctrl-j is a newline",
+            std.mem.eql(u8, got, "ac\ne\n"));
+        s.send(":q!\r");
+        s.drain(300);
+    }
+
+    // 10. The which-key menu is drawn on the *right*, where helix puts its
+    //     keymap infobox — not over the first characters of every line.
+    {
+        h.writeFile(ctx.io, one, "alpha\n");
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ ctx.zedit, "--lsp", "", "one.txt" },
+            .cwd = dir,
+            .term = "xterm-256color",
+        });
+        defer s.finish();
+        s.drain(600);
+        s.send(" ");
+        s.drain(500);
+        var scr = try h.Screen.init(ctx.gpa, 24, 80);
+        defer scr.deinit();
+        scr.apply(s.out.items);
+        var found_col: usize = 0;
+        var r: usize = 1;
+        while (r <= 24) : (r += 1) {
+            const t = try scr.rowText(ctx.gpa, r);
+            defer ctx.gpa.free(t);
+            if (std.mem.indexOf(u8, t, "Write (save)")) |at| found_col = at + 1;
+        }
+        ctx.check("the which-key menu sits on the right of the screen", found_col > 40);
+        s.send("\x1b:q!\r");
+        s.drain(300);
     }
 }
 

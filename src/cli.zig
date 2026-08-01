@@ -28,6 +28,7 @@ pub const Parsed = union(enum) {
     help,
     version,
     init_config,
+    default_config,
     err: []const u8,
 };
 
@@ -78,6 +79,8 @@ pub fn parse(argv: []const [:0]const u8) Parsed {
                 cfg.check_update = true;
             } else if (eql(arg, "--init-config")) {
                 return .init_config;
+            } else if (eql(arg, "--default-config")) {
+                return .default_config;
             } else {
                 return .{ .err = "unknown option (try --help)" };
             }
@@ -107,6 +110,8 @@ const help_text =
     \\  -b, --benchmark      Time open/search/save on [file] (or synthetic data) and exit
     \\  -u, --check-update   Compare this build with the newest release and exit
     \\      --init-config    Write the documented default config file and exit
+    \\      --default-config Reset the config to the documented defaults and
+    \\                       exit (the old one is kept as config.bak)
     \\
     \\Keys (normal mode):
     \\  h j k l           Move left/down/up/right

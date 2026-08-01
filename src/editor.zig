@@ -35,6 +35,7 @@ const vt = @import("vt.zig");
 const dap = @import("dap.zig");
 const quickfix = @import("quickfix.zig");
 const fold = @import("fold.zig");
+const notify = @import("notify.zig");
 const snippet = @import("snippet.zig");
 const remote = @import("remote.zig");
 const regex = @import("regex.zig");
@@ -392,6 +393,9 @@ pub const Editor = struct {
     // the main loop waits until then instead of forever, fires it, and
     // disarms — so an idle editor still blocks indefinitely (zero CPU).
     comp_due_ms: ?i64 = null,
+    /// Corner toasts. Their own deadline, because a toast can be showing while
+    /// a completion request is pending and neither may cancel the other.
+    toasts: notify.Queue = .{},
     due_kind: enum { completion, wsymbol, grep } = .completion,
 
     // Picker preview: the file shown beside the results, cached so moving the
@@ -841,6 +845,10 @@ pub const Editor = struct {
                 self.fireDue();
                 needs_render = true;
             }
+            // A toast whose time is up needs one frame to erase it. `expire`
+            // reports whether anything actually went, so a poll that woke for
+            // something else does not repaint.
+            if (self.toasts.expire(log.nowMs())) needs_render = true;
             if (self.term.takeResize()) {
                 self.win = self.term.size();
                 self.prev_valid = false; // layout changed; diff base is stale
@@ -1070,7 +1078,23 @@ pub const Editor = struct {
     }
 
     /// One key through the dot-repeat capture wrapper and the mode dispatcher.
-    fn feedKey(self: *Editor, k: key.Key, raw: []const u8) !void {
+    fn feedKey(self: *Editor, k_in: key.Key, raw: []const u8) !void {
+        // Ctrl-h and Ctrl-j are window navigation in normal mode only, which
+        // is where AstroNvim binds them. Everywhere else they are the control
+        // codes they have always been — Backspace and a line feed — so insert
+        // mode, the command line, the pickers and the prompts are untouched.
+        // (The tree has its own key table and gets them as-is; `sidebarKey`
+        // routes them into the same directional move, which is how Ctrl-l
+        // steps back out of the explorer.)
+        const k = switch (k_in) {
+            .ctrl => |c| blk: {
+                const normal_mode = self.mode == .normal;
+                if (c == 'h' and !normal_mode) break :blk key.Key.backspace;
+                if (c == 'j' and !normal_mode) break :blk key.Key.enter;
+                break :blk k_in;
+            },
+            else => k_in,
+        };
         // `mouse = false` never asks the terminal to report at all; a stray
         // report from a terminal some other program left in tracking mode
         // stays inert too, rather than moving a cursor nobody pointed at.
@@ -1801,6 +1825,13 @@ pub const Editor = struct {
             },
             'w' => self.await_arg = .ctrl_w, // window command prefix
             'o' => self.jumpBack(), // jumplist back
+            // AstroNvim's window navigation. Directional rather than a cycle,
+            // and the explorer is one of the places you can move to, which is
+            // the keyboard route into the tree that `Space e` alone gave.
+            'h' => self.moveFocus(.left),
+            'l' => self.moveFocus(.right),
+            'j' => self.moveFocus(.down),
+            'k' => self.moveFocus(.up),
             'c' => self.setStatus("Type :q then Enter to quit", .{}),
             else => self.resetPending(),
         }
@@ -3237,9 +3268,17 @@ pub const Editor = struct {
                 self.compMove(false);
                 return true;
             },
-            .tab, .enter => {
+            .tab => {
                 self.acceptCompletion();
                 return true;
+            },
+            // Enter is a newline, never an accept. Typing a word that happens
+            // to raise the popup and pressing Enter for a new line must not
+            // silently insert whatever was highlighted (VS Code's
+            // `acceptSuggestionOnEnter: off`, and Helix's behaviour).
+            .enter => {
+                self.comp_open = false;
+                return false;
             },
             .escape => {
                 self.comp_open = false;
@@ -5005,6 +5044,45 @@ pub const Editor = struct {
         }
     }
 
+    const Dir = enum { left, right, up, down };
+
+    /// Move focus one window in `dir`, treating the file tree as the window
+    /// beyond the edge it is docked to. The tiling is flat and one orientation
+    /// at a time, so "left" and "right" step the list when the split is
+    /// vertical and "up"/"down" step it when the split is horizontal; the
+    /// other axis only ever reaches the tree.
+    fn moveFocus(self: *Editor, dir: Dir) void {
+        const side: Dir = if (config.settings.sidebar == .left) .left else .right;
+        const back: Dir = if (side == .left) .right else .left;
+        // Out of the tree, back to the text.
+        if (self.sb_focus) {
+            if (dir == back) self.sb_focus = false;
+            return;
+        }
+        const n = self.wins.items.len;
+        const idx = self.winIndex(self.cur);
+        // Into the tree: only from the window on the tree's side, and only
+        // when the split does not already have a window that way to go to.
+        if (dir == side and self.sb_open) {
+            const at_edge = !self.split_vertical or idx == (if (side == .left) 0 else n - 1);
+            if (at_edge) {
+                self.sb_focus = true;
+                return;
+            }
+        }
+        if (n <= 1) return;
+        const along = if (self.split_vertical) (dir == .left or dir == .right) else (dir == .up or dir == .down);
+        if (!along) return;
+        const forward = dir == .right or dir == .down;
+        // No wrap: `Ctrl-w w` is the cycle, this is a direction, and wrapping
+        // would make Ctrl-l at the last window jump back to the first.
+        if (forward and idx + 1 < n) {
+            self.focusWin(self.wins.items[idx + 1]);
+        } else if (!forward and idx > 0) {
+            self.focusWin(self.wins.items[idx - 1]);
+        }
+    }
+
     fn nextWindow(self: *Editor, forward: bool) void {
         const n = self.wins.items.len;
         if (n <= 1) return;
@@ -5118,6 +5196,7 @@ pub const Editor = struct {
         }
         const nb = buffer.Buffer.load(self.gpa, self.io, path) catch |err| {
             self.setStatus("cannot open {s}: {s}", .{ path, saveErrorReason(err) });
+            self.notifyToast(.err, "cannot open {s}", .{std.fs.path.basename(path)});
             std.log.scoped(.editor).err("open failed: {s}: {s}", .{ path, @errorName(err) });
             return;
         };
@@ -7343,9 +7422,22 @@ pub const Editor = struct {
     /// How long the main loop may block: forever unless a completion request
     /// is scheduled, which is the only timer zedit ever arms.
     fn pollTimeout(self: *Editor) i32 {
-        const due = self.comp_due_ms orelse return -1;
-        const left = due - log.nowMs();
+        // The sooner of the debounce and the next toast expiry. Still no timer
+        // at all when neither is armed, so an idle editor blocks in poll(2).
+        var due: ?i64 = self.comp_due_ms;
+        if (self.toasts.nextDeadline()) |d| due = if (due) |x| @min(x, d) else d;
+        const at = due orelse return -1;
+        const left = at - log.nowMs();
         return if (left <= 0) 0 else @intCast(@min(left, std.math.maxInt(i32)));
+    }
+
+    /// Raise a corner notification. Deliberately not a wrapper around
+    /// `setStatus`: the statusline answers "what is the state", a toast
+    /// answers "what just happened", and the two want different lifetimes.
+    fn notifyToast(self: *Editor, level: notify.Level, comptime fmt: []const u8, args: anytype) void {
+        var b: [notify.max_text]u8 = undefined;
+        const text = std.fmt.bufPrint(&b, fmt, args) catch b[0..];
+        self.toasts.push(level, text, log.nowMs(), notify.default_ttl_ms);
     }
 
     /// True when the debounce has elapsed (the caller then sends the request).
@@ -7750,6 +7842,7 @@ pub const Editor = struct {
         seq.append(self.gpa, 0x07) catch return; // BEL terminator
         self.term.write(seq.items) catch {};
         self.setStatus("copied {d} bytes to the system clipboard", .{text.len});
+        self.notifyToast(.info, "copied {d} bytes to the clipboard", .{text.len});
     }
 
     fn undoChange(self: *Editor) void {
@@ -9479,6 +9572,15 @@ pub const Editor = struct {
         const n = self.sb_entries.items.len;
         switch (k) {
             .escape => self.sb_focus = false, // keep it open, focus the buffer
+            // The same window navigation as everywhere else, so the way out of
+            // the tree is the way in, reversed.
+            .ctrl => |c| switch (c) {
+                'h' => self.moveFocus(.left),
+                'l' => self.moveFocus(.right),
+                'j' => self.moveFocus(.down),
+                'k' => self.moveFocus(.up),
+                else => {},
+            },
             .down => self.sbMove(1),
             .up => self.sbMove(-1),
             // VS Code's tree keys: Right expands (or opens a file), Left
@@ -10693,6 +10795,10 @@ pub const Editor = struct {
         }
         if (self.sig_open) try self.renderSignature(gutter);
         if (self.comp_open) try self.renderCompletion(gutter);
+        if (self.toasts.visible().len > 0) {
+            try self.renderToasts();
+            overlay = true;
+        }
         try self.emit(ansi.reset_attrs);
         try self.placeCursor(gutter);
         try self.emit(ansi.show_cursor);
@@ -10703,28 +10809,28 @@ pub const Editor = struct {
     // The AstroNvim-style leader tree, shown by the which-key popup.
     const WhichKey = struct { key: []const u8, desc: []const u8 };
     const leader_keys = [_]WhichKey{
-        .{ .key = "b", .desc = "Buffers \u{2026}" },
+        .{ .key = "n", .desc = "New file/folder \u{2026}" },
         .{ .key = "f", .desc = "Find \u{2026}" },
+        .{ .key = "b", .desc = "Buffers \u{2026}" },
         .{ .key = "l", .desc = "Language tools \u{2026}" },
         .{ .key = "g", .desc = "Git \u{2026}" },
+        .{ .key = "d", .desc = "Debug \u{2026}" },
+        .{ .key = "S", .desc = "Session \u{2026}" },
         .{ .key = "u", .desc = "UI toggles \u{2026}" },
-        .{ .key = "n", .desc = "new \u{2026}" },
-        .{ .key = "S", .desc = "session \u{2026}" },
-        .{ .key = "t", .desc = "terminal" },
-        .{ .key = "d", .desc = "debug \u{2026}" },
-        .{ .key = "e", .desc = "explorer" },
-        .{ .key = "c", .desc = "close buffer" },
-        .{ .key = "w", .desc = "write (save)" },
-        .{ .key = "q", .desc = "quit" },
+        .{ .key = "t", .desc = "Terminal" },
+        .{ .key = "e", .desc = "Explorer" },
+        .{ .key = "c", .desc = "Close buffer" },
+        .{ .key = "w", .desc = "Write (save)" },
+        .{ .key = "q", .desc = "Quit" },
     };
     /// `Space n` — making things. The file and folder entries are the same
     /// prompts the explorer's `a`/`A` open, reachable without the tree: they
     /// take a whole path, so `src/net/http.zig` creates both directories and
     /// the file (VS Code's rule).
     const new_keys = [_]WhichKey{
-        .{ .key = "b", .desc = "new buffer" },
-        .{ .key = "f", .desc = "new file" },
-        .{ .key = "d", .desc = "new folder" },
+        .{ .key = "f", .desc = "New file (a/b/c.zig ok)" },
+        .{ .key = "d", .desc = "New folder (a/b/c ok)" },
+        .{ .key = "b", .desc = "New empty buffer" },
     };
     /// `Space d` — the debugger. AstroNvim's `<leader>d` keys, restricted to
     /// what is actually implemented (see TODO.md for what is not).
@@ -10758,7 +10864,6 @@ pub const Editor = struct {
         .{ .key = "m", .desc = "mouse reporting" },
     };
     const buffer_keys = [_]WhichKey{
-        .{ .key = "b", .desc = "find buffers" },
         .{ .key = "n", .desc = "next buffer" },
         .{ .key = "p", .desc = "previous buffer" },
         .{ .key = "c", .desc = "close others" },
@@ -11241,16 +11346,20 @@ pub const Editor = struct {
         const height = menu.len + 1;
         if (rows < height + 2) return;
         const top = rows - height - 1; // 1-based; leave the status bar at the bottom
+        // Bottom *right*, where helix puts its keymap infobox: the left of the
+        // screen is where the text the keys are about starts, and a menu there
+        // covers the first characters of every line under it.
+        const left = if (self.win.cols > width) self.win.cols - width + 1 else 1;
         self.markOverlayRows(top, top + height);
 
-        try self.emitFmt("\x1b[{d};1H", .{top});
+        try self.emitFmt("\x1b[{d};{d}H", .{ top, left });
         try self.setBg(th.mode_command);
         try self.setFg(th.bg);
         try self.emit(title);
         try self.emitSpaces(width - title.len);
 
         for (menu, 0..) |it, i| {
-            try self.emitFmt("\x1b[{d};1H", .{top + 1 + i});
+            try self.emitFmt("\x1b[{d};{d}H", .{ top + 1 + i, left });
             try self.setBg(th.status_seg_bg);
             try self.setFg(th.mode_normal);
             try self.emitFmt("  {s}  ", .{it.key});
@@ -11259,6 +11368,63 @@ pub const Editor = struct {
             const used = 2 + it.key.len + 2 + unicode.displayWidth(it.desc);
             if (used < width) try self.emitSpaces(width - used);
         }
+    }
+
+    /// Corner notifications, stacked under the title bar in the top right —
+    /// where AstroNvim's nvim-notify puts them, and out of the way of both the
+    /// text's left margin and the statusline. Newest at the bottom of the
+    /// stack, so a line does not jump as the one above it expires.
+    fn renderToasts(self: *Editor) !void {
+        const th = theme.current;
+        const list = self.toasts.visible();
+        if (list.len == 0) return;
+        const top: usize = 1 + @as(usize, if (tabsVisible()) 1 else 0);
+        // Widest message, capped so a toast never takes more than half the
+        // screen; 2 for the mark, 2 for the padding either side.
+        var text_w: usize = 0;
+        for (list) |t| text_w = @max(text_w, unicode.displayWidth(t.text()));
+        const mark_w: usize = 1; // every level's mark is one cell
+        const chrome = mark_w + 3; // " <mark> " plus a trailing space
+        const box_w = @min(@max(text_w + chrome, 12), @max(12, self.win.cols / 2));
+        if (self.win.cols < box_w + 2 or self.win.rows < top + list.len) return;
+        const left = self.win.cols - box_w + 1;
+        self.markOverlayRows(top, top + list.len - 1);
+        for (list, 0..) |t, i| {
+            // No diagnostic colours in the palette; the git triple is the
+            // red/amber/green one every theme already defines.
+            const fg = switch (t.level) {
+                .info => th.git_add,
+                .warn => th.git_change,
+                .err => th.git_delete,
+            };
+            try self.emitFmt("\x1b[{d};{d}H", .{ top + i, left });
+            try self.setBg(th.status_seg_bg);
+            try self.setFg(fg);
+            try self.emitFmt(" {s} ", .{t.level.mark()});
+            try self.setFg(th.status_seg_fg);
+            // Toast text can carry a filename or a server's words, so it goes
+            // through the same sanitizer as any other untrusted content.
+            const room = box_w - chrome;
+            const shown = clipToWidth(t.text(), room);
+            try self.emitSanitized(shown);
+            const used = chrome - 1 + unicode.displayWidth(shown);
+            if (used < box_w) try self.emitSpaces(box_w - used);
+        }
+    }
+
+    /// The longest prefix of `text` that fits in `cells` display columns,
+    /// never splitting a codepoint.
+    fn clipToWidth(text: []const u8, cells: usize) []const u8 {
+        var w: usize = 0;
+        var i: usize = 0;
+        while (i < text.len) {
+            const d = unicode.decode(text[i..]);
+            const cw = unicode.displayWidth(text[i .. i + d.len]);
+            if (w + cw > cells) break;
+            w += cw;
+            i += d.len;
+        }
+        return text[0..i];
     }
 
     /// One-line signature-help popup, anchored just above the cursor (or below

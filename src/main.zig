@@ -43,6 +43,18 @@ pub fn main(init: std.process.Init) !void {
             cli.printNote(path);
             return;
         },
+        .default_config => {
+            var pbuf: [512]u8 = undefined;
+            const path = config.resetDefault(io, &pbuf) catch |err| {
+                switch (err) {
+                    error.NoHome => cli.printError("cannot locate a config directory (no $HOME)"),
+                    else => cli.printError("cannot write the config file"),
+                }
+                std.process.exit(1);
+            };
+            cli.printNote(path);
+            return;
+        },
         .err => |message| {
             cli.printError(message);
             std.process.exit(2);
@@ -292,6 +304,7 @@ test {
     _ = @import("dap.zig");
     _ = @import("quickfix.zig");
     _ = @import("fold.zig");
+    _ = @import("notify.zig");
     _ = @import("remote.zig");
     _ = @import("snippet.zig");
     _ = @import("complete.zig");

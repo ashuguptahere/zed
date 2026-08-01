@@ -422,4 +422,59 @@ pub fn run(ctx: *h.Ctx) !void {
         ctx.check("an OSC reply arriving in insert mode leaves the text alone",
             std.mem.eql(u8, got, "Xalpha\n"));
     }
+
+    // Corner notifications: raised for a thing that just happened, gone on
+    // their own, and never at the cost of the idle CPU rule.
+    {
+        const f = h.join(ctx, dir, "toast.txt");
+        defer ctx.gpa.free(f);
+        h.writeFile(ctx.io, f, "alpha\nbeta\n");
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ ctx.zedit, "--lsp", "", "toast.txt" },
+            .cwd = dir,
+            .term = "xterm-256color",
+        });
+        defer s.finish();
+        s.drain(600);
+        s.send("\"+yy"); // yank to the clipboard register
+        s.drain(500);
+        {
+            var scr = try h.Screen.init(ctx.gpa, 24, 80);
+            defer scr.deinit();
+            scr.apply(s.out.items);
+            // Top right, under the title bar — not on the statusline, and not
+            // over the text's left margin.
+            const row = try scr.rowText(ctx.gpa, 2);
+            defer ctx.gpa.free(row);
+            const at = std.mem.indexOf(u8, row, "copied");
+            ctx.check("a clipboard yank raises a toast in the top right",
+                at != null and at.? > 40);
+        }
+        // It goes on its own, with no key pressed: the queue's deadline is
+        // what the poll timeout woke for.
+        const gone_by = h.nowMs() + 6000;
+        var gone = false;
+        while (h.nowMs() < gone_by and !gone) {
+            s.drain(300);
+            var scr = try h.Screen.init(ctx.gpa, 24, 80);
+            defer scr.deinit();
+            scr.apply(s.out.items);
+            const row = try scr.rowText(ctx.gpa, 2);
+            defer ctx.gpa.free(row);
+            gone = std.mem.indexOf(u8, row, "copied") == null;
+        }
+        ctx.check("the toast expires by itself, with no keypress", gone);
+
+        // And the editor is back to costing nothing. A toast that left a
+        // repeating timer armed would show up here.
+        const t0 = try s.cpuTicks(ctx.gpa, ctx.io);
+        s.drain(2000);
+        const t1 = try s.cpuTicks(ctx.gpa, ctx.io);
+        const idle_ms = @as(f64, @floatFromInt(t1 - t0)) /
+            @as(f64, @floatFromInt(h.clockTicksPerSec())) * 1000.0;
+        ctx.check("an idle editor still burns no CPU after a toast", idle_ms < 20.0);
+
+        s.send(":q!\r");
+        s.drain(400);
+    }
 }

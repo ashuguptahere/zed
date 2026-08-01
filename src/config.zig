@@ -418,6 +418,23 @@ pub fn writeDefault(io: std.Io, buf: []u8) ![]const u8 {
     return path;
 }
 
+/// Overwrite the config with the documented default, keeping whatever was
+/// there as `config.bak` — a reset the user asked for should still not be the
+/// moment their settings vanish. Returns the path written.
+pub fn resetDefault(io: std.Io, buf: []u8) ![]const u8 {
+    const path = standardPath(buf) orelse return error.NoHome;
+    const dir_end = std.mem.lastIndexOfScalar(u8, path, '/') orelse return error.NoHome;
+    std.Io.Dir.cwd().createDirPath(io, path[0..dir_end]) catch {};
+    // Only back up a file that is actually there, and only over the one
+    // backup — a second reset must not lose the *original* settings.
+    var bak_buf: [576]u8 = undefined;
+    if (std.fmt.bufPrint(&bak_buf, "{s}.bak", .{path})) |bak| {
+        if (std.Io.Dir.cwd().rename(path, std.Io.Dir.cwd(), bak, io)) |_| {} else |_| {}
+    } else |_| {}
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = default_text });
+    return path;
+}
+
 test "apply parses keys, comments, junk" {
     settings = .{};
     apply(

@@ -155,7 +155,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send(" ");
         s.drain(300);
         ctx.check("Space opens the leader menu in the explorer", s.containsPlain(ctx.gpa, "Find") and
-            s.containsPlain(ctx.gpa, "explorer"));
+            s.containsPlain(ctx.gpa, "Explorer"));
         s.send("\x1b");
         s.drain(200);
 

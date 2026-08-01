@@ -38,7 +38,7 @@ pub fn run(ctx: *h.Ctx) !void {
         var m = s.mark();
         s.send(" ");
         s.drain(300);
-        ctx.check("Space lists the terminal key", s.containsPlainSince(ctx.gpa, m, "terminal"));
+        ctx.check("Space lists the terminal key", s.containsPlainSince(ctx.gpa, m, "Terminal"));
         m = s.mark();
         s.send("t");
         s.drain(1200);

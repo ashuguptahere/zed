@@ -29,10 +29,12 @@ behind the roadmap items.
        leaving the payload to be typed into the buffer.
 
 3. [ ] **Which-key coverage of what already exists.** Done for the undo tree
-       (`Space f u`) and a new buffer (`Space n`) in 0.29.0. Still unbound:
-       `g-`/`g+` and `:earlier` (time travel), and window/split management,
-       which `Ctrl-w` covers the vim way — decide whether a leader group is
-       wanted at all before adding one.
+       (`Space f u`) and a new buffer (`Space n`) in 0.29.0; 0.43.0 relabelled
+       the groups by what they *make* (`Space n` read "new …", which nobody
+       hunting for "create a file" finds) and dropped the duplicate `Space b
+       b`. Still unbound: `g-`/`g+` and `:earlier` (time travel). Window
+       management now has `Ctrl-h/j/k/l` and `Ctrl-w`, so a leader group for
+       it looks unnecessary — decide before adding one.
 4. [ ] **A verified AstroNvim/Helix keymap gap analysis**, updating
        `doc/COMPARISON.md` — key by key, not from memory.
 5. [ ] **Session polish.** Save/restore landed in 0.30.0 (files, cursors,
@@ -153,6 +155,13 @@ there is nothing to change there.
       above; operator-pending `gj`/`gk`; sentence objects).
 
 ## Done (chronological)
+
+- [x] Corner notifications (`notify.zig`) in the top right, expiring on their
+      own without costing idle CPU; `Ctrl-h/j/k/l` window navigation with the
+      explorer as the window past the edge; `zedit --default-config`; the
+      which-key menu moved to the bottom right (helix's infobox corner) and
+      its labels rewritten to say what each group makes; `Tab` accepts a
+      completion and `Enter` no longer does.
 
 - [x] Window resizing (`Ctrl-w +`/`-`/`<`/`>`, counted; `Ctrl-w =` to even up),
       windows carrying a relative *weight* rather than a size, and `:winsave`

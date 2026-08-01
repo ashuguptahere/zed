@@ -75,6 +75,15 @@ and exit. Runs headless; the comparative suite against helix/nvim is
 Write the fully documented default configuration file to the standard location
 and exit. Refuses to overwrite an existing file.
 .TP
+.B \-\-default\-config
+Reset the configuration to the documented defaults and exit, keeping whatever
+was there as
+.I config.bak
+\(em a reset the user asked for should still not be the moment their settings
+vanish. Unlike
+.BR \-\-init\-config ,
+this does overwrite.
+.TP
 .BR \-t ", " \-\-tutor
 Open the interactive tutorial (in the tradition of
 .BR vimtutor (1)).
@@ -1076,6 +1085,14 @@ but the active window.
 .B :theme \fR[\fPname\fR]\fP
 Switch the colour theme (with no argument, opens the theme picker; also on
 .BR "Space f t" ).
+.TP
+.B Ctrl-h Ctrl-j Ctrl-k Ctrl-l
+Move focus one window in that direction (AstroNvim's window keys). The file
+tree counts as the window beyond the edge it is docked to, so
+.B Ctrl-h
+steps into the explorer and
+.B Ctrl-l
+steps back out. They do not wrap.
 .TP
 .B Ctrl-w \fR{\fPv s c o w h j k l + \- < > =\fR}\fP
 Window commands: \fBv\fP/\fBs\fP split vertically/horizontally, \fBc\fP close,

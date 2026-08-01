@@ -60,7 +60,7 @@ pub fn run(ctx: *h.Ctx) !void {
         var m = s.mark();
         s.send(" ");
         s.drain(300);
-        ctx.check("Space lists the session group", s.containsPlainSince(ctx.gpa, m, "session"));
+        ctx.check("Space lists the session group", s.containsPlainSince(ctx.gpa, m, "Session"));
         s.send("S");
         s.drain(300);
         ctx.check("Space S lists save/load/delete", s.containsPlain(ctx.gpa, "save session") and

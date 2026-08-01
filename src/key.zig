@@ -59,9 +59,16 @@ pub fn decode(bytes: []const u8) Decoded {
     const b = bytes[0];
     return switch (b) {
         0x1b => decodeEscape(bytes),
-        '\r', '\n' => .{ .key = .enter, .consumed = 1 },
+        '\r' => .{ .key = .enter, .consumed = 1 },
         '\t' => .{ .key = .tab, .consumed = 1 },
-        0x7f, 0x08 => .{ .key = .backspace, .consumed = 1 },
+        0x7f => .{ .key = .backspace, .consumed = 1 },
+        // 0x08 and 0x0a are Ctrl-h and Ctrl-j on the wire, and a terminal
+        // sends 0x7f for Backspace and 0x0d for Enter — so the pairs *are*
+        // distinguishable, which is how nvim binds <C-h>/<C-j> at all. The
+        // editor turns them back into Backspace/Enter everywhere except
+        // normal mode, so only the new window bindings see the difference.
+        0x08 => .{ .key = .{ .ctrl = 'h' }, .consumed = 1 },
+        '\n' => .{ .key = .{ .ctrl = 'j' }, .consumed = 1 },
         // NUL is what a terminal sends for Ctrl-Space, Ctrl-@ and — on most
         // of them — Ctrl-` too, since backtick masks to zero. They are
         // indistinguishable on the wire, so they are one key here, spelled
@@ -362,4 +369,15 @@ test "an unterminated reply consumes the buffer instead of leaking text" {
     const d = decode("\x1b]11;rgb:1a1a/1b1b");
     try std.testing.expectEqual(Key.osc_reply, d.key);
     try std.testing.expectEqual(@as(usize, 18), d.consumed);
+}
+
+test "Ctrl-h and Ctrl-j are distinct from Backspace and Enter" {
+    // A terminal sends 0x7f for Backspace and 0x0d for Enter, so binding
+    // <C-h>/<C-j> costs neither of them.
+    try std.testing.expectEqual(Key{ .ctrl = 'h' }, decode(&[_]u8{0x08}).key);
+    try std.testing.expectEqual(Key{ .ctrl = 'j' }, decode(&[_]u8{0x0a}).key);
+    try std.testing.expectEqual(Key.backspace, decode(&[_]u8{0x7f}).key);
+    try std.testing.expectEqual(Key.enter, decode(&[_]u8{0x0d}).key);
+    try std.testing.expectEqual(Key{ .ctrl = 'k' }, decode(&[_]u8{0x0b}).key);
+    try std.testing.expectEqual(Key{ .ctrl = 'l' }, decode(&[_]u8{0x0c}).key);
 }

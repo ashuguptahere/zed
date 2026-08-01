@@ -150,7 +150,10 @@
   rows, the command-line area growing upward over the window, as nvim's does
 - **Multiple buffers and windows**: `:e`, `:bn`/`:bp`/`:bd`/`:ls`, `]b`/`[b`
   to cycle (counts work: `2]b`), a `Space b` Buffers menu;
-  `:split`/`:vsplit`, `Ctrl-w` navigation and `Ctrl-w +`/`-`/`<`/`>` to
+  `:split`/`:vsplit`, `Ctrl-h`/`j`/`k`/`l` to move focus (AstroNvim's window
+  keys — the file tree counts as the window past the edge it is docked to, so
+  `Ctrl-h` steps into the explorer and `Ctrl-l` back out),
+  `Ctrl-w` navigation and `Ctrl-w +`/`-`/`<`/`>` to
   resize (`Ctrl-w =` evens them up again, and a count is a number of cells:
   `5 Ctrl-w +`); `:winsave` writes the current proportions to the config as
   `split_sizes`, so the next session splits the same way — relative, so they
@@ -259,11 +262,13 @@ missing file just means defaults. Settings today: `theme`, `tab_width`,
 `buffer_tabs`, `auto_completion`, `completion_delay_ms`,
 `buffer_completion`, `inline_diagnostics`, `soft_wrap`, `wrap_indent`,
 `wrap_column`, `persistent_undo`, `format_on_save`, `cmdline_suggestions`,
-`mouse`, `mousetime`, `sync_background`, `split_sizes`.
+`mouse`, `mousetime`, `sync_background`, `split_sizes`. `zedit
+--default-config` resets the file to those defaults, keeping the old one as
+`config.bak`.
 
 Every CLI option has a short and a long form (`-h/--help`, `-v/--version`,
 `-l/--log`, `-s/--lsp`, `-c/--config`, `-t/--tutor`, `-b/--benchmark`,
-`-u/--check-update`, `--init-config`); `zedit <dir>` opens the file picker in that directory, and
+`-u/--check-update`, `--init-config`, `--default-config`); `zedit <dir>` opens the file picker in that directory, and
 `zedit --benchmark [file]` prints open/search/serialize timings without
 needing a terminal. Releases are versioned by the `VERSION` file and
 documented in [CHANGELOG.md](CHANGELOG.md).

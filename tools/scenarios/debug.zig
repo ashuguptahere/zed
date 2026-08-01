@@ -43,7 +43,7 @@ pub fn run(ctx: *h.Ctx) !void {
         var m = s.mark();
         s.send(" ");
         s.drain(300);
-        ctx.check("Space lists the debug group", s.containsPlainSince(ctx.gpa, m, "debug"));
+        ctx.check("Space lists the debug group", s.containsPlainSince(ctx.gpa, m, "Debug"));
         s.send("d");
         s.drain(300);
         ctx.check("Space d lists the debug keys", s.containsPlain(ctx.gpa, "toggle breakpoint") and

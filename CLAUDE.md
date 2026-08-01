@@ -181,6 +181,7 @@ Source is `src/`, one responsibility per module:
 | `jsonrpc.zig` | The `Content-Length`-framed JSON transport `lsp.zig` and `dap.zig` share: framing only, with control inverted (`nextFrame`) so each caller stays an ordinary loop. |
 | `dap.zig`     | Debug Adapter Protocol client: launch, breakpoints, stop/step, the stack frame the program stopped in; plus the breakpoint set, which outlives a session. |
 | `vt.zig`      | Terminal emulator: bytes from a child process in, a grid of styled cells out (pure, unit-tested — no pty, no rendering). |
+| `notify.zig`  | Corner toast notifications: a fixed, allocation-free queue with its own expiry deadline (pure — the editor draws them and owns the clock). |
 | `fold.zig`    | Folds: which line ranges are collapsed, which rows that hides, and how they move when the text does. |
 | `quickfix.zig`| The quickfix list: file positions kept so `]q`/`[q` can walk them long after the picker that found them is gone. |
 | `session.zig` | Per-directory sessions: the open files + cursors, the split layout and the tree's state, serialised to an XDG state file. |
@@ -559,7 +560,9 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   (one per line); movement, `x`, and `i`/`a`/`I`/`A` + typing apply to every
   caret; `Esc` collapses back to one.
 - **Pickers (AstroNvim-style leader tree, leader = `Space`):** pressing `Space`
-  shows a which-key popup with nested groups (submenus get their own popup):
+  shows a which-key popup — drawn in the **bottom right**, where helix puts
+  its keymap infobox, rather than over the first characters of every line —
+  with nested groups (submenus get their own popup):
   `Space b` = Buffers (`b b` the buffer picker — same as `f b` — `b n`/`b p`
   next/previous, `b c` **close others** — AstroNvim's `bc`, which refuses
   while any of them is unsaved and names it; it used to duplicate `Space c`);
@@ -577,7 +580,12 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   `a`/`A` open but reachable without the tree, and both take a whole path so
   `src/net/http.zig` makes the directories on the way);
   `Space c` close buffer,
-  `Space w` write, `Space q` quit. In a picker: type to filter, `Ctrl-n`/`Ctrl-p` or
+  `Space w` write, `Space q` quit. Group labels say what the group *makes*: `Space n` reads
+  "New file/folder …" and its entries "New file (a/b/c.zig ok)" / "New folder
+  (a/b/c ok)", because a user hunting for how to create a file scans for the
+  word "file" — a label reading "new …" is a feature nobody finds. `Space b b`
+  is gone: it duplicated `Space f b` exactly, and AstroNvim's buffer picker is
+  the `f b` one. In a picker: type to filter, `Ctrl-n`/`Ctrl-p` or
   arrows to move, `Enter` to open, `Esc` to cancel, and `Ctrl-r` re-walks the
   project. Fuzzy queries are multi-term, helix-style (`fuzzy.scoreTerms`):
   the query splits on spaces and every term must match independently, in any
@@ -945,6 +953,30 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   sidebar bullet), and clicks anywhere else are ignored so the terminal's
   own text selection keeps working. `buffer_tabs = false`
   removes the row entirely and restores the statusline filename.
+- **Notifications (`notify.zig`):** the things that *happened* — "copied 6
+  bytes to the clipboard", "cannot open locked.txt" — stack as toasts in the
+  top right under the title bar, AstroNvim's nvim-notify position, and expire
+  on their own after 3 s. The statusline still says what the *state* is; a
+  toast says what just happened, which is why it is not a wrapper around
+  `setStatus`. The queue is fixed-size and allocation-free (3 slots, 96 bytes
+  of text, truncated on a codepoint boundary), and its text goes through the
+  render sanitizer like any other untrusted content. The expiry does **not**
+  cost idle CPU: `nextDeadline` hands the main loop one point in time to wake
+  for, `pollTimeout` takes the sooner of that and the completion debounce, and
+  with nothing showing there is no deadline at all — so an idle editor is back
+  to blocking in `poll(2)` for ever (pty-checked: under 20 ms of CPU over 2 s
+  idle after a toast).
+- **Window navigation (`Ctrl-h`/`j`/`k`/`l`):** AstroNvim's window keys, moving
+  focus directionally rather than cycling, with the **file tree as the window
+  beyond the edge it is docked to** — so `Ctrl-h` steps into the explorer and
+  `Ctrl-l` steps back out (mirrored for `sidebar = right`). They do not wrap:
+  `Ctrl-w w` is the cycle, this is a direction. The keys are `0x08` and `0x0a`
+  on the wire — the same bytes as Ctrl-h and Ctrl-j have always been — and a
+  terminal sends `0x7f` for Backspace and `0x0d` for Enter, so the pairs are
+  distinguishable, which is how nvim binds `<C-h>`/`<C-j>` at all. `key.zig`
+  decodes them apart and the editor turns them back into Backspace/Enter
+  everywhere except normal mode, so insert mode, the command line, the pickers
+  and the prompts are untouched (pty-pinned both ways).
 - **Buffers & windows:** several files can be open at once, each with its own
   cursor, undo, tree-sitter and LSP. `:e <file>` opens (or, in the picker,
   `Enter`) a file in the active window — already-open files are reused, not
@@ -995,7 +1027,10 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   it is armed *only* while typing, so an idle editor still blocks in `poll(2)`
   at zero CPU; `auto_completion = false` restores manual-only behaviour.
   `Ctrl-n` requests it on demand either way (popup: `Ctrl-n`/`Ctrl-p` or
-  arrows to move, `Tab`/`Enter` to accept, `Esc` to dismiss). **With no
+  arrows to move, **`Tab`** to accept, `Esc` to dismiss). `Enter` is a
+  newline, never an accept — typing a word that happens to raise the popup and
+  pressing Enter for a new line must not silently insert whatever was
+  highlighted (VS Code's `acceptSuggestionOnEnter: off`, and helix's rule). **With no
   server** — none installed for the filetype, or one that returns nothing —
   the same popup fills from the identifiers in the open buffers (vim's
   keyword completion, `complete.zig`; config `buffer_completion`, on by
@@ -1128,7 +1163,8 @@ Runtime configuration is one documented file (see `config.zig`): theme,
 `completion_delay_ms`, `inline_diagnostics`, `soft_wrap`, `wrap_indent`,
 `wrap_column`, `persistent_undo`, `format_on_save`, `cmdline_suggestions`,
 `buffer_completion`, `mouse`, `mousetime`, `sync_background`, `split_sizes`;
-`zedit --init-config` writes the annotated default.
+`zedit --init-config` writes the annotated default; `zedit --default-config`
+resets an existing one back to it, keeping what was there as `config.bak`.
 `zedit --tutor` opens the embedded interactive tutorial (`doc/tutor.txt`,
 embedded via `build.zig`).
 

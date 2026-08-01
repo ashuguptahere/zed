@@ -2,6 +2,47 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.43.0 - 2026-08-01
+
+### Added
+
+- **Corner notifications** (`notify.zig`). The things that *happened* — "copied
+  6 bytes to the clipboard", "cannot open locked.txt" — now stack as toasts in
+  the top right under the title bar (AstroNvim's nvim-notify position) and
+  expire on their own after 3 s. The statusline still says what the state is.
+  The queue is fixed-size and allocation-free, its text is sanitized like any
+  other untrusted content, and the expiry costs no idle CPU: the main loop
+  wakes once per toast and, with nothing showing, has no deadline to wake for
+  at all.
+- **`Ctrl-h`/`j`/`k`/`l` move focus between windows** (AstroNvim's keys),
+  directionally rather than cycling, **with the file tree as the window beyond
+  the edge it is docked to** — so `Ctrl-h` steps into the explorer and
+  `Ctrl-l` back out. They are `0x08`/`0x0a` on the wire, and a terminal sends
+  `0x7f` for Backspace and `0x0d` for Enter, so the pairs are distinguishable;
+  outside normal mode they stay Backspace and Enter, leaving insert mode, the
+  command line, the pickers and the prompts untouched.
+- **`zedit --default-config`** resets the config file to the documented
+  defaults, keeping what was there as `config.bak`. (`--init-config` still
+  refuses to overwrite.)
+
+### Changed
+
+- **The which-key menu moved to the bottom right**, where helix draws its
+  keymap infobox — the left is where the text it describes begins, and a menu
+  there covered the first characters of every line under it.
+- **Leader labels say what the group makes.** `Space n` read "new …", so a
+  user looking for how to create a file scanned for "file" and found nothing;
+  it now reads "New file/folder …", and its entries "New file (a/b/c.zig ok)"
+  and "New folder (a/b/c ok)" — which also answers whether a path may name
+  directories that do not exist yet. It may; they are created.
+- **`Space b b` is gone.** It opened the same buffer picker as `Space f b`,
+  which is the one AstroNvim documents. Both groups literally read "find
+  buffers".
+- **`Enter` no longer accepts a completion — `Tab` does.** Typing a word that
+  happens to raise the popup and pressing Enter for a new line must not
+  silently insert whatever was highlighted (VS Code's
+  `acceptSuggestionOnEnter: off`, and helix's rule).
+
 ## 0.42.1 - 2026-08-01
 
 ### Changed
