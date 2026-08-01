@@ -83,7 +83,9 @@ there is nothing to change there.
 ## Later / known gaps (tracked in CLAUDE.md + COMPARISON.md)
 
 - [ ] Windows console support (`term.zig` gate marks the spot).
-- [ ] Nested/mixed window layouts and per-window resizing.
+- [ ] Nested/mixed window layouts (resizing is done: `Ctrl-w +`/`-`/`<`/`>`,
+      `Ctrl-w =`, `:winsave` + `split_sizes`; the tiling is still flat and one
+      orientation at a time).
 - [ ] Side-by-side diff: a leading deletion gap taller than the window shows
       only its tail (the pane top is a buffer row, clamped to keep the cursor
       on screen; a display-space pane top would make the whole gap reachable).
@@ -152,6 +154,14 @@ there is nothing to change there.
       above; operator-pending `gj`/`gk`; sentence objects).
 
 ## Done (chronological)
+
+- [x] Window resizing (`Ctrl-w +`/`-`/`<`/`>`, counted; `Ctrl-w =` to even up),
+      windows carrying a relative *weight* rather than a size, and `:winsave`
+      persisting the proportions to the config as `split_sizes` so a layout
+      comes back next session at any terminal size. Plus the edge strip: the
+      terminal's window padding is now painted in the theme's background via
+      OSC 11 (queried first, restored on exit, `sync_background`), and OSC
+      replies are decoded instead of being typed into the buffer as text.
 
 - [x] `Space u` UI toggles, explorer `a`/`A` new file/folder with missing
       directories created, `:w` doing the same, VS Code's tree arrows,

@@ -193,6 +193,21 @@ been changed by something else since. Whenever an undo file is written,
 sibling undo files untouched for 90 days are removed (each removal is
 logged), so the state directory does not grow forever.
 .TP
+.B sync_background
+(default true). Paint the terminal's window background \(em the few pixels
+of padding outside the character grid, seen as a strip along the bottom and
+right edges of the window \(em in the theme's background colour, so it
+matches the editor instead of showing through in the terminal's own colour.
+zedit asks the terminal for its current background first and restores it on
+exit, so a terminal that does not answer is never left recoloured.
+.TP
+.B split_sizes
+(default empty). Relative window sizes, applied when a split has exactly
+this many windows: \fI1,2\fR makes the second window twice the first.
+Being relative they hold at any terminal size. Empty tiles evenly.
+.B :winsave
+writes the current proportions here.
+.TP
 .B soft_wrap
 (default true). Continue a line too long for the window on the next screen
 row, marked with a dim arrow in the gutter, instead of scrolling the view
@@ -1062,9 +1077,17 @@ but the active window.
 Switch the colour theme (with no argument, opens the theme picker; also on
 .BR "Space f t" ).
 .TP
-.B Ctrl-w \fR{\fPv s c o w h j k l\fR}\fP
+.B Ctrl-w \fR{\fPv s c o w h j k l + \- < > =\fR}\fP
 Window commands: \fBv\fP/\fBs\fP split vertically/horizontally, \fBc\fP close,
 \fBo\fP only, \fBw\fP/\fBh\fP/\fBj\fP/\fBk\fP/\fBl\fP move focus between windows.
+\fB+\fP/\fB\-\fP make the focused window taller/shorter and \fB<\fP/\fB>\fP
+narrower/wider, by one cell or by a count (\fB5 Ctrl-w +\fP); \fB=\fP tiles
+them evenly again. The difference is taken from the other windows, none of
+which is squeezed below a single cell. See
+.B split_sizes
+and
+.B :winsave
+for keeping a layout between sessions.
 .SH ENVIRONMENT
 .TP
 .B TERM

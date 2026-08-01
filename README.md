@@ -150,7 +150,11 @@
   rows, the command-line area growing upward over the window, as nvim's does
 - **Multiple buffers and windows**: `:e`, `:bn`/`:bp`/`:bd`/`:ls`, `]b`/`[b`
   to cycle (counts work: `2]b`), a `Space b` Buffers menu;
-  `:split`/`:vsplit` and `Ctrl-w` navigation; every buffer keeps its own
+  `:split`/`:vsplit`, `Ctrl-w` navigation and `Ctrl-w +`/`-`/`<`/`>` to
+  resize (`Ctrl-w =` evens them up again, and a count is a number of cells:
+  `5 Ctrl-w +`); `:winsave` writes the current proportions to the config as
+  `split_sizes`, so the next session splits the same way — relative, so they
+  hold at any terminal size; every buffer keeps its own
   cursor, undo history, highlighting and language server. `:bd` follows
   vim: the last buffer is replaced by an empty `[No Name]` (the window
   stays), a dirty buffer refuses unless forced with `:bd!`
@@ -255,7 +259,7 @@ missing file just means defaults. Settings today: `theme`, `tab_width`,
 `buffer_tabs`, `auto_completion`, `completion_delay_ms`,
 `buffer_completion`, `inline_diagnostics`, `soft_wrap`, `wrap_indent`,
 `wrap_column`, `persistent_undo`, `format_on_save`, `cmdline_suggestions`,
-`mouse`, `mousetime`.
+`mouse`, `mousetime`, `sync_background`, `split_sizes`.
 
 Every CLI option has a short and a long form (`-h/--help`, `-v/--version`,
 `-l/--log`, `-s/--lsp`, `-c/--config`, `-t/--tutor`, `-b/--benchmark`,

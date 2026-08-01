@@ -475,4 +475,97 @@ fn bufferClose(ctx: *h.Ctx) !void {
         s.send(":q!\r");
         s.drain(300);
     }
+
+    // 6. Ctrl-w resizes the split, and `:winsave` makes the proportions stick.
+    {
+        h.writeFile(ctx.io, one, "a\nb\nc\nd\ne\nf\n");
+        const cfg = h.join(ctx, dir, "cfg");
+        defer ctx.gpa.free(cfg);
+        h.writeFile(ctx.io, cfg, "split_sizes =\n");
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ ctx.zedit, "--lsp", "", "--config", cfg, "one.txt" },
+            .cwd = dir,
+            .term = "xterm-256color",
+        });
+        defer s.finish();
+        s.drain(600);
+        s.send(":split\r");
+        s.drain(500);
+        const even = try boundaryRow(ctx, &s);
+        // The new (focused) split is the lower one; growing it by five rows
+        // must move the boundary up by exactly five.
+        s.send("5\x17+");
+        s.drain(500);
+        const grown = try boundaryRow(ctx, &s);
+        ctx.check("5 Ctrl-w + grows the focused window by five rows",
+            even != 0 and grown != 0 and even == grown + 5);
+
+        // The other axis is refused with a message naming the keys that work,
+        // rather than silently doing nothing.
+        var m = s.mark();
+        s.send("\x17>");
+        s.drain(300);
+        ctx.check("Ctrl-w > on a stacked split says which keys to use",
+            s.containsPlainSince(ctx.gpa, m, "stacked"));
+
+        // Save, and check what landed in the config: relative numbers summing
+        // to the window count, so they mean the same on any terminal.
+        m = s.mark();
+        s.send(":winsave\r");
+        s.drain(600);
+        ctx.check(":winsave reports what it wrote", s.containsPlainSince(ctx.gpa, m, "window sizes saved"));
+        const saved = h.readFile(ctx.gpa, ctx.io, cfg);
+        defer ctx.gpa.free(saved);
+        ctx.check("the proportions are in the config file",
+            std.mem.indexOf(u8, saved, "split_sizes = 0.55,1.45") != null);
+
+        // Ctrl-w = puts them back to even.
+        m = s.mark();
+        s.send("\x17=");
+        s.drain(400);
+        const equal = try boundaryRow(ctx, &s);
+        ctx.check("Ctrl-w = tiles evenly again",
+            s.containsPlainSince(ctx.gpa, m, "equalized") and equal == even);
+        s.send(":q!\r:q!\r");
+        s.drain(400);
+    }
+
+    // 7. A saved layout comes back in the next session, unasked.
+    {
+        h.writeFile(ctx.io, one, "a\nb\nc\nd\ne\nf\n");
+        const cfg = h.join(ctx, dir, "cfg2");
+        defer ctx.gpa.free(cfg);
+        h.writeFile(ctx.io, cfg, "split_sizes = 0.55,1.45\n");
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ ctx.zedit, "--lsp", "", "--config", cfg, "one.txt" },
+            .cwd = dir,
+            .term = "xterm-256color",
+        });
+        defer s.finish();
+        s.drain(600);
+        s.send(":split\r");
+        s.drain(500);
+        const restored = try boundaryRow(ctx, &s);
+        // Even tiling on a 24-row terminal puts the boundary at 12; the saved
+        // 0.55/1.45 split is the resized one, five rows higher.
+        ctx.check("a split reuses the saved proportions", restored == 7);
+        s.send(":q!\r:q!\r");
+        s.drain(400);
+    }
+}
+
+/// The screen row carrying the *first* window's status line — the boundary
+/// between two stacked windows, and so a direct read of how the split is
+/// divided. Row 1 is the tab bar, which names the file too, hence the skip.
+fn boundaryRow(ctx: *h.Ctx, s: *h.Session) !usize {
+    var scr = try h.Screen.init(ctx.gpa, 24, 80);
+    defer scr.deinit();
+    scr.apply(s.out.items);
+    var r: usize = 2;
+    while (r <= 23) : (r += 1) {
+        const t = try scr.rowText(ctx.gpa, r);
+        defer ctx.gpa.free(t);
+        if (std.mem.indexOf(u8, t, "one.txt") != null and std.mem.indexOf(u8, t, "1:1") != null) return r;
+    }
+    return 0;
 }

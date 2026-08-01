@@ -242,6 +242,11 @@ const Shell = struct {
     }
 };
 
+/// How many windows `Ctrl-w`'s resize arithmetic will tile at once. Far past
+/// any usable split on a real terminal; it exists so the cell arithmetic can
+/// stay on the stack.
+const max_tiled = 32;
+
 const Win = struct {
     doc: *Doc,
     cy: usize = 0,
@@ -253,6 +258,10 @@ const Win = struct {
     gy: usize = 1,
     gw: usize = 1,
     gh: usize = 1,
+    /// This window's share of the tiling, relative to its siblings'. Only the
+    /// ratios matter, so a layout survives a terminal resize and reads the
+    /// same on any screen — which is what makes it worth persisting.
+    weight: f64 = 1,
 };
 
 /// One jumplist entry: where the cursor was before a jump-motion.
@@ -743,6 +752,11 @@ pub const Editor = struct {
         try self.term.enableRaw();
         self.term.installResizeHandler();
         try self.term.enterAltScreen(config.settings.mouse);
+        // Ask what colour the window padding is painted in. The answer arrives
+        // on stdin like any other input and costs nothing to wait for, because
+        // nothing waits: a terminal that never replies simply never has its
+        // background touched.
+        if (config.settings.sync_background) self.term.write(ansi.query_background) catch {};
         self.win = self.term.size();
         // The greeting belongs to a buffer session: it must neither clobber a
         // status set before the loop starts (the `zedit <dir>` browser's
@@ -1107,6 +1121,15 @@ pub const Editor = struct {
                 self.dragging = false;
                 return;
             },
+            // The terminal answering the startup background query. Record it
+            // as the colour to restore, and the next frame paints the padding
+            // in the theme's. Never a keystroke: it must not reach showcmd,
+            // dot capture or a pending operator.
+            .background => |c| {
+                self.term.rememberBackground(c.r, c.g, c.b);
+                return;
+            },
+            .osc_reply => return,
             .scroll_up, .scroll_down => |m, tag| {
                 const up = tag == .scroll_up;
                 switch (self.mode) {
@@ -1889,6 +1912,7 @@ pub const Editor = struct {
                 self.resetPending();
             },
             .ctrl_w => {
+                const cnt = self.eff();
                 self.resetPending();
                 const ch: u8 = switch (k) {
                     .char => |c| if (c < 128) @intCast(c) else 0,
@@ -1902,6 +1926,13 @@ pub const Editor = struct {
                     'o' => self.onlyWindow(),
                     'w', 'l', 'j' => self.nextWindow(true),
                     'h', 'k', 'p' => self.nextWindow(false),
+                    // Resize, vim's keys. A count is the number of cells:
+                    // `5Ctrl-w +` grows by five, as `Ctrl-w +` grows by one.
+                    '+' => self.resizeWindow(@intCast(cnt), false),
+                    '-' => self.resizeWindow(-@as(i64, @intCast(cnt)), false),
+                    '>' => self.resizeWindow(@intCast(cnt), true),
+                    '<' => self.resizeWindow(-@as(i64, @intCast(cnt)), true),
+                    '=' => self.equalizeWindows(),
                     else => {},
                 }
             },
@@ -4993,7 +5024,12 @@ pub const Editor = struct {
             return;
         };
         self.split_vertical = vert;
+        // The new window inherits its parent's weight (copied with the rest of
+        // the Win above), so a default split still tiles evenly — vim halves
+        // the parent instead, which is a change of its own and not one this
+        // asked for.
         self.cur = w; // focus the new split
+        self.applyConfigSizes();
     }
 
     /// Close the active window (its document stays open). Refuses the last one.
@@ -6041,7 +6077,7 @@ pub const Editor = struct {
         "cnext",   "copen",   "cprev",     "debug",   "diff",   "earlier",
         "edit",    "format", "later",     "ldiff",    "ls",    "only",   "quit",
         "quitall", "session", "split",    "terminal", "theme", "undolist", "vdiff",
-        "vsplit",  "wall",    "wq",       "write",    "x",
+        "vsplit",  "wall",    "winsave",  "wq",       "write",    "x",
     };
 
     fn wildCommands(self: *Editor, prefix: []const u8) void {
@@ -6147,6 +6183,8 @@ pub const Editor = struct {
             self.splitWindow(false);
         } else if (eql(cmd, "vs") or eql(cmd, "vsp") or eql(cmd, "vsplit")) {
             self.splitWindow(true);
+        } else if (eql(cmd, "winsave")) {
+            try self.saveWindowSizes();
         } else if (eql(cmd, "clo") or eql(cmd, "close")) {
             self.closeWindow();
         } else if (eql(cmd, "on") or eql(cmd, "only")) {
@@ -9778,10 +9816,9 @@ pub const Editor = struct {
         // zero-width window, whose `gw - 1` underflowed and aborted the
         // editor — a tiling accident must degrade, never crash.
         if (self.split_vertical and n > 1) {
-            const each = @max(1, avail / n);
             var x: usize = x0;
             for (self.wins.items, 0..) |w, i| {
-                const want = if (i == n - 1) (if (x0 + avail > x) x0 + avail - x else 1) else each;
+                const want = if (i == n - 1) (if (x0 + avail > x) x0 + avail - x else 1) else self.share(i, avail);
                 w.gx = @min(x, cols);
                 w.gy = 1 + tab_h;
                 w.gw = @max(1, @min(want, cols + 1 -| w.gx));
@@ -9789,10 +9826,9 @@ pub const Editor = struct {
                 x += want;
             }
         } else {
-            const each = @max(1, if (n > 0) total_rows / n else total_rows);
             var y: usize = 1 + tab_h;
             for (self.wins.items, 0..) |w, i| {
-                const want = if (i == n - 1) (if (total_rows + 1 + tab_h > y) total_rows + tab_h - y + 1 else 1) else each;
+                const want = if (i == n - 1) (if (total_rows + 1 + tab_h > y) total_rows + tab_h - y + 1 else 1) else self.share(i, total_rows);
                 w.gx = x0;
                 w.gy = @min(y, self.win.rows);
                 w.gw = avail;
@@ -9800,6 +9836,122 @@ pub const Editor = struct {
                 y += want;
             }
         }
+    }
+
+    /// Window `i`'s slice of `total` cells along the tiling axis, from its
+    /// weight. At least one cell each, and never so greedy that the windows
+    /// after it could not get one — a tiling accident must degrade, not crash.
+    fn share(self: *Editor, i: usize, total: usize) usize {
+        const n = self.wins.items.len;
+        var sum: f64 = 0;
+        for (self.wins.items) |w| sum += w.weight;
+        if (!(sum > 0) or !std.math.isFinite(sum)) return @max(1, total / @max(1, n));
+        const want: f64 = @as(f64, @floatFromInt(total)) * self.wins.items[i].weight / sum;
+        const rest = n - i - 1; // windows still to be placed, one cell minimum
+        const cap = if (total > rest + 1) total - rest - 1 else 1;
+        if (!(want >= 1)) return 1;
+        return @min(cap, @as(usize, @intFromFloat(@round(want))));
+    }
+
+    /// Resize the active window by `delta` cells along the tiling axis, taking
+    /// the difference from (or giving it to) its siblings a cell at a time so
+    /// none is squeezed below one. Weights are then just the resulting sizes:
+    /// relative, so the split holds its proportions through a terminal resize.
+    fn resizeWindow(self: *Editor, delta: i64, vertical_axis: bool) void {
+        const n = self.wins.items.len;
+        if (n < 2) return self.setStatus("only one window", .{});
+        if (vertical_axis != self.split_vertical) {
+            if (self.split_vertical) {
+                self.setStatus("windows are side by side — use Ctrl-w < and >", .{});
+            } else self.setStatus("windows are stacked — use Ctrl-w + and -", .{});
+            return;
+        }
+        if (n > max_tiled) return self.setStatus("too many windows to resize", .{});
+        var cells: [max_tiled]i64 = undefined;
+        var total: i64 = 0;
+        var me: usize = 0;
+        for (self.wins.items, 0..) |w, i| {
+            cells[i] = @intCast(if (self.split_vertical) w.gw else w.gh);
+            total += cells[i];
+            if (w == self.cur) me = i;
+        }
+        // Room to give: everyone else down to one cell.
+        const floor_all: i64 = @intCast(n - 1);
+        const want = std.math.clamp(cells[me] + delta, 1, @max(1, total - floor_all));
+        var move = want - cells[me];
+        // Spread the change over the others one cell at a time, nearest first,
+        // so a `Ctrl-w +` in a three-way split does not flatten the far window.
+        var guard: usize = 0;
+        while (move != 0 and guard < 4096) : (guard += 1) {
+            var acted = false;
+            var step: usize = 1;
+            while (step < n) : (step += 1) {
+                const j = if (me + step < n) me + step else me + step - n;
+                if (j == me) continue;
+                if (move > 0 and cells[j] > 1) {
+                    cells[j] -= 1;
+                    cells[me] += 1;
+                    move -= 1;
+                    acted = true;
+                } else if (move < 0) {
+                    cells[j] += 1;
+                    cells[me] -= 1;
+                    move += 1;
+                    acted = true;
+                }
+                if (move == 0) break;
+            }
+            if (!acted) break; // nothing left to take
+        }
+        for (self.wins.items, 0..) |w, i| w.weight = @floatFromInt(@max(1, cells[i]));
+    }
+
+    /// Every window the same size again (vim's `Ctrl-w =`).
+    fn equalizeWindows(self: *Editor) void {
+        for (self.wins.items) |w| w.weight = 1;
+        self.setStatus("windows equalized", .{});
+    }
+
+    /// Apply `split_sizes` from the config when it names exactly this many
+    /// windows. Called after a split, so a saved layout comes back by itself.
+    fn applyConfigSizes(self: *Editor) void {
+        const n = self.wins.items.len;
+        var have: usize = 0;
+        for (config.settings.split_sizes) |v| {
+            if (v <= 0) break;
+            have += 1;
+        }
+        if (have != n) return;
+        for (self.wins.items, 0..) |w, i| w.weight = config.settings.split_sizes[i];
+    }
+
+    /// Write the current proportions to the config file, so the next session
+    /// splits the same way. Normalised to sum to the window count, which keeps
+    /// the numbers readable (`1,2` rather than `41,82`) and, being relative,
+    /// correct on any terminal.
+    fn saveWindowSizes(self: *Editor) !void {
+        const n = self.wins.items.len;
+        if (n < 2) return self.setStatus("only one window — nothing to save", .{});
+        if (n > config.settings.split_sizes.len)
+            return self.setStatus("too many windows to save (at most {d})", .{config.settings.split_sizes.len});
+        var sum: f64 = 0;
+        for (self.wins.items) |w| sum += w.weight;
+        if (!(sum > 0)) return;
+        var buf: [128]u8 = undefined;
+        var out: std.Io.Writer = .fixed(&buf);
+        for (self.wins.items, 0..) |w, i| {
+            if (i > 0) out.writeByte(',') catch break;
+            out.print("{d:.2}", .{w.weight * @as(f64, @floatFromInt(n)) / sum}) catch break;
+        }
+        const text = out.buffered();
+        config.saveKey(self.gpa, self.io, "split_sizes", text) catch |e| {
+            self.setStatus("could not save window sizes: {s}", .{@errorName(e)});
+            return;
+        };
+        // Keep the running settings in step, so a later `:winsave`-free split
+        // in this same session picks the layout up too.
+        config.settings.split_sizes = config.parseSizes(text);
+        self.setStatus("window sizes saved ({s})", .{text});
     }
 
     fn buildView(self: *Editor, w: *Win) View {
@@ -10468,6 +10620,10 @@ pub const Editor = struct {
 
     fn render(self: *Editor) !void {
         var sp = log.Span.start();
+        // Keep the window padding on the theme's background. Idempotent, so
+        // this is a comparison per frame until a theme actually changes.
+        if (config.settings.sync_background)
+            self.term.setBackground(theme.current.bg.r, theme.current.bg.g, theme.current.bg.b);
         self.style_buf_of = null; // styles are per frame; the text may have changed
         self.frame.clearRetainingCapacity();
         self.cur_fg = null;
@@ -11921,6 +12077,10 @@ fn incompleteEscapeTail(buf: []const u8) bool {
     const idx = std.mem.lastIndexOfScalar(u8, buf, 0x1b) orelse return false;
     const tail = buf[idx..];
     if (tail.len == 1) return true; // lone ESC: maybe a sequence, maybe the key
+    // OSC (`ESC ] … BEL` / `ESC ] … ST`) is unfinished until its terminator.
+    // The ST case already resolves through the ESC of the ST itself; a
+    // BEL-terminated reply split across reads needs this.
+    if (tail[1] == ']') return std.mem.indexOfScalar(u8, tail, 0x07) == null;
     if (tail[1] != '[' and tail[1] != 'O') return false; // ESC+other: complete
     if (tail.len == 2) return true; // introducer without its body yet
     if (tail[1] == 'O') return false; // SS3 is exactly three bytes

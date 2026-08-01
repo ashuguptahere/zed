@@ -53,6 +53,18 @@ pub const Settings = struct {
     /// Wrap a line too long for the window onto the next screen row instead
     /// of scrolling sideways (vim's `wrap`, on by default there too). `j`/`k`
     /// still move by buffer line, as in vim; `gj`/`gk` move by screen row.
+    /// Paint the terminal's window background in the theme's colour, so the
+    /// few pixels of padding outside the character grid — the strip along the
+    /// bottom and right edge of most terminal windows — match the editor
+    /// instead of showing through in the terminal's own colour. The original
+    /// is restored on exit. Only ever applied to a terminal that answers the
+    /// colour query, so one that ignores OSC 11 is never left recoloured.
+    sync_background: bool = true,
+    /// Relative window sizes, applied when a split has exactly this many
+    /// windows — `1,2` makes the second twice the first, and being relative
+    /// it holds at any terminal size. Zero-length (the default) tiles evenly.
+    /// `Ctrl-w +`/`-`/`<`/`>` resize live; `:winsave` writes the result here.
+    split_sizes: [8]f64 = @splat(0),
     soft_wrap: bool = true,
     /// Repeat a wrapped line's indent in front of every continuation row, so
     /// it stays under its own first character (vim's `breakindent`). Capped at
@@ -159,6 +171,16 @@ pub const default_text =
     \\# Wrap long lines onto the next screen row instead of scrolling the view
     \\# sideways (vim's 'wrap'). j/k still step whole buffer lines; gj/gk step
     \\# screen rows. Set false to scroll horizontally instead.
+    \\# Relative window sizes for a split with this many windows, e.g. "1,2"
+    \\# for a third and two thirds. Empty tiles evenly. `Ctrl-w +`/`-`/`<`/`>`
+    \\# resize live and `:winsave` writes the current proportions here.
+    \\split_sizes =
+    \\
+    \\# Paint the terminal's window padding (the strip outside the character
+    \\# grid, along the bottom and right edges) in the theme's background
+    \\# colour. Restored on exit.
+    \\sync_background = true
+    \\
     \\soft_wrap = true
     \\
     \\# Repeat a wrapped line's indent on its continuation rows, so a wrapped
@@ -249,6 +271,10 @@ pub fn apply(text: []const u8) void {
             } else |_| {}
         } else if (std.mem.eql(u8, key, "persistent_undo")) {
             if (parseBool(value)) |b| settings.persistent_undo = b;
+        } else if (std.mem.eql(u8, key, "split_sizes")) {
+            settings.split_sizes = parseSizes(value);
+        } else if (std.mem.eql(u8, key, "sync_background")) {
+            if (parseBool(value)) |b| settings.sync_background = b;
         } else if (std.mem.eql(u8, key, "soft_wrap")) {
             if (parseBool(value)) |b| settings.soft_wrap = b;
         } else if (std.mem.eql(u8, key, "buffer_completion")) {
@@ -300,6 +326,28 @@ pub fn setKeyIn(gpa: std.mem.Allocator, text: []const u8, key: []const u8, value
         try out.print(gpa, "{s} = {s}\n", .{ key, value });
     }
     return out.toOwnedSlice(gpa);
+}
+
+/// A comma-separated list of relative window sizes. A non-positive or
+/// unparseable entry voids the whole list rather than silently tiling on a
+/// half-read one — a layout is all of its parts.
+pub fn parseSizes(value: []const u8) [8]f64 {
+    var out: [8]f64 = @splat(0);
+    var n: usize = 0;
+    var it = std.mem.splitScalar(u8, value, ',');
+    while (it.next()) |part| {
+        const t = std.mem.trim(u8, part, " \t");
+        if (t.len == 0) {
+            if (n == 0 and it.peek() == null) return out; // an empty setting
+            return @splat(0);
+        }
+        if (n == out.len) return @splat(0); // more windows than we persist
+        const v = std.fmt.parseFloat(f64, t) catch return @splat(0);
+        if (!(v > 0) or !std.math.isFinite(v)) return @splat(0);
+        out[n] = v;
+        n += 1;
+    }
+    return out;
 }
 
 /// Persist one setting to the config file `load` used, creating it (and its
@@ -477,4 +525,41 @@ test "indented settings are recognised and normalised" {
 
 test "only the first occurrence is rewritten" {
     try expectSet("theme = a\ntheme = b\n", "theme", "c", "theme = c\ntheme = b\n");
+}
+
+test "split sizes parse into relative weights" {
+    settings = .{};
+    apply("split_sizes = 1,2");
+    try testing.expectEqual(@as(f64, 1), settings.split_sizes[0]);
+    try testing.expectEqual(@as(f64, 2), settings.split_sizes[1]);
+    try testing.expectEqual(@as(f64, 0), settings.split_sizes[2]); // the list ends
+    settings = .{};
+    apply("split_sizes = 0.25 , 0.75");
+    try testing.expectEqual(@as(f64, 0.25), settings.split_sizes[0]);
+    try testing.expectEqual(@as(f64, 0.75), settings.split_sizes[1]);
+    settings = .{};
+}
+
+test "a broken size list is dropped whole rather than half-applied" {
+    // Tiling on the readable prefix would put the windows somewhere the user
+    // never asked for; even tiling is the honest answer.
+    for ([_][]const u8{
+        "split_sizes = 1,x",   // not a number
+        "split_sizes = 1,0",   // a window with no width
+        "split_sizes = 1,-2",  // negative
+        "split_sizes = 1,,2",  // a hole in the middle
+        "split_sizes = 1,2,3,4,5,6,7,8,9", // more than we keep
+    }) |text| {
+        settings = .{};
+        apply(text);
+        try testing.expectEqual(@as(f64, 0), settings.split_sizes[0]);
+    }
+    settings = .{};
+}
+
+test "an empty split_sizes is simply no layout" {
+    settings = .{};
+    apply("split_sizes =");
+    try testing.expectEqual(@as(f64, 0), settings.split_sizes[0]);
+    settings = .{};
 }

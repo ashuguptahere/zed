@@ -351,4 +351,75 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send(":q!\r");
         s.drain(200);
     }
+
+    // The terminal's own window background — the padding outside the character
+    // grid, which is the strip along the bottom and right edge of the window.
+    // zedit asks what colour it is, paints it in the theme's, and puts the
+    // original back on the way out.
+    {
+        const f = h.join(ctx, dir, "bg.txt");
+        defer ctx.gpa.free(f);
+        h.writeFile(ctx.io, f, "alpha\n");
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ ctx.zedit, "--lsp", "", "bg.txt" },
+            .cwd = dir,
+            .term = "xterm-256color",
+        });
+        defer s.finish();
+        s.drain(600);
+        ctx.check("the background colour is queried at startup", s.contains("\x1b]11;?"));
+        // Nothing is set until the terminal answers: one that ignores OSC 11
+        // must never be left recoloured.
+        ctx.check("nothing is set before the terminal answers", !s.contains("\x1b]11;rgb:"));
+
+        // Answer as a terminal would, in a colour no theme uses so a restore
+        // is unambiguous.
+        var m = s.mark();
+        s.send("\x1b]11;rgb:8080/0000/8080\x1b\\");
+        s.drain(500);
+        // (That the reply never reaches the *document* is the check below,
+        // against the saved file — the output stream carries zedit's own OSC
+        // writes, so searching it for the payload proves nothing.)
+        ctx.check("the padding is painted in the theme's background",
+            s.containsSince(m, "\x1b]11;rgb:1a/1b/26\x1b\\")); // tokyonight #1a1b26
+
+        m = s.mark();
+        s.send(":theme gruvbox\r");
+        s.drain(500);
+        ctx.check("and follows a theme change",
+            s.containsSince(m, "\x1b]11;rgb:28/28/28\x1b\\")); // gruvbox #282828
+
+        m = s.mark();
+        s.send(":q!\r");
+        s.drain(600);
+        ctx.check("the terminal's own colour is restored on exit",
+            s.containsSince(m, "\x1b]11;rgb:80/00/80\x1b\\"));
+    }
+
+    // The reply must never reach the document. Before OSC was decoded, `ESC ]`
+    // read as the Escape key and the rest of the report was typed in as text.
+    {
+        const f = h.join(ctx, dir, "inert.txt");
+        defer ctx.gpa.free(f);
+        h.writeFile(ctx.io, f, "alpha\n");
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ ctx.zedit, "--lsp", "", "inert.txt" },
+            .cwd = dir,
+            .term = "xterm-256color",
+        });
+        defer s.finish();
+        s.drain(600);
+        s.send("i"); // insert mode: any stray byte would land in the buffer
+        s.drain(200);
+        s.send("\x1b]11;rgb:8080/0000/8080\x1b\\");
+        s.drain(300);
+        s.send("\x1b]10;rgb:c0c0/c0c0/c0c0\x07"); // an unrelated reply, BEL-terminated
+        s.drain(300);
+        s.send("X\x1b:wq\r");
+        s.drain(600);
+        const got = h.readFile(ctx.gpa, ctx.io, f);
+        defer ctx.gpa.free(got);
+        ctx.check("an OSC reply arriving in insert mode leaves the text alone",
+            std.mem.eql(u8, got, "Xalpha\n"));
+    }
 }

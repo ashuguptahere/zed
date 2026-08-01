@@ -2,6 +2,37 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.42.0 - 2026-08-01
+
+### Added
+
+- **Window resizing.** `Ctrl-w +`/`-` make the focused window taller/shorter,
+  `Ctrl-w <`/`>` narrower/wider, and `Ctrl-w =` tiles evenly again. A count is
+  a number of cells (`5 Ctrl-w +`). The difference comes from the other
+  windows a cell at a time, so none is squeezed below one, and asking for the
+  wrong axis says which keys to use instead of doing nothing.
+- **Relative window sizes, saved.** A window now carries a *weight* rather
+  than a size, so a layout means the same at any terminal size. `:winsave`
+  writes the current proportions to the config as `split_sizes` (normalised
+  to sum to the window count, so they read `1,2` rather than `41,82`), and a
+  later split with that many windows picks them up by itself.
+
+### Fixed
+
+- **The strip of the terminal's own colour along the window edge.** A terminal
+  window is rarely an exact multiple of the cell size, and the leftover pixels
+  along the bottom and right edges are painted by the terminal in *its*
+  background colour. Every cell of the grid was already painted — measured, no
+  row and no cell is ever left on the default background — so this was never a
+  renderer gap. zedit now asks the terminal for its background colour
+  (`OSC 11`), paints the window in the theme's, follows a theme change, and
+  restores the original on exit, panic path included. A terminal that ignores
+  the query is never recoloured: no answer, no change. Config
+  `sync_background`.
+- **OSC replies are no longer typed into the buffer.** `ESC ]` decoded as the
+  Escape *key*, leaving the rest of a terminal's reply to land as text. They
+  are now consumed whole, inert.
+
 ## 0.41.0 - 2026-08-01
 
 ### Fixed

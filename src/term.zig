@@ -48,7 +48,16 @@ pub const ansi = struct {
     pub const hide_cursor = "\x1b[?25l";
     pub const show_cursor = "\x1b[?25h";
     pub const reset_attrs = "\x1b[m";
+    /// Ask the terminal what background colour it paints the window with. The
+    /// reply comes back on stdin as an OSC 11 report (`key.zig` decodes it).
+    pub const query_background = "\x1b]11;?\x1b\\";
 };
+
+/// `OSC 11 ; rgb:RR/GG/BB ST` — set the terminal's background colour, written
+/// into `buf` (which must hold 32 bytes).
+pub fn setBackgroundSeq(buf: []u8, r: u8, g: u8, b: u8) []const u8 {
+    return std.fmt.bufPrint(buf, "\x1b]11;rgb:{x:0>2}/{x:0>2}/{x:0>2}\x1b\\", .{ r, g, b }) catch "";
+}
 
 /// Window dimensions in character cells.
 pub const Size = struct {
@@ -64,6 +73,12 @@ pub const Terminal = struct {
     original: posix.termios,
     raw_enabled: bool,
     alt_active: bool,
+    /// The background colour the terminal had when zedit started, learned from
+    /// its answer to `query_background`. Restored on the way out — including
+    /// the panic path, which is why it lives here and not in the editor.
+    orig_bg: ?[3]u8 = null,
+    bg_changed: bool = false,
+    applied_bg: ?[3]u8 = null,
 
     /// Capture the current terminal settings. Fails cleanly when stdin is not
     /// a terminal (e.g. piped input), letting `main` print a friendly message.
@@ -141,8 +156,43 @@ pub const Terminal = struct {
         self.alt_active = true;
     }
 
+    /// Paint the terminal's own background — the window padding the character
+    /// grid cannot reach — in the theme's colour. Only ever called once the
+    /// terminal has answered `query_background`, so a terminal that ignores
+    /// OSC 11 is never left recoloured: no answer, no change.
+    pub fn setBackground(self: *Terminal, r: u8, g: u8, b: u8) void {
+        if (self.orig_bg == null) return;
+        // Idempotent, so the render loop can simply call this every frame and
+        // a theme change — including the picker's live preview — is picked up
+        // with no separate notification path.
+        if (self.applied_bg) |a| {
+            if (a[0] == r and a[1] == g and a[2] == b) return;
+        }
+        self.applied_bg = .{ r, g, b };
+        var buf: [32]u8 = undefined;
+        self.write(setBackgroundSeq(&buf, r, g, b)) catch return;
+        self.bg_changed = true;
+    }
+
+    /// Remember the terminal's original background, the first answer winning —
+    /// a later query (a theme change re-asks nothing, but a stray reply could
+    /// arrive) must not record the colour zedit itself just set.
+    pub fn rememberBackground(self: *Terminal, r: u8, g: u8, b: u8) void {
+        if (self.orig_bg == null) self.orig_bg = .{ r, g, b };
+    }
+
+    fn restoreBackground(self: *Terminal) void {
+        if (!self.bg_changed) return;
+        const o = self.orig_bg orelse return;
+        var buf: [32]u8 = undefined;
+        self.write(setBackgroundSeq(&buf, o[0], o[1], o[2])) catch {};
+        self.bg_changed = false;
+        self.applied_bg = null;
+    }
+
     fn leaveAltScreen(self: *Terminal) void {
         if (!self.alt_active) return;
+        self.restoreBackground();
         self.write(ansi.disable_mouse) catch {};
         self.write(ansi.disable_bracketed_paste) catch {};
         self.write(ansi.show_cursor) catch {};

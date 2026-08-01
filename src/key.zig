@@ -12,8 +12,18 @@ const unicode = @import("unicode.zig");
 /// A mouse event, at 1-based screen coordinates.
 pub const Mouse = struct { row: u16, col: u16 };
 
+/// An 8-bit-per-channel colour, as an OSC colour report carries it.
+pub const Rgb = struct { r: u8, g: u8, b: u8 };
+
 pub const Key = union(enum) {
     char: u21,
+    /// The terminal's answer to `OSC 11 ; ? ST` — the background colour it is
+    /// painting the window with, ours to restore on the way out.
+    background: Rgb,
+    /// Any other OSC reply. Inert like `mouse_other`, and for the same reason:
+    /// it must be swallowed whole rather than decoded as `Esc` and then the
+    /// payload as text, which is what typed `]11;rgb:1a1b/...` into the buffer.
+    osc_reply,
     mouse_press: Mouse, // left button down
     mouse_drag: Mouse, // motion while the left button is held
     mouse_release: Mouse, // left button up
@@ -69,9 +79,10 @@ fn decodeChar(bytes: []const u8) Decoded {
 
 fn decodeEscape(bytes: []const u8) Decoded {
     // Lone ESC, or ESC not followed by a recognised introducer.
-    if (bytes.len < 2 or (bytes[1] != '[' and bytes[1] != 'O')) {
+    if (bytes.len < 2 or (bytes[1] != '[' and bytes[1] != 'O' and bytes[1] != ']')) {
         return .{ .key = .escape, .consumed = 1 };
     }
+    if (bytes[1] == ']') return decodeOsc(bytes);
     if (bytes.len < 3) return .{ .key = .escape, .consumed = 1 };
 
     // SS3 sequences: ESC O <final>  (e.g. some terminals' Home/End/arrows).
@@ -93,6 +104,53 @@ fn decodeEscape(bytes: []const u8) Decoded {
         '0'...'9' => return decodeCsiNumeric(bytes),
         else => return .{ .key = .unknown, .consumed = 3 },
     }
+}
+
+/// An OSC reply: `ESC ] <body> BEL` or `ESC ] <body> ESC \`. Only the editor's
+/// own background query (`OSC 11`) means anything; every other reply is
+/// consumed and dropped. An unterminated one consumes the whole buffer rather
+/// than leaking its bytes as text — `incompleteEscapeTail` normally holds a
+/// split reply back until its terminator arrives, so this is the last resort
+/// for a reply longer than one read of the input buffer.
+fn decodeOsc(bytes: []const u8) Decoded {
+    var i: usize = 2;
+    while (i < bytes.len) : (i += 1) {
+        const end = if (bytes[i] == 0x07) i else if (bytes[i] == 0x1b and i + 1 < bytes.len and bytes[i + 1] == '\\') i else continue;
+        const consumed = if (bytes[end] == 0x07) end + 1 else end + 2;
+        const body = bytes[2..end];
+        if (parseBackgroundReply(body)) |rgb| return .{ .key = .{ .background = rgb }, .consumed = consumed };
+        return .{ .key = .osc_reply, .consumed = consumed };
+    }
+    return .{ .key = .osc_reply, .consumed = bytes.len };
+}
+
+/// `11;rgb:RRRR/GGGG/BBBB` (xterm's format — 1 to 4 hex digits a channel,
+/// scaled to 8 bits) or `11;#RRGGBB`. Null when it is not a colour report.
+fn parseBackgroundReply(body: []const u8) ?Rgb {
+    if (!std.mem.startsWith(u8, body, "11;")) return null;
+    const spec = body[3..];
+    if (std.mem.startsWith(u8, spec, "rgb:")) {
+        var it = std.mem.splitScalar(u8, spec[4..], '/');
+        var out: [3]u8 = undefined;
+        for (&out) |*ch| ch.* = scaleHexChannel(it.next() orelse return null) orelse return null;
+        if (it.next() != null) return null; // more than three channels: not this
+        return .{ .r = out[0], .g = out[1], .b = out[2] };
+    }
+    if (spec.len == 7 and spec[0] == '#') {
+        var out: [3]u8 = undefined;
+        for (&out, 0..) |*ch, i| ch.* = std.fmt.parseInt(u8, spec[1 + i * 2 ..][0..2], 16) catch return null;
+        return .{ .r = out[0], .g = out[1], .b = out[2] };
+    }
+    return null;
+}
+
+/// One `rgb:` channel to 8 bits. The width carries the scale: `f` is full
+/// intensity just as `ffff` is, so a 1-digit channel is not simply truncated.
+fn scaleHexChannel(text: []const u8) ?u8 {
+    if (text.len == 0 or text.len > 4) return null;
+    const v = std.fmt.parseInt(u16, text, 16) catch return null;
+    const max: u32 = (@as(u32, 1) << @intCast(4 * text.len)) - 1;
+    return @intCast((@as(u32, v) * 255 + max / 2) / max);
 }
 
 fn ss3(final: u8) Key {
@@ -265,4 +323,43 @@ test "decode utf8 char" {
     const d = decode("世");
     try std.testing.expectEqual(@as(u21, 0x4E16), d.key.char);
     try std.testing.expectEqual(@as(usize, 3), d.consumed);
+}
+
+test "an OSC background reply decodes to the colour, not to Esc and text" {
+    // The bug this exists to stop: `ESC ]` used to decode as the Escape key,
+    // leaving `11;rgb:...` to be typed into the buffer as ordinary characters.
+    const d = decode("\x1b]11;rgb:1a1a/1b1b/2626\x1b\\");
+    try std.testing.expectEqual(Key{ .background = .{ .r = 0x1a, .g = 0x1b, .b = 0x26 } }, d.key);
+    try std.testing.expectEqual(@as(usize, 25), d.consumed);
+}
+
+test "a BEL-terminated reply works the same as an ST-terminated one" {
+    const d = decode("\x1b]11;rgb:1a1a/1b1b/2626\x07");
+    try std.testing.expectEqual(Key{ .background = .{ .r = 0x1a, .g = 0x1b, .b = 0x26 } }, d.key);
+    try std.testing.expectEqual(@as(usize, 24), d.consumed);
+}
+
+test "short channels scale rather than truncate" {
+    // `f` is full intensity, as `ffff` is — truncating would read it as 15.
+    try std.testing.expectEqual(Key{ .background = .{ .r = 255, .g = 0, .b = 136 } }, decode("\x1b]11;rgb:f/0/8\x07").key);
+    try std.testing.expectEqual(Key{ .background = .{ .r = 0x12, .g = 0x34, .b = 0x56 } }, decode("\x1b]11;#123456\x07").key);
+}
+
+test "another OSC reply is swallowed whole" {
+    const d = decode("\x1b]10;rgb:c0c0/c0c0/c0c0\x1b\\rest");
+    try std.testing.expectEqual(Key.osc_reply, d.key);
+    try std.testing.expectEqual(@as(usize, 25), d.consumed); // `rest` is left for the next decode
+}
+
+test "a malformed colour reply is inert rather than a wrong colour" {
+    try std.testing.expectEqual(Key.osc_reply, decode("\x1b]11;rgb:zz/00/00\x07").key);
+    try std.testing.expectEqual(Key.osc_reply, decode("\x1b]11;rgb:11/22\x07").key);
+    try std.testing.expectEqual(Key.osc_reply, decode("\x1b]11;rgb:1/2/3/4\x07").key);
+    try std.testing.expectEqual(Key.osc_reply, decode("\x1b]11;plum\x07").key);
+}
+
+test "an unterminated reply consumes the buffer instead of leaking text" {
+    const d = decode("\x1b]11;rgb:1a1a/1b1b");
+    try std.testing.expectEqual(Key.osc_reply, d.key);
+    try std.testing.expectEqual(@as(usize, 18), d.consumed);
 }

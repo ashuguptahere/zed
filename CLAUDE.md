@@ -1093,12 +1093,41 @@ slow SSH links snappy. Input reads complete
 escape sequences split across chunks (SSH delivers small reads) before
 decoding.
 
+**The window padding matches the theme.** A terminal window is rarely an
+exact multiple of the cell size, so a few pixels are left over along the
+bottom and right edges — painted by the terminal in *its* background colour,
+which is the strip that showed through beside a themed editor. Every cell of
+the grid is painted (measured: no row, and no cell, is ever left on the
+default background), so the fix is not in the renderer: zedit asks the
+terminal for its background (`OSC 11 ; ? ST`), paints the window in the
+theme's (`OSC 11 ; rgb:…`), and restores the original on the way out —
+including the panic path, which is why the state lives in `term.zig` rather
+than the editor. `setBackground` is idempotent, so `render` simply calls it
+every frame and a theme change (the picker's live preview included) is
+picked up with no notification path. A terminal that ignores the query is
+never recoloured at all: no answer, no change. Config `sync_background`.
+The reply arrives on stdin like any other input, which is why `key.zig`
+decodes OSC at all — before it did, `ESC ]` read as the Escape *key* and the
+rest of the report was typed into the buffer as text.
+
+**Window sizes are relative.** `Ctrl-w +`/`-`/`<`/`>` resize the focused
+window by a cell or a count, `Ctrl-w =` evens them up, and the difference is
+taken from the other windows a cell at a time so none is squeezed below one.
+A `Win` carries a `weight` rather than a size, and `layout` divides the axis
+by weight (`share`) — so a layout survives a terminal resize and means the
+same on any screen. That is what makes it worth persisting: `:winsave`
+writes the proportions to the config as `split_sizes` (normalised to sum to
+the window count, so they read `1,2` rather than `41,82`), and a later split
+with that many windows picks them up by itself. A plain split still tiles
+evenly: the new window inherits its parent's weight, so nothing changes until
+a resize or a saved layout says otherwise.
+
 Runtime configuration is one documented file (see `config.zig`): theme,
 `tab_width`, `nerd_font`, `sidebar` (left/right), `relative_numbers`,
 `large_file_mb`, `autoindent`, `buffer_tabs`, `auto_completion`,
 `completion_delay_ms`, `inline_diagnostics`, `soft_wrap`, `wrap_indent`,
 `wrap_column`, `persistent_undo`, `format_on_save`, `cmdline_suggestions`,
-`buffer_completion`, `mouse`, `mousetime`;
+`buffer_completion`, `mouse`, `mousetime`, `sync_background`, `split_sizes`;
 `zedit --init-config` writes the annotated default.
 `zedit --tutor` opens the embedded interactive tutorial (`doc/tutor.txt`,
 embedded via `build.zig`).
