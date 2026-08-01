@@ -856,16 +856,6 @@ fn narrowByKeystroke(ctx: *h.Ctx) !void {
 /// is the draw-here-click-here invariant stated directly.
 const Cell = struct { row: usize, col: usize };
 
-/// The column `needle` sits at on one exact row, or null. The result list and
-/// the preview both name the selected file, so "find alpha.txt anywhere" finds
-/// the preview's title first — the row has to be pinned.
-fn colOnRow(ctx: *h.Ctx, s: *h.Session, row: usize, needle: []const u8) ?usize {
-    var scr = h.Screen.init(ctx.gpa, 24, 110) catch return null;
-    defer scr.deinit();
-    scr.apply(s.out.items);
-    return scr.colOf(ctx.gpa, row, needle);
-}
-
 fn cellOf(ctx: *h.Ctx, s: *h.Session, needle: []const u8, max_col: usize) ?Cell {
     var scr = h.Screen.init(ctx.gpa, 24, 110) catch return null;
     defer scr.deinit();
@@ -879,8 +869,11 @@ fn cellOf(ctx: *h.Ctx, s: *h.Session, needle: []const u8, max_col: usize) ?Cell 
     return null;
 }
 
-/// The `▶` selection marker's screen row, wherever the results are drawn.
-fn markerRow(ctx: *h.Ctx, s: *h.Session) ?usize {
+/// The `▶` selection marker's cell, wherever the results are drawn. The row
+/// *and* the column: the results are in project-walk order, which is the
+/// filesystem's and so differs between machines, meaning no particular
+/// filename can be relied on to be the selected one. The marker can.
+fn markerAt(ctx: *h.Ctx, s: *h.Session) ?Cell {
     var scr = h.Screen.init(ctx.gpa, 24, 110) catch return null;
     defer scr.deinit();
     scr.apply(s.out.items);
@@ -888,10 +881,14 @@ fn markerRow(ctx: *h.Ctx, s: *h.Session) ?usize {
     while (row <= 24) : (row += 1) {
         var col: usize = 1;
         while (col <= 110) : (col += 1) {
-            if (scr.at(row, col).cp == 0x25B6) return row;
+            if (scr.at(row, col).cp == 0x25B6) return .{ .row = row, .col = col };
         }
     }
     return null;
+}
+
+fn markerRow(ctx: *h.Ctx, s: *h.Session) ?usize {
+    return (markerAt(ctx, s) orelse return null).row;
 }
 
 /// The floating picker's border rectangle, found by its own corner glyphs —
@@ -1024,13 +1021,15 @@ fn pickerClicks(ctx: *h.Ctx) !void {
         var list_col: usize = 0;
         const settle = h.nowMs() + 5000;
         while (h.nowMs() < settle) {
-            first_row = markerRow(ctx, &s) orelse 0;
-            list_col = if (first_row != 0) (colOnRow(ctx, &s, first_row, "alpha.txt") orelse 0) else 0;
-            if (first_row != 0 and list_col != 0 and cellFilled(ctx, &s, first_row + 1, list_col)) break;
+            if (markerAt(ctx, &s)) |m| {
+                first_row = m.row;
+                list_col = m.col + 2; // the text starts after "▶ "
+            }
+            if (first_row != 0 and cellFilled(ctx, &s, first_row + 1, list_col)) break;
             s.drain(150);
         }
         ctx.check("the result list settled with a row to click",
-            first_row != 0 and list_col != 0 and cellFilled(ctx, &s, first_row + 1, list_col));
+            first_row != 0 and cellFilled(ctx, &s, first_row + 1, list_col));
         clickAt(&s, ctx, .{ .row = first_row + 1, .col = list_col });
         s.drain(400);
         ctx.check("clicking a result row selects it", markerRow(ctx, &s) == first_row + 1);

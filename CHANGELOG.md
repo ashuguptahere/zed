@@ -2,6 +2,17 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.44.2 - 2026-08-01
+
+### Fixed
+
+- The floating-picker click tests keyed on a *filename* being the selected
+  result. Results arrive in project-walk order, which is the filesystem's and
+  so differs between machines — the row that is selected on a workstation is
+  not the one selected on CI, which is why 0.44.1's polling never settled: it
+  was waiting for something that was never going to be true there. They now
+  anchor to the selection marker itself, which is order-independent.
+
 ## 0.44.1 - 2026-08-01
 
 ### Fixed
