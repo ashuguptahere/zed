@@ -479,6 +479,18 @@ fn blockInsert(ctx: *h.Ctx) void {
     h.case(ctx, target, "nvim#bi4 I at column 0 reaches the empty line", &.{ CV ++ "jj", "I", "Z", ESC, ":wq", CR }, "ab\n\ncd\n", "Zab\nZ\nZcd\n");
     h.case(ctx, target, "nvim#bi5 c skips a line short of the left edge", &.{ "ll" ++ CV ++ "jj", "c", "Z", ESC, ":wq", CR }, gap, "abZd\n\nefZh\n");
     h.case(ctx, target, "nvim#bi6 A over a whole block types on every row", &.{ CV ++ "jjl", "A", "XY", ESC, ":wq", CR }, "abcd\nef\nghij\n", "abXYcd\nefXY\nghXYij\n");
+    // `[count]` before a blockwise `A`/`I`: every caret types the text that
+    // many times, exactly as the plain `3a` family does.
+    const blk = "abcd\nefgh\nijkl\n";
+    h.case(ctx, target, "nvim#bc1 3A types on every row", &.{ CV ++ "jj", "3A", "X", ESC, ":wq", CR }, blk, "aXXXbcd\neXXXfgh\niXXXjkl\n");
+    h.case(ctx, target, "nvim#bc2 3I types on every row", &.{ CV ++ "jj", "3I", "X", ESC, ":wq", CR }, blk, "XXXabcd\nXXXefgh\nXXXijkl\n");
+    h.case(ctx, target, "nvim#bc3 the whole typed text repeats", &.{ CV ++ "jj", "2A", "xy", ESC, ":wq", CR }, blk, "axyxybcd\nexyxyfgh\nixyxyjkl\n");
+    h.case(ctx, target, "nvim#bc4 a wider block still appends at its right edge", &.{ CV ++ "jjl", "3A", "X", ESC, ":wq", CR }, blk, "abXXXcd\nefXXXgh\nijXXXkl\n");
+    h.case(ctx, target, "nvim#bc5 3I still skips a line short of the edge", &.{ "ll" ++ CV ++ "jj", "3I", "Z", ESC, ":wq", CR }, "abcd\nef\nghij\n", "abZZZcd\nefZZZ\nghZZZij\n");
+    h.case(ctx, target, "nvim#bc6 3A still pads a line short of the edge", &.{ "l" ++ CV ++ "jj", "3A", "Z", ESC, ":wq", CR }, "abcd\n\nefgh\n", "abZZZcd\n  ZZZ\nefZZZgh\n");
+    h.case(ctx, target, "nvim#bc7 $3A appends at each line's own end", &.{ CV ++ "jj$", "3A", "Z", ESC, ":wq", CR }, "abcd\nef\nghij\n", "abcdZZZ\nefZZZ\nghijZZZ\n");
+    h.case(ctx, target, "nvim#bc8 a count does not reach blockwise c", &.{ CV ++ "jj", "3c", "X", ESC, ":wq", CR }, blk, "Xbcd\nXfgh\nXjkl\n");
+    h.case(ctx, target, "nvim#bc9 u undoes the whole counted insert", &.{ CV ++ "jj", "3A", "X", ESC, "u", ":wq", CR }, blk, blk);
     h.case(ctx, target, "nvim#bi7 u undoes the padding with the insert", &.{ "l" ++ CV ++ "jj", "A", "Z", ESC, "u", ":wq", CR }, gap, gap);
     // `$`: the block follows each line's own end, so `A` appends there and
     // pads nothing — while `I` still works off the left edge.

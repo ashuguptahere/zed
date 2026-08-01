@@ -2,6 +2,17 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.45.1 - 2026-08-01
+
+### Added
+
+- **`[count]` before a blockwise `A`/`I`** types the text that many times at
+  *every* caret (`3A`, `3I`), which was the last `[count]`-before-insert gap.
+  The repeat has to run before the multi-caret Esc collapses the carets —
+  that is the only moment they all still exist. Short lines keep vim's
+  asymmetry (`A` pads, `I` skips), `$A` still appends at each line's own end,
+  a count does not reach blockwise `c`, and one `u` undoes the lot.
+
 ## 0.45.0 - 2026-08-01
 
 Every vim gap on the tracker, each probed against real nvim before and after,

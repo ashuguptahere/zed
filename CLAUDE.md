@@ -513,7 +513,9 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   swaps ends, then `d c y x > <`. In block mode `I`/`A` insert at the left/right
   edge of every selected line (via the multi-cursor machinery), with vim's
   asymmetry on lines that do not reach the block: `A` pads one out with
-  spaces, while `I` and `c` skip it. `$` extends the block to each line's own
+  spaces, while `I` and `c` skip it. A `[count]` types the text that many
+  times at *every* caret (`3A`, `3I`); the repeat runs before the carets are
+  collapsed, which is the only moment they still exist. `$` extends the block to each line's own
   end — and keeps doing so as `j`/`k` grow it — so `$A` appends at every
   line's end and pads nothing; any motion naming a column ends it. `y`/`d`/`x`
   fill a blockwise register (see Registers/paste).
@@ -1243,9 +1245,9 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
 - Vim gaps: paragraph objects/motions treat only truly empty lines as
   boundaries (vim's rule; `nroff`-style paragraph macros in `'paragraphs'`
   aren't supported), and there are no sentence objects (`is`/`as`, `(`/`)`).
-  `[count]` before a *blockwise* `3A`/`3I` still inserts once; the plain
-  family (`3a`, `3i`, `3A`, `3I`, `3o`, `3O`) types the text `[count]` times
-  as vim does (`nvim#ic1`-`ic10`). Dot-repeat and macros
+  `[count]` before an insert types the text that many times, as vim does —
+  the plain family (`3a`, `3i`, `3A`, `3I`, `3o`, `3O`, `nvim#ic1`-`ic10`) and
+  the blockwise `3A`/`3I`, where every caret repeats it (`nvim#bc1`-`bc9`). Dot-repeat and macros
   are otherwise nvim-pinned (the `nvim#dm*` tranche in `vim_compat`), counted
   repeats included as far as a *leading* count goes: `[count].` replaces it
   rather than re-running the change, which is what the operator+click case

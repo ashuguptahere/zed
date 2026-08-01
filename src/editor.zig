@@ -3231,6 +3231,25 @@ pub const Editor = struct {
         const text = self.insertedText() orelse return;
         defer self.gpa.free(text);
         if (text.len == 0 and !self.ins_open_line) return;
+        // Blockwise `[count]A` / `[count]I`: every caret typed the same text,
+        // so every caret repeats it. Each sits on its own line, so inserting
+        // at one cannot move another — the extras are done first only because
+        // the primary's insert would otherwise be counted into `insertedText`
+        // on a later call.
+        if (!std.mem.containsAtLeastScalar(u8, text, 1, '\n')) {
+            for (self.extra.items) |*e| {
+                var col = e.col;
+                var k: usize = 1;
+                while (k < n) : (k += 1) {
+                    if (e.row >= self.buf.lineCount()) break;
+                    const line = self.buf.line(e.row);
+                    if (col > line.len) break;
+                    self.buf.insertBytes(e.row, col, text) catch break;
+                    col += text.len;
+                }
+                e.col = col;
+            }
+        }
         var i: usize = 1;
         while (i < n) : (i += 1) {
             if (self.ins_open_line) self.insertTextAt(self.cy, self.cx, "\n");
@@ -3308,6 +3327,12 @@ pub const Editor = struct {
         if (self.extra.items.len > 0) {
             switch (k) {
                 .escape => {
+                    // `[count]A` / `[count]I` repeat at every caret, so this
+                    // has to happen while the carets are still here —
+                    // `clearExtra` below drops them. `repeatInsertCount`
+                    // clears its own count, so the call inside `insertKeyOne`
+                    // is then a no-op.
+                    self.repeatInsertCount();
                     self.clearExtra();
                     try self.insertKeyOne(k);
                 },
@@ -4109,12 +4134,22 @@ pub const Editor = struct {
         const r = self.blockCols();
         const to_eol = self.vb_dollar and at_right;
         const dcol = if (at_right) r.right + 1 else r.left;
+        // `[count]` is read here: `resetPending` below clears it, and so does
+        // the visual dispatcher on the way out.
+        const count = self.eff();
         self.clearExtra();
         self.mode = .normal;
         self.pushUndo(); // the padding below is part of the same undo step
         self.placeBlockCarets(r, dcol, if (at_right) .pad else .skip, to_eol);
         // `I` already types at the left edge; only `A` has to be walked back.
         if (at_right and self.mode == .insert) self.vb_origin = .{ .row = r.top, .col = r.left };
+        // The anchor is the primary caret, which `placeBlockCarets` just put
+        // in place; every other caret gets the same text on Esc.
+        if (self.mode == .insert) {
+            self.ins_count = count;
+            self.ins_anchor = self.cursor();
+            self.ins_open_line = false;
+        }
         self.resetPending();
     }
 

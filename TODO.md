@@ -131,6 +131,11 @@ there is nothing to change there.
 
 ## Done (chronological)
 
+- [x] `[count]` before a blockwise `A`/`I`, the last of the vim gaps: every
+      caret types the text that many times. The repeat has to happen before
+      the multi-caret Esc collapses them, which is the only moment they are
+      all still there (`nvim#bc1`-`bc9`).
+
 - [x] The vim gaps, all five, each nvim-probed and pinned (40 new cases):
       'startofline' off so `G`/`gg`/`{n}G`/`H`/`M`/`L` and a linewise delete
       keep the display column; a linewise visual yank's column rule; counts
