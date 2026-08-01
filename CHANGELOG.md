@@ -2,6 +2,17 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.44.1 - 2026-08-01
+
+### Fixed
+
+- The floating-picker click tests read their coordinates off a screen that
+  might not have settled: CI walks the project slower than a workstation, so
+  the result row was empty when the click was sent and it landed nowhere.
+  They now poll for the row they mean to click, up to a deadline, which is the
+  "assert the outcome, not the schedule" rule the repo already had — I broke
+  it in the same commit that added them.
+
 ## 0.44.0 - 2026-08-01
 
 ### Added

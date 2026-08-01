@@ -916,6 +916,15 @@ fn boxRect(ctx: *h.Ctx, s: *h.Session) ?h.Rect {
     return .{ .x = a.col, .y = a.row, .w = b.col - a.col + 1, .h = b.row - a.row + 1 };
 }
 
+/// True when `row`,`col` has something other than a space on it.
+fn cellFilled(ctx: *h.Ctx, s: *h.Session, row: usize, col: usize) bool {
+    var scr = h.Screen.init(ctx.gpa, 24, 110) catch return false;
+    defer scr.deinit();
+    scr.apply(s.out.items);
+    const cp = scr.at(row, col).cp;
+    return cp != ' ' and cp != 0;
+}
+
 /// An SGR press+release at a cell.
 fn clickAt(s: *h.Session, ctx: *h.Ctx, c: Cell) void {
     var buf: [64]u8 = undefined;
@@ -990,6 +999,10 @@ fn pickerClicks(ctx: *h.Ctx) !void {
         // column (as sub/gamma.txt), which must not satisfy it.
         // The tree lives to the left of the floating picker; find its "sub"
         // row and click exactly where it is drawn.
+        {
+            const until = h.nowMs() + 5000;
+            while (h.nowMs() < until and cellOf(ctx, &s, "sub", 20) == null) s.drain(150);
+        }
         if (cellOf(ctx, &s, "sub", 20)) |c| clickAt(&s, ctx, c);
         s.drain(500);
         {
@@ -1003,8 +1016,21 @@ fn pickerClicks(ctx: *h.Ctx) !void {
 
         // (b) First click on a result row selects it (the ▶ moves; the
         // preview follows exactly as Ctrl-n would).
-        const first_row = markerRow(ctx, &s) orelse 0;
-        const list_col = colOnRow(ctx, &s, first_row, "alpha.txt") orelse 0;
+        // Wait for the walk to put alpha.txt on the selected row with another
+        // result under it. Clicking a screen that has not settled clicks
+        // nowhere, and CI walks the tree slower than a workstation does — the
+        // outcome is what to wait for, never a fixed number of milliseconds.
+        var first_row: usize = 0;
+        var list_col: usize = 0;
+        const settle = h.nowMs() + 5000;
+        while (h.nowMs() < settle) {
+            first_row = markerRow(ctx, &s) orelse 0;
+            list_col = if (first_row != 0) (colOnRow(ctx, &s, first_row, "alpha.txt") orelse 0) else 0;
+            if (first_row != 0 and list_col != 0 and cellFilled(ctx, &s, first_row + 1, list_col)) break;
+            s.drain(150);
+        }
+        ctx.check("the result list settled with a row to click",
+            first_row != 0 and list_col != 0 and cellFilled(ctx, &s, first_row + 1, list_col));
         clickAt(&s, ctx, .{ .row = first_row + 1, .col = list_col });
         s.drain(400);
         ctx.check("clicking a result row selects it", markerRow(ctx, &s) == first_row + 1);
@@ -1035,6 +1061,10 @@ fn pickerClicks(ctx: *h.Ctx) !void {
         var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "." }, .cwd = dir, .cols = 110 });
         defer s.finish();
         s.drain(700);
+        {
+            const until = h.nowMs() + 5000;
+            while (h.nowMs() < until and cellOf(ctx, &s, "alpha.txt", 20) == null) s.drain(150);
+        }
         if (cellOf(ctx, &s, "alpha.txt", 20)) |c| clickAt(&s, ctx, c); // the tree's row
         s.drain(600);
         ctx.check("an explorer file click closes the picker and opens the file", !onScreen(ctx, &s, "FILES") and
