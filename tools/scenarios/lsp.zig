@@ -52,7 +52,10 @@ fn driveOpt(ctx: *h.Ctx, flag: ?[]const u8, steps: []const Step, final: []const 
         ctx.gpa.dupe(u8, ctx.mock) catch unreachable;
     defer ctx.gpa.free(lsp_cmd);
     h.writeFile(ctx.io, target, initial);
-    var s = h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "--lsp", lsp_cmd, target } }) catch return .{
+    // 120 columns: the picker floats now, so its list is a fraction of the
+    // screen and "path:line: text" needs a terminal a developer would
+    // actually use to show a path *and* the line beside it.
+    var s = h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "--lsp", lsp_cmd, target }, .cols = 120 }) catch return .{
         .out = ctx.gpa.dupe(u8, "") catch unreachable,
         .plain = ctx.gpa.dupe(u8, "") catch unreachable,
         .text = ctx.gpa.dupe(u8, "") catch unreachable,

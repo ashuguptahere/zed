@@ -43,7 +43,7 @@ pub fn main(init: std.process.Init) !void {
             cli.printNote(path);
             return;
         },
-        .default_config => {
+        .reset_config => {
             var pbuf: [512]u8 = undefined;
             const path = config.resetDefault(io, &pbuf) catch |err| {
                 switch (err) {
@@ -305,6 +305,7 @@ test {
     _ = @import("quickfix.zig");
     _ = @import("fold.zig");
     _ = @import("notify.zig");
+    _ = @import("ui.zig");
     _ = @import("remote.zig");
     _ = @import("snippet.zig");
     _ = @import("complete.zig");

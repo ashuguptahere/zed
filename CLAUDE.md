@@ -181,6 +181,7 @@ Source is `src/`, one responsibility per module:
 | `jsonrpc.zig` | The `Content-Length`-framed JSON transport `lsp.zig` and `dap.zig` share: framing only, with control inverted (`nextFrame`) so each caller stays an ordinary loop. |
 | `dap.zig`     | Debug Adapter Protocol client: launch, breakpoints, stop/step, the stack frame the program stopped in; plus the breakpoint set, which outlives a session. |
 | `vt.zig`      | Terminal emulator: bytes from a child process in, a grid of styled cells out (pure, unit-tested — no pty, no rendering). |
+| `ui.zig`      | Chrome geometry: a 1-based `Rect`, the ways of placing one against the screen (centred, right-edge), the inset a border costs, and the box-drawing glyphs. Pure — the caller draws. |
 | `notify.zig`  | Corner toast notifications: a fixed, allocation-free queue with its own expiry deadline (pure — the editor draws them and owns the clock). |
 | `fold.zig`    | Folds: which line ranges are collapsed, which rows that hides, and how they move when the text does. |
 | `quickfix.zig`| The quickfix list: file positions kept so `]q`/`[q` can walk them long after the picker that found them is gone. |
@@ -560,9 +561,9 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   (one per line); movement, `x`, and `i`/`a`/`I`/`A` + typing apply to every
   caret; `Esc` collapses back to one.
 - **Pickers (AstroNvim-style leader tree, leader = `Space`):** pressing `Space`
-  shows a which-key popup — drawn in the **bottom right**, where helix puts
-  its keymap infobox, rather than over the first characters of every line —
-  with nested groups (submenus get their own popup):
+  shows a which-key popup — drawn in the **bottom right** via `ui.rightEdge`,
+  where helix puts its keymap infobox, rather than over the first characters
+  of every line — with nested groups (submenus get their own popup):
   `Space b` = Buffers (`b b` the buffer picker — same as `f b` — `b n`/`b p`
   next/previous, `b c` **close others** — AstroNvim's `bc`, which refuses
   while any of them is unsaved and names it; it used to duplicate `Space c`);
@@ -603,7 +604,17 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   file, so a keystroke costs 4 µs once the scan has covered the project —
   narrowing stays sound with multi-term queries, since appended bytes only
   ever extend the last term or add one, both of which shrink the match set.)
-  Every picker uses one layout: the title bar on row 1 (when enabled), the
+  **The picker is a floating window** (`ui.centered`), helix-style: a rounded
+  border with the picker's name sunk into the top edge and `Esc to close`
+  into the bottom, the editor still painted behind it, and a click anywhere
+  outside dismissing it — a border promises a thing you can close, and the
+  mouse has to keep that promise. It is centred over the *text*, never over
+  the file tree, so a `zedit <dir>` session still shows the tree it is there
+  to browse. On a terminal too small for a border (`ui.centered` returns
+  null) the picker takes the whole view as it always did. Because
+  `pickerLayout` feeds the renderer *and* the click hit-test, the box
+  propagated to both at once — the draw-here-click-here invariant paying for
+  itself. Every picker uses one layout: the title bar on row 1 (when enabled), the
   file tree on its side (when open), the prompt and
   results next to it (selected row on the theme's `ui_sel` background), and —
   for pickers that name a file (`f f`, `f b`,
@@ -1163,7 +1174,7 @@ Runtime configuration is one documented file (see `config.zig`): theme,
 `completion_delay_ms`, `inline_diagnostics`, `soft_wrap`, `wrap_indent`,
 `wrap_column`, `persistent_undo`, `format_on_save`, `cmdline_suggestions`,
 `buffer_completion`, `mouse`, `mousetime`, `sync_background`, `split_sizes`;
-`zedit --init-config` writes the annotated default; `zedit --default-config`
+`zedit --init-config` writes the annotated default; `zedit --reset`
 resets an existing one back to it, keeping what was there as `config.bak`.
 `zedit --tutor` opens the embedded interactive tutorial (`doc/tutor.txt`,
 embedded via `build.zig`).

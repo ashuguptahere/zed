@@ -338,8 +338,25 @@ pub fn run(ctx: *h.Ctx) !void {
             var scr = try screen(ctx, &s);
             defer scr.deinit();
             ctx.check("picker view keeps the title bar", rowHas(ctx, &scr, 1, "b.txt"));
-            ctx.check("picker prompt moves below the bar", rowHas(ctx, &scr, 2, "FILES"));
-            ctx.check("picker selection uses ui_sel", scr.at(3, 2).bg == UI_SEL);
+            // The picker floats, so its title is in the box border somewhere
+            // below the bar rather than on row 2 — what matters is that the
+            // bar is still there and the picker did not paint over it.
+            var title_row: usize = 0;
+            var sel_row: usize = 0;
+            var sel_col: usize = 0;
+            var r: usize = 1;
+            while (r <= 24) : (r += 1) {
+                if (rowHas(ctx, &scr, r, "FILES")) title_row = r;
+                var c: usize = 1;
+                while (c <= 80) : (c += 1) {
+                    if (scr.at(r, c).cp == 0x25B6 and sel_row == 0) {
+                        sel_row = r;
+                        sel_col = c;
+                    }
+                }
+            }
+            ctx.check("picker prompt moves below the bar", title_row > 1);
+            ctx.check("picker selection uses ui_sel", sel_row > 0 and scr.at(sel_row, sel_col).bg == UI_SEL);
         }
         s.send("\x1b:qa!\r");
         s.drain(200);

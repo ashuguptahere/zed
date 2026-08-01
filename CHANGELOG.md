@@ -2,6 +2,33 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.44.0 - 2026-08-01
+
+### Added
+
+- **The picker is a floating window.** A rounded border with the picker's name
+  in the top edge and `Esc to close` in the bottom, the editor still visible
+  behind it, and a click outside dismissing it — a border promises something
+  you can close, and the mouse now keeps that promise. Centred over the text
+  rather than the whole terminal, so a `zedit <dir>` session's file tree stays
+  visible beside it. A terminal too small for a border keeps the old
+  full-screen layout.
+- **`ui.zig`**, the chrome geometry every floating thing now shares: a 1-based
+  rectangle, centred and right-edge placement, the inset a border costs, and
+  the box glyphs. The which-key menu and the notification stack were each
+  computing their own corner; they now ask for the same one. Pure and
+  unit-tested — it says where, the caller draws.
+
+### Changed
+
+- **Notifications have the four levels `std.log` already has** — `debug`,
+  `info`, `warn`, `err` — name for name, so a call site that logs and notifies
+  the same event does not have to translate between two vocabularies. Each has
+  its own mark: ⚙ debug (dim), ✓ info, ⚠ warn, ✗ err. The renderer measures
+  the mark rather than assuming one cell, so a terminal that draws any of them
+  wide still lines the box up.
+- **`zedit --default-config` is now `zedit --reset`.**
+
 ## 0.43.0 - 2026-08-01
 
 ### Added

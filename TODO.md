@@ -156,6 +156,12 @@ there is nothing to change there.
 
 ## Done (chronological)
 
+- [x] The picker as a floating window (`ui.centered`, border + `Esc to close`,
+      click-outside dismisses, centred over the text not the tree), `ui.zig`
+      as the shared chrome geometry the which-key menu and the toast stack
+      also use, notification levels aligned with `std.log`'s four, and
+      `--default-config` renamed `--reset`.
+
 - [x] Corner notifications (`notify.zig`) in the top right, expiring on their
       own without costing idle CPU; `Ctrl-h/j/k/l` window navigation with the
       explorer as the window past the edge; `zedit --default-config`; the

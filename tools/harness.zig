@@ -64,6 +64,10 @@ pub const Ctx = struct {
     }
 };
 
+/// A screen rectangle, 1-based, for tests that locate chrome rather than
+/// hardcoding where it was drawn.
+pub const Rect = struct { x: usize, y: usize, w: usize, h: usize };
+
 pub const SpawnOpts = struct {
     argv: []const []const u8, // full argv, including the program path
     cwd: ?[]const u8 = null,

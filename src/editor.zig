@@ -36,6 +36,7 @@ const dap = @import("dap.zig");
 const quickfix = @import("quickfix.zig");
 const fold = @import("fold.zig");
 const notify = @import("notify.zig");
+const ui = @import("ui.zig");
 const snippet = @import("snippet.zig");
 const remote = @import("remote.zig");
 const regex = @import("regex.zig");
@@ -1502,6 +1503,13 @@ pub const Editor = struct {
         }
         if (self.inSidebar(m.col)) return self.sbClick(m.row, m.col);
         const lay = self.pickerLayout();
+        // Outside the floating box is outside the picker: clicking there
+        // dismisses it, the way clicking off any other floating window does.
+        // Without this the border would promise something the mouse did not
+        // deliver.
+        if (lay.box) |box| {
+            if (!box.contains(m.row, m.col)) return self.closePicker();
+        }
         if (m.row <= lay.top) return; // the prompt row
         if (m.col < lay.body_x or m.col >= lay.body_x + lay.list_w) return; // the preview
         const shown = m.row - lay.top - 1;
@@ -5262,7 +5270,26 @@ pub const Editor = struct {
         list_w: usize, // the results' width (rest is the preview)
         preview: bool,
         status: bool, // the bottom row is the status message's, not a result's
+        /// The floating box, when the terminal is big enough for one. Null on
+        /// a small screen, where the picker takes the whole view as it always
+        /// did — a border costs two rows and two columns a 40x10 terminal
+        /// cannot spare.
+        box: ?ui.Rect = null,
     };
+
+    /// The chrome geometry the popups share: the whole terminal, minus the
+    /// title bar and the status/command row.
+    fn chromeScreen(self: *Editor) ui.Screen {
+        const side = if (self.sb_open) self.sbWidth() else 0;
+        return .{
+            .rows = self.win.rows,
+            .cols = self.win.cols,
+            .top_reserved = if (tabsVisible()) 1 else 0,
+            .bottom_reserved = 1,
+            .left_reserved = if (config.settings.sidebar == .left) side else 0,
+            .right_reserved = if (config.settings.sidebar == .right) side else 0,
+        };
+    }
     fn pickerLayout(self: *Editor) PickerLayout {
         // The title bar keeps row 1 in the picker view too; the prompt and
         // results shift below it.
@@ -5281,6 +5308,27 @@ pub const Editor = struct {
         const body_w = self.win.cols -| side_w;
         // A preview needs room for both panes; below that the results get the
         // whole width rather than two unreadable columns.
+        // Float it, helix-style, so it reads as a window over the editor
+        // rather than a mode the editor has entered — which is the whole point
+        // of the border: something with an edge is something you can close.
+        // Roomy but not full-bleed; the text around it is the cue.
+        if (ui.centered(self.chromeScreen(), (self.win.cols * 4) / 5, (self.win.rows * 4) / 5, 4)) |box| {
+            const in = box.inner();
+            const pv = self.previewKind() != .none and in.w >= 60;
+            return .{
+                .top = in.y,
+                // One row of the inside is the prompt; the rest are results.
+                .visible = @max(1, in.h -| 1),
+                .body_x = in.x,
+                .body_w = in.w,
+                .list_w = if (pv) @max(in.w / 2, 24) else in.w,
+                .preview = pv,
+                // The message goes on the editor's own statusline, which is
+                // still on screen behind the box — nothing to reserve.
+                .status = false,
+                .box = box,
+            };
+        }
         const wants_preview = self.previewKind() != .none and body_w >= 40;
         return .{
             .top = top,
@@ -5297,6 +5345,85 @@ pub const Editor = struct {
     /// the results next to it, and — for anything that names a file — a live
     /// preview of the selection on the right, Helix-style. Every picker uses
     /// this same layout, so searching looks the same wherever you start it.
+    fn klabelFor(kind: PickerKind) []const u8 {
+        return switch (kind) {
+            .files => " FILES ",
+            .grep => " SEARCH ",
+            .code_action => " ACTIONS ",
+            .symbol => " SYMBOLS ",
+            .theme => " THEMES ",
+            .buffer => " BUFFERS ",
+            .reference => " REFERENCES ",
+            .wsymbol => " WORKSPACE SYMBOLS ",
+            .diagnostic => " DIAGNOSTICS ",
+            .undo => " UNDO TREE ",
+        };
+    }
+
+    /// The ordinary editor view, painted under a floating picker.
+    fn renderBehindPicker(self: *Editor) !void {
+        self.layout();
+        if (tabsVisible()) try self.renderTitleBar();
+        for (self.wins.items) |w| try self.renderWindow(w);
+        if (self.sb_open) try self.renderSidebar();
+        self.beginSeg(self.win.rows, 1);
+        try self.emitFmt("\x1b[{d};1H", .{self.win.rows});
+        try self.renderStatus();
+        self.closeSegs();
+    }
+
+    /// A rounded box: border, an optional title in the top edge and an
+    /// optional hint in the bottom one, and a cleared inside. Shared by every
+    /// floating thing, so they cannot drift apart.
+    fn drawBox(self: *Editor, box: ui.Rect, title: []const u8, hint: []const u8) !void {
+        const th = theme.current;
+        if (box.w < 4 or box.h < 3) return;
+        self.markOverlayRows(box.y, box.bottom());
+        try self.setBg(th.bg);
+        try self.setFg(th.mode_normal);
+        // Top edge, with the title sunk into it.
+        try self.emitFmt("\x1b[{d};{d}H", .{ box.y, box.x });
+        try self.emit(ui.border.top_left);
+        var drawn: usize = 0;
+        const tw = @min(unicode.displayWidth(title), box.w -| 4);
+        if (tw > 0) {
+            try self.emit(ui.border.horizontal);
+            try self.setBg(th.mode_command);
+            try self.setFg(th.bg);
+            try self.emitSanitized(title[0..@min(title.len, tw)]);
+            try self.setBg(th.bg);
+            try self.setFg(th.mode_normal);
+            drawn = 1 + tw;
+        }
+        while (drawn + 2 < box.w) : (drawn += 1) try self.emit(ui.border.horizontal);
+        try self.emit(ui.border.top_right);
+        // Sides, clearing the inside as they go.
+        var r: usize = box.y + 1;
+        while (r < box.bottom()) : (r += 1) {
+            try self.emitFmt("\x1b[{d};{d}H", .{ r, box.x });
+            try self.setFg(th.mode_normal);
+            try self.emit(ui.border.vertical);
+            try self.setBg(th.bg);
+            try self.emitSpaces(box.w - 2);
+            try self.setFg(th.mode_normal);
+            try self.emit(ui.border.vertical);
+        }
+        // Bottom edge, with the hint that says how to leave.
+        try self.emitFmt("\x1b[{d};{d}H", .{ box.bottom(), box.x });
+        try self.emit(ui.border.bottom_left);
+        const hw = @min(unicode.displayWidth(hint), box.w -| 6);
+        var used: usize = 0;
+        while (used + 3 + hw < box.w - 1) : (used += 1) try self.emit(ui.border.horizontal);
+        if (hw > 0) {
+            try self.emit(ui.border.horizontal);
+            try self.setFg(th.fg_dim);
+            try self.emitSanitized(hint[0..@min(hint.len, hw)]);
+            try self.setFg(th.mode_normal);
+            try self.emit(ui.border.horizontal);
+        }
+        try self.emit(ui.border.bottom_right);
+    }
+
     fn renderPickerBody(self: *Editor) !void {
         const th = theme.current;
         const rows: usize = self.win.rows;
@@ -5312,38 +5439,45 @@ pub const Editor = struct {
         if (self.picker_sel < self.picker_scroll) self.picker_scroll = self.picker_sel;
         if (self.picker_sel >= self.picker_scroll + visible) self.picker_scroll = self.picker_sel - visible + 1;
 
-        // Clear the whole screen once; the panes then paint over it.
-        try self.setBg(th.bg);
-        var clr: usize = 1;
-        while (clr <= rows) : (clr += 1) {
-            try self.emitFmt("\x1b[{d};1H", .{clr});
-            try self.emit(ansi.clear_line_right);
+        if (lay.box) |box| {
+            // Float over the editor: paint the ordinary view first, so the
+            // file being edited stays visible around the box and the picker
+            // reads as a window sitting on top of it — the affordance that
+            // says "this closes and you get your editor back".
+            try self.renderBehindPicker();
+            try self.drawBox(box, klabelFor(self.picker_kind), " Esc to close ");
+        } else {
+            // Small terminal: no room for a border, so the picker takes the
+            // whole view as it always did.
+            try self.setBg(th.bg);
+            var clr: usize = 1;
+            while (clr <= rows) : (clr += 1) {
+                try self.emitFmt("\x1b[{d};1H", .{clr});
+                try self.emit(ansi.clear_line_right);
+            }
+            if (self.sb_open) try self.renderSidebar();
+            if (tabsVisible()) try self.renderTitleBar();
         }
-        if (self.sb_open) try self.renderSidebar();
-        if (tabsVisible()) try self.renderTitleBar();
 
-        const klabel = switch (self.picker_kind) {
-            .files => " FILES ",
-            .grep => " SEARCH ",
-            .code_action => " ACTIONS ",
-            .symbol => " SYMBOLS ",
-            .theme => " THEMES ",
-            .buffer => " BUFFERS ",
-            .reference => " REFERENCES ",
-            .wsymbol => " WORKSPACE SYMBOLS ",
-            .diagnostic => " DIAGNOSTICS ",
-            .undo => " UNDO TREE ",
-        };
+        const klabel = klabelFor(self.picker_kind);
 
-        // Prompt.
+        // Prompt. Inside a box the title is already in the border, so the
+        // prompt is just a caret — repeating "FILES" on the row below the tab
+        // that says FILES is noise.
         try self.emitFmt("\x1b[{d};{d}H", .{ top, body_x });
-        try self.setBg(th.mode_command);
-        try self.setFg(th.bg);
-        try self.emit(klabel);
+        var label_w: usize = 0;
+        if (lay.box == null) {
+            try self.setBg(th.mode_command);
+            try self.setFg(th.bg);
+            try self.emit(klabel);
+            label_w = klabel.len;
+        }
         try self.setBg(th.bg);
+        try self.setFg(th.mode_normal);
+        try self.emit(if (lay.box == null) " " else "\u{203a} "); // ›
+        label_w += if (lay.box == null) 1 else 2;
         try self.setFg(th.fg);
-        try self.emit(" ");
-        const qmax = list_w -| (klabel.len + 2);
+        const qmax = list_w -| (label_w + 1);
         try self.emitSanitized(self.picker_query.items[0..@min(self.picker_query.items.len, qmax)]);
         // Mid-typing an invalid regex: a dim tag beside the query says why
         // the results are not moving (they are the last good pattern's).
@@ -11342,15 +11476,14 @@ pub const Editor = struct {
         const menu = m.keys;
         const title = m.title;
         const width: usize = 26;
-        const rows: usize = self.win.rows;
-        const height = menu.len + 1;
-        if (rows < height + 2) return;
-        const top = rows - height - 1; // 1-based; leave the status bar at the bottom
-        // Bottom *right*, where helix puts its keymap infobox: the left of the
+        // Bottom right, where helix puts its keymap infobox: the left of the
         // screen is where the text the keys are about starts, and a menu there
-        // covers the first characters of every line under it.
-        const left = if (self.win.cols > width) self.win.cols - width + 1 else 1;
-        self.markOverlayRows(top, top + height);
+        // covers the first characters of every line under it. `ui.rightEdge`
+        // is the same placement the notification stack uses, from the top.
+        const box = ui.rightEdge(self.chromeScreen(), width, menu.len + 1, false) orelse return;
+        const top = box.y;
+        const left = box.x;
+        self.markOverlayRows(box.y, box.bottom());
 
         try self.emitFmt("\x1b[{d};{d}H", .{ top, left });
         try self.setBg(th.mode_command);
@@ -11378,21 +11511,23 @@ pub const Editor = struct {
         const th = theme.current;
         const list = self.toasts.visible();
         if (list.len == 0) return;
-        const top: usize = 1 + @as(usize, if (tabsVisible()) 1 else 0);
         // Widest message, capped so a toast never takes more than half the
         // screen; 2 for the mark, 2 for the padding either side.
         var text_w: usize = 0;
         for (list) |t| text_w = @max(text_w, unicode.displayWidth(t.text()));
-        const mark_w: usize = 1; // every level's mark is one cell
+        var mark_w: usize = 1;
+        for (list) |t| mark_w = @max(mark_w, unicode.displayWidth(t.level.mark()));
         const chrome = mark_w + 3; // " <mark> " plus a trailing space
         const box_w = @min(@max(text_w + chrome, 12), @max(12, self.win.cols / 2));
-        if (self.win.cols < box_w + 2 or self.win.rows < top + list.len) return;
-        const left = self.win.cols - box_w + 1;
-        self.markOverlayRows(top, top + list.len - 1);
+        const box = ui.rightEdge(self.chromeScreen(), box_w, list.len, true) orelse return;
+        const top = box.y;
+        const left = box.x;
+        self.markOverlayRows(box.y, box.bottom());
         for (list, 0..) |t, i| {
             // No diagnostic colours in the palette; the git triple is the
             // red/amber/green one every theme already defines.
             const fg = switch (t.level) {
+                .debug => th.fg_dim, // machinery: present, but never loud
                 .info => th.git_add,
                 .warn => th.git_change,
                 .err => th.git_delete,
@@ -11401,6 +11536,10 @@ pub const Editor = struct {
             try self.setBg(th.status_seg_bg);
             try self.setFg(fg);
             try self.emitFmt(" {s} ", .{t.level.mark()});
+            // Pad a narrow mark out to the widest, so every row's text starts
+            // in the same column whatever mix of levels is showing.
+            if (unicode.displayWidth(t.level.mark()) < mark_w)
+                try self.emitSpaces(mark_w - unicode.displayWidth(t.level.mark()));
             try self.setFg(th.status_seg_fg);
             // Toast text can carry a filename or a server's words, so it goes
             // through the same sanitizer as any other untrusted content.

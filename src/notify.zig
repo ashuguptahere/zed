@@ -20,18 +20,27 @@
 
 const std = @import("std");
 
+/// The four levels `std.log` already has, in the same order and with the same
+/// names — a notification and a log line describe the same event, and having
+/// two different vocabularies for it would mean translating between them at
+/// every call site. `err` is the "critical" end.
 pub const Level = enum {
+    debug,
     info,
     warn,
     err,
 
-    /// The glyph that leads the line. Deliberately not a nerd-font icon: this
-    /// has to read on a terminal without one, like the rest of the fallbacks.
+    /// The glyph that leads the line. Plain Unicode symbols rather than
+    /// nerd-font icons: a toast has to read on a terminal without one, like
+    /// the rest of zedit's fallbacks. Each is distinct at a glance, and the
+    /// renderer measures the width rather than assuming one cell, so a
+    /// terminal that draws any of them wide still lines the box up.
     pub fn mark(self: Level) []const u8 {
         return switch (self) {
-            .info => "\u{2713}", // ✓
-            .warn => "!",
-            .err => "\u{2717}", // ✗
+            .debug => "\u{2699}", // ⚙ gear — machinery, not a user-facing event
+            .info => "\u{2713}", // ✓ something finished
+            .warn => "\u{26a0}", // ⚠ went on, but look at it
+            .err => "\u{2717}", // ✗ did not happen
         };
     }
 };
@@ -196,4 +205,37 @@ test "an exactly-fitting message is not truncated" {
     q.push(.warn, exact, 0, 100);
     try testing.expectEqual(@as(usize, max_text), q.visible()[0].text().len);
     try testing.expectEqual(Level.warn, q.visible()[0].level);
+}
+
+test "the levels line up with std.log's, name for name" {
+    // Not decoration: a call site that logs and notifies the same event must
+    // not have to translate between two vocabularies.
+    const log_names = comptime blk: {
+        var out: [4][]const u8 = undefined;
+        for (@typeInfo(std.log.Level).@"enum".fields, 0..) |f, i| out[i] = f.name;
+        break :blk out;
+    };
+    const our_names = comptime blk: {
+        var out: [4][]const u8 = undefined;
+        for (@typeInfo(Level).@"enum".fields, 0..) |f, i| out[i] = f.name;
+        break :blk out;
+    };
+    // std.log orders them err..debug and we order them debug..err, so compare
+    // as sets: every std.log level has a notification level of the same name.
+    for (log_names) |want| {
+        var found = false;
+        for (our_names) |got| found = found or std.mem.eql(u8, want, got);
+        try testing.expect(found);
+    }
+    try testing.expectEqual(@as(usize, 4), our_names.len);
+}
+
+test "every level has its own mark" {
+    var seen: [4][]const u8 = undefined;
+    for ([_]Level{ .debug, .info, .warn, .err }, 0..) |l, i| {
+        seen[i] = l.mark();
+        try testing.expect(l.mark().len > 0);
+        var j: usize = 0;
+        while (j < i) : (j += 1) try testing.expect(!std.mem.eql(u8, seen[j], seen[i]));
+    }
 }

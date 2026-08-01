@@ -738,10 +738,12 @@ fn previewPaneReserved(ctx: *h.Ctx) !void {
         var scr = try h.Screen.init(ctx.gpa, 24, 110);
         defer scr.deinit();
         scr.apply(s.out.items);
-        // The pane's header bar (tokyonight status_seg_bg) at row 2, col 70:
-        // sidebar 1..28, results 29..69, preview 70..110.
+        // The pane's header bar (tokyonight status_seg_bg) on the prompt row,
+        // three quarters of the way across the box — found rather than
+        // hardcoded, since the box floats.
+        const box = boxRect(ctx, &s) orelse h.Rect{ .x = 1, .y = 1, .w = 110, .h = 24 };
         ctx.check("the preview pane is reserved before anything is typed",
-            scr.at(2, 80).bg == h.rgb(0x29, 0x2e, 0x42));
+            scr.at(box.y + 1, box.x + (box.w * 3) / 4).bg == h.rgb(0x29, 0x2e, 0x42));
     }
     s.send("zq"); // a query nothing matches: now the results do take the width
     s.drain(500);
@@ -749,8 +751,9 @@ fn previewPaneReserved(ctx: *h.Ctx) !void {
         var scr = try h.Screen.init(ctx.gpa, 24, 110);
         defer scr.deinit();
         scr.apply(s.out.items);
+        const box2 = boxRect(ctx, &s) orelse h.Rect{ .x = 1, .y = 1, .w = 110, .h = 24 };
         ctx.check("a query with no match gives the width back to the results",
-            scr.at(2, 80).bg != h.rgb(0x29, 0x2e, 0x42));
+            scr.at(box2.y + 1, box2.x + (box2.w * 3) / 4).bg != h.rgb(0x29, 0x2e, 0x42));
     }
     s.send("\x1b:qa!\r");
     s.drain(300);
@@ -789,14 +792,13 @@ fn statusRow(ctx: *h.Ctx) !void {
         ctx.check("the picker's status message lands on the bottom row",
             std.mem.indexOf(u8, txt, "type to match file NAMES") != null);
     }
-    // Two clicks on that row: the first would select the hidden result, the
-    // second (already selected) would open it and close the picker. Both must
-    // be inert, exactly as the prompt row is.
-    s.send("\x1b[<0;35;24M\x1b[<0;35;24m");
-    s.drain(400);
+    // The picker floats now, so the message sits on the editor's own
+    // statusline *outside* the box and there is no result hidden under it.
+    // A click there is a click outside a window with a visible border, which
+    // dismisses it — the promise the border makes.
     s.send("\x1b[<0;35;24M\x1b[<0;35;24m");
     s.drain(500);
-    ctx.check("clicking the status row cannot open a hidden result", onScreen(ctx, &s, "FILES"));
+    ctx.check("clicking outside the floating picker dismisses it", !onScreen(ctx, &s, "FILES"));
     s.send("\x1b:qa!\r");
     s.drain(300);
 }
@@ -847,17 +849,79 @@ fn narrowByKeystroke(ctx: *h.Ctx) !void {
     s.drain(300);
 }
 
-/// The `▶` selection marker's screen row within the picker's result column
-/// (`body_x` = sidebar width + 1 when the tree is open, else 1), or null.
-fn markerRow(ctx: *h.Ctx, s: *h.Session, marker_col: usize) ?usize {
+/// Where something is on screen. The picker floats now, so its rows and
+/// columns are not constants any more — a click test that hardcoded them was
+/// really testing the layout arithmetic twice instead of testing that the
+/// renderer and the hit-test agree. Finding the cell first and clicking *it*
+/// is the draw-here-click-here invariant stated directly.
+const Cell = struct { row: usize, col: usize };
+
+/// The column `needle` sits at on one exact row, or null. The result list and
+/// the preview both name the selected file, so "find alpha.txt anywhere" finds
+/// the preview's title first — the row has to be pinned.
+fn colOnRow(ctx: *h.Ctx, s: *h.Session, row: usize, needle: []const u8) ?usize {
+    var scr = h.Screen.init(ctx.gpa, 24, 110) catch return null;
+    defer scr.deinit();
+    scr.apply(s.out.items);
+    return scr.colOf(ctx.gpa, row, needle);
+}
+
+fn cellOf(ctx: *h.Ctx, s: *h.Session, needle: []const u8, max_col: usize) ?Cell {
     var scr = h.Screen.init(ctx.gpa, 24, 110) catch return null;
     defer scr.deinit();
     scr.apply(s.out.items);
     var row: usize = 1;
     while (row <= 24) : (row += 1) {
-        if (scr.at(row, marker_col).cp == 0x25B6) return row;
+        const col = scr.colOf(ctx.gpa, row, needle) orelse continue;
+        if (col > max_col) continue;
+        return .{ .row = row, .col = col };
     }
     return null;
+}
+
+/// The `▶` selection marker's screen row, wherever the results are drawn.
+fn markerRow(ctx: *h.Ctx, s: *h.Session) ?usize {
+    var scr = h.Screen.init(ctx.gpa, 24, 110) catch return null;
+    defer scr.deinit();
+    scr.apply(s.out.items);
+    var row: usize = 1;
+    while (row <= 24) : (row += 1) {
+        var col: usize = 1;
+        while (col <= 110) : (col += 1) {
+            if (scr.at(row, col).cp == 0x25B6) return row;
+        }
+    }
+    return null;
+}
+
+/// The floating picker's border rectangle, found by its own corner glyphs —
+/// so a test never has to repeat the layout arithmetic it is checking.
+fn boxRect(ctx: *h.Ctx, s: *h.Session) ?h.Rect {
+    var scr = h.Screen.init(ctx.gpa, 24, 110) catch return null;
+    defer scr.deinit();
+    scr.apply(s.out.items);
+    var tl: ?Cell = null;
+    var br: ?Cell = null;
+    var row: usize = 1;
+    while (row <= 24) : (row += 1) {
+        var col: usize = 1;
+        while (col <= 110) : (col += 1) {
+            const cp = scr.at(row, col).cp;
+            if (cp == 0x256d and tl == null) tl = .{ .row = row, .col = col };
+            if (cp == 0x256f) br = .{ .row = row, .col = col };
+        }
+    }
+    const a = tl orelse return null;
+    const b = br orelse return null;
+    return .{ .x = a.col, .y = a.row, .w = b.col - a.col + 1, .h = b.row - a.row + 1 };
+}
+
+/// An SGR press+release at a cell.
+fn clickAt(s: *h.Session, ctx: *h.Ctx, c: Cell) void {
+    var buf: [64]u8 = undefined;
+    const seq = std.fmt.bufPrint(&buf, "\x1b[<0;{d};{d}M\x1b[<0;{d};{d}m", .{ c.col, c.row, c.col, c.row }) catch return;
+    _ = ctx;
+    s.send(seq);
 }
 
 /// Mouse clicks in the picker view (the whole `zedit .` startup): explorer
@@ -883,6 +947,37 @@ fn pickerClicks(ctx: *h.Ctx) !void {
     h.writeFile(ctx.io, b, "BETA MARKER\n");
     h.writeFile(ctx.io, g, "GAMMA MARKER\n");
 
+    // The picker is a floating window: a border around it, the editor still
+    // visible behind, and the way out written on it.
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "alpha.txt" }, .cwd = dir, .cols = 110 });
+        defer s.finish();
+        s.drain(600);
+        s.send(" ff");
+        s.drain(700);
+        const box = boxRect(ctx, &s);
+        ctx.check("the picker is drawn as a bordered box", box != null and
+            box.?.w > 20 and box.?.h > 4 and box.?.x > 1 and box.?.y > 1);
+        ctx.check("the box says how to leave", onScreen(ctx, &s, "Esc to close"));
+        {
+            // The file being edited is still on screen around the box, which
+            // is what makes it read as a window over the editor rather than a
+            // mode the editor has entered.
+            var scr = try h.Screen.init(ctx.gpa, 24, 110);
+            defer scr.deinit();
+            scr.apply(s.out.items);
+            const bar = try scr.rowText(ctx.gpa, 1);
+            defer ctx.gpa.free(bar);
+            ctx.check("the editor is still visible behind the picker",
+                std.mem.indexOf(u8, bar, "alpha.txt") != null);
+        }
+        s.send("\x1b");
+        s.drain(400);
+        ctx.check("Esc closes it", !onScreen(ctx, &s, "Esc to close"));
+        s.send(":qa!\r");
+        s.drain(200);
+    }
+
     // Explorer + result-row clicks, and the inert areas, in one session.
     {
         var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "." }, .cwd = dir, .cols = 110 });
@@ -893,7 +988,9 @@ fn pickerClicks(ctx: *h.Ctx) !void {
         // (a) A directory row toggles under the live picker. The assert is
         // column-scoped to the sidebar: "gamma.txt" also shows in the result
         // column (as sub/gamma.txt), which must not satisfy it.
-        s.send("\x1b[<0;4;2M\x1b[<0;4;2m"); // click tree row 2 ("sub") + release
+        // The tree lives to the left of the floating picker; find its "sub"
+        // row and click exactly where it is drawn.
+        if (cellOf(ctx, &s, "sub", 20)) |c| clickAt(&s, ctx, c);
         s.drain(500);
         {
             var scr = try h.Screen.init(ctx.gpa, 24, 110);
@@ -906,24 +1003,26 @@ fn pickerClicks(ctx: *h.Ctx) !void {
 
         // (b) First click on a result row selects it (the ▶ moves; the
         // preview follows exactly as Ctrl-n would).
-        s.send("\x1b[<0;35;4M\x1b[<0;35;4m"); // second result row
+        const first_row = markerRow(ctx, &s) orelse 0;
+        const list_col = colOnRow(ctx, &s, first_row, "alpha.txt") orelse 0;
+        clickAt(&s, ctx, .{ .row = first_row + 1, .col = list_col });
         s.drain(400);
-        ctx.check("clicking a result row selects it", markerRow(ctx, &s, 29) == 4);
+        ctx.check("clicking a result row selects it", markerRow(ctx, &s) == first_row + 1);
 
         // Inert areas: the prompt row, the preview pane, and non-press mouse
         // reports (wheel release, drag) change nothing.
-        s.send("\x1b[<0;35;2M\x1b[<0;35;2m"); // the prompt row
+        clickAt(&s, ctx, .{ .row = first_row - 1, .col = list_col }); // the prompt row
         s.drain(300);
-        s.send("\x1b[<0;90;5M\x1b[<0;90;5m"); // the preview pane
+        clickAt(&s, ctx, .{ .row = first_row + 1, .col = list_col + 40 }); // the preview pane
         s.drain(300);
         s.send("\x1b[<64;80;10m\x1b[<32;80;10M"); // wheel release + drag
         s.drain(300);
         ctx.check("prompt, preview and non-press reports stay inert", onScreen(ctx, &s, "FILES") and
-            markerRow(ctx, &s, 29) == 4);
+            markerRow(ctx, &s) == first_row + 1);
 
         // (b) A click on the already-selected row opens it — a double-click
         // opens from anywhere, with no double-click timer.
-        s.send("\x1b[<0;35;4M\x1b[<0;35;4m");
+        clickAt(&s, ctx, .{ .row = first_row + 1, .col = list_col });
         s.drain(500);
         ctx.check("clicking the selected row opens it", !onScreen(ctx, &s, "FILES") and onScreen(ctx, &s, "NORMAL"));
         s.send(":qa!\r");
@@ -936,7 +1035,7 @@ fn pickerClicks(ctx: *h.Ctx) !void {
         var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "." }, .cwd = dir, .cols = 110 });
         defer s.finish();
         s.drain(700);
-        s.send("\x1b[<0;6;3M\x1b[<0;6;3m"); // tree row 3: alpha.txt
+        if (cellOf(ctx, &s, "alpha.txt", 20)) |c| clickAt(&s, ctx, c); // the tree's row
         s.drain(600);
         ctx.check("an explorer file click closes the picker and opens the file", !onScreen(ctx, &s, "FILES") and
             onScreen(ctx, &s, "ALPHA MARKER") and onScreen(ctx, &s, "NORMAL"));
