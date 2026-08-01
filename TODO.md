@@ -17,19 +17,17 @@ behind the roadmap items.
        and the development machine has no language server at all, so only CI
        ever saw it, and only for the one test that opens a `.rs` file. A real
        user-facing freeze, not a test artefact.
-2. [ ] **The terminal's own colour at the far right / far bottom.** Traced as
-       far as the code allows: every render branch pads to its window's width
-       (`emitFillerRow`, `emitDeletedRow`, `past_eof`, `emitLine`), the
-       tiling's last window absorbs the division remainder in both
-       orientations (`layout`), and all three `\x1b[K` sites set the theme
-       background first — so no *cell* is left unpainted. What is left is the
-       sub-cell strip gnome-terminal keeps when the window size is not an
-       exact multiple of the cell size; no TUI can paint it, and nvim shows
-       it too. The one real fix is OSC 11 (set the terminal's default
-       background to the theme's on entry, OSC 111 to restore on exit,
-       including the panic/signal paths) — invasive enough to want the owner's
-       say-so first, and worth confirming against a screenshot that the strip
-       is thinner than one character cell.
+2. [x] ~~**The terminal's own colour at the far right / far bottom**~~ —
+       fixed in 0.42.0. Measured first: replaying a frame into a grid showed
+       no row and no *cell* left on the default background, so it was never a
+       renderer gap — it is the leftover pixels outside the character grid,
+       which the terminal paints in its own colour. zedit now queries the
+       terminal's background (OSC 11), paints the window in the theme's,
+       follows a theme change, and restores the original on exit including
+       the panic path (`sync_background`). Decoding the reply is why
+       `key.zig` handles OSC at all: `ESC ]` used to read as the Escape key,
+       leaving the payload to be typed into the buffer.
+
 3. [ ] **Which-key coverage of what already exists.** Done for the undo tree
        (`Space f u`) and a new buffer (`Space n`) in 0.29.0. Still unbound:
        `g-`/`g+` and `:earlier` (time travel), and window/split management,
@@ -43,14 +41,18 @@ behind the roadmap items.
        keeps a cursor per window, not per buffer — that model would have to
        change first), named sessions beyond the one per directory, and the
        jumplist/marks.
-6. [ ] **Terminal polish.** The shell landed in 0.31.0, scrollback in 0.36.0. Not there yet:
-       the alternate screen (a full-screen program draws over the
-       shell's output instead of restoring it on exit), mouse and
-       bracketed-paste forwarding, more than one terminal at a time, and
-       `TERM=xterm-256color` — which needs the two above first. The
-       `hung_up` guard in `term.zig` is for the platforms whose pty reports
-       EOF before the child is reapable; on Linux `waitpid` wins that race,
-       so CI never exercises it.
+6. [ ] **Terminal polish.** The shell landed in 0.31.0, scrollback in
+       0.36.0, several terminals on their own tab row in 0.40.0, and the
+       device-control/device-attribute replies a shell waits on in 0.41.0
+       (fish was printing the XTGETTCAP payload and stalling ten seconds on
+       an unanswered DA query). Not there yet: the alternate screen (a
+       full-screen program draws over the shell's output instead of restoring
+       it on exit), mouse and bracketed-paste forwarding, and
+       `TERM=xterm-256color` — which needs those first. The `hung_up` guard
+       in `term.zig` is for the platforms whose pty reports EOF before the
+       child is reapable; on Linux `waitpid` wins that race, so CI never
+       exercises it.
+
 7. [ ] **Debugger polish.** The core loop landed in 0.32.0 (breakpoints,
        launch, stop, step, jump-to-stop). Not there yet: variables and scopes,
        watches, REPL evaluation, conditional and function breakpoints, attach,
@@ -141,9 +143,6 @@ there is nothing to change there.
       Alt), edge auto-scroll while dragging (needs a repeat timer; the
       completion debounce is the only timer zedit arms), drag-to-resize
       splits.
-- [ ] The wheel's step counts buffer lines inside the diff views (as
-      `Ctrl-d/u/f/b` do): `winLineAfterRows` branches only on soft wrap, not
-      on a pair's fillers or the line diff's woven rows.
 - [ ] A linewise visual operator leaves the cursor in the wrong column
       (found while reviewing the mouse work, pre-dates it, reproduces without
       the mouse): nvim keeps the column across `Vd` and moves it to 0 across
