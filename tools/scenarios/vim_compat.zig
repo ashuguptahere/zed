@@ -507,6 +507,14 @@ fn dotAndMacros(ctx: *h.Ctx) void {
     const two_lines = "foo\nbar\n";
     // Counts: `.` alone re-uses the recorded one, and a fresh count *replaces*
     // it rather than multiplying the repeat.
+    // Visual mode has no `dd`: `d` deletes the selection and returns to
+    // normal, so a second `d` arms a *new* operator and the next motion
+    // completes it. Reported as "d then j deletes more lines"; it is what nvim
+    // does, verified against it, and worth pinning because it is surprising.
+    const ten = "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
+    h.case(ctx, target, "nvim#vd1 v then an aborted object, k, d is charwise", &.{ "5G", "v", "i", "k", "k", "d", "j", ":wq", CR }, ten, "line1\nline2\nline3\nine5\nline6\nline7\nline8\nline9\nline10\n");
+    h.case(ctx, target, "nvim#vd2 a second d after a visual d arms an operator, and j completes it", &.{ "5G", "v", "i", "k", "k", "d", "d", "j", ":wq", CR }, ten, "line1\nline2\nline3\nline7\nline8\nline9\nline10\n");
+    h.case(ctx, target, "nvim#vd3 the same without the object key", &.{ "5G", "v", "k", "k", "d", "j", ":wq", CR }, ten, "line1\nline2\nine5\nline6\nline7\nline8\nline9\nline10\n");
     h.case(ctx, target, "nvim#dm1 3dd then . deletes three more", &.{ "3dd", ".", ":wq", CR }, nine, "7\n8\n9\n");
     h.case(ctx, target, "nvim#dm2 3dd then 2. deletes only two", &.{ "3dd", "2.", ":wq", CR }, nine, "6\n7\n8\n9\n");
     h.case(ctx, target, "nvim#dm3 3x then 2. removes five characters, not nine", &.{ "3x", "2.", ":wq", CR }, "abcdefghij\n", "fghij\n");

@@ -2,6 +2,17 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.44.5 - 2026-08-01
+
+### Added
+
+- Three nvim-pinned cases for what a `d` in visual mode leaves behind
+  (`nvim#vd1`-`vd3`). Visual mode has no `dd`: the first `d` deletes the
+  selection and returns to normal, so a second `d` arms a *new* operator and
+  the next motion completes it — which is why `d` `d` `j` takes two further
+  lines. Verified against real nvim, which does exactly the same; pinned
+  because it surprises people.
+
 ## 0.44.4 - 2026-08-01
 
 ### Fixed
