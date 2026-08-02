@@ -2,6 +2,44 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.47.5 - 2026-08-02
+
+### Changed
+
+- `doc/COMPARISON.md` re-verified key by key against the editors as
+  *installed*, which is TODO item 4 done rather than deferred: Neovim 0.12.4
+  (a `--clean --headless` keymap dump plus `index.txt`'s 473 normal-mode
+  entries), AstroNvim v6.0 (a live `nvim_get_keymap` dump of 267 mappings,
+  cross-checked against its `astrocore`/`astrolsp` mapping tables), Helix
+  25.07.1 (`book/src/keymap.md` at the tag the installed binary was built
+  from) and zedit's own dispatch switches read out of `editor.zig`. The
+  document now states its method per editor.
+- Four claims in it were **wrong** — it listed the `=` re-indent operator,
+  the `(`/`)` sentence motions, window resizing and `[count]`-before-insert
+  as missing, and all four had landed. Comparing from memory is what the
+  re-verification pass exists to catch.
+- Nine gaps no tracker had, found by the sweep and now listed in TODO.md.
+  The largest is that **`zz`/`zt`/`zb` are not bound at all** — the
+  `fold_prefix` dispatch handles `f o c a R M d E` and nothing else, so
+  there is no way to centre the cursor line on demand. Also: no leader key
+  reaches the quickfix list (AstroNvim's `Space x`), no git-hunk motion
+  (`]g`/`[g`) although the hunks are already computed for the signs and all
+  three diff views, no `gv`, no `gu`/`gU`/`g~`, no severity-filtered
+  diagnostic motions (`]e`/`[e`, `]w`/`[w`), no way back to the startup
+  screen, no `gx`, no `gJ`.
+- One divergence turned out not to be one: CLAUDE.md calls zedit's
+  wrapped-line `j`/`k` "a deliberate divergence from vim", and AstroNvim
+  v6.0 maps `j`/`k` to `v:count == 0 ? 'gj' : 'j'` by default. The gate
+  differs (zedit keys on whether the line wraps, AstroNvim on whether a
+  count was typed) and that difference is now tracked for pinning.
+- VS Code, Zed and Focus (the Jai editor) added as a third part, ranked into
+  candidate tiers. Flagged in the document as **vendor documentation only** —
+  none is installed here, nothing was driven or measured. Zed's multibuffer
+  and Focus's build-command-plus-error-regex are the two that fit machinery
+  zedit already has (the quickfix list, in both cases).
+
+Docs only — no behaviour change, so no test accompanies it.
+
 ## 0.47.4 - 2026-08-02
 
 ### Changed

@@ -32,11 +32,46 @@ behind the roadmap items.
        (`Space f u`) and a new buffer (`Space n`) in 0.29.0; 0.43.0 relabelled
        the groups by what they *make* (`Space n` read "new …", which nobody
        hunting for "create a file" finds) and dropped the duplicate `Space b
-       b`. Still unbound: `g-`/`g+` and `:earlier` (time travel). Window
-       management now has `Ctrl-h/j/k/l` and `Ctrl-w`, so a leader group for
-       it looks unnecessary — decide before adding one.
-4. [ ] **A verified AstroNvim/Helix keymap gap analysis**, updating
-       `doc/COMPARISON.md` — key by key, not from memory.
+       b`. Still unbound: `g-`/`g+` and `:earlier` (time travel), the whole
+       **quickfix list** (AstroNvim's `Space x`; `]q`/`[q` and `:copen` exist
+       and no leader key reaches any of it — found by the 0.47.5 sweep) and
+       the **startup screen** (AstroNvim's `Space h`, no way back to it once
+       dismissed). Window management now has `Ctrl-h/j/k/l` and `Ctrl-w`, so
+       a leader group for it looks unnecessary — decide before adding one.
+4. [x] ~~**A verified AstroNvim/Helix keymap gap analysis**~~ — done in
+       0.47.5, key by key against the editors as installed (nvim 0.12.4
+       headless keymap dump + `index.txt`, AstroNvim v6.0 live mapping dump,
+       Helix 25.07.1's `keymap.md` at its own tag, zedit's own dispatch
+       switches). It caught four claims in `COMPARISON.md` that were simply
+       wrong — `=`, sentences, window resizing and `[count]`-before-insert
+       were all listed as missing and had all landed — which is the whole
+       argument for re-verifying rather than editing from memory. The nine
+       gaps it turned up are item 4a below.
+
+4a. [ ] **The nine gaps the keymap sweep found**, none of which any tracker
+       had. Cheapest first; each wants a unit test plus an nvim-pinned
+       `vim_compat` case:
+       - `zz`/`zt`/`zb` — centre/top/bottom the cursor line. Not bound at
+         all (`fold_prefix` handles `f o c a R M d E` and falls through).
+         Among the most-used keys in vim; Helix gives it a whole minor mode.
+         The biggest daily-use gap found.
+       - `gv` — reselect the previous visual area.
+       - `gu`/`gU`/`g~` — case operators (`~` alone exists).
+       - `gJ` — join without inserting a space.
+       - `gx` — open the file/URL under the cursor with the system handler.
+         A stock nvim 0.12 default, so users arrive expecting it.
+       - `]e`/`[e`, `]w`/`[w` — severity-filtered diagnostic motions.
+         `]d`/`[d` walk every severity, so on a file with 200 hints the
+         errors are unreachable in practice.
+       - `]g`/`[g` — git-hunk motion. `git.computeHunks` already produces
+         the hunks for the signs and all three diff views; only the motion
+         is missing.
+       - `Space x` quickfix group and `Space h` startup screen — folded into
+         item 3 above.
+       Also pin the `j`/`k` wrap gate: CLAUDE.md calls it "a deliberate
+       divergence from vim", but AstroNvim v6.0 ships
+       `v:count == 0 ? 'gj' : 'j'` as its default. The two differ only in
+       the gate (line-wraps vs count-typed) and that belongs in a test.
 5. [ ] **Session polish.** Save/restore landed in 0.30.0 (files, cursors,
        splits, tree open/closed). Not covered yet: the tree's *expanded*
        directories, per-buffer cursors for files no pane shows (the editor
@@ -60,6 +95,34 @@ behind the roadmap items.
        watches, REPL evaluation, conditional and function breakpoints, attach,
        multiple threads (a `stopped` event names one and steps go to it), and
        a launch-configuration format. No package management (agreed).
+
+8. [ ] **VS Code / Zed / Focus candidates — awaiting the owner's verdict.**
+       Added to `doc/COMPARISON.md` Part 3 in 0.47.5. **Nothing here is
+       agreed work yet**: none of the three editors is installed on this
+       machine, so every entry came from vendor documentation and none was
+       driven, measured or pinned. The owner verifies first, then decides
+       what (if anything) is adopted. Ranked by how well each fits machinery
+       zedit already has:
+       - **Build command + compiler-error regex → the quickfix list**
+         (Focus; vim's `:make` + `'errorformat'`). The list, the picker and
+         `]q`/`[q` exist and have no external producer. Best fit of the lot.
+       - **`Ctrl-D`-style add-cursor-at-next-match** (VS Code and Zed share
+         the binding; Helix's `C` is the neighbouring idea). zedit's
+         multicursor is one-caret-per-line, so the most-used multi-cursor
+         gesture in the world is currently inexpressible.
+       - **Command palette** — searchable list of every command with its
+         binding. VS Code, Helix *and* AstroNvim all have it: three votes.
+       - **Multibuffer** (Zed) — project search / diagnostics / references
+         as one editable buffer of excerpts, saved together. The editable
+         rendering of the quickfix list zedit already keeps, and the natural
+         home for the multi-selection editing model rated "high" vs Helix.
+       - Peek definition, breadcrumbs / sticky scroll, fold-by-level, regex
+         replace case modifiers (`\u$1`), project-local config (Focus *and*
+         nvim's `'exrc'` — two votes), outline panel, git status in the
+         sidebar, MRU tab switching, a timeline view over the existing undo
+         tree, auto-save.
+       Explicitly rejected as non-goals, recorded so they are not re-proposed:
+       plugin/extension marketplaces, and AI assistance / collaboration.
 
 Local builds are host-only already (`b.standardTargetOptions`); the release
 workflow's matrix passes `-Dtarget=` for the cross-compiled artifacts, so
@@ -114,6 +177,14 @@ there is nothing to change there.
       wrap (they agree with wrap off, so the gap is only the wrapped case).
 
 ## Done (chronological)
+
+- [x] `doc/COMPARISON.md` re-verified key by key against the four editors as
+      *installed* (nvim 0.12.4, AstroNvim v6.0, Helix 25.07.1, zedit's own
+      dispatch), and VS Code / Zed / Focus added as a clearly-marked
+      unverified candidate list. Four of its existing claims were wrong —
+      `=`, sentences, window resizing and `[count]`-before-insert were all
+      listed as missing and had all landed. Nine new gaps found, `zz`/`zt`/
+      `zb` being the one that stings. (0.47.5)
 
 - [x] Fourth sweep: one `languages` table in `syntax.zig` replacing six
       switches over the same enum in three files (−17 lines, but ~6 edits
