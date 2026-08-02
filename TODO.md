@@ -115,6 +115,12 @@ there is nothing to change there.
 
 ## Done (chronological)
 
+- [x] Over-engineering sweep (−30 lines): hand-rolled UTF-8 where the bytes
+      were ASCII, a clip helper duplicating one thirty lines away, two dead
+      pub functions, and five `pub` keywords on file-local helpers. Four of
+      the six were written in the preceding two days — the "wrote it before it
+      had a caller" pattern the rules exist to catch.
+
 - [x] The last two vim gaps: an `=` re-indent operator (which needed the one
       dedent rule zedit lacked — a line starting with a closer comes back out)
       and a block pasted into the middle of a tab, which now breaks the tab

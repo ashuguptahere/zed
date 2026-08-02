@@ -11933,28 +11933,13 @@ pub const Editor = struct {
             try self.setFg(th.status_seg_fg);
             // Toast text can carry a filename or a server's words, so it goes
             // through the same sanitizer as any other untrusted content.
-            const room = box_w - chrome;
-            const shown = clipToWidth(t.text(), room);
-            try self.emitSanitized(shown);
-            const used = chrome - 1 + unicode.displayWidth(shown);
+            const cut = clipCells(t.text(), box_w - chrome);
+            try self.emitSanitized(t.text()[0..cut.bytes]);
+            const used = chrome - 1 + cut.cells;
             if (used < box_w) try self.emitSpaces(box_w - used);
         }
     }
 
-    /// The longest prefix of `text` that fits in `cells` display columns,
-    /// never splitting a codepoint.
-    fn clipToWidth(text: []const u8, cells: usize) []const u8 {
-        var w: usize = 0;
-        var i: usize = 0;
-        while (i < text.len) {
-            const d = unicode.decode(text[i..]);
-            const cw = unicode.displayWidth(text[i .. i + d.len]);
-            if (w + cw > cells) break;
-            w += cw;
-            i += d.len;
-        }
-        return text[0..i];
-    }
 
     /// One-line signature-help popup, anchored just above the cursor (or below
     /// if it is on the top row), with the active parameter emphasized.
@@ -12800,7 +12785,7 @@ fn completePrefixLen(buf: []const u8, more_pending: bool) usize {
 
 /// The leading whitespace (spaces/tabs) of a line.
 fn leadingIndent(line: []const u8) []const u8 {
-    return line[0 .. std.mem.indexOfNone(u8, line, " \t") orelse line.len];
+    return line[0..motion.firstNonBlank(line)]; // one definition of "blank"
 }
 
 fn lineIsBlank(line: []const u8) bool {

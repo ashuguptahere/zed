@@ -120,10 +120,6 @@ pub const Queue = struct {
     pub fn visible(self: *const Queue) []const Toast {
         return self.items[0..self.n];
     }
-
-    pub fn clear(self: *Queue) void {
-        self.n = 0;
-    }
 };
 
 /// The longest prefix of `text` that is at most `limit` bytes and does not cut

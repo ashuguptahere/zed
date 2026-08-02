@@ -2,6 +2,22 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.47.1 - 2026-08-02
+
+### Changed
+
+- Repo-wide over-engineering sweep, net −30 lines. `motion.firstNonBlank`
+  decoded UTF-8 to look for a space or a tab, both of which are ASCII —
+  `std.mem.indexOfNone` says the same thing in one line, and `leadingIndent`
+  now calls it instead of implementing "blank" a second way. `clipToWidth` was
+  deleted: `clipCells` thirty lines away already did the same job and counts a
+  control codepoint as the one cell its `?` occupies, which the newer one did
+  not. `fold.Set.hidden` and `notify.Queue.clear` had no callers at all and
+  are gone (the fold tests now assert through `closedAt`, which is what the
+  editor actually uses — the module comment claimed otherwise). Four `pub`
+  accessors in `ui.zig` and `Fold.covers` were only ever used inside their own
+  file.
+
 ## 0.47.0 - 2026-08-02
 
 Every vim behaviour gap on the tracker is now closed.

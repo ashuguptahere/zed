@@ -59,19 +59,19 @@ pub const Screen = struct {
     left_reserved: usize = 0,
     right_reserved: usize = 0,
 
-    pub fn usableTop(self: Screen) usize {
+    fn usableTop(self: Screen) usize {
         return 1 + self.top_reserved;
     }
 
-    pub fn usableRows(self: Screen) usize {
+    fn usableRows(self: Screen) usize {
         return self.rows -| (self.top_reserved + self.bottom_reserved);
     }
 
-    pub fn usableLeft(self: Screen) usize {
+    fn usableLeft(self: Screen) usize {
         return 1 + self.left_reserved;
     }
 
-    pub fn usableCols(self: Screen) usize {
+    fn usableCols(self: Screen) usize {
         return self.cols -| (self.left_reserved + self.right_reserved);
     }
 };

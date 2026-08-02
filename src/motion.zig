@@ -245,13 +245,9 @@ pub fn mouseWord(buf: *const buffer.Buffer, pos: Pos) Span {
 
 /// First non-blank column of a line (`^`).
 pub fn firstNonBlank(line: []const u8) usize {
-    var col: usize = 0;
-    while (col < line.len) {
-        const d = unicode.decode(line[col..]);
-        if (d.cp != ' ' and d.cp != '\t') break;
-        col += d.len;
-    }
-    return col;
+    // Only a space and a tab count as blank, and both are ASCII, so there is
+    // nothing for a UTF-8 decode to do here.
+    return std.mem.indexOfNone(u8, line, " \t") orelse line.len;
 }
 
 /// Move one codepoint forward, crossing to the next line's start at end-of-line.

@@ -2,7 +2,7 @@
 //!
 //! The set lives per document and the rules are pure, so which rows are hidden
 //! — and where the cursor may land — is unit-testable without a screen. The
-//! renderer asks `hidden`, motions ask `nextVisible`/`prevVisible`, and edits
+//! renderer asks `closedAt`, motions ask `nextVisible`/`prevVisible`, and edits
 //! call `shift` so a fold keeps covering the same text when lines move.
 //!
 //! Nesting is allowed: `closedAt` returns the *outermost* closed fold covering
@@ -21,7 +21,7 @@ pub const Fold = struct {
     end: usize, // 0-based last row, inclusive
     closed: bool = true, // `zf` makes a closed fold, as vim does
 
-    pub fn covers(self: Fold, row: usize) bool {
+    fn covers(self: Fold, row: usize) bool {
         return row >= self.start and row <= self.end;
     }
 };
@@ -70,13 +70,6 @@ pub const Set = struct {
             if (f.closed and f.covers(row)) return f;
         }
         return null;
-    }
-
-    /// True when `row` is swallowed by a closed fold: inside one, but not the
-    /// header line that stands in for it.
-    pub fn hidden(self: *const Set, row: usize) bool {
-        const f = self.closedAt(row) orelse return false;
-        return row != f.start;
     }
 
     /// The first visible row at or after `row` (`last` is the final row of the
@@ -190,11 +183,11 @@ fn oneFold(gpa: std.mem.Allocator) Set {
 test "a closed fold hides everything but its header" {
     var s = oneFold(testing.allocator);
     defer s.deinit();
-    try testing.expect(!s.hidden(1));
-    try testing.expect(!s.hidden(2)); // the header stays on screen
-    try testing.expect(s.hidden(3));
-    try testing.expect(s.hidden(5));
-    try testing.expect(!s.hidden(6));
+    try testing.expect(s.closedAt(1) == null);
+    try testing.expectEqual(@as(usize, 2), s.closedAt(2).?.start); // its own header
+    try testing.expectEqual(@as(usize, 2), s.closedAt(3).?.start); // swallowed
+    try testing.expectEqual(@as(usize, 2), s.closedAt(5).?.start);
+    try testing.expect(s.closedAt(6) == null);
 }
 
 test "a single line cannot be folded" {
@@ -208,7 +201,7 @@ test "an open fold hides nothing" {
     var s = oneFold(testing.allocator);
     defer s.deinit();
     try testing.expect(s.setClosed(3, false));
-    try testing.expect(!s.hidden(3));
+    try testing.expect(s.closedAt(3) == null);
     try testing.expect(s.closedAt(3) == null);
 }
 
@@ -216,9 +209,9 @@ test "toggling flips it both ways" {
     var s = oneFold(testing.allocator);
     defer s.deinit();
     try testing.expect(s.toggle(4)); // closed -> open
-    try testing.expect(!s.hidden(4));
+    try testing.expect(s.closedAt(4) == null);
     try testing.expect(s.toggle(4)); // open -> closed
-    try testing.expect(s.hidden(4));
+    try testing.expect(s.closedAt(4) != null);
 }
 
 test "nextVisible skips a closed fold's body" {
@@ -253,8 +246,8 @@ test "nested folds resolve to the outermost closed one" {
     // Open the outer and the inner still hides its own body.
     try testing.expect(s.setClosed(4, false));
     try testing.expectEqual(@as(usize, 3), s.closedAt(4).?.start);
-    try testing.expect(s.hidden(4));
-    try testing.expect(!s.hidden(2));
+    try testing.expectEqual(@as(usize, 3), s.closedAt(4).?.start); // swallowed by the inner
+    try testing.expect(s.closedAt(2) == null); // outside it
 }
 
 test "zR and zM act on every fold" {
@@ -263,9 +256,9 @@ test "zR and zM act on every fold" {
     s.add(1, 3);
     s.add(6, 9);
     s.setAll(false);
-    try testing.expect(!s.hidden(2) and !s.hidden(7));
+    try testing.expect(s.closedAt(2) == null and s.closedAt(7) == null);
     s.setAll(true);
-    try testing.expect(s.hidden(2) and s.hidden(7));
+    try testing.expect(s.closedAt(2) != null and s.closedAt(7) != null);
 }
 
 test "deleting a fold removes the innermost one" {
@@ -316,5 +309,5 @@ test "adding the same range twice does not duplicate it" {
     _ = s.setClosed(3, false);
     s.add(2, 5); // re-folding the same range closes the one already there
     try testing.expectEqual(@as(usize, 1), s.len());
-    try testing.expect(s.hidden(3));
+    try testing.expect(s.closedAt(3) != null);
 }
