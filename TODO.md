@@ -100,15 +100,6 @@ there is nothing to change there.
       machinery (`coladvance`), so it is its own piece of work rather than a
       patch to the paste. (A block *edge* on a tab is handled: it covers the
       tab whole, as vim does — `nvim#bp37`/`nvim#bi17`.)
-- [ ] `[count].` replaces only a *leading* count. A count typed after the
-      operator is still multiplied by the new one: nvim's `d2w` then `3.`
-      deletes three words and `2d2w` then `3.` also three, where zedit deletes
-      six in both (probed on "a b c d e f g h i j k l m"). vim can do it
-      because its redo buffer holds one normalised count; zedit replays the
-      recorded *bytes*, and there `2` in `d2w` is indistinguishable from the
-      `2` in `f2` or `r2` without parsing the command. Fixing it means
-      capturing the count beside the keys at record time — its own tranche,
-      with the `[count]`-before-insert family above.
 - [ ] Tree-sitter depth, the rest of it: `@indent.end`/`@indent.dedent`
       (a Python `return` should dedent; nvim-treesitter does) and
       `@indent.align` (align a wrapped expression to its opening paren), an
@@ -126,14 +117,17 @@ there is nothing to change there.
       Alt), edge auto-scroll while dragging (needs a repeat timer; the
       completion debounce is the only timer zedit arms), drag-to-resize
       splits.
-- [ ] Sentence objects and motions (`is`/`as`, `(`/`)`) — not implemented at
-      all; `das` leaves the buffer alone where nvim deletes the sentence.
 - [ ] An `=` re-indent operator (`=G`, `==`): missing, so a paste that lands
       at the wrong indent has to be fixed by hand.
 - [ ] More nvim ground-truth tranches: operator-pending `gj`/`gk` under soft
       wrap (they agree with wrap off, so the gap is only the wrapped case).
 
 ## Done (chronological)
+
+- [x] Sentences (`(`/`)`, `is`/`as`) and `[count].` replacing a count typed
+      after the operator. The latter meant keeping counts out of the dot
+      capture entirely and storing the number beside the keys — `d2w`'s `2`
+      and `f2`'s `2` are the same byte, so byte surgery could never work.
 
 - [x] One Esc always leaves insert mode, popup or no popup. The old rule was
       vim's, but zedit's popup is automatic rather than asked for, so whether

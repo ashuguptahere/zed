@@ -479,6 +479,29 @@ fn blockInsert(ctx: *h.Ctx) void {
     h.case(ctx, target, "nvim#bi4 I at column 0 reaches the empty line", &.{ CV ++ "jj", "I", "Z", ESC, ":wq", CR }, "ab\n\ncd\n", "Zab\nZ\nZcd\n");
     h.case(ctx, target, "nvim#bi5 c skips a line short of the left edge", &.{ "ll" ++ CV ++ "jj", "c", "Z", ESC, ":wq", CR }, gap, "abZd\n\nefZh\n");
     h.case(ctx, target, "nvim#bi6 A over a whole block types on every row", &.{ CV ++ "jjl", "A", "XY", ESC, ":wq", CR }, "abcd\nef\nghij\n", "abXYcd\nefXY\nghXYij\n");
+    // --- sentences: the `(`/`)` motions and the `is`/`as` objects.
+    const sents = "One. Two. Three.\n";
+    h.case(ctx, target, "nvim#sn1 das takes the sentence and its trailing space", &.{ "fT", "das", ":wq", CR }, sents, "One. Three.\n");
+    h.case(ctx, target, "nvim#sn2 dis leaves the whitespace", &.{ "fT", "dis", ":wq", CR }, sents, "One.  Three.\n");
+    h.case(ctx, target, "nvim#sn3 das on the first", &.{ "das", ":wq", CR }, sents, "Two. Three.\n");
+    h.case(ctx, target, "nvim#sn4 das on the last takes the leading space instead", &.{ "$", "das", ":wq", CR }, sents, "One. Two.\n");
+    h.case(ctx, target, "nvim#sn5 cis replaces the sentence", &.{ "fT", "cis", "X", ESC, ":wq", CR }, sents, "One. X Three.\n");
+    h.case(ctx, target, "nvim#sn6 ) moves to the next sentence", &.{ ")", "i@", ESC, ":wq", CR }, sents, "One. @Two. Three.\n");
+    h.case(ctx, target, "nvim#sn7 2) counts", &.{ "2)", "i@", ESC, ":wq", CR }, sents, "One. Two. @Three.\n");
+    h.case(ctx, target, "nvim#sn8 ( moves back to the sentence start", &.{ "$", "(", "i@", ESC, ":wq", CR }, sents, "One. Two. @Three.\n");
+    h.case(ctx, target, "nvim#sn9 d) deletes to the next sentence", &.{ "d)", ":wq", CR }, sents, "Two. Three.\n");
+    h.case(ctx, target, "nvim#sn10 a sentence does not run past its line", &.{ "fT", "das", ":wq", CR }, "One. Two.\nThree. Four.\n", "One.\nThree. Four.\n");
+    h.case(ctx, target, "nvim#sn11 ! and ? end one too", &.{ "fB", "das", ":wq", CR }, "Hi! Bye? End.\n", "Hi! End.\n");
+
+    // --- `[count].` replaces every count the change had, including one typed
+    //     after the operator. The recorded keys carry no digits at all now.
+    const words = "a b c d e f g h i j k l m\n";
+    h.case(ctx, target, "nvim#dc1 d2w then 3. deletes three words, not six", &.{ "d2w", "3.", ":wq", CR }, words, "f g h i j k l m\n");
+    h.case(ctx, target, "nvim#dc2 2d2w then 3. replaces the product", &.{ "2d2w", "3.", ":wq", CR }, words, "h i j k l m\n");
+    h.case(ctx, target, "nvim#dc3 d2w then a bare . keeps the two", &.{ "d2w", ".", ":wq", CR }, words, "e f g h i j k l m\n");
+    h.case(ctx, target, "nvim#dc4 dw then 3. takes a count the change never had", &.{ "dw", "3.", ":wq", CR }, words, "e f g h i j k l m\n");
+    h.case(ctx, target, "nvim#dc5 a register prefix keeps the count after it", &.{ "\"a2dd", "3.", ":wq", CR }, "1\n2\n3\n4\n5\n6\n7\n8\n9\n", "6\n7\n8\n9\n");
+
     // `[count]` before a blockwise `A`/`I`: every caret types the text that
     // many times, exactly as the plain `3a` family does.
     const blk = "abcd\nefgh\nijkl\n";

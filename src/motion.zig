@@ -643,3 +643,127 @@ test "mouseWord % spans lines, and a blank line selects one cell" {
     try testing.expectEqual(Pos{ .row = 2, .col = 0 }, empty.start);
     try testing.expectEqual(Pos{ .row = 2, .col = 0 }, empty.end);
 }
+
+// === sentences =============================================================
+//
+// Vim's rule: a sentence ends at `.`, `!` or `?`, followed by any number of
+// `)`, `]`, `"` or `'`, and then a space, a tab or the end of the line. The
+// next sentence starts after the whitespace that follows. Paragraph and
+// section boundaries also end one, which here means an empty line.
+
+fn isSentenceEnd(line: []const u8, i: usize) ?usize {
+    if (i >= line.len) return null;
+    if (line[i] != '.' and line[i] != '!' and line[i] != '?') return null;
+    var j = i + 1;
+    while (j < line.len and (line[j] == ')' or line[j] == ']' or line[j] == '"' or line[j] == '\'')) j += 1;
+    // End of line counts as the terminator, as does a space or a tab.
+    if (j >= line.len) return j;
+    if (line[j] == ' ' or line[j] == '\t') return j;
+    return null;
+}
+
+/// Byte offset just past the end of the sentence containing (or starting at)
+/// `col` on `line`, not counting the whitespace after it. `line.len` when the
+/// line has no terminator left.
+fn sentenceEndFrom(line: []const u8, col: usize) usize {
+    var i = col;
+    while (i < line.len) : (i += 1) {
+        if (isSentenceEnd(line, i)) |past| return past;
+    }
+    return line.len;
+}
+
+/// The start of the sentence that `col` belongs to, on `line` alone.
+fn sentenceStartOn(line: []const u8, col: usize) usize {
+    var start: usize = 0;
+    var i: usize = 0;
+    while (i < line.len and i <= col) {
+        if (isSentenceEnd(line, i)) |past| {
+            var w = past;
+            while (w < line.len and (line[w] == ' ' or line[w] == '\t')) w += 1;
+            if (w > col) break; // `col` is inside this sentence's tail
+            start = w;
+            i = w;
+            continue;
+        }
+        i += 1;
+    }
+    return start;
+}
+
+/// `)` — the start of the next sentence. Crosses lines, and an empty line is
+/// a sentence of its own (vim treats a paragraph boundary as one).
+pub fn sentenceForward(buf: *const buffer.Buffer, pos: Pos) Pos {
+    const last = buf.lineCount() - 1;
+    const line = buf.line(pos.row);
+    const past = sentenceEndFrom(line, pos.col);
+    if (past < line.len) {
+        var w = past;
+        while (w < line.len and (line[w] == ' ' or line[w] == '\t')) w += 1;
+        if (w < line.len) return .{ .row = pos.row, .col = w };
+    }
+    // Nothing left on this line: the next line's first sentence.
+    if (pos.row >= last) return .{ .row = pos.row, .col = if (line.len == 0) 0 else unicode.prevBoundary(line, line.len) };
+    var r = pos.row + 1;
+    while (r < last and buf.line(r).len == 0 and buf.line(r + 1).len == 0) r += 1;
+    return .{ .row = r, .col = 0 };
+}
+
+/// `(` — the start of the sentence the cursor is in, or the previous one when
+/// it is already there.
+pub fn sentenceBackward(buf: *const buffer.Buffer, pos: Pos) Pos {
+    const line = buf.line(pos.row);
+    const start = sentenceStartOn(line, pos.col);
+    if (start < pos.col) return .{ .row = pos.row, .col = start };
+    if (start > 0) {
+        // At the start of a sentence that is not the line's first: step back
+        // into the previous one and take its start.
+        return .{ .row = pos.row, .col = sentenceStartOn(line, start - 1) };
+    }
+    if (pos.row == 0) return .{ .row = 0, .col = 0 };
+    const prev = buf.line(pos.row - 1);
+    return .{ .row = pos.row - 1, .col = sentenceStartOn(prev, prev.len -| 1) };
+}
+
+/// `is` / `as`. `as` takes the whitespace after the sentence; when there is
+/// none on the line — the sentence ends the line — it takes the whitespace
+/// before it instead, which is the same rule `ap` follows.
+pub fn objSentence(buf: *const buffer.Buffer, pos: Pos, around: bool) ?Span {
+    const line = buf.line(pos.row);
+    if (line.len == 0) return null;
+    const col = @min(pos.col, line.len -| 1);
+    const start = sentenceStartOn(line, col);
+    const end = sentenceEndFrom(line, start); // one past the terminator
+    if (end <= start) return null;
+    if (!around) return .{ .start = .{ .row = pos.row, .col = start }, .end = .{ .row = pos.row, .col = end } };
+    var e = end;
+    while (e < line.len and (line[e] == ' ' or line[e] == '\t')) e += 1;
+    if (e > end) return .{ .start = .{ .row = pos.row, .col = start }, .end = .{ .row = pos.row, .col = e } };
+    // No trailing whitespace: take the leading whitespace instead.
+    var s = start;
+    while (s > 0 and (line[s - 1] == ' ' or line[s - 1] == '\t')) s -= 1;
+    return .{ .start = .{ .row = pos.row, .col = s }, .end = .{ .row = pos.row, .col = end } };
+}
+
+test "a sentence ends at .!? plus closers then whitespace" {
+    try std.testing.expect(isSentenceEnd("One. Two.", 3) != null);
+    try std.testing.expect(isSentenceEnd("Hi! Bye?", 2) != null);
+    try std.testing.expect(isSentenceEnd("end.\")  x", 3) != null); // closers count
+    try std.testing.expect(isSentenceEnd("3.14 is pi", 1) == null); // no space after
+    try std.testing.expect(isSentenceEnd("last.", 4) != null); // end of line
+}
+
+test "the start of the sentence a column belongs to" {
+    const l = "One. Two. Three.";
+    try std.testing.expectEqual(@as(usize, 0), sentenceStartOn(l, 0));
+    try std.testing.expectEqual(@as(usize, 0), sentenceStartOn(l, 3));
+    try std.testing.expectEqual(@as(usize, 5), sentenceStartOn(l, 5));
+    try std.testing.expectEqual(@as(usize, 5), sentenceStartOn(l, 8));
+    try std.testing.expectEqual(@as(usize, 10), sentenceStartOn(l, 12));
+}
+
+test "the end of a sentence is one past its terminator" {
+    try std.testing.expectEqual(@as(usize, 4), sentenceEndFrom("One. Two.", 0));
+    try std.testing.expectEqual(@as(usize, 9), sentenceEndFrom("One. Two.", 5));
+    try std.testing.expectEqual(@as(usize, 7), sentenceEndFrom("no stop", 0)); // no terminator
+}

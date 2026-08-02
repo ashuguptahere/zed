@@ -2,6 +2,25 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.47.0 - 2026-08-02
+
+### Added
+
+- **Sentences.** `(` and `)` move to the previous/next sentence (counted), and
+  `is`/`as` are text objects for one — none of which existed. A sentence ends
+  at `.`, `!` or `?` followed by any number of `)`, `]`, `"`, `'` and then a
+  space, a tab or the end of the line. `as` takes the whitespace after it, or
+  the whitespace before it when the sentence ends the line. Eleven nvim-pinned
+  cases; the rules are pure and unit-tested in `motion.zig`.
+
+### Fixed
+
+- **`[count].` now replaces every count the change had**, not just a leading
+  one: `d2w` then `3.` deletes three words where it used to delete six. The
+  recorded keys no longer contain digits at all — the capture keeps counts out
+  and stores the effective count beside them. Editing the recorded bytes could
+  never work, because `d2w`'s `2` and `f2`'s `2` are the same byte.
+
 ## 0.46.1 - 2026-08-02
 
 ### Changed

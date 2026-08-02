@@ -455,6 +455,13 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   returns at the first hit, comparing grammar symbol ids rather than type
   names — `]f` on a 320 KB file costs ~0.4 ms, against 12 ms for a naive
   full-tree walk.
+- **Sentences:** `(` / `)` move to the previous/next sentence start (counted),
+  and `is` / `as` are text objects for one. A sentence ends at `.`, `!` or `?`
+  followed by any number of `)`, `]`, `"`, `'` and then a space, a tab or the
+  end of the line — vim's rule. `as` takes the whitespace after the sentence,
+  or, when it ends the line, the whitespace before it instead (the same
+  asymmetry `ap` has). All nvim-pinned (`nvim#sn1`-`sn11`); the rules are pure
+  and unit-tested in `motion.zig`.
 - **Text objects:** `iw aw iW aW`, `ip ap` (paragraph, linewise — `ap` takes
   the trailing blank lines, or the leading ones when nothing trails),
   `i( i[ i{ i< i" i' i\`` and `a…` variants (plus `b`/`B` aliases), e.g.
@@ -1251,7 +1258,7 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   `poll` is noticed on the next keypress (a self-pipe would close the race).
 - Vim gaps: paragraph objects/motions treat only truly empty lines as
   boundaries (vim's rule; `nroff`-style paragraph macros in `'paragraphs'`
-  aren't supported), and there are no sentence objects (`is`/`as`, `(`/`)`).
+  aren't supported).
   `[count]` before an insert types the text that many times, as vim does —
   the plain family (`3a`, `3i`, `3A`, `3I`, `3o`, `3O`, `nvim#ic1`-`ic10`) and
   the blockwise `3A`/`3I`, where every caret repeats it (`nvim#bc1`-`bc9`). Dot-repeat and macros

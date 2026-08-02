@@ -528,6 +528,13 @@ pub const Editor = struct {
 
     // dot-repeat
     dot_keys: std.ArrayList(u8) = .empty,
+    /// The recorded change's effective count, kept beside the keys because the
+    /// keys no longer contain it. `[count].` replaces this outright — and a
+    /// count typed *after* the operator (`d2w`) is part of it, which is what
+    /// string surgery on the recorded bytes could never tell from the `2` in
+    /// `f2` or `r2`.
+    dot_count: usize = 1,
+    dot_count_tmp: usize = 1,
     dot_temp: std.ArrayList(u8) = .empty,
     change_started: bool = false,
     in_dot: bool = false,
@@ -1130,7 +1137,7 @@ pub const Editor = struct {
                 // replaying the raw report does. Without this, `.` silently
                 // repeated whatever change came before instead.
                 const change = self.mode == .normal and self.operator != .none and self.await_arg == .none;
-                if (change and !self.in_dot) self.dotCapturePre(raw);
+                if (change and !self.in_dot) self.dotCapturePre(k, raw);
                 try self.mouseClick(m);
                 if (change and !self.in_dot) self.dotCapturePost();
                 return;
@@ -1178,7 +1185,7 @@ pub const Editor = struct {
             },
             else => {},
         }
-        if (!self.in_dot) self.dotCapturePre(raw);
+        if (!self.in_dot) self.dotCapturePre(k, raw);
         // showcmd records the *decoded* key, never raw bytes: an arrow's
         // escape sequence must not appear as ^[[B. Characters and control
         // keys read back as text (^W for Ctrl-w, as vim shows).
@@ -1573,21 +1580,38 @@ pub const Editor = struct {
         w.goal_col = displayCol(line, w.cx);
     }
 
-    fn dotCapturePre(self: *Editor, raw: []const u8) void {
+    fn dotCapturePre(self: *Editor, k: key.Key, raw: []const u8) void {
         if (self.mode == .normal and self.atNeutral()) {
             self.dot_temp.clearRetainingCapacity();
+            self.dot_count_tmp = 1;
             self.change_started = false;
         }
+        // Count digits are recorded as a number, not as keys: a `.` with a new
+        // count has to replace *every* count the change had, and `d2w`'s `2`
+        // is indistinguishable from `f2`'s in the raw bytes.
+        if (self.isCountDigit(k)) return;
+        if (self.mode == .normal and (self.count > 0 or self.count2 > 0)) self.dot_count_tmp = self.eff();
         switch (self.mode) {
             .normal, .insert, .visual, .visual_line, .visual_block => self.dot_temp.appendSlice(self.gpa, raw) catch {},
             .command, .picker, .terminal => {},
         }
     }
 
+    /// Whether this key is about to be swallowed as a count rather than acting.
+    /// Mirrors the two places counts accumulate — the leading one in
+    /// `normalChar` and the one after an operator in `operatorPendingKey`.
+    fn isCountDigit(self: *Editor, k: key.Key) bool {
+        if (self.mode != .normal or self.await_arg != .none) return false;
+        const c = charByte(k) orelse return false;
+        if (self.operator != .none) return (c >= '1' and c <= '9') or (c == '0' and self.count2 > 0);
+        return (c >= '1' and c <= '9') or (c == '0' and self.count > 0);
+    }
+
     fn dotCapturePost(self: *Editor) void {
         if (self.mode == .normal and self.atNeutral() and self.change_started) {
             self.dot_keys.clearRetainingCapacity();
             self.dot_keys.appendSlice(self.gpa, self.dot_temp.items) catch {};
+            self.dot_count = self.dot_count_tmp;
             self.change_started = false;
         }
     }
@@ -1754,6 +1778,8 @@ pub const Editor = struct {
             } else self.resetPending(),
             '{' => self.doMotion(self.paragraphMotion(false)),
             '}' => self.doMotion(self.paragraphMotion(true)),
+            '(' => self.doMotion(self.sentenceMotion(false)),
+            ')' => self.doMotion(self.sentenceMotion(true)),
             'H' => self.doMotion(self.gotoLineMotion(self.top)),
             'M' => self.doMotion(self.gotoLineMotion(self.lineAtScreenRow(self.textRows() / 2))),
             'L' => self.doMotion(self.gotoLineMotion(self.lineAtScreenRow(self.textRows() - 1))),
@@ -2321,6 +2347,10 @@ pub const Editor = struct {
         if (c == 'f' or c == 'c') return self.treeObjectSpan(around, c == 'f');
         if (c == 'a') return self.treeListItemSpan(around);
         if (c == 'C') return self.treeCommentSpan(around);
+        if (c == 's') { // sentence: charwise, its end already exclusive
+            const o = motion.objSentence(self.buf, self.cursor(), around) orelse return null;
+            return .{ .lines = false, .start = o.start, .end = o.end };
+        }
         if (c == 'p') { // paragraph: a linewise object (nvim-verified)
             const r = motion.paraObject(self.buf, self.cy, around, self.eff());
             return .{ .lines = true, .top = r.top, .bot = r.bot };
@@ -2668,6 +2698,20 @@ pub const Editor = struct {
             col = if (self.operator == .none) lastColumn(line) else line.len;
         }
         return .{ .pos = .{ .row = row, .col = col }, .kind = .exclusive, .col_mode = .exact };
+    }
+
+    /// `(` / `)` — the start of the previous/next sentence. Exclusive and
+    /// charwise, and not a jump motion (vim does not record these).
+    fn sentenceMotion(self: *Editor, forward: bool) MotionResult {
+        var p = self.cursor();
+        var i: usize = 0;
+        const n = self.eff();
+        while (i < n) : (i += 1) {
+            const next = if (forward) motion.sentenceForward(self.buf, p) else motion.sentenceBackward(self.buf, p);
+            if (next.row == p.row and next.col == p.col) break; // nowhere left to go
+            p = next;
+        }
+        return .{ .pos = p, .kind = .exclusive, .col_mode = .exact };
     }
 
     fn gotoLineMotion(self: *Editor, row: usize) MotionResult {
@@ -3774,6 +3818,8 @@ pub const Editor = struct {
                 }),
                 'g' => self.setCursorKeep(.{ .row = 0, .col = 0 }),
                 '%' => if (motion.matchPair(self.buf, self.cursor())) |p| self.setCursorKeep(p),
+                '(' => for (0..n) |_| self.setCursorKeep(motion.sentenceBackward(self.buf, self.cursor())),
+                ')' => for (0..n) |_| self.setCursorKeep(motion.sentenceForward(self.buf, self.cursor())),
                 'p', 'P' => try self.visualPaste(),
                 'o' => {
                     const tmp = self.vstart;
@@ -9161,23 +9207,20 @@ pub const Editor = struct {
         // *after* a `"{reg}` prefix, which vim copies across untouched: writing
         // it in front instead would glue the two digit runs of `"a2dd` into one
         // and turn `3.` into `32dd`.
-        const count = self.count;
+        // The recorded keys carry no count at all, so replaying is simply
+        // "this many, then those keys": a new count replaces the recorded one
+        // outright — including a count that was typed after the operator,
+        // which the old byte-editing could not even see. The count goes
+        // *after* a `"{reg}` prefix, which vim keeps.
+        const count = if (self.count > 0) self.count else self.dot_count;
         var keys: std.ArrayList(u8) = .empty;
         defer keys.deinit(self.gpa);
-        var recorded: []const u8 = self.dot_keys.items;
-        if (count > 0) {
-            var n: usize = if (recorded.len >= 2 and recorded[0] == '"') 2 else 0;
-            const head = n;
-            if (n < recorded.len and recorded[n] >= '1' and recorded[n] <= '9') {
-                while (n < recorded.len and recorded[n] >= '0' and recorded[n] <= '9') n += 1;
-            }
-            keys.appendSlice(self.gpa, recorded[0..head]) catch return;
-            keys.print(self.gpa, "{d}", .{count}) catch return;
-            keys.appendSlice(self.gpa, recorded[n..]) catch return;
-        } else {
-            keys.appendSlice(self.gpa, recorded) catch return;
-        }
-        recorded = keys.items;
+        const recorded_keys: []const u8 = self.dot_keys.items;
+        const head: usize = if (recorded_keys.len >= 2 and recorded_keys[0] == '"') 2 else 0;
+        keys.appendSlice(self.gpa, recorded_keys[0..head]) catch return;
+        if (count > 1) keys.print(self.gpa, "{d}", .{count}) catch return;
+        keys.appendSlice(self.gpa, recorded_keys[head..]) catch return;
+        const recorded: []const u8 = keys.items;
         self.resetPending();
         self.in_dot = true;
         defer self.in_dot = false;
