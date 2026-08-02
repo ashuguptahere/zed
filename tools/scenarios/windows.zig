@@ -11,9 +11,7 @@ const CTRL_W = "\x17";
 /// zero-width window used to underflow the row painter's `gw - 1`. Reachable
 /// with no mouse involved, so it lives with the window tests.
 fn tinyTerminalSplits(ctx: *h.Ctx) !void {
-    const dir = try h.tempDir(ctx.gpa);
-    defer ctx.gpa.free(dir);
-    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const dir = try ctx.tempDir();
     const path = h.join(ctx, dir, "a.txt");
     defer ctx.gpa.free(path);
     h.writeFile(ctx.io, path, "one\ntwo\n");
@@ -62,9 +60,7 @@ pub fn run(ctx: *h.Ctx) !void {
 
     // A vertical split shows two different buffers side by side at once.
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         const a = h.join(ctx, dir, "a.txt");
         defer ctx.gpa.free(a);
         const b = h.join(ctx, dir, "b.txt");
@@ -89,9 +85,7 @@ pub fn run(ctx: *h.Ctx) !void {
 
     // Two buffers, switched with :e / :bp, edited independently and saved.
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         const a = h.join(ctx, dir, "a.txt");
         defer ctx.gpa.free(a);
         const b = h.join(ctx, dir, "b.txt");
@@ -159,9 +153,7 @@ pub fn run(ctx: *h.Ctx) !void {
 
     // Ctrl-w v splits the same buffer; Ctrl-w w moves focus; the edit lands.
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         const a = h.join(ctx, dir, "a.txt");
         defer ctx.gpa.free(a);
         h.writeFile(ctx.io, a, "aaa\n");
@@ -200,9 +192,7 @@ pub fn run(ctx: *h.Ctx) !void {
 /// scenario-level rather than vim_compat byte-parity.
 fn bufferClose(ctx: *h.Ctx) !void {
     const LEAVE_ALT = "\x1b[?1049l"; // emitted only when the editor exits
-    const dir = try h.tempDir(ctx.gpa);
-    defer ctx.gpa.free(dir);
-    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const dir = try ctx.tempDir();
     const one = h.join(ctx, dir, "one.txt");
     defer ctx.gpa.free(one);
     const two = h.join(ctx, dir, "two.txt");

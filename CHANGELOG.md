@@ -2,6 +2,21 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.47.3 - 2026-08-02
+
+### Changed
+
+- Third over-engineering sweep, net −113 lines, almost all of it one pattern:
+  every scenario opened with three lines to make and clean a temp directory,
+  67 times. `ctx.tempDir()` hands out a directory the `Ctx` removes when the
+  suite ends, so each site is one line and keeps the name it had. It also
+  found a directory in `git.zig` that was never cleaned up at all.
+- `freeDoc` replaces the document teardown written out five times. It is
+  deliberately *not* `destroyDoc`, which already existed and does more —
+  unregistering the document and repairing any diff pair pointing at it. The
+  callers here hold a document that was never added to the list, so calling
+  the existing one would have removed something that was not there.
+
 ## 0.47.2 - 2026-08-02
 
 ### Changed

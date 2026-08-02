@@ -17,9 +17,7 @@ const POWERLINE = "\xee\x82\xb0"; // U+E0B0
 /// the buffer tabline present or gone, and the completion debounce accepted as
 /// a number rather than ignored.
 fn renderedSettings(ctx: *h.Ctx) !void {
-    const dir = try h.tempDir(ctx.gpa);
-    defer ctx.gpa.free(dir);
-    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const dir = try ctx.tempDir();
     const cfg = try std.fmt.allocPrint(ctx.gpa, "{s}/cfg", .{dir});
     defer ctx.gpa.free(cfg);
     const a = try std.fmt.allocPrint(ctx.gpa, "{s}/a.txt", .{dir});
@@ -88,9 +86,7 @@ fn renderedSettings(ctx: *h.Ctx) !void {
 pub fn run(ctx: *h.Ctx) !void {
     // --- the theme picker previews live, restores on cancel, and persists ---
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         const f = h.join(ctx, dir, "t.txt");
         defer ctx.gpa.free(f);
         h.writeFile(ctx.io, f, "alpha\n");
@@ -153,9 +149,7 @@ pub fn run(ctx: *h.Ctx) !void {
 
     try renderedSettings(ctx);
 
-    const dir = try h.tempDir(ctx.gpa);
-    defer ctx.gpa.free(dir);
-    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const dir = try ctx.tempDir();
 
     const cfg_path = try std.fmt.allocPrint(ctx.gpa, "{s}/cfg", .{dir});
     defer ctx.gpa.free(cfg_path);

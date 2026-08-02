@@ -67,9 +67,7 @@ pub fn run(ctx: *h.Ctx) !void {
     // fast after opening a file and the popup never comes. The request must
     // wait for the handshake instead.
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         const cfg = h.join(ctx, dir, "cfg");
         defer ctx.gpa.free(cfg);
         h.writeFile(ctx.io, cfg, "buffer_completion = false\n");
@@ -105,9 +103,7 @@ pub fn run(ctx: *h.Ctx) !void {
     }
 
 
-    const dir = try h.tempDir(ctx.gpa);
-    defer ctx.gpa.free(dir);
-    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const dir = try ctx.tempDir();
 
     const first = h.join(ctx, dir, "first.py");
     defer ctx.gpa.free(first);
@@ -328,9 +324,7 @@ pub fn run(ctx: *h.Ctx) !void {
     // all. Pausing is what a person does, and before this the second Esc was
     // needed only when they had.
     {
-        const edir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(edir);
-        defer h.removeTree(ctx.gpa, ctx.io, edir);
+        const edir = try ctx.tempDir();
         const f = h.join(ctx, edir, "esc.txt");
         defer ctx.gpa.free(f);
         h.writeFile(ctx.io, f, "alphabet\nbeta\n");

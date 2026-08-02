@@ -54,9 +54,7 @@ fn tmpLeftover(ctx: *h.Ctx, dir_path: []const u8) bool {
 }
 
 pub fn run(ctx: *h.Ctx) !void {
-    const dir = try h.tempDir(ctx.gpa);
-    defer ctx.gpa.free(dir);
-    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const dir = try ctx.tempDir();
 
     // Fake remote filesystem + the mock ssh on PATH.
     const bin = h.join(ctx, dir, "bin");

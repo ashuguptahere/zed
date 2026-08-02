@@ -115,6 +115,10 @@ there is nothing to change there.
 
 ## Done (chronological)
 
+- [x] Third over-engineering sweep (−113), almost all of it the temp-directory
+      triple in the test tree. The `undo.zig` fixture finding was costed at −6
+      and dropped: not worth a mechanical rewrite of five tests.
+
 - [x] Second over-engineering sweep (−14). Also a lesson recorded: two of the
       six findings were net-*negative* once applied — a shared home for five
       three-line builders cost more than the duplication. Measure the removal,

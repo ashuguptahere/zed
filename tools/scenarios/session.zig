@@ -12,9 +12,7 @@ const ESC = "\x1b";
 const CR = "\r";
 
 pub fn run(ctx: *h.Ctx) !void {
-    const dir = try h.tempDir(ctx.gpa);
-    defer ctx.gpa.free(dir);
-    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const dir = try ctx.tempDir();
     const state = h.join(ctx, dir, "state");
     defer ctx.gpa.free(state);
     const state_env = try std.fmt.allocPrint(ctx.gpa, "XDG_STATE_HOME={s}", .{state});

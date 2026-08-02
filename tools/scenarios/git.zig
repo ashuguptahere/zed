@@ -23,9 +23,7 @@ const LOWBLOCK = "\xe2\x96\x81"; // U+2581
 /// on any row it shares, so seeing the text first can only mean it came in an
 /// earlier frame.
 fn paintBeforeDecorating(ctx: *h.Ctx) !void {
-    const dir = try h.tempDir(ctx.gpa);
-    defer ctx.gpa.free(dir);
-    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const dir = try ctx.tempDir();
     const name = "tracked.txt";
     const file = try std.fmt.allocPrint(ctx.gpa, "{s}/{s}", .{ dir, name });
     defer ctx.gpa.free(file);
@@ -66,9 +64,7 @@ fn capture(
     name: []const u8,
     checks: []const struct { name: []const u8, present: []const []const u8, absent: []const []const u8 },
 ) !void {
-    const dir = try h.tempDir(ctx.gpa);
-    defer ctx.gpa.free(dir);
-    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const dir = try ctx.tempDir();
 
     const file = try std.fmt.allocPrint(ctx.gpa, "{s}/{s}", .{ dir, name });
     defer ctx.gpa.free(file);
@@ -105,9 +101,7 @@ fn capture(
 /// different distance than one that did not: the view leapt, which is what
 /// "jumping around lines when scrolling past a change" was.
 fn wheelOverVirtualRows(ctx: *h.Ctx) !void {
-    const dir = try h.tempDir(ctx.gpa);
-    defer ctx.gpa.free(dir);
-    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const dir = try ctx.tempDir();
     const f = try std.fmt.allocPrint(ctx.gpa, "{s}/f.txt", .{dir});
     defer ctx.gpa.free(f);
 
@@ -267,9 +261,9 @@ const TINT_ADD = h.rgb(59, 71, 55);
 const TINT_DELETE = h.rgb(81, 49, 64);
 
 /// A fresh repo with `committed` committed and `modified` in the worktree as
-/// f.txt. Caller frees the returned dir (and removes the tree).
-fn diffRepo(ctx: *h.Ctx, committed: []const u8, modified: []const u8) ![]u8 {
-    const dir = try h.tempDir(ctx.gpa);
+/// f.txt. The directory belongs to `ctx` and goes when the suite ends.
+fn diffRepo(ctx: *h.Ctx, committed: []const u8, modified: []const u8) ![]const u8 {
+    const dir = try ctx.tempDir();
     const f = h.join(ctx, dir, "f.txt");
     defer ctx.gpa.free(f);
     h.runQuiet(ctx.gpa, ctx.io, &.{ "git", "-C", dir, "init", "-q" });

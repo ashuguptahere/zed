@@ -213,6 +213,7 @@ pub fn main(init: std.process.Init) !void {
             ctx.suite = s[0];
             const began = h.nowMs();
             try s[1].run(&ctx);
+            ctx.dropTempDirs();
             const took = h.nowMs() - began;
             std.debug.print("--- {s}: {d} checks in {d} ms\n", .{ s[0], ctx.passed + ctx.failed - before, took });
             before = ctx.passed + ctx.failed;

@@ -35,8 +35,7 @@ fn capture(
     keys: []const []const u8,
     body: fn (ctx: *h.Ctx, s: *h.Session) void,
 ) !void {
-    const dir = try h.tempDir(ctx.gpa);
-    defer ctx.gpa.free(dir);
+    const dir = try ctx.tempDir();
     const path = try std.fmt.allocPrint(ctx.gpa, "{s}/{s}", .{ dir, name });
     defer ctx.gpa.free(path);
     h.writeFile(ctx.io, path, content);
@@ -97,9 +96,7 @@ fn checkMarkdown(ctx: *h.Ctx, s: *h.Session) void {
 /// empty tree to tree-sitter without an edit (an api.h contract violation), so
 /// the stale zero-length root won forever: no colours, not even the lexer's.
 fn newFileHighlighting(ctx: *h.Ctx) !void {
-    const dir = try h.tempDir(ctx.gpa);
-    defer ctx.gpa.free(dir);
-    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const dir = try ctx.tempDir();
 
     // CLI path: `zedit brandnew.py` with no such file on disk.
     {
@@ -172,9 +169,7 @@ fn onScreen(
     name: []const u8,
     body: fn (ctx: *h.Ctx, scr: *h.Screen) void,
 ) !void {
-    const dir = try h.tempDir(ctx.gpa);
-    defer ctx.gpa.free(dir);
-    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const dir = try ctx.tempDir();
     const path = h.join(ctx, dir, name);
     defer ctx.gpa.free(path);
     h.writeFile(ctx.io, path, content);

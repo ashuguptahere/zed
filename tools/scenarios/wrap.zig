@@ -14,9 +14,7 @@ const seg = 75; // text columns in an 80-column window (80 - 5 gutter)
 const WRAP_MARK = "\u{21B3}"; // ↳, the continuation-row gutter marker
 
 pub fn run(ctx: *h.Ctx) !void {
-    const dir = try h.tempDir(ctx.gpa);
-    defer ctx.gpa.free(dir);
-    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const dir = try ctx.tempDir();
 
     const path = try std.fmt.allocPrint(ctx.gpa, "{s}/long.txt", .{dir});
     defer ctx.gpa.free(path);

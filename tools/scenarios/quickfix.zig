@@ -15,9 +15,7 @@ const CR = "\r";
 const CTRL_Q = "\x11";
 
 pub fn run(ctx: *h.Ctx) !void {
-    const dir = try h.tempDir(ctx.gpa);
-    defer ctx.gpa.free(dir);
-    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const dir = try ctx.tempDir();
     const a = h.join(ctx, dir, "alpha.txt");
     defer ctx.gpa.free(a);
     const b = h.join(ctx, dir, "beta.txt");

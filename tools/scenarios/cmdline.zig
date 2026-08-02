@@ -39,9 +39,7 @@ const GRUVBOX_BG = "\x1b[48;2;40;40;40m"; // #282828
 const NORD_BG = "\x1b[48;2;46;52;64m"; // #2e3440
 
 pub fn run(ctx: *h.Ctx) !void {
-    const dir = try h.tempDir(ctx.gpa);
-    defer ctx.gpa.free(dir);
-    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const dir = try ctx.tempDir();
     const alpha = h.join(ctx, dir, "alpha.txt");
     defer ctx.gpa.free(alpha);
     const alpine = h.join(ctx, dir, "alpine.txt");

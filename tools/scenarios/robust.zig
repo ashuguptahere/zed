@@ -11,9 +11,7 @@ const h = @import("../harness.zig");
 /// reaching the terminal, and no row emitting more cells than the window has —
 /// the pre-fix build wrote 2000-cell rows that the terminal wrapped backwards.
 fn binaryInert(ctx: *h.Ctx) !void {
-    const dir = try h.tempDir(ctx.gpa);
-    defer ctx.gpa.free(dir);
-    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const dir = try ctx.tempDir();
     const path = h.join(ctx, dir, "blob.bin");
     defer ctx.gpa.free(path);
 
@@ -77,9 +75,7 @@ fn binaryInert(ctx: *h.Ctx) !void {
 pub fn run(ctx: *h.Ctx) !void {
     try binaryInert(ctx);
 
-    const dir = try h.tempDir(ctx.gpa);
-    defer ctx.gpa.free(dir);
-    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const dir = try ctx.tempDir();
 
     // A file smuggling an OSC title-set and a clear-screen CSI must render as
     // plain '?' text — the raw escape bytes must never reach the terminal.

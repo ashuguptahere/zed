@@ -26,9 +26,7 @@ fn rowHas(ctx: *h.Ctx, scr: *h.Screen, row: usize, needle: []const u8) bool {
 pub fn run(ctx: *h.Ctx) !void {
     // --- the tab close box ---------------------------------------------------
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         const a = h.join(ctx, dir, "aa.txt");
         defer ctx.gpa.free(a);
         const b = h.join(ctx, dir, "bb.txt");
@@ -75,9 +73,7 @@ pub fn run(ctx: *h.Ctx) !void {
     }
 
 
-    const dir = try h.tempDir(ctx.gpa);
-    defer ctx.gpa.free(dir);
-    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const dir = try ctx.tempDir();
     const a = h.join(ctx, dir, "a.txt");
     defer ctx.gpa.free(a);
     const b = h.join(ctx, dir, "b.txt");

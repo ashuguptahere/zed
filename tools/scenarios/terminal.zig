@@ -17,9 +17,7 @@ const CTRL_BACKSLASH = "\x1c";
 const CTRL_N = "\x0e";
 
 pub fn run(ctx: *h.Ctx) !void {
-    const dir = try h.tempDir(ctx.gpa);
-    defer ctx.gpa.free(dir);
-    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const dir = try ctx.tempDir();
     const f = h.join(ctx, dir, "f.txt");
     defer ctx.gpa.free(f);
     h.writeFile(ctx.io, f, "alpha\nbeta\n");

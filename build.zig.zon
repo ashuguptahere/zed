@@ -1,6 +1,6 @@
 .{
     .name = .zed,
-    .version = "0.47.2", // must match the VERSION file — build.zig fails the build if not
+    .version = "0.47.3", // must match the VERSION file — build.zig fails the build if not
     .fingerprint = 0xf4720e37acb48e17,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{},

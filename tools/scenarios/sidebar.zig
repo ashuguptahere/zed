@@ -42,9 +42,7 @@ pub fn run(ctx: *h.Ctx) !void {
     // the same pair `l`/`h` bind to. And `a`/`A` create a file/folder, with
     // intermediate directories made on the way (VS Code's rule).
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         const a = h.join(ctx, dir, "alpha.txt");
         defer ctx.gpa.free(a);
         const sub = h.join(ctx, dir, "subdir");
@@ -112,9 +110,7 @@ pub fn run(ctx: *h.Ctx) !void {
 
     // Sidebar: tree renders, navigation opens a file, a directory expands.
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         const a = h.join(ctx, dir, "alpha.txt");
         defer ctx.gpa.free(a);
         const sub = h.join(ctx, dir, "subdir");
@@ -167,9 +163,7 @@ pub fn run(ctx: *h.Ctx) !void {
     // focused -> close. Before the cycle, Space e closed an unfocused tree,
     // leaving no keyboard route back into it.
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         const a = h.join(ctx, dir, "alpha.txt");
         defer ctx.gpa.free(a);
         const sub = h.join(ctx, dir, "subdir");
@@ -228,9 +222,7 @@ pub fn run(ctx: *h.Ctx) !void {
     // and any reordering would move the viewport. A tree taller than the 22
     // rows the sidebar has is the only way to see the difference.
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         const first = h.join(ctx, dir, "aaa.txt");
         defer ctx.gpa.free(first);
         h.writeFile(ctx.io, first, "x\n");
@@ -272,9 +264,7 @@ pub fn run(ctx: *h.Ctx) !void {
     // Explorer mouse clicks (sidebar left, 80x24: tree cols 1..28, rows 2..23).
     // Dirs sort first, so screen row 2 = subdir, row 3 = alpha.txt.
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         const a = h.join(ctx, dir, "alpha.txt");
         defer ctx.gpa.free(a);
         const sub = h.join(ctx, dir, "subdir");
@@ -484,9 +474,7 @@ pub fn run(ctx: *h.Ctx) !void {
     // showcmd indicator — before that fix the release decoded as `unknown`
     // and smeared `^[[<…m` across it.
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         const b = h.join(ctx, dir, "b.txt");
         defer ctx.gpa.free(b);
         h.writeFile(ctx.io, b, "one two three\n");
@@ -514,9 +502,7 @@ pub fn run(ctx: *h.Ctx) !void {
     // Clicking a file whose disk entry vanished after the tree was built is
     // `:e`'s new-file rule: an empty buffer, a sane status, no crash.
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         const a = h.join(ctx, dir, "a.txt");
         defer ctx.gpa.free(a);
         const gone = h.join(ctx, dir, "gone.txt");
@@ -545,9 +531,7 @@ pub fn run(ctx: *h.Ctx) !void {
     // hit-test shrinks with it (shared geometry) — col 8 is still the tree,
     // col 9 is the text area.
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         const a = h.join(ctx, dir, "a.txt");
         defer ctx.gpa.free(a);
         const sub = h.join(ctx, dir, "subdir");
@@ -586,9 +570,7 @@ pub fn run(ctx: *h.Ctx) !void {
     // Explorer clicks honour `sb_scroll`: 30 files, `G` scrolls the tree by 8
     // (22 visible rows), so the row-2 click must resolve to f09, not f01.
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         var k: usize = 1;
         while (k <= 30) : (k += 1) {
             var nbuf: [16]u8 = undefined;
@@ -617,9 +599,7 @@ pub fn run(ctx: *h.Ctx) !void {
     // Config `sidebar = right` still renders (position is config-driven), and
     // explorer clicks resolve at the mirrored columns (53..80 at 80 wide).
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         const a = h.join(ctx, dir, "a.txt");
         defer ctx.gpa.free(a);
         const sub = h.join(ctx, dir, "subdir");
@@ -682,9 +662,7 @@ pub fn run(ctx: *h.Ctx) !void {
 
     // Git diff views in a real repo with a working-tree change.
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         const f = h.join(ctx, dir, "f.txt");
         defer ctx.gpa.free(f);
         h.runQuiet(ctx.gpa, ctx.io, &.{ "git", "-C", dir, "init", "-q" });

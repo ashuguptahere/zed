@@ -27,8 +27,7 @@ fn run_picker(
     open_arg: []const u8,
     chunks: []const []const u8,
 ) ![][]u8 {
-    const dir = try h.tempDir(ctx.gpa);
-    defer ctx.gpa.free(dir);
+    const dir = try ctx.tempDir();
 
     for (files) |f| {
         const path = try std.fmt.allocPrint(ctx.gpa, "{s}/{s}", .{ dir, f.name });
@@ -97,9 +96,7 @@ pub fn run(ctx: *h.Ctx) !void {
     // `zedit .` lands on the browser view: the file tree on the left, the
     // picker on the right, and a preview of the selected file beside it.
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         const a = try std.fmt.allocPrint(ctx.gpa, "{s}/alpha.txt", .{dir});
         defer ctx.gpa.free(a);
         const b = try std.fmt.allocPrint(ctx.gpa, "{s}/beta.txt", .{dir});
@@ -124,9 +121,7 @@ pub fn run(ctx: *h.Ctx) !void {
 
     // The preview is tree-sitter highlighted and scrollable on its own.
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         const zf = try std.fmt.allocPrint(ctx.gpa, "{s}/long.zig", .{dir});
         defer ctx.gpa.free(zf);
         var content: std.ArrayList(u8) = .empty;
@@ -196,9 +191,7 @@ pub fn run(ctx: *h.Ctx) !void {
     // results, which shows the content-search hint (files picker only). The
     // `zedit <dir>` session also opens with a one-time scope status line.
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         const sub = h.join(ctx, dir, "sub");
         defer ctx.gpa.free(sub);
         std.Io.Dir.cwd().createDirPath(ctx.io, sub) catch {};
@@ -277,9 +270,7 @@ pub fn run(ctx: *h.Ctx) !void {
     // extend-narrow fast path and the char-bitmask prefilter. Pinned on the
     // buffer picker: both buffers carry "alpha", only one carries "q7q7".
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         const only = h.join(ctx, dir, "alpha_only.txt");
         defer ctx.gpa.free(only);
         const both = h.join(ctx, dir, "q7q7_alpha.txt");
@@ -322,9 +313,7 @@ pub fn run(ctx: *h.Ctx) !void {
     // order — which is exactly what a multi-term matcher would have returned.
     // (`foo.*bar` is how the grep picker asks for order; the docs say so.)
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         const pair = h.join(ctx, dir, "pair.txt");
         defer ctx.gpa.free(pair);
         const swapped = h.join(ctx, dir, "swapped.txt");
@@ -352,9 +341,7 @@ pub fn run(ctx: *h.Ctx) !void {
 
     // Buffers appear as tabs across the top once more than one is open.
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         const a = try std.fmt.allocPrint(ctx.gpa, "{s}/one.txt", .{dir});
         defer ctx.gpa.free(a);
         const b = try std.fmt.allocPrint(ctx.gpa, "{s}/two.txt", .{dir});
@@ -410,9 +397,7 @@ pub fn run(ctx: *h.Ctx) !void {
     // The file list is cached per session (Zed-style warm picker): a file
     // created after the first walk appears only after Ctrl-r refreshes.
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         const a = try std.fmt.allocPrint(ctx.gpa, "{s}/a.txt", .{dir});
         defer ctx.gpa.free(a);
         const late = try std.fmt.allocPrint(ctx.gpa, "{s}/latecomer.txt", .{dir});
@@ -442,9 +427,7 @@ pub fn run(ctx: *h.Ctx) !void {
     // prefilter's key), and treating it as a line number parked the cursor on
     // "line 29" of whatever the user opened (clamped to the file's last line).
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         var i: usize = 0;
         while (i < 40) : (i += 1) {
             var nb: [64]u8 = undefined;
@@ -476,9 +459,7 @@ pub fn run(ctx: *h.Ctx) !void {
 
     // ...while the grep picker must keep jumping to the matched line.
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         const f = h.join(ctx, dir, "one.txt");
         defer ctx.gpa.free(f);
         h.writeFile(ctx.io, f, "aaa\nbbb\nNEEDLE here\nddd\n");
@@ -505,9 +486,7 @@ pub fn run(ctx: *h.Ctx) !void {
     // file cache by design — the walk streams in — so a grep that ran once and
     // never resumed searched nothing at all.)
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         var i: usize = 0;
         while (i < 60) : (i += 1) {
             var nb: [64]u8 = undefined;
@@ -534,9 +513,7 @@ pub fn run(ctx: *h.Ctx) !void {
     // re-reading the project. The results must be the ones a rescan would
     // give: matched on the line text, not on the row's path prefix.
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         const files = [_][2][]const u8{
             .{ "one.txt", "alpha beta\n" },
             .{ "two.txt", "alphax gamma\n" },
@@ -579,9 +556,7 @@ pub fn run(ctx: *h.Ctx) !void {
     // class finds what no literal query could: \d\d0 keeps the line with
     // three digits and drops the near-miss.
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         const f = h.join(ctx, dir, "r.txt");
         defer ctx.gpa.free(f);
         h.writeFile(ctx.io, f, "value_19x0 nope\nvalue_1990 yes\n");
@@ -599,9 +574,7 @@ pub fn run(ctx: *h.Ctx) !void {
 
     // Alternation spans files: (cat|dog) lists a hit from each.
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         const files = [_][2][]const u8{
             .{ "cat.txt", "the cat sat\n" },
             .{ "dog.txt", "a dog ran\n" },
@@ -627,9 +600,7 @@ pub fn run(ctx: *h.Ctx) !void {
 
     // ^ anchors to the line start: only the line that begins with the word.
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         const f = h.join(ctx, dir, "a.txt");
         defer ctx.gpa.free(f);
         h.writeFile(ctx.io, f, "root at start\nnot root here\n");
@@ -649,9 +620,7 @@ pub fn run(ctx: *h.Ctx) !void {
     // picker: the last good results stay on screen with an "incomplete" tag,
     // and completing the group brings the regex to life.
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         const f = h.join(ctx, dir, "one.txt");
         defer ctx.gpa.free(f);
         h.writeFile(ctx.io, f, "alpha beta\n");
@@ -692,9 +661,7 @@ pub fn run(ctx: *h.Ctx) !void {
     // the refresh itself must reset the hits and the scan cursor — rows from
     // the old cache (here: a deleted file) must not survive the re-walk.
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         const keep = h.join(ctx, dir, "keep.txt");
         defer ctx.gpa.free(keep);
         h.writeFile(ctx.io, keep, "alpha keeps\n");
@@ -737,9 +704,7 @@ pub fn run(ctx: *h.Ctx) !void {
 /// only appears once rows land would re-lay the whole picker out under the
 /// reader a frame later. An empty directory is that state made permanent.
 fn previewPaneReserved(ctx: *h.Ctx) !void {
-    const dir = try h.tempDir(ctx.gpa);
-    defer ctx.gpa.free(dir);
-    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const dir = try ctx.tempDir();
 
     var s = try h.Session.spawn(ctx.gpa, .{
         .argv = &.{ ctx.zedit, "." },
@@ -781,9 +746,7 @@ fn previewPaneReserved(ctx: *h.Ctx) !void {
 /// row painted over would still resolve to the result underneath it and open
 /// a file the reader cannot see.
 fn statusRow(ctx: *h.Ctx) !void {
-    const dir = try h.tempDir(ctx.gpa);
-    defer ctx.gpa.free(dir);
-    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const dir = try ctx.tempDir();
     // More files than the list has rows (24 rows − title − prompt = 21), so
     // the bottom row would otherwise carry a real, clickable result.
     var i: usize = 0;
@@ -824,9 +787,7 @@ fn statusRow(ctx: *h.Ctx) !void {
 /// find. `Ctrl-r` forces that rescore (it clears `prev_query`), so the two
 /// paths are compared against each other rather than against a guess.
 fn narrowByKeystroke(ctx: *h.Ctx) !void {
-    const dir = try h.tempDir(ctx.gpa);
-    defer ctx.gpa.free(dir);
-    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const dir = try ctx.tempDir();
     const names = [_][]const u8{
         "reduced.txt", // "ed" and "re"
         "pipeline_red.txt", // "ed" and "re"
@@ -970,9 +931,7 @@ fn clickAt(s: *h.Session, ctx: *h.Ctx, c: Cell) void {
 /// Geometry at 110x24: sidebar cols 1-28, prompt row 2 (below the tab bar),
 /// results rows 3+ starting at col 29 (41 wide), preview from col 70.
 fn pickerClicks(ctx: *h.Ctx) !void {
-    const dir = try h.tempDir(ctx.gpa);
-    defer ctx.gpa.free(dir);
-    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const dir = try ctx.tempDir();
     const sub = h.join(ctx, dir, "sub");
     defer ctx.gpa.free(sub);
     std.Io.Dir.cwd().createDirPath(ctx.io, sub) catch {};
@@ -1022,9 +981,7 @@ fn pickerClicks(ctx: *h.Ctx) !void {
     // height painted it straight through the bottom border and over the
     // statusline. A file longer than the box is what shows that.
     {
-        const dir2 = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir2);
-        defer h.removeTree(ctx.gpa, ctx.io, dir2);
+        const dir2 = try ctx.tempDir();
         const long = try std.fmt.allocPrint(ctx.gpa, "{s}/big.zig", .{dir2});
         defer ctx.gpa.free(long);
         var body: std.ArrayList(u8) = .empty;
@@ -1252,9 +1209,7 @@ fn pickerClicks(ctx: *h.Ctx) !void {
 /// on top of the untouched [No Name] buffer a `zedit .`/empty session starts
 /// with must not leave it behind in `:ls` and the tab bar.
 fn nonameBuffer(ctx: *h.Ctx) !void {
-    const dir = try h.tempDir(ctx.gpa);
-    defer ctx.gpa.free(dir);
-    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const dir = try ctx.tempDir();
     const hello = h.join(ctx, dir, "hello.txt");
     defer ctx.gpa.free(hello);
     h.writeFile(ctx.io, hello, "hello\n");

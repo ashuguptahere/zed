@@ -18,9 +18,7 @@ const eight = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\n";
 
 
 pub fn run(ctx: *h.Ctx) !void {
-    const dir = try h.tempDir(ctx.gpa);
-    defer ctx.gpa.free(dir);
-    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const dir = try ctx.tempDir();
     const f = h.join(ctx, dir, "f.txt");
     defer ctx.gpa.free(f);
 

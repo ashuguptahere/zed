@@ -12,9 +12,7 @@ const target = "/tmp/zedit_it_feat.txt";
 pub fn run(ctx: *h.Ctx) !void {
     // ---- `:w` creates missing parent directories (VS Code's rule) ----------
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ctx.zedit}, .cwd = dir });
         defer s.finish();
         s.drain(500);
@@ -34,9 +32,7 @@ pub fn run(ctx: *h.Ctx) !void {
 
     // ---- `Space u` UI toggles ---------------------------------------------
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         const f = h.join(ctx, dir, "t.txt");
         defer ctx.gpa.free(f);
         h.writeFile(ctx.io, f, "alpha\nbeta\ngamma\n");

@@ -19,9 +19,7 @@ const AMBER = "\x1b[38;2;224;175;104m";
 const DOT = "\u{25CF}";
 
 pub fn run(ctx: *h.Ctx) !void {
-    const dir = try h.tempDir(ctx.gpa);
-    defer ctx.gpa.free(dir);
-    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const dir = try ctx.tempDir();
     const f = h.join(ctx, dir, "prog.c");
     defer ctx.gpa.free(f);
     h.writeFile(ctx.io,

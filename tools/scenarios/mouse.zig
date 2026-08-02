@@ -39,9 +39,7 @@ fn multi(comptime n: usize, comptime row: usize, comptime col: usize) []const u8
 }
 
 pub fn run(ctx: *h.Ctx) !void {
-    const dir = try h.tempDir(ctx.gpa);
-    defer ctx.gpa.free(dir);
-    defer h.removeTree(ctx.gpa, ctx.io, dir);
+    const dir = try ctx.tempDir();
     const path = h.join(ctx, dir, "m.txt");
     defer ctx.gpa.free(path);
     const cfg = h.join(ctx, dir, "cfg");
@@ -617,9 +615,7 @@ pub fn run(ctx: *h.Ctx) !void {
 
     // ---- the diff views ----------------------------------------------------
     {
-        const repo = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(repo);
-        defer h.removeTree(ctx.gpa, ctx.io, repo);
+        const repo = try ctx.tempDir();
         const d = h.join(ctx, repo, "d.txt");
         defer ctx.gpa.free(d);
         h.runQuiet(ctx.gpa, ctx.io, &.{ "git", "-C", repo, "init", "-q" });

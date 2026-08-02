@@ -65,7 +65,7 @@ pub fn main(init: std.process.Init) !void {
 
     // A private (mkdtemp) config home for helix, so the benchmark sees a
     // clean config and no other local user can pre-plant one.
-    const xdg_dir = try h.tempDir(gpa);
+    const xdg_dir = try h.makeTempDir(gpa);
     defer gpa.free(xdg_dir);
     defer h.removeTree(gpa, io, xdg_dir);
     const xdg_env = try std.fmt.allocPrint(gpa, "XDG_CONFIG_HOME={s}", .{xdg_dir});

@@ -690,6 +690,17 @@ pub const Editor = struct {
         };
     }
 
+    /// Free a document and everything hanging off it. Deliberately *not*
+    /// `destroyDoc`, which also unregisters the doc and repairs any diff pair
+    /// pointing at it: these callers hold a doc that was never added to
+    /// `self.docs` (an append that failed), plus the teardown loop that is
+    /// emptying the list anyway.
+    fn freeDoc(self: *Editor, doc: *Doc) void {
+        doc.buf.deinit();
+        freeDocState(doc, self.gpa);
+        self.gpa.destroy(doc);
+    }
+
     pub fn deinit(self: *Editor) void {
         if (self.walker) |*w| w.deinit();
         if (self.walk_dir) |*d| d.close(self.io);
@@ -760,11 +771,7 @@ pub const Editor = struct {
         self.picker_query.deinit(self.gpa);
         // The active doc's real state was freed above (the Editor mirror); each
         // Doc owns its buffer (+ inactive docs own their state placeholders here).
-        for (self.docs.items) |doc| {
-            doc.buf.deinit();
-            freeDocState(doc, self.gpa);
-            self.gpa.destroy(doc);
-        }
+        for (self.docs.items) |doc| self.freeDoc(doc);
         for (self.wins.items) |w| self.gpa.destroy(w);
         self.docs.deinit(self.gpa);
         self.wins.deinit(self.gpa);
@@ -5598,9 +5605,7 @@ pub const Editor = struct {
             return;
         };
         self.docs.append(self.gpa, doc) catch {
-            doc.buf.deinit();
-            freeDocState(doc, self.gpa);
-            self.gpa.destroy(doc);
+            self.freeDoc(doc);
             return;
         };
         // Paint before decorating, exactly as the first frame does: a 300 KB
@@ -7143,9 +7148,7 @@ pub const Editor = struct {
             return null;
         };
         self.docs.append(self.gpa, doc) catch { // same teardown as openFile's
-            doc.buf.deinit();
-            freeDocState(doc, self.gpa);
-            self.gpa.destroy(doc);
+            self.freeDoc(doc);
             return null;
         };
         return doc;
@@ -7185,9 +7188,7 @@ pub const Editor = struct {
             } else ji += 1;
         }
         if (self.jump_idx > self.jumps.items.len) self.jump_idx = self.jumps.items.len;
-        victim.buf.deinit();
-        freeDocState(victim, self.gpa);
-        self.gpa.destroy(victim);
+        self.freeDoc(victim);
     }
 
     // === undo / macros / dot ===============================================
@@ -7794,9 +7795,7 @@ pub const Editor = struct {
             return null;
         };
         self.docs.append(self.gpa, doc) catch {
-            doc.buf.deinit();
-            freeDocState(doc, self.gpa);
-            self.gpa.destroy(doc);
+            self.freeDoc(doc);
             return null;
         };
         return doc;
@@ -8866,14 +8865,14 @@ pub const Editor = struct {
         var argv = [_:null]?[*:0]const u8{ term.userShell(), null };
         const child = term.spawnChild(&argv, null, rows, cols) catch |err| {
             self.closeWindow();
-            self.destroyDoc(doc);
+            self.freeDoc(doc);
             return self.setStatus("could not start a shell: {s}", .{@errorName(err)});
         };
         const screen = vt.Screen.init(self.gpa, rows, cols) catch {
             var ch = child;
             ch.close();
             self.closeWindow();
-            self.destroyDoc(doc);
+            self.freeDoc(doc);
             return self.setStatus("out of memory", .{});
         };
         doc.shell = .{ .child = child, .screen = screen };
@@ -10009,9 +10008,7 @@ pub const Editor = struct {
         doc.read_only = true;
         doc.name = self.gpa.dupe(u8, label) catch null;
         self.docs.append(self.gpa, doc) catch {
-            doc.buf.deinit();
-            freeDocState(doc, self.gpa);
-            self.gpa.destroy(doc);
+            self.freeDoc(doc);
             return;
         };
         self.splitWindow(vert);

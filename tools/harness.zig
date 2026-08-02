@@ -33,6 +33,11 @@ pub const Ctx = struct {
     failures: std.ArrayList([]const u8) = .empty,
     /// The suite currently running, so a failure names where to look.
     suite: []const u8 = "",
+    /// Temp directories handed out by `tempDir`, removed when the suite ends.
+    /// Every scenario used to carry three lines for this — make it, free the
+    /// path, remove the tree — which was 200 lines of the test tree and one
+    /// more thing to forget on an early return.
+    temp_dirs: std.ArrayList([]const u8) = .empty,
 
     /// Like `check`, but a failure records `fmt` too — the got/want of an
     /// editing case, say. The detail rides along into the tail summary *and*
@@ -60,7 +65,27 @@ pub const Ctx = struct {
 
     pub fn deinit(self: *Ctx) void {
         for (self.failures.items) |f| self.gpa.free(f);
+        self.dropTempDirs();
+        self.temp_dirs.deinit(self.gpa);
         self.failures.deinit(self.gpa);
+    }
+
+    /// A temp directory that lives until the suite ends. The caller neither
+    /// frees the path nor removes the tree.
+    pub fn tempDir(self: *Ctx) ![]const u8 {
+        const d = try makeTempDir(self.gpa);
+        self.temp_dirs.append(self.gpa, d) catch {};
+        return d;
+    }
+
+    /// Remove everything `tempDir` handed out. Called by the runner between
+    /// suites, so one suite's directories cannot outlive it.
+    pub fn dropTempDirs(self: *Ctx) void {
+        for (self.temp_dirs.items) |d| {
+            removeTree(self.gpa, self.io, d);
+            self.gpa.free(d);
+        }
+        self.temp_dirs.clearRetainingCapacity();
     }
 };
 
@@ -489,7 +514,7 @@ pub fn runQuiet(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8) vo
 }
 
 /// Create a fresh temp directory and return its path (caller frees with `gpa`).
-pub fn tempDir(gpa: std.mem.Allocator) ![]u8 {
+pub fn makeTempDir(gpa: std.mem.Allocator) ![]u8 {
     var tmpl = [_]u8{0} ** 32;
     const base = "/tmp/zedittestXXXXXX";
     @memcpy(tmpl[0..base.len], base);

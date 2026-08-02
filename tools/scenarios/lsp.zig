@@ -83,9 +83,7 @@ pub fn run(ctx: *h.Ctx) !void {
     // that long routinely, which is how this shipped unnoticed: it only bites
     // where a *slow* server is installed, and CI is such a machine.
     {
-        const dir = try h.tempDir(ctx.gpa);
-        defer ctx.gpa.free(dir);
-        defer h.removeTree(ctx.gpa, ctx.io, dir);
+        const dir = try ctx.tempDir();
         const f = h.join(ctx, dir, "slow.txt");
         defer ctx.gpa.free(f);
         h.writeFile(ctx.io, f, "alpha\n");
