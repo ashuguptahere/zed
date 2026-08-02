@@ -7341,7 +7341,7 @@ pub const Editor = struct {
                     argc += 1;
                 }
             }
-        } else if (defaultServer(self.lang)) |def| {
+        } else if (syntax.server(self.lang)) |def| {
             for (def) |a| {
                 argv_store[argc] = a;
                 argc += 1;
@@ -7367,7 +7367,7 @@ pub const Editor = struct {
         const content = self.buf.toBytes(self.gpa) catch return;
         defer self.gpa.free(content);
 
-        self.lsp = lsp.Client.start(self.gpa, self.io, argv_store[0..argc], cwd, uri_buf.items, langId(self.lang), content);
+        self.lsp = lsp.Client.start(self.gpa, self.io, argv_store[0..argc], cwd, uri_buf.items, syntax.lspId(self.lang), content);
         if (self.lsp) |*c| {
             self.lsp_rev = self.buf.revision;
             _ = c;
@@ -7383,7 +7383,7 @@ pub const Editor = struct {
             // after its first paint) and never on the typing path. A filetype
             // with no known server stays quiet.
             self.setStatus("no language server for {s} (install {s}){s}", .{
-                langId(self.lang),
+                syntax.lspId(self.lang),
                 argv_store[0],
                 if (config.settings.buffer_completion) "; completing from open buffers" else "",
             });
@@ -8758,7 +8758,7 @@ pub const Editor = struct {
             var it = std.mem.tokenizeScalar(u8, cmd, ' ');
             while (it.next()) |w| argv.append(self.gpa, w) catch return;
         } else {
-            const def = defaultAdapter(self.lang) orelse
+            const def = syntax.adapter(self.lang) orelse
                 return self.setStatus("no debug adapter for this filetype — pass --dap <command>", .{});
             argv.appendSlice(self.gpa, def) catch return;
         }
@@ -12533,7 +12533,7 @@ pub const Editor = struct {
         // Right: filetype + position | percentage
         var rb: [96]u8 = undefined;
         const rseg = std.fmt.bufPrint(&rb, " {s}  Ln {d}, Col {d} ", .{
-            langName(self.lang), self.cy + 1, displayCol(self.curLine(), self.cx) + 1,
+            syntax.name(self.lang), self.cy + 1, displayCol(self.curLine(), self.cx) + 1,
         }) catch " ";
         var pb: [16]u8 = undefined;
         const lines = self.buf.lineCount();
@@ -13256,61 +13256,6 @@ fn ignoredDir(name: []const u8) bool {
     const ignore = [_][]const u8{ ".git", "zig-cache", ".zig-cache", "zig-out", "node_modules", "target", ".cache" };
     for (ignore) |g| if (std.mem.eql(u8, name, g)) return true;
     return name.len > 0 and name[0] == '.'; // hidden directories
-}
-
-fn langName(l: syntax.Language) []const u8 {
-    return switch (l) {
-        .zig => "zig",
-        .c => "c",
-        .python => "python",
-        .javascript => "js",
-        .typescript => "ts",
-        .json => "json",
-        .rust => "rust",
-        .go => "go",
-        .html => "html",
-        .markdown => "md",
-        .diff => "diff",
-        .none => "text",
-    };
-}
-
-/// LSP languageId for a detected language.
-fn langId(l: syntax.Language) []const u8 {
-    // The same names as the statusline's, except where LSP spells them out.
-    // Only the differences live here, so adding a grammar means one table.
-    return switch (l) {
-        .javascript => "javascript",
-        .typescript => "typescript",
-        .markdown => "markdown",
-        .none => "plaintext",
-        else => langName(l),
-    };
-}
-
-/// Default debug-adapter command per language (used when the config's
-/// `debug_adapter` is empty). Only the adapters that speak DAP over stdio
-/// with no extra setup; anything else is the config key's job.
-fn defaultAdapter(l: syntax.Language) ?[]const []const u8 {
-    return switch (l) {
-        .c, .zig, .rust => &.{"lldb-dap"},
-        .python => &.{ "python3", "-m", "debugpy.adapter" },
-        .go => &.{ "dlv", "dap" },
-        else => null,
-    };
-}
-
-/// Default language-server command per language (used when --lsp is not given).
-fn defaultServer(l: syntax.Language) ?[]const []const u8 {
-    return switch (l) {
-        .zig => &.{"zls"},
-        .c => &.{"clangd"},
-        .python => &.{"pylsp"},
-        .javascript, .typescript => &.{ "typescript-language-server", "--stdio" },
-        .rust => &.{"rust-analyzer"},
-        .go => &.{"gopls"},
-        else => null,
-    };
 }
 
 fn trimTrailingNewline(s: []const u8) []const u8 {

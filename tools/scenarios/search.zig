@@ -1,7 +1,6 @@
 //! In-buffer search: incremental jump, cancel, n, and match highlight.
 //! Port of tools/search_test.py.
 
-const std = @import("std");
 const h = @import("../harness.zig");
 
 const ESC = "\x1b";

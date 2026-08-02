@@ -1,7 +1,6 @@
 //! Vim keybindings end-to-end: each case drives the editor and compares the
 //! saved file. Port of tools/vim_test.py.
 
-const std = @import("std");
 const h = @import("../harness.zig");
 
 const ESC = "\x1b";

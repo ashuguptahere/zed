@@ -106,25 +106,12 @@ fn specFor(lang: syntax.Language) ?Spec {
 fn specByName(name: []const u8) ?Spec {
     if (std.mem.eql(u8, name, "markdown_inline"))
         return .{ .language = tree_sitter_markdown_inline(), .highlights = highlights_markdown_inline };
-    const map = std.StaticStringMap(syntax.Language).initComptime(.{
-        .{ "zig", syntax.Language.zig },
-        .{ "c", syntax.Language.c },
-        .{ "cpp", syntax.Language.c },
-        .{ "python", syntax.Language.python },
-        .{ "py", syntax.Language.python },
-        .{ "json", syntax.Language.json },
-        .{ "javascript", syntax.Language.javascript },
-        .{ "js", syntax.Language.javascript },
-        .{ "typescript", syntax.Language.typescript },
-        .{ "ts", syntax.Language.typescript },
-        .{ "rust", syntax.Language.rust },
-        .{ "rs", syntax.Language.rust },
-        .{ "go", syntax.Language.go },
-        .{ "html", syntax.Language.html },
-        .{ "markdown", syntax.Language.markdown },
-        .{ "md", syntax.Language.markdown },
-    });
-    return specFor(map.get(name) orelse return null);
+    // A fence tag is one of the names `syntax` already knows a language by —
+    // the same list the file-extension lookup uses, since "py" and "rs" are
+    // both. Keeping a second copy here is how `cpp` ended up highlighted as C
+    // in one table and unknown in the other.
+    const lang = syntax.byName(name);
+    return if (lang == .none) null else specFor(lang);
 }
 
 /// Backing store for the process-wide query cache's predicate tables (and the

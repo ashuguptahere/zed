@@ -1,7 +1,6 @@
 //! Surround (ys/cs/ds, visual S) and blockwise visual (Ctrl-v) end-to-end.
 //! Port of tools/extra_test.py.
 
-const std = @import("std");
 const h = @import("../harness.zig");
 
 const ESC = "\x1b";

@@ -115,6 +115,11 @@ there is nothing to change there.
 
 ## Done (chronological)
 
+- [x] Fourth sweep: one `languages` table in `syntax.zig` replacing six
+      switches over the same enum in three files (−17 lines, but ~6 edits
+      down to 1 when a grammar is added). The line estimate was −53 and the
+      truth was −17 — a wide table row costs about what a switch arm does.
+
 - [x] Third over-engineering sweep (−113), almost all of it the temp-directory
       triple in the test tree. The `undo.zig` fixture finding was costed at −6
       and dropped: not worth a mechanical rewrite of five tests.

@@ -196,8 +196,9 @@ Vendored C lives under `vendor/` (`tree-sitter/` runtime, plus `tree-sitter-zig`
 `parser.c`, an optional `scanner.c`, and `highlights.scm`, plus an optional
 `injections.scm` and `indents.scm`); `build.zig` compiles
 them with `-D_GNU_SOURCE` and links libc. Adding a grammar is one entry in the
-`grammars` list in `build.zig` plus a case in `specFor`/`specByName` in
-`treesitter.zig` (TypeScript keeps
+`grammars` list in `build.zig`, one row in `syntax.zig`'s `languages` table
+(extensions, fence tags, statusline name, LSP id, server, adapter) and a case
+in `specFor` in `treesitter.zig` (TypeScript keeps
 its grammar under `typescript/` with a sibling `common/scanner.h`, and its
 highlight *and* indent queries layer on JavaScript's).
 

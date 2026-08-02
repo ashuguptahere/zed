@@ -1,7 +1,6 @@
 //! Multiple cursors end-to-end: Ctrl-n/Ctrl-p add carets, edits apply to all.
 //! Port of tools/multicursor_test.py.
 
-const std = @import("std");
 const h = @import("../harness.zig");
 
 const ESC = "\x1b";

@@ -24,7 +24,6 @@
 //!     the block's indent, which is what vim's plain 'autoindent' does;
 //!   - `.txt` and other grammar-less files keep the copy rule outright.
 
-const std = @import("std");
 const h = @import("../harness.zig");
 
 const ESC = "\x1b";

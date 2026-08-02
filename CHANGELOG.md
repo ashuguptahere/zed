@@ -2,6 +2,21 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.47.4 - 2026-08-02
+
+### Changed
+
+- One table for what the editor knows about a language. The file-extension
+  map, the markdown fence-tag map, the statusline name, the LSP `languageId`,
+  the default server and the default debug adapter were six switches over the
+  same enum in three files; they are now one row each in `syntax.zig`. Adding
+  a grammar touches that row instead of six places, and the fence-tag map can
+  no longer disagree with the extension map — it already did, on `cpp`.
+- Five scenarios imported `std` and never used it.
+
+Net only −17 lines: the table's rows are wide enough to cost nearly what the
+switches did. The gain here is the edit count, not the size.
+
 ## 0.47.3 - 2026-08-02
 
 ### Changed

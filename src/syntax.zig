@@ -26,26 +26,82 @@ pub const Style = enum {
 
 pub const Language = enum { none, zig, c, python, javascript, typescript, json, rust, go, html, markdown, diff };
 
+/// Everything the rest of the editor needs to know about a language, in one
+/// row each. It used to be six switches in three files — the file-extension
+/// table, the markdown fence-tag table, the statusline name, the LSP language
+/// id, the default server and the default debug adapter — so adding a grammar
+/// meant finding all six. The tree-sitter parser and the structural node names
+/// stay where they are: those reference extern C and the editor's own tables,
+/// neither of which `syntax.zig` can see.
+pub const Info = struct {
+    lang: Language,
+    /// What the statusline calls it.
+    name: []const u8,
+    /// What LSP calls it (`languageId`), when that differs from `name`.
+    id: []const u8 = "",
+    /// File extensions, and the names a markdown fence may use for it.
+    exts: []const []const u8 = &.{},
+    server: ?[]const []const u8 = null,
+    adapter: ?[]const []const u8 = null,
+};
+
+pub const languages = [_]Info{
+    .{ .lang = .zig, .name = "zig", .exts = &.{"zig"}, .server = &.{"zls"}, .adapter = &.{"lldb-dap"} },
+    .{ .lang = .c, .name = "c", .exts = &.{ "c", "h", "cpp", "cc", "hpp" }, .server = &.{"clangd"}, .adapter = &.{"lldb-dap"} },
+    .{ .lang = .python, .name = "python", .exts = &.{ "py", "python" }, .server = &.{"pylsp"}, .adapter = &.{ "python3", "-m", "debugpy.adapter" } },
+    .{ .lang = .javascript, .name = "js", .id = "javascript", .exts = &.{ "js", "jsx", "mjs", "javascript" }, .server = &.{ "typescript-language-server", "--stdio" } },
+    .{ .lang = .typescript, .name = "ts", .id = "typescript", .exts = &.{ "ts", "tsx", "typescript" }, .server = &.{ "typescript-language-server", "--stdio" } },
+    .{ .lang = .json, .name = "json", .exts = &.{"json"} },
+    .{ .lang = .rust, .name = "rust", .exts = &.{ "rs", "rust" }, .server = &.{"rust-analyzer"}, .adapter = &.{"lldb-dap"} },
+    .{ .lang = .go, .name = "go", .exts = &.{"go"}, .server = &.{"gopls"}, .adapter = &.{ "dlv", "dap" } },
+    .{ .lang = .html, .name = "html", .exts = &.{ "html", "htm" } },
+    .{ .lang = .markdown, .name = "md", .id = "markdown", .exts = &.{ "md", "markdown" } },
+    .{ .lang = .diff, .name = "diff", .exts = &.{ "diff", "patch" } },
+    .{ .lang = .none, .name = "text", .id = "plaintext" },
+};
+
+pub fn info(l: Language) Info {
+    for (languages) |e| {
+        if (e.lang == l) return e;
+    }
+    return languages[languages.len - 1]; // .none
+}
+
+/// The statusline's name for a language.
+pub fn name(l: Language) []const u8 {
+    return info(l).name;
+}
+
+/// The `languageId` an LSP server expects, which is the plain name unless the
+/// protocol spells it out.
+pub fn lspId(l: Language) []const u8 {
+    const e = info(l);
+    return if (e.id.len > 0) e.id else e.name;
+}
+
+pub fn server(l: Language) ?[]const []const u8 {
+    return info(l).server;
+}
+
+pub fn adapter(l: Language) ?[]const []const u8 {
+    return info(l).adapter;
+}
+
+/// The language an extension or a markdown fence tag names.
+pub fn byName(ext: []const u8) Language {
+    for (languages) |e| {
+        for (e.exts) |x| {
+            if (std.mem.eql(u8, x, ext)) return e.lang;
+        }
+    }
+    return .none;
+}
+
 /// Pick a language from a file path's extension.
 pub fn detect(path: ?[]const u8) Language {
     const p = path orelse return .none;
     const dot = std.mem.lastIndexOfScalar(u8, p, '.') orelse return .none;
-    const ext = p[dot + 1 ..];
-    const map = .{
-        .{ "zig", Language.zig },
-        .{ "c", Language.c },     .{ "h", Language.c },
-        .{ "cpp", Language.c },   .{ "cc", Language.c }, .{ "hpp", Language.c },
-        .{ "py", Language.python },
-        .{ "js", Language.javascript },   .{ "jsx", Language.javascript },   .{ "mjs", Language.javascript },
-        .{ "ts", Language.typescript },   .{ "tsx", Language.typescript },
-        .{ "rs", Language.rust },
-        .{ "go", Language.go },
-        .{ "html", Language.html },       .{ "htm", Language.html },
-        .{ "md", Language.markdown },     .{ "markdown", Language.markdown },
-        .{ "json", Language.json },
-        .{ "diff", Language.diff },   .{ "patch", Language.diff },
-    };
-    return std.StaticStringMap(Language).initComptime(map).get(ext) orelse .none;
+    return byName(p[dot + 1 ..]);
 }
 
 const Spec = struct {
