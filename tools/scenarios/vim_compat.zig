@@ -479,6 +479,13 @@ fn blockInsert(ctx: *h.Ctx) void {
     h.case(ctx, target, "nvim#bi4 I at column 0 reaches the empty line", &.{ CV ++ "jj", "I", "Z", ESC, ":wq", CR }, "ab\n\ncd\n", "Zab\nZ\nZcd\n");
     h.case(ctx, target, "nvim#bi5 c skips a line short of the left edge", &.{ "ll" ++ CV ++ "jj", "c", "Z", ESC, ":wq", CR }, gap, "abZd\n\nefZh\n");
     h.case(ctx, target, "nvim#bi6 A over a whole block types on every row", &.{ CV ++ "jjl", "A", "XY", ESC, ":wq", CR }, "abcd\nef\nghij\n", "abXYcd\nefXY\nghXYij\n");
+    // A block pasted *into* a tab breaks the tab into the spaces it was
+    // drawing, so the rectangle lands on the column it was aimed at. (The
+    // harness runs with tab_width 4; nvim --clean uses 8, so this one is
+    // pinned to the same rule at zedit's width rather than to nvim's bytes.)
+    h.case(ctx, target, "blk-tab1 a block pasted inside a tab splits it", &.{ CV ++ "jly", "jjl", "P", ":wq", CR }, "11\n22\nabcd\n\tZ\n", "11\n22\na11bcd\n 22   Z\n");
+    h.case(ctx, target, "blk-tab2 a paste at the tab's own boundary leaves it", &.{ CV ++ "jly", "jj0", "P", ":wq", CR }, "11\n22\nabcd\n\tZ\n", "11\n22\n11abcd\n22\tZ\n");
+
     // --- sentences: the `(`/`)` motions and the `is`/`as` objects.
     const sents = "One. Two. Three.\n";
     h.case(ctx, target, "nvim#sn1 das takes the sentence and its trailing space", &.{ "fT", "das", ":wq", CR }, sents, "One. Three.\n");

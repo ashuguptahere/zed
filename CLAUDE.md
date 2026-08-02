@@ -436,7 +436,8 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   every motion selects, which would change what `d`, `.`, visual mode and four
   hundred nvim-pinned checks all mean. With an operator pending they are plain
   motions, because `de` must delete the word rather than select it and wait.
-- **Operators:** `d` `c` `y`, `> <` (indent), doubled `dd cc yy >> <<`; `D C Y`,
+- **Operators:** `d` `c` `y`, `> <` (indent), `=` (re-indent), doubled
+  `dd cc yy >> << ==`; `D C Y`,
   `x X s S`, `r` `~` `J`. `cw`/`cW` act like `ce`/`cE`.
 - **Structural objects (tree-sitter):** `af`/`if` select a function (whole, or
   just its body), `ac`/`ic` a class/struct/impl/enum, `aa`/`ia` an argument or
@@ -1270,9 +1271,15 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   multiplied by the new one, since telling a count from an argument in the
   recorded bytes needs vim's normalised redo buffer rather than string
   surgery. Autoindent is vim's 'autoindent' plus the grammar's
-  `@indent.begin` nodes (see the Insert section) — there is no smartindent,
-  no `@indent.end`/`@indent.dedent`/`@indent.align`, and no `=` re-indent
-  operator. Where the tree has nothing to say the copy rule wins outright, so
+  `@indent.begin` nodes (see the Insert section) — there is no smartindent and
+  no `@indent.align`. `=` re-indents (`=G`, `==`, `=j`, visual `=`): each line
+  follows the nearest non-blank line above it plus the blocks that line opens,
+  minus a level when the line itself starts with `}`, `)` or `]`. That dedent
+  is the one place such a rule exists, and why `=` has code of its own rather
+  than reusing the insert path — the indent engine only ever answered "what
+  follows this line". Pinned against nvim's cindent (`c-eq1`-`c-eq8` in
+  `indent`), which it matches byte for byte once the file already uses tabs,
+  since zedit takes its unit from the surrounding code. Where the tree has nothing to say the copy rule wins outright, so
   `o` *on* a blank line inside a block starts at column 0 (plain vim's answer,
   pinned as `ts-indent#b4`) where nvim-treesitter would indent to the block —
   pty-probed, and the one measured disagreement with it. Cmdline completion covers command names,
@@ -1322,13 +1329,10 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   the active window has live LSP polling and an editable selection/search/inlay
   overlay; inactive windows render from their cached state.
 - Blockwise paste is a true rectangle, block `A`/`I` pad and skip as vim does,
-  and a block edge covers a wide character or a tab whole — but *pasting into*
-  the middle of a tab resolves to the tab's own boundary rather than splitting
-  it into spaces the way vim does (`tabstop=4`, block "11"/"22" pasted with
-  `P` at display column 1 over "\tZ": nvim writes " 22   Z", zedit "22\tZ").
-  Every other alignment rule is in display columns, tabs included — only
-  breaking a tab apart is missing, and it needs vim's virtual-column
-  machinery.
+  and a block edge covers a wide character or a tab whole —.
+  Every alignment rule is in display columns, tabs included: a block pasted
+  *into* a tab now breaks it into the spaces it was drawing, so the rectangle
+  lands on the column it was aimed at.
 - Buffer-word completion is a flat word list, not vim's full `'complete'`
   machinery: no completion from included files, tags or the dictionary, and
   no `Ctrl-x` sub-modes. Proximity decides which words are *collected*

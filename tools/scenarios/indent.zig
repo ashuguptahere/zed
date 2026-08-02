@@ -134,4 +134,17 @@ pub fn run(ctx: *h.Ctx) !void {
     h.case(ctx, c_file, "ts-indent#x2 a macro replays the indent it recorded", &.{"qqobar" ++ ESC ++ "q4G@q" ++ ESC ++ ":wq" ++ CR}, two, twice);
     h.case(ctx, c_file, "ts-indent#x3 two opens in one batch both indent", &.{"obar" ++ ESC ++ "4Gobaz" ++ ESC ++ ":wq" ++ CR}, two, "void f(void) {\n    bar\n}\nvoid g(void) {\n    baz\n}\n");
     h.case(ctx, py, "ts-indent#x4 python `.` repeats the indent it made", &.{"obar" ++ ESC ++ "4G." ++ ESC ++ ":wq" ++ CR}, "def f():\n    pass\nif x:\n    pass\n", "def f():\n    bar\n    pass\nif x:\n    bar\n    pass\n");
+    // --- the `=` operator: give lines the indent they should have, rather
+    //     than shifting what is there. Pinned against nvim's cindent, which
+    //     agrees byte for byte once the file already uses tabs (nvim --clean
+    //     is noexpandtab, and zedit takes its unit from the surrounding code).
+    h.case(ctx, c_file, "c-eq1 =G indents a function body", &.{ "=G", ":wq", CR }, "int f(void){\n\t\t\tint x;\n\treturn x;\n}\n", "int f(void){\n\tint x;\n\treturn x;\n}\n");
+    h.case(ctx, c_file, "c-eq2 == does one line", &.{ "j", "==", ":wq", CR }, "int f(void){\n\t\t\tint x;\n}\n", "int f(void){\n\tint x;\n}\n");
+    h.case(ctx, c_file, "c-eq3 =j does two", &.{ "j", "=j", ":wq", CR }, "int f(void){\nint x;\n\t\t\tint y;\n}\n", "int f(void){\n\tint x;\n\tint y;\n}\n");
+    h.case(ctx, c_file, "c-eq4 a nested block stacks", &.{ "=G", ":wq", CR }, "int f(void){\n\tif (x) {\nint y;\n}\n}\n", "int f(void){\n\tif (x) {\n\t\tint y;\n\t}\n}\n");
+    h.case(ctx, c_file, "c-eq5 a closer comes back out", &.{ "=G", ":wq", CR }, "int f(void){\n\tint x;\n\t\t\t}\n", "int f(void){\n\tint x;\n}\n");
+    h.case(ctx, c_file, "c-eq6 correct indent is left alone", &.{ "=G", ":wq", CR }, "int f(void){\n\tint x;\n}\n", "int f(void){\n\tint x;\n}\n");
+    h.case(ctx, c_file, "c-eq7 a blank line stays blank", &.{ "=G", ":wq", CR }, "int f(void){\n\n\t\t\tint x;\n}\n", "int f(void){\n\n\tint x;\n}\n");
+    h.case(ctx, c_file, "c-eq8 visual = works too", &.{ "jVj", "=", ":wq", CR }, "int f(void){\n\t\t\tint x;\n}\n", "int f(void){\n\tint x;\n}\n");
+
 }

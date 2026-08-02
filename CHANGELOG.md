@@ -4,7 +4,16 @@ Notable changes to zedit. Dates are commit dates.
 
 ## 0.47.0 - 2026-08-02
 
+Every vim behaviour gap on the tracker is now closed.
+
 ### Added
+
+- **The `=` re-indent operator** (`=G`, `==`, `=j`, visual `=`). Each line
+  follows the nearest non-blank line above it plus the blocks that line opens
+  — the same `indents.scm` query autoindent uses — minus a level when the line
+  itself starts with `}`, `)` or `]`. That dedent is why `=` needed code of
+  its own: the indent engine only ever answered "what follows this line", and
+  a closing brace has to come back out. Pinned against nvim's cindent.
 
 - **Sentences.** `(` and `)` move to the previous/next sentence (counted), and
   `is`/`as` are text objects for one — none of which existed. A sentence ends
@@ -15,6 +24,10 @@ Notable changes to zedit. Dates are commit dates.
 
 ### Fixed
 
+- **A block pasted into the middle of a tab** now breaks the tab into the
+  spaces it was drawing, so the rectangle lands on the column it was aimed at
+  instead of sliding to the tab's own boundary. Every other alignment rule was
+  already in display columns; this was the last one that was not.
 - **`[count].` now replaces every count the change had**, not just a leading
   one: `d2w` then `3.` deletes three words where it used to delete six. The
   recorded keys no longer contain digits at all — the capture keeps counts out

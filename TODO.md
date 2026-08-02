@@ -93,13 +93,6 @@ there is nothing to change there.
 - [ ] Side-by-side diff: a leading deletion gap taller than the window shows
       only its tail (the pane top is a buffer row, clamped to keep the cursor
       on screen; a display-space pane top would make the whole gap reachable).
-- [ ] Pasting a block *into* the middle of a tab resolves to the tab's own
-      boundary instead of splitting the tab into spaces. Probed with
-      `tabstop=4` on "11\n22\nabcd\n\tZ": `<C-v>jly` `jjl` `P` gives nvim
-      " 22   Z" on the last line, zedit "22\tZ". Needs vim's virtual-column
-      machinery (`coladvance`), so it is its own piece of work rather than a
-      patch to the paste. (A block *edge* on a tab is handled: it covers the
-      tab whole, as vim does — `nvim#bp37`/`nvim#bi17`.)
 - [ ] Tree-sitter depth, the rest of it: `@indent.end`/`@indent.dedent`
       (a Python `return` should dedent; nvim-treesitter does) and
       `@indent.align` (align a wrapped expression to its opening paren), an
@@ -117,12 +110,15 @@ there is nothing to change there.
       Alt), edge auto-scroll while dragging (needs a repeat timer; the
       completion debounce is the only timer zedit arms), drag-to-resize
       splits.
-- [ ] An `=` re-indent operator (`=G`, `==`): missing, so a paste that lands
-      at the wrong indent has to be fixed by hand.
 - [ ] More nvim ground-truth tranches: operator-pending `gj`/`gk` under soft
       wrap (they agree with wrap off, so the gap is only the wrapped case).
 
 ## Done (chronological)
+
+- [x] The last two vim gaps: an `=` re-indent operator (which needed the one
+      dedent rule zedit lacked — a line starting with a closer comes back out)
+      and a block pasted into the middle of a tab, which now breaks the tab
+      into the spaces it was drawing instead of sliding to its boundary.
 
 - [x] Sentences (`(`/`)`, `is`/`as`) and `[count].` replacing a count typed
       after the operator. The latter meant keeping counts out of the dot

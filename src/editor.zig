@@ -127,7 +127,7 @@ const WildItem = struct { text: []u8, show: usize };
 const SbEntry = struct { path: []u8, depth: u8, is_dir: bool, expanded: bool };
 const sidebar_width: usize = 28;
 
-const Operator = enum { none, delete, change, yank, indent_right, indent_left, comment, surround, fold };
+const Operator = enum { none, delete, change, yank, indent_right, indent_left, reindent, comment, surround, fold };
 
 /// What the next key supplies an argument for.
 const Await = enum {
@@ -1797,6 +1797,7 @@ pub const Editor = struct {
             'c' => self.operator = .change,
             'y' => self.operator = .yank,
             '>' => self.operator = .indent_right,
+            '=' => self.operator = .reindent,
             '<' => self.operator = .indent_left,
             // register / marks / macros
             '"' => self.await_arg = .register,
@@ -2236,6 +2237,7 @@ pub const Editor = struct {
             .change => c == 'c',
             .yank => c == 'y',
             .indent_right => c == '>',
+            .reindent => c == '=',
             .indent_left => c == '<',
             .comment => c == 'c', // gcc
             .fold => c == 'f', // zff folds this line's... nothing; vim has no zff
@@ -2797,6 +2799,7 @@ pub const Editor = struct {
         switch (op) {
             .indent_right => return self.indent(span, true),
             .indent_left => return self.indent(span, false),
+            .reindent => return self.reindent(span),
             .comment => return self.toggleComment(span),
             // A fold covers whole lines whatever the motion was, like `>`.
             .fold => return self.foldCreate(span.top, span.bot),
@@ -2890,6 +2893,55 @@ pub const Editor = struct {
         const removals = span.end.row - span.start.row;
         while (i < removals) : (i += 1) self.buf.removeLineAt(span.start.row + 1);
         return span.start;
+    }
+
+    /// `=` — give every line in the span the indent it should have, rather
+    /// than shifting what is there. Each line follows the previous non-blank
+    /// one, plus a level for every block that line opens (the grammar's
+    /// `indents.scm`, the same query autoindent uses), minus a level when this
+    /// line *closes* one. That last part is why `=` needs code of its own: the
+    /// indent engine only ever answers "what follows this line", and a `}` has
+    /// to come back out.
+    ///
+    /// Lines are done top-down so each sees the one above it already fixed,
+    /// which is what lets a whole nested block settle in one pass.
+    fn reindent(self: *Editor, span: Span) void {
+        if (self.rejectReadOnly()) return;
+        const top = if (span.lines) span.top else @min(span.start.row, span.end.row);
+        const bot = @min(if (span.lines) span.bot else @max(span.start.row, span.end.row), self.buf.lineCount() - 1);
+        self.pushUndo();
+        var r = top;
+        while (r <= bot) : (r += 1) {
+            const line = self.buf.line(r);
+            if (lineIsBlank(line)) continue; // vim leaves a blank line blank
+            // The reference is the nearest non-blank line above.
+            var ref: ?usize = null;
+            var i = r;
+            while (i > 0) {
+                i -= 1;
+                if (!lineIsBlank(self.buf.line(i))) {
+                    ref = i;
+                    break;
+                }
+            }
+            self.setAutoIndentFollowing(r, ref, r, null);
+            const body = line[leadingIndent(line).len..];
+            // A line that starts by closing a block sits one level out from
+            // what follows its opener.
+            if (body.len > 0 and (body[0] == '}' or body[0] == ')' or body[0] == ']')) {
+                const unit = self.indentUnit(self.ai_indent.items);
+                if (self.ai_indent.items.len >= unit.len)
+                    self.ai_indent.shrinkRetainingCapacity(self.ai_indent.items.len - unit.len);
+            }
+            var out: std.ArrayList(u8) = .empty;
+            defer out.deinit(self.gpa);
+            out.appendSlice(self.gpa, self.ai_indent.items) catch continue;
+            out.appendSlice(self.gpa, body) catch continue;
+            if (!std.mem.eql(u8, out.items, line)) self.buf.setLine(r, out.items) catch {};
+        }
+        self.cy = @min(top, self.buf.lineCount() - 1);
+        self.cx = motion.firstNonBlank(self.curLine());
+        self.updateGoal();
     }
 
     fn indent(self: *Editor, span: Span, right: bool) void {
@@ -3152,6 +3204,32 @@ pub const Editor = struct {
     ///     further repetition of a count — so `3p` squares the block up but a
     ///     paste at end-of-line stays ragged;
     ///   * the cursor lands on the first cell of the pasted rectangle.
+    /// Replace the tab covering display column `dcol` on `row` with the spaces
+    /// it was drawing, so an edit can land in the middle of it. A no-op when
+    /// no tab straddles the column — which is every ordinary line.
+    fn splitTabAt(self: *Editor, row: usize, dcol: usize) void {
+        const line = self.buf.line(row);
+        var i: usize = 0;
+        var w: usize = 0;
+        while (i < line.len) {
+            const d = unicode.decode(line[i..]);
+            const cw = if (line[i] == '\t') config.settings.tab_width - (w % config.settings.tab_width) else unicode.displayWidth(line[i .. i + d.len]);
+            // Only a tab that *starts before* the column and runs past it is
+            // in the way; one that begins exactly there is not straddling.
+            if (line[i] == '\t' and w < dcol and w + cw > dcol) {
+                var sp: std.ArrayList(u8) = .empty;
+                defer sp.deinit(self.gpa);
+                sp.appendNTimes(self.gpa, ' ', cw) catch return;
+                self.buf.deleteInLine(row, i, i + 1) catch return;
+                self.buf.insertBytes(row, i, sp.items) catch return;
+                return;
+            }
+            if (w >= dcol) return;
+            w += cw;
+            i += d.len;
+        }
+    }
+
     fn pasteBlock(self: *Editor, reg: register.Register, after: bool, n: usize) void {
         const first = self.curLine();
         const at_byte = if (after and first.len > 0) unicode.nextBoundary(first, self.cx) else self.cx;
@@ -3171,6 +3249,11 @@ pub const Editor = struct {
                 pad.appendNTimes(self.gpa, ' ', dcol - have) catch return;
                 self.buf.insertBytes(row, line.len, pad.items) catch return;
             }
+            // A tab straddling `dcol` has to be broken into spaces first: the
+            // block goes *inside* it, and `byteAtDisplayCol` can only land on
+            // the tab's own boundary, which is what made a paste there slide
+            // to the wrong column.
+            self.splitTabAt(row, dcol);
             const col = byteAtDisplayCol(self.buf.line(row), dcol);
             const tail = col < self.buf.line(row).len;
 
@@ -3837,6 +3920,7 @@ pub const Editor = struct {
                 'u' => try self.visualCase(.lower),
                 '~' => try self.visualCase(.toggle),
                 '>' => try self.visualOperator(.indent_right),
+                '=' => try self.visualOperator(.reindent),
                 '<' => try self.visualOperator(.indent_left),
                 'V' => self.mode = .visual_line,
                 'v' => self.mode = .visual,
