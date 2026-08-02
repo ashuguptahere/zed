@@ -455,3 +455,37 @@ pub fn userShell() [*:0]const u8 {
     }
     return "/bin/sh";
 }
+
+/// Hand a URL or a path to the desktop's own handler — what `gx` does.
+///
+/// Fork *twice*: the middle child exits immediately, so the grandchild that
+/// execs is orphaned and reaped by init. That keeps the promise the rest of
+/// this module makes — the editor never blocks waiting on a browser to
+/// start, and no zombie accumulates for the run loop to trip over. The
+/// handler is spawned as an argv array, so nothing here is ever handed to a
+/// shell however hostile the buffer content was.
+///
+/// Best effort by design: a machine with no `xdg-open` simply does nothing.
+pub fn openExternal(target: [:0]const u8) void {
+    const opener: [*:0]const u8 = if (builtin.os.tag == .macos) "open" else "xdg-open";
+    const pid = c.fork();
+    if (pid < 0) return;
+    if (pid > 0) { // the editor: reap the middle child, which exits at once
+        var status: c_int = undefined;
+        _ = c.waitpid(pid, &status, 0);
+        return;
+    }
+    if (c.fork() != 0) c._exit(0); // middle child: orphan the grandchild
+    _ = c.setsid();
+    // The handler must not share the editor's terminal — anything it prints
+    // would land in the middle of a frame.
+    const devnull = c.open("/dev/null", c.O_RDWR);
+    if (devnull >= 0) {
+        _ = c.dup2(devnull, 0);
+        _ = c.dup2(devnull, 1);
+        _ = c.dup2(devnull, 2);
+    }
+    const argv = [_:null]?[*:0]const u8{ opener, target.ptr };
+    _ = c.execvp(opener, @ptrCast(&argv));
+    c._exit(127); // no handler installed
+}

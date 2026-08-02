@@ -676,4 +676,75 @@ fn dotAndMacros(ctx: *h.Ctx) void {
     h.case(ctx, target, "nvim#dm37 a counted replay stops at the error too", &.{ "qq", "IX" ++ ESC ++ "j", "q", "gg", "3@q", ":wq", CR }, "aaa\nbbb\nccc\n", "XXaaa\nXbbb\nXccc\n");
     // The abort is scoped to the replay: the next key a person types runs.
     h.case(ctx, target, "nvim#dm38 a failed replay does not swallow the next key", &.{ "qq", "/zzz\r", "q", "@q", "x", ":wq", CR }, "abc\n", "bc\n");
+
+    // === gv: reselect the previous visual area ===========================
+    // Every expectation below came out of the same headless nvim as the rest
+    // of this file. The interesting one is `gv` after an *operator*: vim puts
+    // back the same coordinates, not the same text, so `vlld` then `gvd`
+    // deletes whatever moved into those three columns.
+    h.case(ctx, target, "nvim#gv1 gv reselects after Esc", &.{ "vll", ESC, "gvd", ":wq", CR }, "abcdef\n", "def\n");
+    h.case(ctx, target, "nvim#gv2 …wherever the cursor went", &.{ "vll", ESC, "0gvd", ":wq", CR }, "abcdef\n", "def\n");
+    h.case(ctx, target, "nvim#gv3 a linewise selection comes back linewise", &.{ "Vj", ESC, "gvd", ":wq", CR }, "a\nb\nc\n", "c\n");
+    h.case(ctx, target, "nvim#gv4 a charwise selection across lines", &.{ "vjl", ESC, "gvd", ":wq", CR }, "abc\ndef\n", "f\n");
+    h.case(ctx, target, "nvim#gv5 gv after a yank", &.{ "vey", ESC, "0gvd", ":wq", CR }, "abc def\n", " def\n");
+    h.case(ctx, target, "nvim#gv6 gv after an operator reselects the columns", &.{ "vlld", "gvd", ":wq", CR }, "abcdef\n", "\n");
+    h.case(ctx, target, "nvim#gv7 gv in visual swaps the two", &.{ "vll", ESC, "vgvd", ":wq", CR }, "abcdef\n", "def\n");
+    h.case(ctx, target, "nvim#gv8 gv then an operator other than d", &.{ "vll", ESC, "gvU", ":wq", CR }, "abcdef\n", "ABCdef\n");
+    h.case(ctx, target, "nvim#gv9 gv twice still reaches the first", &.{ "vll", ESC, "gv", ESC, "gvd", ":wq", CR }, "abcdef\n", "def\n");
+    h.case(ctx, target, "nvim#gv10 gv with nothing selected yet does nothing", &.{ "gvd", ":wq", CR }, "abc\n", "abc\n");
+
+    // === gu / gU / g~ : the case operators ================================
+    h.case(ctx, target, "nvim#gc1 gUiw", &.{ "gUiw", ":wq", CR }, "hello world\n", "HELLO world\n");
+    h.case(ctx, target, "nvim#gc2 guiw", &.{ "guiw", ":wq", CR }, "HELLO WORLD\n", "hello WORLD\n");
+    h.case(ctx, target, "nvim#gc3 g~iw", &.{ "g~iw", ":wq", CR }, "Hello World\n", "hELLO World\n");
+    h.case(ctx, target, "nvim#gc4 gUU doubles", &.{ "gUU", ":wq", CR }, "hello there\n", "HELLO THERE\n");
+    h.case(ctx, target, "nvim#gc5 gUgU is the same", &.{ "gUgU", ":wq", CR }, "hello there\n", "HELLO THERE\n");
+    h.case(ctx, target, "nvim#gc6 guu", &.{ "guu", ":wq", CR }, "HELLO THERE\n", "hello there\n");
+    h.case(ctx, target, "nvim#gc7 g~~", &.{ "g~~", ":wq", CR }, "Hello There\n", "hELLO tHERE\n");
+    h.case(ctx, target, "nvim#gc8 gU$ from mid-line", &.{ "wgU$", ":wq", CR }, "abc def\n", "abc DEF\n");
+    h.case(ctx, target, "nvim#gc9 gUw stops at the word", &.{ "gUw", ":wq", CR }, "abc def\n", "ABC def\n");
+    h.case(ctx, target, "nvim#gc10 2gUU takes two lines", &.{ "2gUU", ":wq", CR }, "ab\ncd\nef\n", "AB\nCD\nef\n");
+    h.case(ctx, target, "nvim#gc11 gU2j is linewise", &.{ "gU2j", ":wq", CR }, "ab\ncd\nef\n", "AB\nCD\nEF\n");
+    h.case(ctx, target, "nvim#gc12 non-letters are left alone", &.{ "gU$", ":wq", CR }, "a1!b\n", "A1!B\n");
+    // The cursor lands at the start of what changed, which is what lets `.`
+    // recase the next word.
+    h.case(ctx, target, "nvim#gc13 gUiw is dot-repeatable", &.{ "gUiw", "w", ".", ":wq", CR }, "aa bb\n", "AA BB\n");
+    // Visual mode already had `u`/`U`/`~`; `gU` and friends reach it too.
+    h.case(ctx, target, "nvim#gc14 visual U", &.{ "veU", ":wq", CR }, "abc def\n", "ABC def\n");
+    h.case(ctx, target, "nvim#gc15 visual u", &.{ "veu", ":wq", CR }, "ABC DEF\n", "abc DEF\n");
+    h.case(ctx, target, "nvim#gc16 visual ~", &.{ "ve~", ":wq", CR }, "Abc\n", "aBC\n");
+    h.case(ctx, target, "nvim#gc17 V U is linewise", &.{ "VU", ":wq", CR }, "ab\ncd\n", "AB\ncd\n");
+    h.case(ctx, target, "nvim#gc18 visual gu", &.{ "vlgu", ":wq", CR }, "ABC DEF\n", "abC DEF\n");
+
+    // === gJ: join without a separator ====================================
+    // The pair that shows the difference: `J` strips the next line's indent
+    // and inserts one space, `gJ` does neither.
+    h.case(ctx, target, "nvim#gj1 J inserts a space", &.{ "J", ":wq", CR }, "abc\ndef\n", "abc def\n");
+    h.case(ctx, target, "nvim#gj2 gJ does not", &.{ "gJ", ":wq", CR }, "abc\ndef\n", "abcdef\n");
+    h.case(ctx, target, "nvim#gj3 J strips the indent", &.{ "J", ":wq", CR }, "abc\n    def\n", "abc def\n");
+    h.case(ctx, target, "nvim#gj4 gJ keeps the indent", &.{ "gJ", ":wq", CR }, "abc\n    def\n", "abc    def\n");
+    h.case(ctx, target, "nvim#gj5 3gJ joins three", &.{ "3gJ", ":wq", CR }, "a\nb\nc\nd\n", "abc\nd\n");
+    h.case(ctx, target, "nvim#gj6 3J joins three with spaces", &.{ "3J", ":wq", CR }, "a\nb\nc\nd\n", "a b c\nd\n");
+    h.case(ctx, target, "nvim#gj7 2gJ is a plain gJ", &.{ "2gJ", ":wq", CR }, "a\nb\nc\n", "ab\nc\n");
+    h.case(ctx, target, "nvim#gj8 gJ over an empty line", &.{ "gJ", ":wq", CR }, "abc\n\ndef\n", "abc\ndef\n");
+    h.case(ctx, target, "nvim#gj9 gJ on the last line does nothing", &.{ "gJ", ":wq", CR }, "abc\n", "abc\n");
+    // Both leave the cursor at the seam — `gJ` on the first char of what was
+    // the next line, `J` on the space it inserted.
+    h.case(ctx, target, "nvim#gj10 gJ leaves the cursor at the seam", &.{ "gJx", ":wq", CR }, "abc\ndef\n", "abcef\n");
+    h.case(ctx, target, "nvim#gj11 J leaves it on the inserted space", &.{ "Jx", ":wq", CR }, "abc\ndef\n", "abcdef\n");
+    h.case(ctx, target, "nvim#gj12 visual gJ joins the selection", &.{ "VjgJ", ":wq", CR }, "a\nb\nc\n", "ab\nc\n");
+    // Writing these turned up two rules zedit's `J` never had: vim adds no
+    // space where the first line already ends in white space, and none
+    // before a `)`. Both were wrong here until now, and only `gJ`'s pairing
+    // with `J` made it visible.
+    h.case(ctx, target, "nvim#gj13 J does not double an existing space", &.{ "J", ":wq", CR }, "abc \ndef\n", "abc def\n");
+    h.case(ctx, target, "nvim#gj14 gJ keeps the trailing space as it is", &.{ "gJ", ":wq", CR }, "abc \ndef\n", "abc def\n");
+    h.case(ctx, target, "nvim#gj15 J adds nothing after a trailing tab", &.{ "J", ":wq", CR }, "abc\t\ndef\n", "abc\tdef\n");
+    h.case(ctx, target, "nvim#gj16 J adds no space before a )", &.{ "J", ":wq", CR }, "foo(\n)bar\n", "foo()bar\n");
+    h.case(ctx, target, "nvim#gj17 gJ agrees there", &.{ "gJ", ":wq", CR }, "foo(\n)bar\n", "foo()bar\n");
+    h.case(ctx, target, "nvim#gj18 J onto an empty first line", &.{ "J", ":wq", CR }, "\ndef\n", "def\n");
+
+    // `vg` used to jump to line 1 on the bare `g`; vim waits for the second
+    // key, and `gg` still gets there.
+    h.case(ctx, target, "nvim#vg1 visual gg extends to the first line", &.{ "jjvggd", ":wq", CR }, "aa\nbb\ncc\n", "c\n");
 }

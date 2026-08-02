@@ -5,7 +5,9 @@ live in README.md's Benchmarks section (`zig build bench`).
 
 ## How this document was verified
 
-Last re-verified **2026-08-02**, against zedit 0.47.4. The point of this pass
+Last re-verified **2026-08-02**. The analysis was made against zedit 0.47.4;
+**0.48.0 then acted on it**, so section 1.5 lists what shipped and the
+inventories below describe the editor as it now stands. The point of the pass
 was to stop comparing from memory. What each claim rests on:
 
 | Compared against | Version | Ground truth used |
@@ -13,7 +15,7 @@ was to stop comparing from memory. What each claim rests on:
 | Neovim | 0.12.4 (local) | `nvim --clean --headless` dumping `nvim_get_keymap` for n/x/i/o/c (91 default maps), plus `/usr/share/nvim/runtime/doc/index.txt` — 473 indexed normal-mode commands |
 | AstroNvim | v6.0 (local) | live `nvim_get_keymap` dump of the running config (267 mappings), cross-checked against `_astrocore_mappings.lua` + `_astrolsp_mappings.lua` |
 | Helix | 25.07.1 (local) | `book/src/keymap.md` at the matching upstream tag — the exact source of the installed binary |
-| zedit | 0.47.4 | the dispatch switches in `src/editor.zig` read directly (`normalKey`, `normalCtrl`, `.g_prefix`, `.fold_prefix`, `.bracket_next/prev`, the which-key tables) |
+| zedit | 0.47.4 → 0.48.0 | the dispatch switches in `src/editor.zig` read directly (`normalKey`, `normalCtrl`, `.g_prefix`, `.fold_prefix`, `.bracket_next/prev`, the which-key tables) |
 | VS Code / Zed / Focus | current | **vendor documentation only.** Not installed here, nothing driven, nothing measured. Treat every claim in those sections as a lead to check, not a verified fact. |
 
 The four editors in the top half are all installed on this machine and were
@@ -60,16 +62,20 @@ Read off the dispatch switches, not the docs:
 
 - **Motions** `h j k l w W b B e E 0 ^ _ $ G % { } ( ) H M L f F t T ; ,`
   and arrows/Home/End/PageUp/PageDown.
-- **Operators** `d c y > < =` (doubled `dd cc yy >> << ==`), `gc`.
-- **Immediate edits** `x X D C Y s S r ~ J p P u`.
+- **Operators** `d c y > < =` and `gu gU g~` (doubled `dd cc yy >> << ==`,
+  `guu gUU g~~`), `gc`.
+- **Immediate edits** `x X D C Y s S r ~ J gJ p P u`.
 - **Insert entries** `i I a A o O` (+ `c`/`s`).
 - **Prefixes** `g` `z` `Z` `[` `]` `"` `m` `` ` `` `'` `q` `@` `Ctrl-w`.
-- **`g` namespace (13):** `gg gc gd gr gi gy ga g- g+ gj gk g0 g$`.
-- **`z` namespace (8):** `zf zo zc za zR zM zd zE`. Plus `ZZ`/`ZQ`.
-- **Brackets (4 pairs):** `]d [d`, `]b [b`, `]f [f`, `]q [q`.
+- **`g` namespace (19):** `gg gc gd gr gi gy ga g- g+ gj gk g0 g$` plus
+  `gu gU g~ gJ gv gx` (0.48.0).
+- **`z` namespace (11):** `zf zo zc za zR zM zd zE` plus `zz zt zb`
+  (0.48.0). Plus `ZZ`/`ZQ`.
+- **Brackets (7 pairs):** `]d [d`, `]b [b`, `]f [f`, `]q [q` plus
+  `]e [e`, `]w [w`, `]g [g` (0.48.0).
 - **Ctrl (normal):** `Ctrl-r v n p f b d u w o i` + `Ctrl-h/j/k/l`.
-- **Leader (`Space`), 8 groups:** `f`(5) `l`(8) `g`(3) `d`(7) `b`(3) `u`(8)
-  `S`(3) `n`(3), plus `e c w q t`.
+- **Leader (`Space`), 9 groups:** `f`(5) `l`(8) `g`(3) `d`(7) `b`(3) `u`(8)
+  `S`(3) `n`(3) `x`(4, 0.48.0), plus `e c w q t h` (`h` 0.48.0).
 - **Search/visual/cmdline** `/ ? n N * # v V Ctrl-v : .`
 
 ## 1.2 vs Neovim 0.12.4 — namespace coverage
@@ -78,12 +84,12 @@ Counted against `index.txt`'s 473 normal-mode entries:
 
 | Namespace | nvim | zedit | Missing that a user would actually reach for |
 |---|---:|---:|---|
-| `g…` | ~50 | 13 | **`gv`** reselect last visual, **`gu`/`gU`/`g~`** case operators, **`gJ`** join without space, `gf`/`gF` edit file under cursor, `gx` open with system handler, `g;`/`g,` changelist, `gq`/`gw` reflow, `gn`/`gN` select next match, `ge`/`gE` back to word end, `gI` insert col 1, `g*`/`g#` unbounded search, `go` byte offset, `gt`/`gT` tab pages, `g&` repeat `:s` everywhere, `gR` virtual replace, `g_`, `gm`/`gM` |
-| `z…` | ~44 | 8 | **`zz`/`zt`/`zb`** centre/top/bottom the cursor line, `z.`/`z<CR>`/`z-`, `zj`/`zk` move between folds, `zA`/`zC`/`zO`/`zD` recursive fold ops, `zm`/`zr`/`zi`, `z=`/`zg`/`zw` spell, `zh`/`zl`/`zH`/`zL` horizontal scroll, `zp`/`zP` block paste |
-| `[…` / `]…` | 15 pairs | 4 pairs | `[ `/`] ` add blank line, `[D`/`]D` first/last diagnostic, `[l`/`]l` location list, `[a`/`]a` arglist, `[t`/`]t` tags, `[%`/`]%` matchit |
+| `g…` | ~50 | 19 | `gf`/`gF` edit file under cursor, `g;`/`g,` changelist, `gq`/`gw` reflow, `gn`/`gN` select next match, `ge`/`gE` back to word end, `gI` insert col 1, `g*`/`g#` unbounded search, `go` byte offset, `gt`/`gT` tab pages, `g&` repeat `:s` everywhere, `gR` virtual replace, `g_`, `gm`/`gM` |
+| `z…` | ~44 | 11 | `z.`/`z<CR>`/`z-`, `zj`/`zk` move between folds, `zA`/`zC`/`zO`/`zD` recursive fold ops, `zm`/`zr`/`zi`, `z=`/`zg`/`zw` spell, `zh`/`zl`/`zH`/`zL` horizontal scroll, `zp`/`zP` block paste |
+| `[…` / `]…` | 15 pairs | 7 pairs | `[ `/`] ` add blank line, `[D`/`]D` first/last diagnostic, `[l`/`]l` location list, `[a`/`]a` arglist, `[t`/`]t` tags, `[%`/`]%` matchit |
 
 **Stock nvim 0.12 defaults zedit does not have** (from the `--clean` dump, so
-these are things a user gets with *no config at all*): `gx`, `gO` (document
+these are things a user gets with *no config at all*): `gO` (document
 symbols), `<C-W>d` (diagnostics under cursor), `[ `/`] `, `[D`/`]D`, the
 matchit set (`[%` `]%` `g%` `a%`), and the tree-sitter incremental-selection
 set (`an`/`in` objects, `]n`/`[n`/`]N`/`[N` sibling motions).
@@ -114,12 +120,12 @@ to**, which is the good news. The disagreements and holes:
 
 **Groups AstroNvim has that zedit has no key for at all:**
 
-- **`Space x` — Quickfix/Lists** (`xq` quickfix, `xl` location list). zedit has
-  a complete quickfix list, `]q`/`[q` and `:copen`, and **no leader key
-  reaching any of it**. This is the single clearest instance of TODO item 3
-  ("which-key coverage of what already exists").
-- **`Space h` — Home screen.** zedit *has* a startup screen and no way back to
-  it once dismissed.
+- **`Space x` — Quickfix/Lists.** Was the clearest instance of TODO item 3:
+  a complete quickfix list reachable only by typing `:copen`. **Done in
+  0.48.0** as `x q`/`x n`/`x p`/`x c`; zedit has no location list, so
+  AstroNvim's `xl` has no counterpart.
+- **`Space h` — Home screen.** zedit *had* a startup screen and no way back
+  to it once dismissed. **Done in 0.48.0.**
 - `Space p` — Packages. Correctly absent: no plugin manager is a stated
   non-goal.
 
@@ -157,46 +163,50 @@ one; these are the entries that name a capability zedit could have:
 | `\|` `!` `$` `Alt-\|` | shell pipe / insert output / keep-pipe | **absent** — no way to filter text through a command |
 | `&` / `_` | align / trim selections | absent |
 | `s` / `S` / `K` / `C` | select-regex-in-selection, split, keep, copy selection to next line | absent — needs the multi-selection model |
-| `]g` / `[g` | goto next/prev **change (git hunk)** | **absent** — zedit has signs and three diff views but no hunk-to-hunk motion |
+| `]g` / `[g` | goto next/prev **change (git hunk)** | **done in 0.48.0** |
 | `]c` / `[c` | next/prev comment | absent (the `aC`/`iC` objects exist) |
 | `]a` / `[a` | next/prev parameter | absent (the `aa`/`ia` objects exist) |
 | `]p` / `[p` | next/prev paragraph | `{`/`}` cover it |
 | `]Space` / `[Space` | add newline below/above | absent (nvim's `] `/`[ `) |
-| `z` view mode | `zz`/`zt`/`zb`/`zm` equivalents | **absent** — see 1.5 |
+| `z` view mode | `zz`/`zt`/`zb`/`zm` equivalents | `zz`/`zt`/`zb` **done in 0.48.0**; no `zm`/sticky mode |
 | `Ctrl-s` | save selection to jumplist | absent |
 | `gw` | two-char labelled jump | absent |
 | `m` match mode | surround/textobject minor mode | zedit uses vim's `ys`/`cs`/`ds` — deliberate |
 
-## 1.5 What this pass found that no tracker had
+## 1.5 What this pass found that no tracker had — **all shipped in 0.48.0**
 
-Ranked. These are new — none appears in TODO.md or the previous revision of
-this document.
+Ranked as found. Every one is now implemented, nvim-pinned where vim has an
+opinion, and listed here as the record of what the sweep was worth.
 
-1. **`zz` / `zt` / `zb` are missing entirely.** Verified by reading the
-   `fold_prefix` dispatch: it handles `f o c a R M d E` and falls through to
-   nothing else. Centring the cursor line is among the most-used keys in vim,
-   Helix gives it a whole minor mode (`z`), and zedit's automatic centring on
-   a long jump is not a substitute — there is no way to say "centre this now".
-   Small, self-contained, and the biggest daily-use gap found.
-2. **No leader key reaches the quickfix list.** `Space x` in AstroNvim. The
-   feature is complete and unreachable without typing `:copen`.
-3. **No git-hunk motion.** `]g`/`[g` in Helix, `]c`/`[c` in gitsigns. zedit
-   computes hunks already (`git.computeHunks`) for the signs and all three
-   diff views — the data is there, the motion is not.
-4. **`gv` is missing** — reselect the previous visual area. Cheap; the
-   selection bounds are already kept.
-5. **`gu` / `gU` / `g~` case operators are missing.** `~` alone exists.
-6. **Severity-filtered diagnostic motions are missing** — `]e`/`[e` errors,
-   `]w`/`[w` warnings. zedit's `]d`/`[d` walk every severity, so on a file
-   with 200 hints the errors are unreachable in practice.
-7. **No way back to the startup screen** (`Space h`).
-8. **`gx`** — open the file/URL under the cursor with the system handler. A
-   stock nvim 0.12 default, so users arrive expecting it.
-9. **`gJ`** join without inserting a space.
+1. **`zz` / `zt` / `zb` were missing entirely** — the `fold_prefix` dispatch
+   handled `f o c a R M d E` and fell through to nothing else. The biggest
+   daily-use gap found. Now nvim's exact arithmetic, pinned in the new `view`
+   suite against numbers read out of a real nvim at the same 22 text rows.
+2. **No leader key reached the quickfix list.** Now `Space x` (open, next,
+   previous, close) — AstroNvim's `<leader>x`.
+3. **No git-hunk motion.** Now `]g`/`[g`, over the hunks `git.computeHunks`
+   was already producing for the signs and all three diff views. A hunk of
+   any length is one stop.
+4. **`gv`** — reselect the previous visual area; swaps when used from visual
+   mode. It reselects the *coordinates*, as vim does.
+5. **`gu` / `gU` / `g~`** case operators, with the doubled and `gUgU` forms,
+   sharing one `caseRange` with the visual `u`/`U`/`~` that already existed.
+6. **Severity-filtered diagnostic motions** — `]e`/`[e`, `]w`/`[w`, as one
+   argument on `lsp.nextDiagLine`.
+7. **`Space h`** brings the startup screen back.
+8. **`gx`** opens the URL or path under the cursor via `xdg-open`/`open`,
+   through a double fork so the editor neither blocks nor collects zombies.
+9. **`gJ`** joins without a separator.
 
-Cheap wins 1, 4, 5, 8, 9 are all pure-logic keys that fit existing machinery
-and want unit tests plus an nvim-pinned `vim_compat` case each. 2, 3, 6, 7
-are wiring to features that already exist.
+Writing `gJ`'s tests beside `J`'s also exposed **two pre-existing bugs in
+`J` itself**: vim inserts no space where the first line already ends in white
+space, and none before a `)`. zedit did both wrong, and only the pairing made
+it visible — which is the argument for pinning a new key against the old one
+it resembles.
+
+The one thing here that is *not* a fix: the `j`/`k` soft-wrap gate (1.3) is
+now pinned in `wrap`, but as a characterization test. It records existing
+behaviour and passes with or without any change, deliberately.
 
 ---
 
@@ -215,7 +225,7 @@ are wiring to features that already exist.
   `Alt-n`/`Alt-p`) — **medium** (nvim 0.12 ships this as a default too)
 - Increment/decrement numbers (`Ctrl-a`/`Ctrl-x`) — **low**
 - Autosave (focus-lost, after-delay) — **low**
-- Explicit case commands and `:reflow` — **low**
+- `:reflow` text wrapping — **low** (explicit case commands are done: `gu`/`gU`/`g~`)
 
 **LSP** — everything on the old list is done (references, formatting,
 cross-file WorkspaceEdits, `gi`/`gy`, workspace symbols, diagnostics pickers,

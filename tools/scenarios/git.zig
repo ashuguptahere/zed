@@ -206,9 +206,69 @@ fn wheelOverVirtualRows(ctx: *h.Ctx) !void {
     }
 }
 
+/// `]g` / `[g`: step between changed hunks. The hunks were already computed
+/// for the gutter and all three diff views; what was missing was a motion
+/// over them. The landing row is marked with `x` and read back from the
+/// saved file, which pins where the cursor actually was.
+fn hunkMotion(ctx: *h.Ctx) !void {
+    const dir = try ctx.tempDir();
+    const name = "hunks.txt";
+    const file = try std.fmt.allocPrint(ctx.gpa, "{s}/{s}", .{ dir, name });
+    defer ctx.gpa.free(file);
+    // Rows 2-3 change together and row 7 alone: two hunks, one of them two
+    // lines long, which is what proves a hunk is a single stop.
+    const committed = "L01\nL02\nL03\nL04\nL05\nL06\nL07\nL08\nL09\nL10\n";
+    const modified = "L01\nL02\nX03\nX04\nL05\nL06\nL07\nX08\nL09\nL10\n";
+    const both_marked = "L01\nL02\n03\nX04\nL05\nL06\nL07\n08\nL09\nL10\n";
+
+    h.runQuiet(ctx.gpa, ctx.io, &.{ "git", "-C", dir, "init", "-q" });
+    h.writeFile(ctx.io, file, committed);
+    h.runQuiet(ctx.gpa, ctx.io, &.{ "git", "-C", dir, "add", name });
+    h.runQuiet(ctx.gpa, ctx.io, &.{ "git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@t.t", "commit", "-q", "-m", "init" });
+
+    const Case = struct { name: []const u8, keys: []const u8, want: []const u8 };
+    for ([_]Case{
+        // Forward: row 0 -> row 2 (not row 3 — the two-line hunk is one
+        // stop) -> row 7.
+        .{ .name = "]g stops once per hunk, on its first line", .keys = "]gx]gx:wq\r", .want = both_marked },
+        // Backward from the end: row 9 -> row 7 -> row 2.
+        .{ .name = "[g walks the hunks backwards", .keys = "G[gx[gx:wq\r", .want = both_marked },
+        // A third step from the last hunk wraps round to the first.
+        .{ .name = "]g wraps back to the first hunk", .keys = "]g]g]gx:wq\r", .want = "L01\nL02\n03\nX04\nL05\nL06\nL07\nX08\nL09\nL10\n" },
+    }) |c| {
+        h.writeFile(ctx.io, file, modified);
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, name, "--lsp", "" }, .cwd = dir });
+        defer s.finish();
+        s.drain(700);
+        s.send(c.keys);
+        s.drain(700);
+        const got = h.readFile(ctx.gpa, ctx.io, file);
+        defer ctx.gpa.free(got);
+        ctx.check(c.name, std.mem.eql(u8, got, c.want));
+    }
+
+    // An unchanged file has nowhere to go, and says so instead of moving.
+    {
+        const clean = try std.fmt.allocPrint(ctx.gpa, "{s}/clean.txt", .{dir});
+        defer ctx.gpa.free(clean);
+        h.writeFile(ctx.io, clean, "one\ntwo\n");
+        h.runQuiet(ctx.gpa, ctx.io, &.{ "git", "-C", dir, "add", "clean.txt" });
+        h.runQuiet(ctx.gpa, ctx.io, &.{ "git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@t.t", "commit", "-q", "-m", "clean" });
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "clean.txt", "--lsp", "" }, .cwd = dir });
+        defer s.finish();
+        s.drain(700);
+        s.send("]g");
+        s.drain(400);
+        ctx.check("]g on an unchanged file reports no changes", s.containsPlain(ctx.gpa, "no changes"));
+        s.send(":q!\r");
+        s.drain(200);
+    }
+}
+
 pub fn run(ctx: *h.Ctx) !void {
     try wheelOverVirtualRows(ctx);
     try paintBeforeDecorating(ctx);
+    try hunkMotion(ctx);
 
     // changed + added line
     try capture(ctx, "alpha\nbeta\ngamma\n", "alpha\nBETA\ngamma\nadded\n", "f.txt", &.{

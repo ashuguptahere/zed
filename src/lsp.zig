@@ -1121,10 +1121,16 @@ pub const Client = struct {
 
     /// The nearest diagnostic line strictly after (forward) or before `from`,
     /// wrapping around the document. Null when there are no diagnostics.
-    pub fn nextDiagLine(self: *const Client, from: usize, forward: bool) ?usize {
+    /// The next diagnostic line in `forward`'s direction, wrapping at the
+    /// ends. `sev` restricts it to one severity — 1 for `]e`/`[e` (errors),
+    /// 2 for `]w`/`[w` (warnings) — where null takes any, which is what
+    /// `]d`/`[d` do. Without the filter a file carrying two hundred hints
+    /// buries its errors, and there is no key that reaches them.
+    pub fn nextDiagLine(self: *const Client, from: usize, forward: bool, sev: ?u8) ?usize {
         var near: ?usize = null; // closest in the requested direction
         var wrap: ?usize = null; // extreme line, used when nothing is past `from`
         for (self.diags.items) |d| {
+            if (sev) |want| if (d.severity != want) continue;
             if (forward) {
                 if (d.line > from and (near == null or d.line < near.?)) near = d.line;
                 if (wrap == null or d.line < wrap.?) wrap = d.line;

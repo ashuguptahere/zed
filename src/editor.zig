@@ -127,7 +127,16 @@ const WildItem = struct { text: []u8, show: usize };
 const SbEntry = struct { path: []u8, depth: u8, is_dir: bool, expanded: bool };
 const sidebar_width: usize = 28;
 
-const Operator = enum { none, delete, change, yank, indent_right, indent_left, reindent, comment, surround, fold };
+const Operator = enum { none, delete, change, yank, indent_right, indent_left, reindent, comment, surround, fold, upper, lower, toggle_case };
+
+/// Which way `gu`/`gU`/`g~` and visual `u`/`U`/`~` turn a range.
+const Case = enum { upper, lower, toggle };
+
+/// A selection remembered so `gv` can put it back. Positions rather than a
+/// span, because vim reselects the same *coordinates* even after the text
+/// under them changed — `vlld` then `gv` selects whatever now occupies the
+/// three columns the delete emptied (nvim-probed).
+const Selection = struct { start: Pos, end: Pos, mode: Mode };
 
 /// What the next key supplies an argument for.
 const Await = enum {
@@ -144,6 +153,7 @@ const Await = enum {
     mark_jump_line, // '{a-z} line
     register, // "{a-z}
     g_prefix, // g then ...
+    visual_g, // g then ... in visual mode (gg, gv, gJ, gu/gU/g~)
     z_prefix, // Z then Z/Q
     fold_prefix, // z then a fold command (f o c a R M d E)
     bracket_next, // ] then d (next diagnostic)
@@ -154,6 +164,7 @@ const Await = enum {
     macro_record, // q{reg}
     macro_play, // @{reg}
     space_leader, // <space> menu (which-key)
+    space_qf, // <space>x — the AstroNvim Quickfix/Lists group
     space_find, // <space>f — the AstroNvim Find group
     space_lang, // <space>l — the AstroNvim Language-tools group
     space_git, // <space>g — the Git group (diff views)
@@ -366,6 +377,11 @@ pub const Editor = struct {
     // Only ever set while a visual mode is active (`enterVisual` clears it),
     // and whatever ends the selection lands back in insert.
     ins_visual: bool = false,
+
+    /// The selection `gv` puts back — whatever was last selected, recorded as
+    /// visual mode is left. Null until there has been one, which is why `gv`
+    /// on a fresh buffer does nothing rather than selecting a stray cell.
+    last_vis: ?Selection = null,
 
     // multiple cursors (one per line; primary stays cy/cx). Empty = single cursor.
     extra: std.ArrayList(Pos) = .empty,
@@ -1832,7 +1848,7 @@ pub const Editor = struct {
             'S' => try self.changeLines(self.eff()),
             'r' => self.await_arg = .replace,
             '~' => try self.toggleCase(self.eff()),
-            'J' => try self.joinLines(self.eff()),
+            'J' => try self.joinLines(self.eff(), true),
             'K' => {
                 self.lspHover();
                 self.resetPending();
@@ -1948,6 +1964,24 @@ pub const Editor = struct {
                 } else if (k == .char and k.char == '+') {
                     self.timeTravel(self.eff(), false); // g+: one state newer
                     self.resetPending();
+                } else if (k == .char and (k.char == 'U' or k.char == 'u' or k.char == '~')) {
+                    const op: Operator = switch (k.char) {
+                        'U' => .upper,
+                        'u' => .lower,
+                        else => .toggle_case,
+                    };
+                    // `gUgU` is `gUU`: arriving here with the same operator
+                    // already pending means the user doubled it the long way.
+                    if (self.operator == op) self.applyLinewiseOperator() else self.operator = op;
+                } else if (k == .char and k.char == 'J') {
+                    try self.joinLines(self.eff(), false); // gJ: join, no space
+                    self.resetPending();
+                } else if (k == .char and k.char == 'v') {
+                    self.reselect(); // gv: put the last selection back
+                    self.resetPending();
+                } else if (k == .char and k.char == 'x') {
+                    self.openUnderCursor(); // gx: hand it to the system handler
+                    self.resetPending();
                 } else if (k == .char and k.char == 'j')
                     self.doMotion(self.screenVertical(false, self.eff()))
                 else if (k == .char and k.char == 'k')
@@ -1958,6 +1992,29 @@ pub const Editor = struct {
                     self.doMotion(self.screenLineEdge(true))
                 else
                     self.resetPending();
+            },
+            // `g` in visual mode. The selection is still live here, so these
+            // act on it rather than taking a motion.
+            .visual_g => {
+                self.await_arg = .none;
+                if (k == .char) switch (k.char) {
+                    'g' => self.setCursorKeep(.{ .row = 0, .col = 0 }), // gg
+                    'v' => self.reselect(), // gv swaps the two selections
+                    'U' => try self.visualCase(.upper),
+                    'u' => try self.visualCase(.lower),
+                    '~' => try self.visualCase(.toggle),
+                    'J' => { // gJ: join the selected lines, no separator
+                        const from = self.vstart.row;
+                        const to = self.cy;
+                        const top = @min(from, to);
+                        self.mode = .normal;
+                        self.setCursor(.{ .row = top, .col = 0 });
+                        // A one-line selection still joins it to the next,
+                        // which is what a bare `gJ` does (nvim-probed).
+                        try self.joinLines(@max(from, to) - top + 1, false);
+                    },
+                    else => {},
+                };
             },
             .z_prefix => {
                 if (k == .char and k.char == 'Z') {
@@ -1984,14 +2041,20 @@ pub const Editor = struct {
                     'M' => self.foldAll(true),
                     'd' => self.foldDelete(),
                     'E' => self.foldClear(),
+                    'z' => self.positionView(.centre),
+                    't' => self.positionView(.top),
+                    'b' => self.positionView(.bottom),
                     else => {},
                 };
             },
             .bracket_next, .bracket_prev => {
-                if (k == .char and k.char == 'd') self.gotoDiagnostic(a == .bracket_next);
+                if (k == .char and k.char == 'd') self.gotoDiagnostic(a == .bracket_next, null);
+                if (k == .char and k.char == 'e') self.gotoDiagnostic(a == .bracket_next, 1); // ]e / [e errors
+                if (k == .char and k.char == 'w') self.gotoDiagnostic(a == .bracket_next, 2); // ]w / [w warnings
                 if (k == .char and k.char == 'b') self.cycleDoc(a == .bracket_next, self.eff()); // ]b / [b buffers
                 if (k == .char and k.char == 'f') self.gotoFunction(a == .bracket_next); // ]f / [f functions
                 if (k == .char and k.char == 'q') self.qfStep(a == .bracket_next, self.eff()); // ]q / [q quickfix
+                if (k == .char and k.char == 'g') self.gotoHunk(a == .bracket_next); // ]g / [g git hunks
                 self.resetPending();
             },
             .ctrl_w => {
@@ -2058,6 +2121,8 @@ pub const Editor = struct {
                     't' => self.openTerminal(), // AstroNvim's <leader>t
                     'd' => self.await_arg = .space_debug,
                     'e' => self.sidebarToggle(), // file explorer (AstroNvim <leader>e)
+                    'x' => self.await_arg = .space_qf, // AstroNvim's <leader>x
+                    'h' => self.showHome(), // AstroNvim's <leader>h
                     'w' => _ = try self.write(""),
                     'q' => self.doQuit(),
                     'c' => self.closeDoc(false), // close buffer (AstroNvim <leader>c)
@@ -2080,6 +2145,16 @@ pub const Editor = struct {
                     'b' => self.newBuffer(), // AstroNvim's <leader>n
                     'f' => self.enterNewEntry(false),
                     'd' => self.enterNewEntry(true),
+                    else => {},
+                };
+            },
+            .space_qf => {
+                self.resetPending();
+                if (k == .char) switch (k.char) {
+                    'q' => self.qfOpen(), // :copen
+                    'n' => self.qfStep(true, 1), // :cnext / ]q
+                    'p' => self.qfStep(false, 1), // :cprev / [q
+                    'c' => self.qfClose(), // :cclose
                     else => {},
                 };
             },
@@ -2249,6 +2324,11 @@ pub const Editor = struct {
             .comment => c == 'c', // gcc
             .fold => c == 'f', // zff folds this line's... nothing; vim has no zff
             .surround => false, // handled by the 's' intercept (yss)
+            // `gUU`/`guu`/`g~~`. The `gUgU` spelling doubles in the `g`
+            // prefix instead, where the second `g` has already been eaten.
+            .upper => c == 'U',
+            .lower => c == 'u',
+            .toggle_case => c == '~',
             .none => false,
         };
     }
@@ -2810,6 +2890,9 @@ pub const Editor = struct {
             .comment => return self.toggleComment(span),
             // A fold covers whole lines whatever the motion was, like `>`.
             .fold => return self.foldCreate(span.top, span.bot),
+            .upper => return self.applyCase(span, .upper),
+            .lower => return self.applyCase(span, .lower),
+            .toggle_case => return self.applyCase(span, .toggle),
             else => {},
         }
         const text = self.extract(span) catch return;
@@ -3132,19 +3215,29 @@ pub const Editor = struct {
         self.resetPending();
     }
 
-    fn joinLines(self: *Editor, count: usize) !void {
+    /// `J` (`space = true`) and `gJ` (`space = false`). vim's `gJ` is the
+    /// literal join: it neither strips the next line's indent nor inserts a
+    /// separator, so `abc` + `    def` becomes `abc    def` where `J` gives
+    /// `abc def`. Both leave the cursor at the seam (nvim-pinned).
+    fn joinLines(self: *Editor, count: usize, space: bool) !void {
         if (self.rejectReadOnly()) return;
         const joins = if (count > 1) count - 1 else 1;
         self.pushUndo();
         var i: usize = 0;
         while (i < joins) : (i += 1) {
             if (self.cy + 1 >= self.buf.lineCount()) break;
-            const cur_len = self.buf.line(self.cy).len;
+            const cur = self.buf.line(self.cy);
+            const cur_len = cur.len;
+            const ends_blank = cur_len > 0 and (cur[cur_len - 1] == ' ' or cur[cur_len - 1] == '\t');
             const next = self.gpa.dupe(u8, self.buf.line(self.cy + 1)) catch break;
             defer self.gpa.free(next);
-            const rest = std.mem.trimStart(u8, next, " \t");
+            const rest = if (space) std.mem.trimStart(u8, next, " \t") else next;
             self.buf.removeLineAt(self.cy + 1);
-            const need_space = cur_len > 0 and rest.len > 0;
+            // vim adds exactly one space, and not at all where there is
+            // already trailing white space, where the first line is empty,
+            // or where the next line opens with `)` (all nvim-probed).
+            const need_space = space and cur_len > 0 and rest.len > 0 and
+                !ends_blank and rest[0] != ')';
             self.cx = cur_len;
             if (need_space) {
                 self.buf.insertBytes(self.cy, cur_len, " ") catch {};
@@ -3845,8 +3938,59 @@ pub const Editor = struct {
         self.ins_visual = false;
     }
 
+    /// `gv` — put the last selection back, in the mode it had. Called from
+    /// visual mode it *swaps*, which is vim's rule there (nvim-probed: `v`
+    /// then `gv` lands on the older selection, and the one just abandoned
+    /// becomes what the next `gv` returns to). Coordinates are clamped, since
+    /// the text they named may have shrunk since — vim reselects the columns,
+    /// not the characters that were in them.
+    fn reselect(self: *Editor) void {
+        const s = self.last_vis orelse return;
+        const in_visual = self.mode == .visual or self.mode == .visual_line or self.mode == .visual_block;
+        if (in_visual) self.last_vis = .{ .start = self.vstart, .end = self.cursor(), .mode = self.mode };
+        self.mode = s.mode;
+        self.vstart = self.clampPos(s.start);
+        self.vb_dollar = false;
+        self.ins_visual = false;
+        self.setCursor(self.clampPos(s.end));
+    }
+
+    fn clampPos(self: *Editor, p: Pos) Pos {
+        const row = @min(p.row, self.buf.lineCount() - 1);
+        return .{ .row = row, .col = @min(p.col, self.buf.line(row).len) };
+    }
+
+    /// `gx` — hand the URL or path under the cursor to the desktop's handler.
+    ///
+    /// The target is buffer content, so it is untrusted: it leaves as a
+    /// single argv element (no shell ever parses it), and one that would read
+    /// as an option is refused rather than passed to the handler as a flag.
+    fn openUnderCursor(self: *Editor) void {
+        const target = motion.targetUnderCursor(self.curLine(), self.cx) orelse
+            return self.setStatus("nothing to open under the cursor", .{});
+        if (target[0] == '-')
+            return self.setStatus("not opening '{s}': reads as an option", .{target});
+        // One stack buffer, NUL-terminated for execvp; a path longer than
+        // this is not one worth spawning a browser for.
+        var buf: [1024]u8 = undefined;
+        if (target.len >= buf.len)
+            return self.setStatus("that target is too long to open", .{});
+        @memcpy(buf[0..target.len], target);
+        buf[target.len] = 0;
+        term.openExternal(buf[0..target.len :0]);
+        self.notifyToast(.info, "opening {s}", .{target});
+    }
+
     fn visualKey(self: *Editor, k: key.Key) !void {
         if (self.await_arg != .none) return self.awaitKey(k); // v i{obj} / v a{obj}
+        // `gv` reselects whatever was last selected, so the selection has to
+        // be left behind before any key can end it. Recording here covers
+        // every exit path at once — Esc, an operator, a case change, a paste
+        // — because all of them arrive as a key. The `g` prefix is the one
+        // exception: skipping it is what lets `gv` see the *previous*
+        // selection rather than the one it is standing in.
+        if (!(k == .char and k.char == 'g'))
+            self.last_vis = .{ .start = self.vstart, .end = self.cursor(), .mode = self.mode };
         // Arrows act exactly like h/l/k/j — translate for dispatch only; the
         // goal-column guard below still keys on the original key.
         const kk: key.Key = switch (k) {
@@ -3909,7 +4053,11 @@ pub const Editor = struct {
                     .row = if (self.count > 0) @min(self.count - 1, self.buf.lineCount() - 1) else self.buf.lineCount() - 1,
                     .col = 0,
                 }),
-                'g' => self.setCursorKeep(.{ .row = 0, .col = 0 }),
+                // `g` waits for its second key here as it does in normal
+                // mode — `gg` still goes to line 1, and `gv`/`gJ`/`gU` now
+                // reach the rest. (It used to jump on the bare `g`, so `vg`
+                // moved where vim waits.)
+                'g' => self.await_arg = .visual_g,
                 '%' => if (motion.matchPair(self.buf, self.cursor())) |p| self.setCursorKeep(p),
                 '(' => for (0..n) |_| self.setCursorKeep(motion.sentenceBackward(self.buf, self.cursor())),
                 ')' => for (0..n) |_| self.setCursorKeep(motion.sentenceForward(self.buf, self.cursor())),
@@ -3999,23 +4147,22 @@ pub const Editor = struct {
 
     /// Visual-mode `U`/`u`/`~`: set or toggle the case of the selection
     /// (charwise and linewise; ASCII, like `~` in normal mode).
-    fn visualCase(self: *Editor, how: enum { upper, lower, toggle }) !void {
-        if (self.rejectReadOnly()) return;
-        self.pushUndo();
-        const linewise = self.mode == .visual_line;
-        var start = self.vstart;
-        var end = self.cursor();
-        if (cmpPos(end, start) < 0) std.mem.swap(Pos, &start, &end);
-
+    /// Recase `[start, end)` — `end` exclusive, the way an operator span
+    /// carries it — or whole lines from `start.row` to `end.row` when
+    /// `lines`. The one place the transformation lives: `gu`/`gU`/`g~` and
+    /// visual `u`/`U`/`~` differ only in how they arrive at the range.
+    fn caseRange(self: *Editor, start: Pos, end: Pos, lines: bool, how: Case) !void {
         var row = start.row;
-        while (row <= end.row) : (row += 1) {
+        const last = self.buf.lineCount() - 1;
+        while (row <= @min(end.row, last)) : (row += 1) {
             const line = self.buf.line(row);
             var lo: usize = 0;
             var hi: usize = line.len;
-            if (!linewise) {
-                if (row == start.row) lo = start.col;
-                if (row == end.row) hi = @min(unicode.nextBoundary(line, end.col), line.len);
+            if (!lines) {
+                if (row == start.row) lo = @min(start.col, line.len);
+                if (row == end.row) hi = @min(end.col, line.len);
             }
+            if (lo >= hi) continue;
             const mut = try self.buf.lineMut(row);
             for (mut[lo..hi]) |*ch| {
                 ch.* = switch (how) {
@@ -4027,6 +4174,30 @@ pub const Editor = struct {
         }
         self.buf.dirty = true;
         self.buf.revision +%= 1;
+    }
+
+    /// `gu{motion}` / `gU{motion}` / `g~{motion}`, and their doubled forms.
+    /// The cursor lands at the start of what changed, which is what makes
+    /// `gUiww.` recase the next word too (nvim-pinned).
+    fn applyCase(self: *Editor, span: Span, how: Case) void {
+        self.pushUndo();
+        const start: Pos = if (span.lines) .{ .row = span.top, .col = 0 } else span.start;
+        const end: Pos = if (span.lines) .{ .row = span.bot, .col = 0 } else span.end;
+        self.caseRange(start, end, span.lines, how) catch return;
+        self.setCursor(.{ .row = @min(start.row, self.buf.lineCount() - 1), .col = start.col });
+    }
+
+    fn visualCase(self: *Editor, how: Case) !void {
+        if (self.rejectReadOnly()) return;
+        self.pushUndo();
+        const linewise = self.mode == .visual_line;
+        var start = self.vstart;
+        var end = self.cursor();
+        if (cmpPos(end, start) < 0) std.mem.swap(Pos, &start, &end);
+        // A selection runs *through* its end cell; `caseRange` wants it one
+        // past, as an operator span already is.
+        end.col = unicode.nextBoundary(self.buf.line(end.row), end.col);
+        try self.caseRange(start, end, linewise, how);
         self.mode = .normal;
         self.setCursor(.{ .row = start.row, .col = if (linewise) 0 else start.col });
         self.resetPending();
@@ -7556,17 +7727,64 @@ pub const Editor = struct {
 
     /// Jump to the next/previous diagnostic line (]d / [d), wrapping. `[count]`
     /// repeats. The landed line's message shows via the statusline (lspMiddle).
-    fn gotoDiagnostic(self: *Editor, forward: bool) void {
+    /// `]d`/`[d` walk every diagnostic; `]e`/`[e` and `]w`/`[w` restrict the
+    /// walk to errors and warnings (AstroNvim's keys). `sev` is the LSP
+    /// severity: 1 error, 2 warning, null any.
+    fn gotoDiagnostic(self: *Editor, forward: bool, sev: ?u8) void {
         const client = if (self.lsp) |*c| c else return self.setStatus("no language server", .{});
         var line: ?usize = null;
         var from = self.cy;
         var n = self.eff();
         while (n > 0) : (n -= 1) {
-            const next = client.nextDiagLine(from, forward) orelse break;
+            const next = client.nextDiagLine(from, forward, sev) orelse break;
             line = next;
             from = next;
         }
-        const target = line orelse return self.setStatus("no diagnostics", .{});
+        const target = line orelse return self.setStatus("no {s}diagnostics", .{switch (sev orelse 0) {
+            1 => "error ",
+            2 => "warning ",
+            else => "",
+        }});
+        self.cy = @min(target, self.buf.lineCount() - 1);
+        self.cx = motion.firstNonBlank(self.curLine());
+        self.updateGoal();
+    }
+
+    /// The first line of the next/previous changed hunk, wrapping at both
+    /// ends. A hunk *starts* where a signed line follows an unsigned one, so
+    /// a five-line change is one stop rather than five — the signs are
+    /// already there for the gutter and all three diff views, and this is
+    /// the motion that was missing over them.
+    fn hunkStart(self: *Editor, from: usize, forward: bool) ?usize {
+        var near: ?usize = null;
+        var wrap: ?usize = null;
+        var it = self.git_signs.keyIterator();
+        while (it.next()) |k| {
+            const line = k.*;
+            if (line > 0 and self.git_signs.contains(line - 1)) continue; // mid-hunk
+            if (forward) {
+                if (line > from and (near == null or line < near.?)) near = line;
+                if (wrap == null or line < wrap.?) wrap = line;
+            } else {
+                if (line < from and (near == null or line > near.?)) near = line;
+                if (wrap == null or line > wrap.?) wrap = line;
+            }
+        }
+        return near orelse wrap;
+    }
+
+    /// `]g` / `[g` — jump to the next/previous hunk. Counted, and no jumplist
+    /// entry, exactly as its sibling `]d` behaves.
+    fn gotoHunk(self: *Editor, forward: bool) void {
+        var line: ?usize = null;
+        var from = self.cy;
+        var n = self.eff();
+        while (n > 0) : (n -= 1) {
+            const next = self.hunkStart(from, forward) orelse break;
+            line = next;
+            from = next;
+        }
+        const target = line orelse return self.setStatus("no changes", .{});
         self.cy = @min(target, self.buf.lineCount() - 1);
         self.cx = motion.firstNonBlank(self.curLine());
         self.updateGoal();
@@ -8659,6 +8877,17 @@ pub const Editor = struct {
         self.d.qf_view = true;
         self.placeAt(self.qf.idx);
         self.setStatus("{d} entries — Enter jumps, :cclose closes", .{self.qf.len()});
+    }
+
+    /// `Space h` — back to the startup screen. It is shown at launch on an
+    /// empty session and, until now, could never be reached again once any
+    /// key had dismissed it (AstroNvim's `<leader>h`).
+    fn showHome(self: *Editor) void {
+        if (self.recents.entries.items.len == 0)
+            return self.setStatus("no recently opened files yet", .{});
+        self.dashboard = true;
+        self.dash_sel = 0;
+        self.prev_valid = false; // it paints the whole screen
     }
 
     fn qfClose(self: *Editor) void {
@@ -9776,6 +10005,47 @@ pub const Editor = struct {
     /// `(rows-1)/2` lines above it, clamped at the start of the buffer.
     fn centredTop(self: *Editor, rows: usize) usize {
         return self.cy -| (rows -| 1) / 2;
+    }
+
+    /// `zz`/`zt`/`zb` — put the cursor's line at the centre, the top or the
+    /// bottom of the window. nvim's arithmetic, pty-probed against a 22-row
+    /// window: `zt` tops at the cursor line, `zz` keeps `(rows-1)/2` lines
+    /// above it (which is `centredTop`, the rule a long jump already uses)
+    /// and `zb` keeps `rows-1`. All three clamp at the *start* of the buffer
+    /// and none clamps at the end, so `zt` near EOF deliberately leaves a
+    /// screen of `~` rows — vim scrolls past the last line for these.
+    ///
+    /// Counted the way every other viewport move is counted: display rows
+    /// inside a diff pair (the partner's filler rows are rows too), screen
+    /// rows under soft wrap, buffer lines otherwise. `scroll` cannot fight
+    /// any of the three, since each leaves the cursor inside the window.
+    fn positionView(self: *Editor, where: enum { top, centre, bottom }) void {
+        const rows = self.textRows();
+        if (self.diffPairOf(self.cur)) |p| {
+            const side = self.cur == p.wt;
+            const d = git.displayRow(p.hunks, side, self.cy);
+            self.top = git.rowAtOrAfter(p.hunks, side, switch (where) {
+                .top => d,
+                .centre => d -| (rows -| 1) / 2,
+                .bottom => d -| (rows -| 1),
+            });
+        } else if (self.wrapping()) {
+            const seg = self.cursorSeg();
+            self.top = switch (where) {
+                .top => self.cy,
+                // `topShowing(.., n)` is the highest top that still fits the
+                // cursor's segment in `n` rows — so a full window puts it on
+                // the last row, and half a window puts it in the middle.
+                .centre => self.topShowing(self.cy, seg, (rows + 1) / 2),
+                .bottom => self.topShowing(self.cy, seg, rows),
+            };
+        } else {
+            self.top = switch (where) {
+                .top => self.cy,
+                .centre => self.centredTop(rows),
+                .bottom => self.cy -| (rows -| 1),
+            };
+        }
     }
 
     // === git diff views ====================================================
@@ -11341,8 +11611,10 @@ pub const Editor = struct {
         .{ .key = "d", .desc = "Debug \u{2026}" },
         .{ .key = "S", .desc = "Session \u{2026}" },
         .{ .key = "u", .desc = "UI toggles \u{2026}" },
+        .{ .key = "x", .desc = "Quickfix list \u{2026}" },
         .{ .key = "t", .desc = "Terminal" },
         .{ .key = "e", .desc = "Explorer" },
+        .{ .key = "h", .desc = "Home screen" },
         .{ .key = "c", .desc = "Close buffer" },
         .{ .key = "w", .desc = "Write (save)" },
         .{ .key = "q", .desc = "Quit" },
@@ -11408,6 +11680,15 @@ pub const Editor = struct {
         .{ .key = "d", .desc = "line diagnostic" },
         .{ .key = "D", .desc = "all diagnostics" },
         .{ .key = "f", .desc = "format buffer" },
+    };
+    /// `Space x` — the quickfix list. It was complete and reachable only by
+    /// typing `:copen`; AstroNvim puts it on `<leader>x`, and `:cnext`/
+    /// `:cprev` had no key of their own either.
+    const qf_keys = [_]WhichKey{
+        .{ .key = "q", .desc = "open the list" },
+        .{ .key = "n", .desc = "next entry" },
+        .{ .key = "p", .desc = "previous entry" },
+        .{ .key = "c", .desc = "close the list" },
     };
     const git_keys = [_]WhichKey{
         .{ .key = "d", .desc = "diff (inline)" },
@@ -11854,6 +12135,7 @@ pub const Editor = struct {
             .space_session => .{ .title = " SPACE S", .keys = &session_keys },
             .space_debug => .{ .title = " SPACE d", .keys = &debug_keys },
             .space_new => .{ .title = " SPACE n", .keys = &new_keys },
+            .space_qf => .{ .title = " SPACE x", .keys = &qf_keys },
             else => null,
         };
     }

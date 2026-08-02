@@ -125,6 +125,52 @@ pub fn run(ctx: *h.Ctx) !void {
         ctx.check("dj is still linewise with wrap on", std.mem.indexOf(u8, got, "second") == null);
     }
 
+    // --- what the screen-row rule is gated on -----------------------------
+    // zedit switches `j`/`k` to screen rows when the *current line wraps*.
+    // AstroNvim — which is where this behaviour comes from at all — instead
+    // maps `j` to `v:count == 0 ? 'gj' : 'j'`, gating on whether a count was
+    // typed. The two agree on a bare `j` and disagree the moment a count
+    // appears, so that is what these two cases pin. It was never written
+    // down before; CLAUDE.md called the whole thing "a deliberate divergence
+    // from vim" without saying the gate itself diverges from AstroNvim too.
+    {
+        const three = try std.fmt.allocPrint(ctx.gpa, "{s}/three.txt", .{dir});
+        defer ctx.gpa.free(three);
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(ctx.gpa);
+        try body.appendNTimes(ctx.gpa, 'A', seg);
+        try body.appendNTimes(ctx.gpa, 'B', seg); // line 1 fills exactly two rows
+        try body.appendSlice(ctx.gpa, "\nsecond\nthird\n");
+
+        // `2j` from the top of the wrapped line: two *screen* rows is the B
+        // segment and then "second". Two *buffer* lines would be "third".
+        h.writeFile(ctx.io, three, body.items);
+        {
+            var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "--lsp", "", "three.txt" }, .cwd = dir });
+            defer s.finish();
+            s.drain(400);
+            s.send("2jx:wq\r");
+            s.drain(500);
+            const got = h.readFile(ctx.gpa, ctx.io, three);
+            defer ctx.gpa.free(got);
+            ctx.check("a count still counts screen rows on a wrapped line", std.mem.indexOf(u8, got, "\necond\n") != null);
+            ctx.check("...so it does not reach the second buffer line", std.mem.indexOf(u8, got, "\nhird\n") == null);
+        }
+        // The other half of the gate: from a line that does *not* wrap, `j`
+        // is an ordinary buffer-line move, so "second" -> "third".
+        h.writeFile(ctx.io, three, body.items);
+        {
+            var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "--lsp", "", "three.txt" }, .cwd = dir });
+            defer s.finish();
+            s.drain(400);
+            s.send("Gkjx:wq\r"); // onto "second", then down one
+            s.drain(500);
+            const got = h.readFile(ctx.gpa, ctx.io, three);
+            defer ctx.gpa.free(got);
+            ctx.check("j on an unwrapped line moves a buffer line", std.mem.indexOf(u8, got, "\nhird\n") != null);
+        }
+    }
+
     // --- word breaks, indent retention, wrap_column ------------------------
     // A 4-space indent then words; the row must break at a space, the
     // continuation must hang under the indent, and both must be switchable.

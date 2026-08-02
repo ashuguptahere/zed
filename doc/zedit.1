@@ -559,6 +559,16 @@ Toggle comments.
 .B D C Y x X s S r ~ J
 Delete/change to end of line, delete char, substitute, replace char, toggle
 case, join lines.
+.TP
+.B gu\fR{motion}\fP gU\fR{motion}\fP g~\fR{motion}\fP
+Lowercase, uppercase and toggle the case of the text a motion covers; doubled
+.RB ( guu ", " gUU ", " g~~ )
+for the whole line.
+.TP
+.B gJ
+Join lines without a separator \(em unlike
+.BR J ,
+it neither strips the next line's indent nor inserts a space.
 .SS "Text objects"
 .TP
 .B iw aw i( a( i" a" \fR(and\fP i[ a{ i< i' i`\fR)\fP
@@ -636,6 +646,21 @@ Record and replay a macro.
 replays the last one, and both take a count. A replay stops at the first
 command that fails \(em a motion with nowhere to go, or a find or search
 with no match \(em rather than running the keys after it.
+.TP
+.B zz zt zb
+Put the cursor's line at the centre, the top or the bottom of the window,
+without moving the cursor itself.
+.TP
+.B gx
+Open the URL or file name under the cursor with the desktop's own handler
+.RB ( xdg-open ,
+or
+.B open
+on macOS).
+.TP
+.B gv
+Reselect the previous visual selection; used from visual mode it swaps the
+two.
 .SH "VISUAL MODE"
 .B v
 character\-wise,
@@ -852,7 +877,22 @@ shows the list in a split where
 .B Enter
 opens the entry under the cursor (in the window above, so the list stays);
 .BR :cclose ", " :cnext ", " :cprev ", " :cfirst ", " :clast " and " ":cc {n}"
-round it out.
+round it out, and
+.B Space x
+reaches the list from the leader tree.
+.TP
+.B ]d\fR, \fP[d\fR, \fP]e\fR, \fP[e\fR, \fP]w\fR, \fP[w
+Walk diagnostics, wrapping and taking a count:
+.BR ]d / [d
+over every severity,
+.BR ]e / [e
+over errors only and
+.BR ]w / [w
+over warnings only.
+.TP
+.B ]g\fR, \fP[g
+Walk the changed hunks of the file, wrapping at both ends. A hunk of any
+length is a single stop.
 .TP
 .B Space n
 New:
@@ -917,6 +957,12 @@ Buffers: the open\-buffer picker (same as
 .BR "Space f b" ),
 next buffer, previous buffer, close buffer (same as
 .BR "Space c" ).
+.TP
+.B Space x q\fR, \fPSpace x n\fR, \fPSpace x p\fR, \fPSpace x c
+Quickfix list: open it, next entry, previous entry, close it.
+.TP
+.B Space h
+Show the startup screen again (the recently\-opened list).
 .TP
 .B Space c\fR, \fPSpace w\fR, \fPSpace q
 Close buffer, write, quit.

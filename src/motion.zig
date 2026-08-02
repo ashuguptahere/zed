@@ -250,6 +250,39 @@ pub fn firstNonBlank(line: []const u8) usize {
     return std.mem.indexOfNone(u8, line, " \t") orelse line.len;
 }
 
+/// A byte that can belong to a URL or a file name — vim's `isfname` plus the
+/// few a URL needs (`:?&`). Brackets, parentheses, quotes and whitespace are
+/// deliberately *out*, which is what makes a markdown `[text](url)` yield the
+/// url alone and a quoted "path" come back unquoted.
+fn isTargetByte(ch: u8) bool {
+    return std.ascii.isAlphanumeric(ch) or switch (ch) {
+        '/', '.', '-', '_', '~', '+', ',', '#', '$', '%', '@', ':', '?', '=', '&' => true,
+        // Any non-ASCII byte belongs to the name: a UTF-8 file name is one
+        // run, and splitting it would hand a truncated path to the handler.
+        else => ch >= 0x80,
+    };
+}
+
+/// The URL or file name under the cursor — vim's `<cfile>`, which is what
+/// `gx` opens. Returns a slice of `line`, or null when the cursor is not on
+/// one. Trailing punctuation is dropped, so a link at the end of a sentence
+/// ("see https://ziglang.org/.") does not carry the full stop with it.
+pub fn targetUnderCursor(line: []const u8, col: usize) ?[]const u8 {
+    if (line.len == 0) return null;
+    const at = @min(col, line.len - 1);
+    if (!isTargetByte(line[at])) return null;
+
+    var lo = at;
+    while (lo > 0 and isTargetByte(line[lo - 1])) lo -= 1;
+    var hi = at + 1;
+    while (hi < line.len and isTargetByte(line[hi])) hi += 1;
+    while (hi > lo and switch (line[hi - 1]) {
+        '.', ',', ':', '?' => true,
+        else => false,
+    }) hi -= 1;
+    return if (hi > lo) line[lo..hi] else null;
+}
+
 /// Move one codepoint forward, crossing to the next line's start at end-of-line.
 /// Returns the same position when already at the very end of the buffer.
 fn stepForward(buf: *const buffer.Buffer, row: usize, col: usize) Pos {
@@ -762,4 +795,30 @@ test "the end of a sentence is one past its terminator" {
     try std.testing.expectEqual(@as(usize, 4), sentenceEndFrom("One. Two.", 0));
     try std.testing.expectEqual(@as(usize, 9), sentenceEndFrom("One. Two.", 5));
     try std.testing.expectEqual(@as(usize, 7), sentenceEndFrom("no stop", 0)); // no terminator
+}
+
+test "the URL or file name under the cursor (gx)" {
+    const eq = std.testing.expectEqualStrings;
+    // A bare URL, from anywhere inside it.
+    try eq("https://ziglang.org/", targetUnderCursor("see https://ziglang.org/ here", 6).?);
+    try eq("https://ziglang.org/", targetUnderCursor("see https://ziglang.org/ here", 4).?);
+    try eq("https://ziglang.org/", targetUnderCursor("see https://ziglang.org/ here", 23).?);
+    // Trailing sentence punctuation is not part of the link.
+    try eq("https://ziglang.org", targetUnderCursor("see https://ziglang.org.", 10).?);
+    try eq("https://x.dev/a", targetUnderCursor("go to https://x.dev/a, then", 10).?);
+    // A query string survives, since `?`, `=` and `&` are part of it.
+    try eq("https://x.dev/a?b=1&c=2", targetUnderCursor("https://x.dev/a?b=1&c=2", 0).?);
+    // Markdown: the parens delimit, so the url comes back alone.
+    try eq("https://x.dev/a", targetUnderCursor("[docs](https://x.dev/a)", 10).?);
+    // Quotes delimit too.
+    try eq("src/main.zig", targetUnderCursor("open \"src/main.zig\" now", 8).?);
+    // A plain relative path, and a UTF-8 one kept whole.
+    try eq("../a/b.txt", targetUnderCursor("../a/b.txt", 3).?);
+    try eq("café/naïve.md", targetUnderCursor("café/naïve.md", 2).?);
+    // Nothing under the cursor.
+    try std.testing.expect(targetUnderCursor("a  b", 1) == null);
+    try std.testing.expect(targetUnderCursor("", 0) == null);
+    try std.testing.expect(targetUnderCursor("   ", 1) == null);
+    // A column past the end clamps rather than reading out of bounds.
+    try eq("abc", targetUnderCursor("abc", 99).?);
 }

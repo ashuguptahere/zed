@@ -361,4 +361,67 @@ pub fn run(ctx: *h.Ctx) !void {
         defer ctx.gpa.free(text);
         ctx.check("cursor follows the scrolled viewport", std.mem.indexOf(u8, text, "\n10\n") != null);
     }
+
+    // ---- gx: hand what is under the cursor to the system handler ---------
+    // Only the two refusing paths are driven. A passing case would really
+    // spawn `xdg-open` on whatever machine runs the suite, and opening a
+    // browser is not something a test may do to somebody. The extraction
+    // rule itself — URLs, query strings, markdown links, quoted paths, UTF-8
+    // names — is unit-tested exhaustively in `motion.zig`.
+    {
+        const dir = try ctx.tempDir();
+        const f = h.join(ctx, dir, "links.txt");
+        defer ctx.gpa.free(f);
+        h.writeFile(ctx.io, f, "a   b\n-rf\n");
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "links.txt", "--lsp", "" }, .cwd = dir });
+        defer s.finish();
+        s.drain(600);
+        s.send("lgx"); // column 1 is a blank
+        s.drain(400);
+        ctx.check("gx on blank space has nothing to open", s.containsPlain(ctx.gpa, "nothing to open"));
+        s.send("j0gx"); // `-rf` would reach the handler as a flag
+        s.drain(400);
+        ctx.check("gx refuses a target that reads as an option", s.containsPlain(ctx.gpa, "not opening"));
+        s.send(":q!" ++ CR);
+        s.drain(200);
+    }
+
+    // ---- Space x reaches the quickfix list, Space h the startup screen ---
+    // Both features already existed and neither had a key: the list was
+    // reachable only by typing `:copen`, and the startup screen could not be
+    // returned to once any key had dismissed it.
+    {
+        const dir = try ctx.tempDir();
+        const state = h.join(ctx, dir, "state");
+        defer ctx.gpa.free(state);
+        const state_env = try std.fmt.allocPrint(ctx.gpa, "XDG_STATE_HOME={s}", .{state});
+        defer ctx.gpa.free(state_env);
+        const f = h.join(ctx, dir, "note.txt");
+        defer ctx.gpa.free(f);
+        h.writeFile(ctx.io, f, "hello\nworld\n");
+
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ "env", state_env, ctx.zedit, "note.txt", "--lsp", "" },
+            .cwd = dir,
+        });
+        defer s.finish();
+        s.drain(700);
+        s.send(" x"); // Space x — the group popup
+        s.drain(400);
+        ctx.check("Space x shows the quickfix group", s.containsPlain(ctx.gpa, "open the list"));
+        ctx.check("...with the step entries too", s.containsPlain(ctx.gpa, "next entry"));
+        s.send("q"); // and opens the (empty) list
+        s.drain(400);
+        ctx.check("Space x q reaches the quickfix list", s.containsPlain(ctx.gpa, "quickfix list is empty"));
+
+        // The file just opened is in the recent list, so Space h has one.
+        s.send(" h");
+        s.drain(500);
+        ctx.check("Space h brings the startup screen back", s.containsPlain(ctx.gpa, "Recent"));
+        ctx.check("...listing the file that was opened", s.containsPlain(ctx.gpa, "note.txt"));
+        s.send(ESC); // dismiss it again
+        s.drain(200);
+        s.send(":q!" ++ CR);
+        s.drain(200);
+    }
 }

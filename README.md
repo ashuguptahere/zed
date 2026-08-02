@@ -21,6 +21,8 @@
     `%`, `H M L`, `Ctrl-d/u/f/b`, arrows
   - Counts and operators: `d c y`, `> <`, doubled `dd cc yy`, `D C Y x X s S`,
     `r ~ J`, e.g. `3dw`, `d2j`, `ci"`, `da(`, `diw`
+  - Case operators `gu` / `gU` / `g~` with any motion (and `guu`/`gUU`/`g~~`),
+    `gJ` to join without a separator, `gv` to reselect the last selection
   - Registers and paste: `"a`, `p` / `P` (linewise & charwise); `"+`/`"*`
     talk to the **system clipboard via OSC 52** — works over SSH
   - Undo `u`, redo `Ctrl-r`, repeat `.`
@@ -31,6 +33,9 @@
   - `:%s/pat/rep/g` substitution with ranges (`%`, `n,m`), flags `g`/`i`,
     `&` and `\1`–`\9` in replacements — behaviour pinned to real-nvim outputs
   - Marks `m` `` ` `` `'` and macros `q…q` / `@`
+  - `zz` / `zt` / `zb` put the cursor's line at the centre, top or bottom of
+    the window without moving the cursor
+  - `gx` hands the URL or path under the cursor to the desktop's own handler
   - Jumplist: `Ctrl-o` / `Ctrl-i` walk back and forward through jumps
     (searches, `G`, marks, `gd`, buffer switches — cross-buffer)
   - Text objects incl. paragraphs (`ip`/`ap`, `{`/`}`), also in visual mode
@@ -58,7 +63,8 @@
   open buffer, so different languages run side by side:
   - diagnostics in the gutter/statusline **and inline at end of line** (dim,
     severity-coloured; `inline_diagnostics = false` to silence), with `]d` /
-    `[d` navigation
+    `[d` navigation — and `]e`/`[e`, `]w`/`[w` when only the errors or only
+    the warnings are wanted
   - completion that pops up as you type (debounced; `Ctrl-n` on demand) and
     is **fuzzy** matched — `mplt` finds `mockComplete`; when no server is
     installed for the filetype the statusline says which one to install and
@@ -84,8 +90,9 @@
   **Folds**: `zf{motion}` collapses a range to one row, `zo`/`zc`/`za` open
   and close, `zR`/`zM` all of them — and `j`/`k` step over a closed fold as
   though it were one line;
-  `Ctrl-q` in a picker sends every result to the **quickfix list** (`]q`/`[q`
-  to walk it, `:copen` to see it);
+  `Ctrl-q` in a picker sends every result to the **quickfix list** (`Space x`
+  opens and walks it, `]q`/`[q` step, `:copen` to see it);
+  `Space h` brings the startup screen back;
   `Space n …` new buffer / file / folder (a path like `src/net/http.zig`
   creates the directories on the way); `Space d …` a **debugger** (breakpoints,
   start/continue, step over/into/out — DAP, so `lldb-dap`, `debugpy` and
@@ -196,7 +203,8 @@
   lines that replaced them (no split, no second buffer, still fully
   editable, cursor motion skips the woven rows); any key pressed again
   closes its view, and the three views swap for each other per file — plus
-  the always-on gutter change signs
+  the always-on gutter change signs, and `]g`/`[g` to step from one changed
+  hunk to the next (a multi-line hunk is one stop, and both ends wrap)
 - **Themes**: `tokyonight` (default), `gruvbox`, `catppuccin`, `nord`,
   `onedark` — set in the config, switch live with `:theme <name>` or the
   `Space f t` picker, which previews each theme as you move and saves the one

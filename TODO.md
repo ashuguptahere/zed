@@ -32,12 +32,11 @@ behind the roadmap items.
        (`Space f u`) and a new buffer (`Space n`) in 0.29.0; 0.43.0 relabelled
        the groups by what they *make* (`Space n` read "new …", which nobody
        hunting for "create a file" finds) and dropped the duplicate `Space b
-       b`. Still unbound: `g-`/`g+` and `:earlier` (time travel), the whole
-       **quickfix list** (AstroNvim's `Space x`; `]q`/`[q` and `:copen` exist
-       and no leader key reaches any of it — found by the 0.47.5 sweep) and
-       the **startup screen** (AstroNvim's `Space h`, no way back to it once
-       dismissed). Window management now has `Ctrl-h/j/k/l` and `Ctrl-w`, so
-       a leader group for it looks unnecessary — decide before adding one.
+       b`. 0.48.0 bound the two the sweep found: the **quickfix list**
+       (`Space x`) and the **startup screen** (`Space h`). Still unbound:
+       `g-`/`g+` and `:earlier` (time travel). Window management now has
+       `Ctrl-h/j/k/l` and `Ctrl-w`, so a leader group for it looks
+       unnecessary — decide before adding one.
 4. [x] ~~**A verified AstroNvim/Helix keymap gap analysis**~~ — done in
        0.47.5, key by key against the editors as installed (nvim 0.12.4
        headless keymap dump + `index.txt`, AstroNvim v6.0 live mapping dump,
@@ -48,53 +47,18 @@ behind the roadmap items.
        argument for re-verifying rather than editing from memory. The nine
        gaps it turned up are item 4a below.
 
-4a. [ ] **The nine gaps the keymap sweep found**, none of which any tracker
-       had. Cheapest first; each wants a unit test plus an nvim-pinned
-       `vim_compat` case:
-       - `zz`/`zt`/`zb` — centre/top/bottom the cursor line. Not bound at
-         all (`fold_prefix` handles `f o c a R M d E` and falls through).
-         Among the most-used keys in vim; Helix gives it a whole minor mode.
-         The biggest daily-use gap found.
-       - `gv` — reselect the previous visual area.
-       - `gu`/`gU`/`g~` — case operators (`~` alone exists).
-       - `gJ` — join without inserting a space.
-       - `gx` — open the file/URL under the cursor with the system handler.
-         A stock nvim 0.12 default, so users arrive expecting it.
-       - `]e`/`[e`, `]w`/`[w` — severity-filtered diagnostic motions.
-         `]d`/`[d` walk every severity, so on a file with 200 hints the
-         errors are unreachable in practice.
-       - `]g`/`[g` — git-hunk motion. `git.computeHunks` already produces
-         the hunks for the signs and all three diff views; only the motion
-         is missing.
-       - `Space x` quickfix group and `Space h` startup screen — folded into
-         item 3 above.
-       Also pin the `j`/`k` wrap gate: CLAUDE.md calls it "a deliberate
-       divergence from vim", but AstroNvim v6.0 ships
-       `v:count == 0 ? 'gj' : 'j'` as its default. The two differ only in
-       the gate (line-wraps vs count-typed) and that belongs in a test.
-5. [ ] **Session polish.** Save/restore landed in 0.30.0 (files, cursors,
-       splits, tree open/closed). Not covered yet: the tree's *expanded*
-       directories, per-buffer cursors for files no pane shows (the editor
-       keeps a cursor per window, not per buffer — that model would have to
-       change first), named sessions beyond the one per directory, and the
-       jumplist/marks.
-6. [ ] **Terminal polish.** The shell landed in 0.31.0, scrollback in
-       0.36.0, several terminals on their own tab row in 0.40.0, and the
-       device-control/device-attribute replies a shell waits on in 0.41.0
-       (fish was printing the XTGETTCAP payload and stalling ten seconds on
-       an unanswered DA query). Not there yet: the alternate screen (a
-       full-screen program draws over the shell's output instead of restoring
-       it on exit), mouse and bracketed-paste forwarding, and
-       `TERM=xterm-256color` — which needs those first. The `hung_up` guard
-       in `term.zig` is for the platforms whose pty reports EOF before the
-       child is reapable; on Linux `waitpid` wins that race, so CI never
-       exercises it.
-
-7. [ ] **Debugger polish.** The core loop landed in 0.32.0 (breakpoints,
-       launch, stop, step, jump-to-stop). Not there yet: variables and scopes,
-       watches, REPL evaluation, conditional and function breakpoints, attach,
-       multiple threads (a `stopped` event names one and steps go to it), and
-       a launch-configuration format. No package management (agreed).
+4a. [x] ~~**The nine gaps the keymap sweep found**~~ — all shipped in
+       0.48.0, each nvim-pinned where vim has an opinion: `zz`/`zt`/`zb`
+       (a new `view` suite, against numbers read out of a real nvim at the
+       same 22 text rows), `gv`, `gu`/`gU`/`g~`, `gJ`, `gx`, `]e`/`[e` and
+       `]w`/`[w`, `]g`/`[g`, and the `Space x` / `Space h` leader keys that
+       close the rest of item 3. Writing `gJ`'s tests beside `J`'s also
+       turned up **two pre-existing bugs in `J`** — vim inserts no space
+       after trailing white space, and none before a `)` — plus one in
+       visual mode, where a bare `g` jumped to line 1 instead of waiting
+       for its second key. The `j`/`k` wrap gate is pinned too, but as a
+       characterization test: it records existing behaviour and passes
+       either way, deliberately.
 
 8. [ ] **VS Code / Zed / Focus candidates — awaiting the owner's verdict.**
        Added to `doc/COMPARISON.md` Part 3 in 0.47.5. **Nothing here is
@@ -177,6 +141,13 @@ there is nothing to change there.
       wrap (they agree with wrap off, so the gap is only the wrapped case).
 
 ## Done (chronological)
+
+- [x] The nine keymap gaps, all shipped together: `zz`/`zt`/`zb`, `gv`,
+      `gu`/`gU`/`g~`, `gJ`, `gx`, `]e`/`[e` + `]w`/`[w`, `]g`/`[g`,
+      `Space x` and `Space h`. Ground truth for every vim behaviour came out
+      of a real nvim driven through a pty, which is also how the three bugs
+      found on the way were caught — `J`'s two missing space rules and a
+      bare `g` jumping in visual mode. (0.48.0)
 
 - [x] `doc/COMPARISON.md` re-verified key by key against the four editors as
       *installed* (nvim 0.12.4, AstroNvim v6.0, Helix 25.07.1, zedit's own

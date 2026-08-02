@@ -308,8 +308,11 @@ itest` builds `zedit` plus a `mock_lsp` server, then runs the `itest` harness:
   serves for a public repo *without* a token, where the log body needs one); `tools/scenarios/*.zig` are the suites (vim,
   vim_compat, feature, multicursor, extra, search, treesitter, indent, picker,
   git, windows, sidebar, mouse, titlebar, config, cmdline, robust, remote, ssh,
-  lsp, bufcomplete, cpu, wrap, undotree, session, terminal, debug), each a
-  `pub fn run(ctx: *harness.Ctx) !void`.
+  lsp, bufcomplete, cpu, wrap, undotree, session, terminal, debug, quickfix,
+  fold, view), each a
+  `pub fn run(ctx: *harness.Ctx) !void`. `view` is the viewport suite
+  (`zz`/`zt`/`zb`): it asserts which buffer lines the window ends up showing,
+  against numbers read out of a real nvim at the same 22 text rows.
   `vim_compat` asserts byte-for-byte agreement with expected outputs generated
   by driving real Neovim headlessly — extend it the same way when porting more
   upstream behaviours (ask nvim, not memory).
@@ -437,9 +440,18 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   every motion selects, which would change what `d`, `.`, visual mode and four
   hundred nvim-pinned checks all mean. With an operator pending they are plain
   motions, because `de` must delete the word rather than select it and wait.
-- **Operators:** `d` `c` `y`, `> <` (indent), `=` (re-indent), doubled
-  `dd cc yy >> << ==`; `D C Y`,
-  `x X s S`, `r` `~` `J`. `cw`/`cW` act like `ce`/`cE`.
+- **Operators:** `d` `c` `y`, `> <` (indent), `=` (re-indent), `gu` `gU` `g~`
+  (case), doubled
+  `dd cc yy >> << ==` and `guu`/`gUU`/`g~~` (also the long `gUgU` spelling,
+  which doubles in the `g` prefix since the second `g` has already been
+  eaten); `D C Y`,
+  `x X s S`, `r` `~` `J`, `gJ`. `cw`/`cW` act like `ce`/`cE`. `gJ` is the
+  literal join — unlike `J` it neither strips the next line's indent nor
+  inserts a separator, so `abc` + `    def` is `abc    def`. `J` itself
+  inserts exactly one space, and none at all where the first line already
+  ends in white space or the next opens with `)` (both nvim-probed, and both
+  wrong here until 0.48.0 — writing `gJ`'s tests beside `J`'s is what
+  exposed them).
 - **Structural objects (tree-sitter):** `af`/`if` select a function (whole, or
   just its body), `ac`/`ic` a class/struct/impl/enum, `aa`/`ia` an argument or
   parameter (`aa` swallowing the comma that joins it to a neighbour — the one
@@ -527,7 +539,18 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   collapsed, which is the only moment they still exist. `$` extends the block to each line's own
   end — and keeps doing so as `j`/`k` grow it — so `$A` appends at every
   line's end and pads nothing; any motion naming a column ends it. `y`/`d`/`x`
-  fill a blockwise register (see Registers/paste).
+  fill a blockwise register (see Registers/paste). `u`/`U`/`~` recase the
+  selection, and so do `gu`/`gU`/`g~`; `gJ` joins the selected lines with no
+  separator. **`gv` puts the last selection back**, in the mode it had —
+  called from visual mode it *swaps*, which is vim's rule there. The
+  coordinates are what is remembered, not the characters: `vlld` then `gv`
+  selects whatever moved into the three columns the delete emptied
+  (nvim-probed). Every key that could end visual mode records the selection
+  first, at the top of the dispatch, so no exit path can forget to — the `g`
+  prefix being the one exception, which is how `gv` sees the *previous*
+  selection rather than the one it is standing in. `g` in visual mode now
+  waits for its second key as vim does; it used to jump to line 1 on the
+  bare `g`.
 - **Search:** `/pat` `?pat` (incremental — jumps live as you type, `Esc`
   cancels and restores the cursor), `n N`, `*` `#` (whole-word, `\<word\>`).
   Matches are highlighted; wraps. Patterns are modern regexes (regex.zig:
@@ -540,6 +563,26 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   a count stops with it. The abort is scoped to that replay, so the next key
   typed runs normally, and the *incremental* search does not raise it (a
   replayed `/pat` must not abort while typing its own pattern).
+- **Where the cursor sits on screen (`zz`/`zt`/`zb`):** put the cursor's line
+  at the centre, the top or the bottom of the window without moving the
+  cursor itself. nvim's arithmetic, pty-probed on a 22-row window: `zt` tops
+  at the cursor line, `zz` keeps `(rows-1)/2` lines above it — the same
+  `centredTop` a long jump already uses — and `zb` keeps `rows-1`. All three
+  clamp at the *start* of the buffer and none at the end, so `zt` near EOF
+  deliberately leaves a screen of `~`. Counted like every other viewport
+  move: display rows inside a diff pair, screen rows under soft wrap, buffer
+  lines otherwise.
+- **`gx`:** hand the URL or file name under the cursor to the desktop's own
+  handler (`xdg-open`, `open` on macOS) — a stock nvim 0.12 default. The
+  target is vim's `<cfile>`: the run of `isfname` bytes plus the few a URL
+  needs (`:?&`), with brackets, parens, quotes and whitespace deliberately
+  *out*, so a markdown `[text](url)` yields the url alone and trailing
+  sentence punctuation is dropped (`motion.targetUnderCursor`, unit-tested).
+  Buffer content is untrusted, so it leaves as one argv element — no shell
+  ever parses it — and a target starting with `-` is refused rather than
+  reaching the handler as a flag. `term.openExternal` forks *twice* so the
+  grandchild is orphaned and reaped by init: the editor never blocks on a
+  browser starting and no zombie accumulates.
 - **Jumplist:** `Ctrl-o` / `Ctrl-i` (also `Tab`) walk back/forward through
   jump-motions — `G`/`gg`/`{n}G`, `H M L`, `%`, committed searches (back to the
   origin), `n N * #`, mark jumps, `:{n}`, and every buffer switch (`:e`,
@@ -600,6 +643,11 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   `n f` a new file and `n d` a new folder, the same prompts the explorer's
   `a`/`A` open but reachable without the tree, and both take a whole path so
   `src/net/http.zig` makes the directories on the way);
+  `Space x` = the Quickfix list (`x q` open it, `x n`/`x p` step, `x c`
+  close — AstroNvim's `<leader>x`; the list was complete and reachable only
+  by typing `:copen`, and `:cnext`/`:cprev` had no key either);
+  `Space h` the startup screen (AstroNvim's `<leader>h`, which could not be
+  returned to once any key had dismissed it);
   `Space c` close buffer,
   `Space w` write, `Space q` quit. Group labels say what the group *makes*: `Space n` reads
   "New file/folder …" and its entries "New file (a/b/c.zig ok)" / "New folder
@@ -820,6 +868,12 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   third window, and each split view re-tiles in its own orientation. All of
   them reflect the file as last saved, like the gutter signs; all refresh on
   `:w` (a weave with no changes left simply closes).
+  **`]g`/`[g` step between hunks** — counted, wrapping at both ends, and no
+  jumplist entry (its sibling `]d` takes none either). A hunk *starts* where
+  a signed line follows an unsigned one, so a five-line change is one stop
+  rather than five; the signs `git.computeHunks` already produces for the
+  gutter and all three views are the whole source, so the motion costs one
+  pass over that map and no extra subprocess.
 - **Debugger (`Space d`, `:debug`):** a DAP client (`dap.zig`) speaking the
   same `Content-Length` framing as LSP — shared in `jsonrpc.zig`. `Space d b`
   toggles a breakpoint on the cursor's line, `d B` clears them all, `d c`
@@ -1039,7 +1093,10 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   across the open buffers tagged by severity, `ga`
   lists code actions for the current line in a picker and applies the chosen
   one, and `]d`/`[d` jump to the next/previous diagnostic line (wrapping;
-  `[count]` repeats). Each diagnostic's message also renders inline at the end
+  `[count]` repeats). `]e`/`[e` and `]w`/`[w` do the same restricted to
+  **errors** and **warnings** (AstroNvim's keys): `]d` walks every severity,
+  so a file carrying two hundred hints buries its errors and no key reached
+  them. The filter is one argument on `lsp.nextDiagLine`, not a second walk. Each diagnostic's message also renders inline at the end
   of its line as dim, severity-coloured virtual text (config
   `inline_diagnostics`, default on; errors red, warnings yellow, info/hints in
   the comment colour) — so every problem on screen is visible at once, not just
@@ -1260,7 +1317,17 @@ cost 82 ms a frame; with it, 4 ms — the same as with wrap off.
   `poll` is noticed on the next keypress (a self-pipe would close the race).
 - Vim gaps: paragraph objects/motions treat only truly empty lines as
   boundaries (vim's rule; `nroff`-style paragraph macros in `'paragraphs'`
-  aren't supported).
+  aren't supported). The `g` namespace covers `gg gc gd gr gi gy ga g- g+ gj
+  gk g0 g$ gu gU g~ gJ gv gx`; still absent from vim's ~50 are `gf`/`gF`
+  (edit the file under the cursor), `g;`/`g,` (the changelist), `gq`/`gw`
+  (reflow), `gn`/`gN`, `ge`/`gE`, `gI`, `g*`/`g#`, `go`, `gt`/`gT` (tab
+  pages), `g&`, `gR` and `gm`/`gM`. The `z` namespace covers the folds plus
+  `zz`/`zt`/`zb`; absent are `zj`/`zk` (move between folds), the recursive
+  `zA`/`zC`/`zO`/`zD`, `zm`/`zr`/`zi`, the spelling `z=`/`zg`/`zw` and the
+  horizontal `zh`/`zl`/`zH`/`zL`. Brackets cover `]d [d`, `]e [e`, `]w [w`,
+  `]b [b`, `]f [f`, `]q [q`, `]g [g`; absent are `[ `/`] ` (add a blank
+  line), `[D`/`]D` (first/last diagnostic), the location list `[l`/`]l` and
+  matchit's `[%`/`]%`.
   `[count]` before an insert types the text that many times, as vim does —
   the plain family (`3a`, `3i`, `3A`, `3I`, `3o`, `3O`, `nvim#ic1`-`ic10`) and
   the blockwise `3A`/`3I`, where every caret repeats it (`nvim#bc1`-`bc9`). Dot-repeat and macros

@@ -228,6 +228,31 @@
 
 ---> const answer = 42;
 
+  CASE:  gU  uppercases what a motion covers,  gu  lowercases it and  g~
+  swaps it.  Doubled ( gUU ,  guu ,  g~~ ) they take the whole line.
+
+  6. Put the cursor on the word below and press  gUiw :
+
+---> shout this word
+
+  JOINING:  J  joins the next line onto this one with a space between.
+  gJ  joins them with nothing at all, keeping whatever indent was there.
+
+  7. Try  J  on the first line, undo with  u , then try  gJ :
+
+---> the two halves of
+--->      one sentence
+
+  RESELECTING:  gv  brings back the selection you last had, in the mode
+  it had, wherever the cursor has wandered to since.
+
+  ONE MORE THING:  zz  scrolls so the cursor's line sits in the middle of
+  the window,  zt  puts it at the top and  zb  at the bottom.  None of
+  them moves the cursor — only the view around it.  And  gx  opens the
+  address under the cursor in your browser:
+
+---> https://ziglang.org/
+
 ------------------------------------------------------------------------------
                         Lesson 7: FILES AND WINDOWS
 ------------------------------------------------------------------------------
@@ -286,7 +311,8 @@
      zf{motion} fold those lines away ( zo  opens,  za  toggles,
                 zR  opens every fold,  zd  removes one)
      Ctrl-q     in a picker: keep every result in the quickfix list,
-                then walk them with  ]q  and  [q  ( :copen  lists them)
+                then walk them with  ]q  and  [q  ( Space x  opens it)
+     Space h    back to the startup screen you saw on an empty session
      Space d    debug: b a breakpoint, c start/continue, n/i/o step
      Space t    a terminal: a real shell in a split below
      Space S    this directory's session: s save, l load, d delete
@@ -340,6 +366,8 @@
                 format_on_save is true, the default)
      ga         list code actions for the current line in a picker
      ]d / [d    jump to the next / previous diagnostic line
+     ]e / [e    the same, but stopping only at errors
+     ]w / [w    ... and only at warnings
 
   Problems the server reports appear three ways at once: a coloured sign
   in the gutter, the message inline at the end of the offending line, and

@@ -149,6 +149,46 @@ pub fn run(ctx: *h.Ctx) !void {
         ctx.check("[d jumps to previous diagnostic", r.outHas("mock error"));
     }
 
+    // Severity-filtered navigation (AstroNvim's ]e/[e and ]w/[w). `]d` walks
+    // every severity, which on a file full of hints leaves the errors
+    // unreachable in practice; these two skip straight to one kind. The mock
+    // publishes exactly one of each — an error on line 1, a warning on line 2.
+    //
+    // Each case deletes a character where it lands and reads the file back,
+    // because the *screen* cannot tell these apart: every diagnostic renders
+    // as inline virtual text on its own line, so "mock warn" is on screen
+    // whether or not the cursor ever went near it. Asserting on the output
+    // passed against an unfixed build, which is exactly what checking a test
+    // fails-without-the-fix is for.
+    const save = "\x1b:wq\r";
+    {
+        // Line 0 -> the warning on line 2, stepping over the error on line 1
+        // that a plain `]d` would have stopped at.
+        const r = drive(ctx, &.{ .{ .keys = "0", .ms = 500 }, .{ .keys = "]wx", .ms = 500 } }, save);
+        defer r.deinit(ctx.gpa);
+        ctx.check("]w skips the error and lands on the warning", r.textHas("\nonst c = 3;"));
+        ctx.check("...rather than on the error's line", !r.textHas("\nonst b = 2;"));
+    }
+    {
+        // From the last line, `[w` finds only itself and wraps back to it;
+        // `[d` would have gone up to the error.
+        const r = drive(ctx, &.{ .{ .keys = "G", .ms = 500 }, .{ .keys = "[wx", .ms = 500 } }, save);
+        defer r.deinit(ctx.gpa);
+        ctx.check("[w wraps among warnings only", r.textHas("\nonst c = 3;"));
+    }
+    {
+        // Two `]e` in a row stay on the one error, wrapping to it; two `]d`
+        // would have walked on to the warning below.
+        const r = drive(ctx, &.{
+            .{ .keys = "0", .ms = 500 },
+            .{ .keys = "]e", .ms = 400 },
+            .{ .keys = "]ex", .ms = 400 },
+        }, save);
+        defer r.deinit(ctx.gpa);
+        ctx.check("]e walks errors only", r.textHas("\nonst b = 2;"));
+        ctx.check("...and never falls through to the warning", !r.textHas("\nonst c = 3;"));
+    }
+
     // Hover in insert mode (Ctrl-k).
     {
         const r = drive(ctx, &.{ .{ .keys = "i", .ms = 300 }, .{ .keys = "\x0b", .ms = 800 } }, quit);
