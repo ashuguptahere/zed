@@ -14,16 +14,12 @@
 const std = @import("std");
 const h = @import("../harness.zig");
 
+
 // tokyonight values (theme.zig) for the Screen-model colour assertions.
 const MODE_COMMAND = h.rgb(0xe0, 0xaf, 0x68); // focused EXPLORER header/segment
 const UI_SEL = h.rgb(0x33, 0x46, 0x7c); // focused sidebar selection
 
 /// The final screen for a session's captured output so far.
-fn screen(ctx: *h.Ctx, s: *h.Session) !h.Screen {
-    var scr = try h.Screen.init(ctx.gpa, 24, 80);
-    scr.apply(s.out.items);
-    return scr;
-}
 
 /// Whether `needle` appears on `row` starting within columns [min_col, max_col]
 /// — i.e. inside the sidebar's span, not merely somewhere in the row.
@@ -191,7 +187,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("\x1b"); // Esc: open, unfocused
         s.drain(300);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("Esc unfocuses but keeps the tree", scr.colOf(ctx.gpa, 1, "EXPLORER") != null and
                 scr.at(1, 2).bg != MODE_COMMAND);
@@ -202,7 +198,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send(" e"); // open + unfocused -> refocus, nothing else
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("Space e refocuses an open unfocused tree", scr.at(1, 2).bg == MODE_COMMAND);
             const col = scr.colOf(ctx.gpa, 3, "alpha.txt") orelse 0;
@@ -212,14 +208,14 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("R"); // sanity: an explicit refresh does pick the new file up
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("R still rebuilds the tree", treeHas(ctx, &scr, "zz_late", 1, 28));
         }
         s.send(" e"); // open + focused -> close
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("Space e from a focused tree closes it", scr.colOf(ctx.gpa, 1, "EXPLORER") == null);
         }
@@ -257,7 +253,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send(" e"); // refocus
         s.drain(500);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             var sel_row: usize = 0;
             var r: usize = 2;
@@ -309,7 +305,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("\x1b[<0;5;1M\x1b[<0;5;1m");
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("header click focuses the explorer", scr.at(1, 2).bg == MODE_COMMAND);
         }
@@ -320,7 +316,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("\x1b[<0;5;2M\x1b[<0;5;2m");
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("click on a directory row expands it", rowHasAt(ctx, &scr, 3, "inner.txt", 1, 28));
             ctx.check("row click grabs explorer focus", scr.at(1, 2).bg == MODE_COMMAND);
@@ -334,7 +330,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("\x1b[<0;28;2M\x1b[<0;28;2m");
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("click on the directory again collapses it", !treeHas(ctx, &scr, "inner.txt", 1, 28));
         }
@@ -343,7 +339,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("\x1b[<0;29;2M\x1b[<0;29;2m");
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("border column click stays outside the tree", !treeHas(ctx, &scr, "inner.txt", 1, 28));
         }
@@ -354,7 +350,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("\x1b[<0;5;3M\x1b[<0;5;3m");
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("clicked file gets a tab", rowHasAt(ctx, &scr, 1, "inner.txt", 29, 80));
             ctx.check("clicked file's content shows", rowHasAt(ctx, &scr, 2, "inner", 29, 80));
@@ -369,7 +365,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("\x1b[<0;5;10M\x1b[<0;5;10m");
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             const col = scr.colOf(ctx.gpa, 3, "inner.txt") orelse 0;
             ctx.check("below-tree click focuses the explorer", scr.at(1, 2).bg == MODE_COMMAND);
@@ -384,7 +380,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("\x1b[<0;5;24M\x1b[<0;5;24m");
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("command-line row click grabs nothing", scr.at(1, 2).bg != MODE_COMMAND);
         }
@@ -394,7 +390,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("\x1b[<0;31;1M\x1b[<0;31;1m");
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("tab click still switches buffers", rowHasAt(ctx, &scr, 2, "l1", 29, 80));
         }
@@ -403,7 +399,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("\x1b[<65;45;10M\x1b[<65;45;10M");
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("wheel still scrolls the buffer", rowHasAt(ctx, &scr, 2, "l7", 29, 80));
         }
@@ -416,7 +412,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("\x1b[<0;45;15M\x1b[<0;45;15m");
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             // Column 45 is past the end of a three-character line, so the
             // cursor clamps back to it (text starts at column 34).
@@ -430,14 +426,14 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("\x1b[<0;5;2M\x1b[<0;5;2m\x1b[<0;5;2M\x1b[<0;5;2m");
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("fast double-click nets two toggles", treeHas(ctx, &scr, "inner.txt", 1, 28));
         }
         s.send("\x1b[<0;5;2M\x1b[<0;5;2m");
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("single click after the burst still works", !treeHas(ctx, &scr, "inner.txt", 1, 28));
         }
@@ -451,7 +447,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("\x1b[<0;5;2M\x1b[<0;5;2m");
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("visual mode keeps the selection on a click", scr.colOf(ctx.gpa, 24, "VISUAL") != null);
             ctx.check("visual mode click toggles nothing", !treeHas(ctx, &scr, "inner.txt", 1, 28));
@@ -468,14 +464,14 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("\x1b[<0;5;2M\x1b[<0;5;2m");
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("an explorer click acts under the live picker", treeHas(ctx, &scr, "inner.txt", 1, 28));
         }
         s.send("\x1b"); // close the picker
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("the toggle survives closing the picker", treeHas(ctx, &scr, "inner.txt", 1, 28));
         }
@@ -506,7 +502,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("\x1b[<0;40;10M\x1b[<0;40;10m");
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("a click completes the pending operator", scr.colOf(ctx.gpa, 2, "one") == null);
             ctx.check("release bytes never reach showcmd", scr.colOf(ctx.gpa, 24, "[<0;") == null);
@@ -646,14 +642,14 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("\x1b[<0;56;2M"); // dir row at the mirrored column
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("sidebar right: dir click expands", rowHasAt(ctx, &scr, 3, "inner.txt", 53, 80));
         }
         s.send("\x1b[<0;56;2M");
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("sidebar right: second click collapses", !treeHas(ctx, &scr, "inner.txt", 53, 80));
         }
@@ -662,21 +658,21 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("\x1b[<0;53;2M\x1b[<0;53;2m");
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("sidebar right: first-column click acts", treeHas(ctx, &scr, "inner.txt", 53, 80));
         }
         s.send("\x1b[<0;52;2M\x1b[<0;52;2m");
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("sidebar right: border column click is inert", treeHas(ctx, &scr, "inner.txt", 53, 80));
         }
         s.send("\x1b[<0;80;2M\x1b[<0;80;2m");
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("sidebar right: last-column click acts", !treeHas(ctx, &scr, "inner.txt", 53, 80));
         }

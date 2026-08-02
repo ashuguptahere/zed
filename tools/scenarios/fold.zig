@@ -10,26 +10,12 @@
 const std = @import("std");
 const h = @import("../harness.zig");
 
+
 const ESC = "\x1b";
 const CR = "\r";
 const eight = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\n";
 
-fn screen(ctx: *h.Ctx, s: *h.Session) !h.Screen {
-    var scr = try h.Screen.init(ctx.gpa, 24, 80);
-    scr.apply(s.out.items);
-    return scr;
-}
 
-/// Whether any row on screen contains `needle`.
-fn onScreen(ctx: *h.Ctx, scr: *h.Screen, needle: []const u8) bool {
-    var r: usize = 1;
-    while (r <= scr.rows) : (r += 1) {
-        const t = scr.rowText(ctx.gpa, r) catch return false;
-        defer ctx.gpa.free(t);
-        if (std.mem.indexOf(u8, t, needle) != null) return true;
-    }
-    return false;
-}
 
 pub fn run(ctx: *h.Ctx) !void {
     const dir = try h.tempDir(ctx.gpa);
@@ -52,10 +38,10 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("jzf3j"); // fold lines 2..5
         s.drain(500);
         ctx.check("zf reports what it folded", s.containsPlainSince(ctx.gpa, m, "folded 4 lines"));
-        var scr = try screen(ctx, &s);
-        ctx.check("the fold header names the count", onScreen(ctx, &scr, "4 lines: l2"));
-        ctx.check("the folded body is off screen", !onScreen(ctx, &scr, "l3") and !onScreen(ctx, &scr, "l5"));
-        ctx.check("lines outside it still show", onScreen(ctx, &scr, "l1") and onScreen(ctx, &scr, "l6"));
+        var scr = try h.screenOf(ctx, &s, 24, 80);
+        ctx.check("the fold header names the count", scr.has(ctx.gpa, "4 lines: l2"));
+        ctx.check("the folded body is off screen", !scr.has(ctx.gpa, "l3") and !scr.has(ctx.gpa, "l5"));
+        ctx.check("lines outside it still show", scr.has(ctx.gpa, "l1") and scr.has(ctx.gpa, "l6"));
         scr.deinit();
 
         // `j` treats the fold as one line: from the header it lands on l6, not
@@ -88,18 +74,18 @@ pub fn run(ctx: *h.Ctx) !void {
         s.drain(400);
         s.send("zo"); // open it
         s.drain(400);
-        var scr = try screen(ctx, &s);
-        ctx.check("zo shows the body again", onScreen(ctx, &scr, "l3") and onScreen(ctx, &scr, "l5"));
+        var scr = try h.screenOf(ctx, &s, 24, 80);
+        ctx.check("zo shows the body again", scr.has(ctx.gpa, "l3") and scr.has(ctx.gpa, "l5"));
         scr.deinit();
         s.send("zc");
         s.drain(400);
-        scr = try screen(ctx, &s);
-        ctx.check("zc hides it again", !onScreen(ctx, &scr, "l3"));
+        scr = try h.screenOf(ctx, &s, 24, 80);
+        ctx.check("zc hides it again", !scr.has(ctx.gpa, "l3"));
         scr.deinit();
         s.send("za");
         s.drain(400);
-        scr = try screen(ctx, &s);
-        ctx.check("za toggles it open", onScreen(ctx, &scr, "l3"));
+        scr = try h.screenOf(ctx, &s, 24, 80);
+        ctx.check("za toggles it open", scr.has(ctx.gpa, "l3"));
         scr.deinit();
         var m = s.mark();
         s.send("zM"); // close every fold
@@ -139,11 +125,11 @@ pub fn run(ctx: *h.Ctx) !void {
         s.drain(400);
         s.send("ggOnew" ++ ESC); // insert a line at the very top
         s.drain(500);
-        var scr = try screen(ctx, &s);
+        var scr = try h.screenOf(ctx, &s, 24, 80);
         // The fold moved down with its text: l4 is still its header and l5 is
         // still hidden.
         ctx.check("a fold moves with the text an edit above it shifts",
-            onScreen(ctx, &scr, "2 lines: l4") and !onScreen(ctx, &scr, "l5"));
+            scr.has(ctx.gpa, "2 lines: l4") and !scr.has(ctx.gpa, "l5"));
         scr.deinit();
         s.send(":q!" ++ CR);
         s.drain(300);

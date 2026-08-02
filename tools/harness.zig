@@ -64,6 +64,13 @@ pub const Ctx = struct {
     }
 };
 
+/// The screen as it stands after everything the session has emitted.
+pub fn screenOf(ctx: *Ctx, s: *Session, rows: usize, cols: usize) !Screen {
+    var scr = try Screen.init(ctx.gpa, rows, cols);
+    scr.apply(s.out.items);
+    return scr;
+}
+
 /// A screen rectangle, 1-based, for tests that locate chrome rather than
 /// hardcoding where it was drawn.
 pub const Rect = struct { x: usize, y: usize, w: usize, h: usize };
@@ -313,6 +320,18 @@ pub const Screen = struct {
     }
 
     /// Row `row` decoded to UTF-8, trailing blanks trimmed (caller frees).
+    /// Whether any row contains `needle`. The question every scenario asks of
+    /// a screen, and four of them had written their own loop for it.
+    pub fn has(self: *Screen, gpa: std.mem.Allocator, needle: []const u8) bool {
+        var r: usize = 1;
+        while (r <= self.rows) : (r += 1) {
+            const t = self.rowText(gpa, r) catch return false;
+            defer gpa.free(t);
+            if (std.mem.indexOf(u8, t, needle) != null) return true;
+        }
+        return false;
+    }
+
     pub fn rowText(self: *Screen, gpa: std.mem.Allocator, row: usize) ![]u8 {
         var o: std.ArrayList(u8) = .empty;
         errdefer o.deinit(gpa);

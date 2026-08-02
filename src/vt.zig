@@ -480,9 +480,10 @@ pub const Screen = struct {
     }
 
     /// A parameter that means "0 is a real value" (SGR, ED, EL).
-    fn param0(self: *const Screen, i: usize) u32 {
-        if (i >= self.nparams) return 0;
-        return self.params[i];
+    /// The first parameter *raw* — 0 included, where `param` would read 0 as
+    /// "use the default". Only the first is ever wanted this way.
+    fn param0(self: *const Screen) u32 {
+        return if (self.nparams == 0) 0 else self.params[0];
     }
 
     fn dispatch(self: *Screen, final: u8) void {
@@ -516,8 +517,8 @@ pub const Screen = struct {
                 self.cx = @min(self.cols - 1, @max(1, self.param(1, 1)) - 1);
                 self.wrap_next = false;
             },
-            'J' => self.eraseDisplay(self.param0(0)),
-            'K' => self.eraseLine(self.param0(0)),
+            'J' => self.eraseDisplay(self.param0()),
+            'K' => self.eraseLine(self.param0()),
             'L' => self.insertLines(n),
             'M' => self.deleteLines(n),
             'P' => self.deleteChars(n),
@@ -554,7 +555,7 @@ pub const Screen = struct {
                     self.reply.appendSlice(self.gpa, "\x1b[>0;10;0c") catch {};
                 }
             },
-            'n' => switch (self.param0(0)) {
+            'n' => switch (self.param0()) {
                 5 => self.reply.appendSlice(self.gpa, "\x1b[0n") catch {}, // "terminal OK"
                 6 => { // cursor position report, 1-based
                     var buf: [32]u8 = undefined;

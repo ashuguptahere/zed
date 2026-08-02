@@ -115,6 +115,11 @@ there is nothing to change there.
 
 ## Done (chronological)
 
+- [x] Second over-engineering sweep (−14). Also a lesson recorded: two of the
+      six findings were net-*negative* once applied — a shared home for five
+      three-line builders cost more than the duplication. Measure the removal,
+      not just the duplication.
+
 - [x] Over-engineering sweep (−30 lines): hand-rolled UTF-8 where the bytes
       were ASCII, a clip helper duplicating one thirty lines away, two dead
       pub functions, and five `pub` keywords on file-local helpers. Four of

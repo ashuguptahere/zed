@@ -6,6 +6,13 @@
 const std = @import("std");
 const h = @import("../harness.zig");
 
+/// This suite runs 110 columns wide.
+fn onScreen(ctx: *h.Ctx, s: *h.Session, needle: []const u8) bool {
+    var scr = h.screenOf(ctx, s, 24, 110) catch return false;
+    defer scr.deinit();
+    return scr.has(ctx.gpa, needle);
+}
+
 const CR = "\r";
 
 const File = struct { name: []const u8, content: []const u8 };
@@ -60,18 +67,6 @@ fn freeResult(ctx: *h.Ctx, result: [][]u8) void {
 /// True if `needle` appears anywhere on the *current* screen (replaying the
 /// whole captured stream through the terminal model — row-diffed frames mean
 /// "was printed at some point" is not "is still shown").
-fn onScreen(ctx: *h.Ctx, s: *h.Session, needle: []const u8) bool {
-    var scr = h.Screen.init(ctx.gpa, 24, 110) catch return false;
-    defer scr.deinit();
-    scr.apply(s.out.items);
-    var row: usize = 1;
-    while (row <= 24) : (row += 1) {
-        const txt = scr.rowText(ctx.gpa, row) catch return false;
-        defer ctx.gpa.free(txt);
-        if (std.mem.indexOf(u8, txt, needle) != null) return true;
-    }
-    return false;
-}
 
 pub fn run(ctx: *h.Ctx) !void {
     // File picker: open a.txt, picker-open b.txt, delete a char, save.

@@ -1767,9 +1767,9 @@ pub const Editor = struct {
             '$' => self.doMotion(self.endOfLineMotion()),
             'w' => self.doMotion(self.repeatWord(.f, false)),
             'W' => self.doMotion(self.repeatWord(.f, true)),
-            'b' => self.selectWord(.b, false),
+            'b' => self.selectWord(.b),
             'B' => self.doMotion(self.repeatWord(.b, true)),
-            'e' => self.selectWord(.e, false),
+            'e' => self.selectWord(.e),
             'E' => self.doMotion(self.repeatWord(.e, true)),
             'G' => self.doMotion(self.gotoLineMotion(if (self.count > 0) self.count - 1 else self.buf.lineCount() - 1)),
             '%' => if (motion.matchPair(self.buf, self.cursor())) |p| {
@@ -3815,10 +3815,13 @@ pub const Editor = struct {
     /// From an existing selection it extends, so `ee` reaches two words. With
     /// an operator pending it is the plain motion, because `de` must delete
     /// the word rather than select it first.
-    fn selectWord(self: *Editor, kind: WordKind, big: bool) void {
-        if (self.operator != .none) return self.doMotion(self.repeatWord(kind, big));
+    /// Helix's selecting `e`/`b`: move, and leave what was travelled over
+    /// selected. Only the small-word forms are bound — `E`/`B` keep vim's
+    /// plain meaning — so there is no WORD variant to parameterise.
+    fn selectWord(self: *Editor, kind: WordKind) void {
+        if (self.operator != .none) return self.doMotion(self.repeatWord(kind, false));
         const anchor = if (self.mode == .visual) self.vstart else self.cursor();
-        self.doMotion(self.repeatWord(kind, big));
+        self.doMotion(self.repeatWord(kind, false));
         if (self.mode != .visual) self.mode = .visual;
         self.vstart = anchor;
         self.vb_dollar = false;
@@ -13277,19 +13280,14 @@ fn langName(l: syntax.Language) []const u8 {
 
 /// LSP languageId for a detected language.
 fn langId(l: syntax.Language) []const u8 {
+    // The same names as the statusline's, except where LSP spells them out.
+    // Only the differences live here, so adding a grammar means one table.
     return switch (l) {
-        .zig => "zig",
-        .c => "c",
-        .python => "python",
         .javascript => "javascript",
         .typescript => "typescript",
-        .json => "json",
-        .rust => "rust",
-        .go => "go",
-        .html => "html",
         .markdown => "markdown",
-        .diff => "diff",
         .none => "plaintext",
+        else => langName(l),
     };
 }
 

@@ -18,12 +18,6 @@
 const std = @import("std");
 const h = @import("../harness.zig");
 
-fn screen(ctx: *h.Ctx, s: *h.Session) !h.Screen {
-    var scr = try h.Screen.init(ctx.gpa, 24, 80);
-    scr.apply(s.out.items);
-    return scr;
-}
-
 /// A press+release pair at a 1-based screen cell.
 fn click(comptime row: usize, comptime col: usize) []const u8 {
     return std.fmt.comptimePrint("\x1b[<0;{d};{d}M\x1b[<0;{d};{d}m", .{ col, row, col, row });
@@ -77,7 +71,7 @@ pub fn run(ctx: *h.Ctx) !void {
             try burst.appendSlice(ctx.gpa, "\x1b[B");
             s.send(burst.items);
             s.drain(600);
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             const status = try scr.rowText(ctx.gpa, 24);
             defer ctx.gpa.free(status);
@@ -177,7 +171,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.drain(200);
         s.send("\x1b[<8;10;4M\x1b[<40;20;5M\x1b[<8;20;5m"); // alt
         s.drain(300);
-        var scr = try screen(ctx, &s);
+        var scr = try h.screenOf(ctx, &s, 24, 80);
         defer scr.deinit();
         const st = try scr.rowText(ctx.gpa, 24);
         defer ctx.gpa.free(st);
@@ -202,7 +196,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("d");
         s.drain(250);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             const st = try scr.rowText(ctx.gpa, 24);
             defer ctx.gpa.free(st);
@@ -211,7 +205,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send(click(2, 8));
         s.drain(300);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             const st = try scr.rowText(ctx.gpa, 24);
             defer ctx.gpa.free(st);
@@ -222,7 +216,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send(click(3, 7));
         s.drain(300);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             const st = try scr.rowText(ctx.gpa, 24);
             defer ctx.gpa.free(st);
@@ -307,7 +301,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send(click(2, 13));
         s.drain(300);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             const st = try scr.rowText(ctx.gpa, 24);
             defer ctx.gpa.free(st);
@@ -322,7 +316,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send(click(2, 14));
         s.drain(300);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             const st = try scr.rowText(ctx.gpa, 24);
             defer ctx.gpa.free(st);
@@ -390,7 +384,7 @@ pub fn run(ctx: *h.Ctx) !void {
             s.drain(400);
             s.sendKeys(c.keys);
             s.drain(300);
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             const st = try scr.rowText(ctx.gpa, 24);
             defer ctx.gpa.free(st);
@@ -484,7 +478,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send(click(4, 8)); // left pane, line 3
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             const left = try scr.rowText(ctx.gpa, 23);
             defer ctx.gpa.free(left);
@@ -495,7 +489,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send(click(23, 8));
         s.drain(300);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("a click on a window status row moves nothing", scr.cur_row == 4 and scr.cur_col == 8);
         }
@@ -522,7 +516,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("\x1b[<65;10;5M"); // wheel down over the *top* window
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             const top = try scr.rowText(ctx.gpa, 2);
             defer ctx.gpa.free(top);
@@ -539,7 +533,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("\x1b[<65;10;15M");
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             const st1 = try scr.rowText(ctx.gpa, 12);
             defer ctx.gpa.free(st1);
@@ -554,7 +548,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("\x1b[<64;10;12M"); // wheel up on the top window's status row
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             const st1 = try scr.rowText(ctx.gpa, 12);
             defer ctx.gpa.free(st1);
@@ -568,7 +562,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("\x1b[<64;10;1M"); // wheel up on the title bar
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             const st2 = try scr.rowText(ctx.gpa, 23);
             defer ctx.gpa.free(st2);
@@ -579,7 +573,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("\x1b[<65;5;15M"); // wheel down inside the tree's columns
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             const st2 = try scr.rowText(ctx.gpa, 23);
             defer ctx.gpa.free(st2);
@@ -612,7 +606,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.drain(400);
         s.sendKeys(&.{ " ff", press(10, 40), drag(12, 50), release(12, 50) });
         s.drain(400);
-        var scr = try screen(ctx, &s);
+        var scr = try h.screenOf(ctx, &s, 24, 80);
         defer scr.deinit();
         const status = try scr.rowText(ctx.gpa, 24);
         defer ctx.gpa.free(status);
@@ -645,7 +639,7 @@ pub fn run(ctx: *h.Ctx) !void {
             s.drain(600);
             s.sendKeys(&.{ " gs", click(2, 10) });
             s.drain(400);
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("a click on a diff filler snaps to a real line", scr.cur_row == 5);
             // The index pane is a read-only snapshot: a click focuses it, and
@@ -654,7 +648,7 @@ pub fn run(ctx: *h.Ctx) !void {
             s.drain(400);
             s.send("x");
             s.drain(400);
-            var scr2 = try screen(ctx, &s);
+            var scr2 = try h.screenOf(ctx, &s, 24, 80);
             defer scr2.deinit();
             const status = try scr2.rowText(ctx.gpa, 24);
             defer ctx.gpa.free(status);
@@ -683,7 +677,7 @@ pub fn run(ctx: *h.Ctx) !void {
             s.drain(500);
             s.send("\x1b[<65;60;10M"); // wheel down over the index (right) pane
             s.drain(500);
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             const row2 = try scr.rowText(ctx.gpa, 2);
             defer ctx.gpa.free(row2);
@@ -761,7 +755,7 @@ pub fn run(ctx: *h.Ctx) !void {
                 s.sendKeys(lay.keys);
                 s.drain(300);
             }
-            var base = try screen(ctx, &s);
+            var base = try h.screenOf(ctx, &s, 24, 80);
             defer base.deinit();
             var bad: usize = 0;
             var tested: usize = 0;
@@ -775,7 +769,7 @@ pub fn run(ctx: *h.Ctx) !void {
                     var b: [48]u8 = undefined;
                     s.send(std.fmt.bufPrint(&b, "\x1b[<0;{d};{d}M\x1b[<0;{d};{d}m", .{ col, r, col, r }) catch continue);
                     s.drain(60);
-                    var scr = try screen(ctx, &s);
+                    var scr = try h.screenOf(ctx, &s, 24, 80);
                     defer scr.deinit();
                     tested += 1;
                     if (scr.cur_row != r or scr.cur_col != col) {
@@ -827,7 +821,7 @@ pub fn run(ctx: *h.Ctx) !void {
                 try line.appendSlice(ctx.gpa, seq);
                 s.send(line.items); // one write, so the reads split it
                 s.drain(400);
-                var scr = try screen(ctx, &s);
+                var scr = try h.screenOf(ctx, &s, 24, 80);
                 defer scr.deinit();
                 const st = try scr.rowText(ctx.gpa, 24);
                 defer ctx.gpa.free(st);

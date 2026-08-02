@@ -9,6 +9,7 @@
 const std = @import("std");
 const h = @import("../harness.zig");
 
+
 // tokyonight values the bar is painted with (theme.zig).
 const ACCENT = h.rgb(0x7a, 0xa2, 0xf7); // mode_normal: the active tab
 const STATUS_BG = h.rgb(0x16, 0x16, 0x1e); // inactive tabs + filler
@@ -17,11 +18,6 @@ const UI_SEL = h.rgb(0x33, 0x46, 0x7c); // picker/sidebar selection
 const UI_SEL_DIM = h.rgb(0x24, 0x2e, 0x4d); // mixColor(bg_dark, ui_sel, 50)
 
 /// The final screen for a session's captured output so far.
-fn screen(ctx: *h.Ctx, s: *h.Session) !h.Screen {
-    var scr = try h.Screen.init(ctx.gpa, 24, 80);
-    scr.apply(s.out.items);
-    return scr;
-}
 
 fn rowHas(ctx: *h.Ctx, scr: *h.Screen, row: usize, needle: []const u8) bool {
     return scr.colOf(ctx.gpa, row, needle) != null;
@@ -103,7 +99,7 @@ pub fn run(ctx: *h.Ctx) !void {
         defer s.finish();
         s.drain(500);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("single-buffer session shows the title bar", rowHas(ctx, &scr, 1, "a.txt"));
             const status = try scr.rowText(ctx.gpa, 24);
@@ -115,7 +111,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send(":e b.txt\r");
         s.drain(500);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             const ca = scr.colOf(ctx.gpa, 1, "a.txt") orelse 0;
             const cb = scr.colOf(ctx.gpa, 1, "b.txt") orelse 0;
@@ -127,7 +123,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("x"); // b.txt becomes dirty
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("dirty buffer keeps its dot in the tab", rowHas(ctx, &scr, 1, "b.txt \u{25CF}"));
         }
@@ -136,7 +132,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("\x1b[<0;3;1M"); // first tab = a.txt
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("click switches tabs (sidebar closed)", rowHas(ctx, &scr, 2, "alpha one"));
         }
@@ -147,7 +143,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send(" e");
         s.drain(500);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             const ce = scr.colOf(ctx.gpa, 1, "EXPLORER") orelse 0;
             const ca = scr.colOf(ctx.gpa, 1, "a.txt") orelse 0;
@@ -162,7 +158,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("\x1b[<0;2;1M");
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("click on EXPLORER does not switch buffers", rowHas(ctx, &scr, 2, "ravo one"));
         }
@@ -170,7 +166,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("\x1b[<0;31;1M");
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("click switches tabs (sidebar left)", rowHas(ctx, &scr, 2, "alpha one"));
         }
@@ -181,7 +177,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send(":e sub/inner.txt\r");
         s.drain(500);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             var found_row: usize = 0;
             var found_col: usize = 0;
@@ -244,7 +240,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send(" e");
         s.drain(500);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             const ce = scr.colOf(ctx.gpa, 1, "EXPLORER") orelse 0;
             const ca = scr.colOf(ctx.gpa, 1, "a.txt") orelse 0;
@@ -253,14 +249,14 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("\x1b[<0;60;1M"); // inside the EXPLORER segment: not a tab
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("sidebar right: EXPLORER click switches no buffer", rowHas(ctx, &scr, 2, "bravo one"));
         }
         s.send("\x1b[<0;3;1M"); // first tab
         s.drain(400);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("sidebar right: tab click switches", rowHas(ctx, &scr, 2, "alpha one"));
         }
@@ -277,7 +273,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send(":e b.txt\r");
         s.drain(500);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("buffer_tabs=false removes the bar", rowHas(ctx, &scr, 1, "bravo one") and
                 !rowHas(ctx, &scr, 1, "a.txt"));
@@ -298,7 +294,7 @@ pub fn run(ctx: *h.Ctx) !void {
         defer s.finish();
         s.drain(500);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("flat statusline reaches the right edge", scr.at(24, 80).bg == ACCENT);
         }
@@ -335,7 +331,7 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send(" ff");
         s.drain(600);
         {
-            var scr = try screen(ctx, &s);
+            var scr = try h.screenOf(ctx, &s, 24, 80);
             defer scr.deinit();
             ctx.check("picker view keeps the title bar", rowHas(ctx, &scr, 1, "b.txt"));
             // The picker floats, so its title is in the box border somewhere

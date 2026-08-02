@@ -2,6 +2,23 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.47.2 - 2026-08-02
+
+### Changed
+
+- Second over-engineering sweep, net −14 lines. `langId` now defers to
+  `langName` for the eight names they share, so adding a grammar means one
+  table rather than two that can drift. `selectWord`'s `big` parameter was
+  `false` at both call sites (`E`/`B` keep vim's meaning, so there is no WORD
+  form to reach) and `vt.param0`'s index was `0` at all three. In the test
+  tree, four scenarios had copied `fn screen` verbatim and two had their own
+  row-scanning loop; both now go through `Screen.has` and `screenOf`.
+- Two findings from that audit were **reverted after measuring**: moving the
+  five mouse-escape builders into the harness cost 30 lines there to save 16
+  across two scenarios, and per-suite `screen` wrappers were pure churn. Two
+  small copies beat a shared module plus adapters, and the audit had counted
+  the duplication without costing its removal.
+
 ## 0.47.1 - 2026-08-02
 
 ### Changed
