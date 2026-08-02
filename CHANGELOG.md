@@ -2,6 +2,16 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.46.1 - 2026-08-02
+
+### Changed
+
+- Tracker correction: the linewise-visual cursor column was still listed as a
+  gap after 0.45.0 fixed it. Re-probed everything else that section claims and
+  split what was left into the two real, separate pieces of work it had been
+  hiding — sentence objects and an `=` re-indent operator, neither of which is
+  implemented at all.
+
 ## 0.46.0 - 2026-08-01
 
 ### Changed

@@ -126,8 +126,12 @@ there is nothing to change there.
       Alt), edge auto-scroll while dragging (needs a repeat timer; the
       completion debounce is the only timer zedit arms), drag-to-resize
       splits.
-- [ ] More nvim ground-truth test tranches (the linewise-visual cursor column
-      above; operator-pending `gj`/`gk`; sentence objects).
+- [ ] Sentence objects and motions (`is`/`as`, `(`/`)`) — not implemented at
+      all; `das` leaves the buffer alone where nvim deletes the sentence.
+- [ ] An `=` re-indent operator (`=G`, `==`): missing, so a paste that lands
+      at the wrong indent has to be fixed by hand.
+- [ ] More nvim ground-truth tranches: operator-pending `gj`/`gk` under soft
+      wrap (they agree with wrap off, so the gap is only the wrapped case).
 
 ## Done (chronological)
 
