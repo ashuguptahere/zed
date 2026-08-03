@@ -118,6 +118,39 @@ pub fn wordBackward(buf: *const buffer.Buffer, pos: Pos, big: bool) Pos {
     return p;
 }
 
+/// The character class at a position, counting the end of a line as blank so
+/// a backwards walk crosses line breaks the way vim's does.
+fn classAtPos(buf: *const buffer.Buffer, p: Pos, big: bool) u8 {
+    const line = buf.line(p.row);
+    if (p.col >= line.len) return 0;
+    return classAt(line, p.col, big);
+}
+
+/// `ge` / `gE`: backwards to the end of the previous word.
+///
+/// Two walks: leave whatever run the cursor started in, then skip back over
+/// blanks. Landing on a non-blank after that *is* an end-of-word, because the
+/// position after it was either blank or the run we just left — which is why
+/// `ge` from the middle of a word reaches the previous word rather than its
+/// own start.
+pub fn wordEndBackward(buf: *const buffer.Buffer, pos: Pos, big: bool) Pos {
+    var p = stepBackward(buf, pos.row, pos.col);
+    const start = classAtPos(buf, pos, big);
+    if (start != 0) {
+        while (classAtPos(buf, p, big) == start) {
+            const q = stepBackward(buf, p.row, p.col);
+            if (q.row == p.row and q.col == p.col) return p;
+            p = q;
+        }
+    }
+    while (classAtPos(buf, p, big) == 0) {
+        const q = stepBackward(buf, p.row, p.col);
+        if (q.row == p.row and q.col == p.col) return p;
+        p = q;
+    }
+    return p;
+}
+
 /// `f`/`t` forward, `F`/`T` backward search within the current line for `target`.
 /// `till` stops one cell short (t/T). Returns null if not found.
 pub fn findChar(line: []const u8, col: usize, target: u21, forward: bool, till: bool) ?usize {

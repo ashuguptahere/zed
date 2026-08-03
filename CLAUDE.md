@@ -618,6 +618,39 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   reach `gR` is exactly `R`, which is most of what makes it cheap: one flag,
   one width walk, and everything else — the stack, counts, dot, undo — is
   already there.
+- **The rest of the `g` namespace.** `ge`/`gE` back to the end of the
+  previous word (counted, inclusive); `g_` the last non-blank `count-1` lines
+  down; `g^` the first non-blank of the *screen* row; `gm`/`gM` the middle of
+  the window / of the line's own text; `go` byte N, counting the line break
+  that ends each line; `g'`/`` g` `` the mark jump with the jumplist left
+  alone; `g*`/`g#` search without the `\<`/`\>` bounds `*`/`#` add;
+  `gn`/`gN` select the next/previous match of the last search, so `dgn`
+  deletes it and `.` moves on to the one after; `g?` rot13 (with `g??` and
+  `g?g?`); `gI` insert at column 1; `gp`/`gP` paste leaving the cursor
+  *after* what was pasted, which is what lets repeated `gp` stack;
+  `g&` run the last `:s` again over every line, flags and all; `g8` the
+  UTF-8 bytes of the character under the cursor; `gf`/`gF` open the file
+  named under the cursor (the same reader `gx` uses, so a quoted path or a
+  markdown link yields the path alone; `gF` also honours a trailing `:line`);
+  `g;`/`g,` walk the **change list**, which every `pushUndo` records, one
+  entry per line as vim does; `gD` the LSP declaration; `gq`/`gw` reflow to
+  `wrap_column` (79 when it is 0, vim's own fallback for `textwidth=0`) —
+  `gq` ends on the last line it made, `gw` puts the cursor back, and that is
+  the whole difference; `g<Down>`/`g<Up>`/`g<Home>`/`g<End>` alias
+  `gj`/`gk`/`g0`/`g$`; `g Ctrl-G` reports the position in every unit.
+
+  **What is deliberately not bound**, so it is not looked for again:
+  `gt`/`gT`/`g<Tab>` need tab pages, a layout container above windows that
+  zedit does not have; `gh`/`gH`/`g Ctrl-H`/`gV` need Select mode; `gQ` is Ex
+  mode; `g@` needs `'operatorfunc'`, i.e. scripting, a stated non-goal; `g]`
+  and `g Ctrl-]` need tags; `g<` needs a message history; `g Ctrl-A` is a
+  vim debug build's memory profile; `g<LeftMouse>` and friends are Ctrl-click
+  aliases, and mouse modifiers stay unbound on purpose. `gs` *sleeps the
+  editor*, which contradicts the rule that zedit never blocks — it is the one
+  entry left out on principle rather than for want of machinery. Four more
+  keep zedit's AstroNvim meaning rather than vim's: `ga` is a code action
+  (`g8` answers "what is this character" instead), `gi` is goto
+  implementation, `gr` is rename and `gd` is goto definition.
 - **Insert:** `i I a A o O` (and `c`/`s` entries), `Esc` to normal. Auto-pairs:
   typing an opener inserts its closer; typing the closer steps over it.
   Autoindent (config `autoindent`, on by default): `o`/`O`/Enter/`cc` inherit

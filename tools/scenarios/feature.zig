@@ -362,6 +362,77 @@ pub fn run(ctx: *h.Ctx) !void {
         ctx.check("cursor follows the scrolled viewport", std.mem.indexOf(u8, text, "\n10\n") != null);
     }
 
+    // ---- gq / gw: reflow to wrap_column ----------------------------------
+    // nvim's ground truth was taken with `:set tw=20`; zedit reuses
+    // `wrap_column` as the reflow width, so the config sets it to 20 here.
+    // `gq` leaves the cursor on the last line it produced, `gw` puts it back
+    // where it started — the only difference between the two.
+    {
+        const dir = try ctx.tempDir();
+        const cfg = h.join(ctx, dir, "cfg");
+        defer ctx.gpa.free(cfg);
+        const f = h.join(ctx, dir, "p.txt");
+        defer ctx.gpa.free(f);
+        h.writeFile(ctx.io, cfg, "wrap_column = 20\n");
+        const para = "the quick brown fox jumps over the lazy dog and keeps going\n";
+        const wrapped = "the quick brown fox\njumps over the lazy\ndog and keeps going\n";
+
+        const Case = struct { name: []const u8, keys: []const u8, want: []const u8 };
+        for ([_]Case{
+            .{ .name = "gqq reflows the line", .keys = "gqq:wq" ++ CR, .want = wrapped },
+            .{ .name = "gqip reflows the paragraph", .keys = "gqip:wq" ++ CR, .want = wrapped },
+            // `x` marks where the cursor ended up.
+            .{ .name = "gq leaves the cursor on the last line", .keys = "gqqx:wq" ++ CR, .want = "the quick brown fox\njumps over the lazy\nog and keeps going\n" },
+            .{ .name = "gw puts the cursor back", .keys = "gwwx:wq" ++ CR, .want = "he quick brown fox\njumps over the lazy\ndog and keeps going\n" },
+        }) |c| {
+            h.writeFile(ctx.io, f, para);
+            var s = try h.Session.spawn(ctx.gpa, .{
+                .argv = &.{ ctx.zedit, "--config", cfg, "--lsp", "", "p.txt" },
+                .cwd = dir,
+            });
+            defer s.finish();
+            s.drain(500);
+            s.send(c.keys);
+            s.drain(600);
+            const got = h.readFile(ctx.gpa, ctx.io, f);
+            defer ctx.gpa.free(got);
+            ctx.check(c.name, std.mem.eql(u8, got, c.want));
+        }
+    }
+
+    // ---- gf, g8 and g Ctrl-G --------------------------------------------
+    {
+        const dir = try ctx.tempDir();
+        const other = h.join(ctx, dir, "other.txt");
+        defer ctx.gpa.free(other);
+        const main = h.join(ctx, dir, "main.txt");
+        defer ctx.gpa.free(main);
+        h.writeFile(ctx.io, other, "I am the other file\n");
+        h.writeFile(ctx.io, main, "see other.txt for more\n\xc3\xa9\n");
+
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "--lsp", "", "main.txt" }, .cwd = dir });
+        defer s.finish();
+        s.drain(600);
+        // g Ctrl-G reports where the cursor is, in vim's units.
+        s.send("g\x07");
+        s.drain(300);
+        ctx.check("g Ctrl-G reports the position", s.containsPlain(ctx.gpa, "line 1 of 2"));
+        // g8 shows the UTF-8 bytes of the character under the cursor: the
+        // second line is a single e-acute, which is c3 a9.
+        s.send("jg8");
+        s.drain(300);
+        ctx.check("g8 shows the UTF-8 bytes", s.containsPlain(ctx.gpa, "c3 a9"));
+        // gf opens the file whose name is under the cursor, relative to the
+        // file being edited.
+        s.send("ggw");
+        s.drain(200);
+        s.send("gf");
+        s.drain(700);
+        ctx.check("gf opens the file under the cursor", s.containsPlain(ctx.gpa, "I am the other file"));
+        s.send(":q!" ++ CR);
+        s.drain(300);
+    }
+
     // ---- gx: hand what is under the cursor to the system handler ---------
     // Only the two refusing paths are driven. A passing case would really
     // spawn `xdg-open` on whatever machine runs the suite, and opening a

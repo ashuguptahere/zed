@@ -682,6 +682,88 @@ on macOS).
 .B gv
 Reselect the previous visual selection; used from visual mode it swaps the
 two.
+.TP
+.B "ge gE g_ g^ gm gM go"
+Back to the end of the previous word (\fBgE\fP by WORD); the last non\-blank
+of the line \fIcount\fP\-1 lower; the first non\-blank of the screen row; the
+middle of the window and of the line's own text; and byte \fIN\fP of the
+buffer, counting the line break that ends each line.
+.TP
+.B "g' g\`"
+Jump to a mark without recording a jumplist entry \(em otherwise exactly
+.B '
+and
+.BR \` .
+.TP
+.B "g* g#"
+Search for the word under the cursor forward or backward, \fIwithout\fP the
+whole\-word bounds that
+.B *
+and
+.B #
+add \(em so \fBfoo\fP also finds \fBfoobar\fP.
+.TP
+.B "gn gN"
+Select the next (previous) match of the last search, so an operator acts on
+it:
+.B dgn
+deletes it and
+.B .
+moves on to the one after.
+.TP
+.B g?\fR{motion}\fP
+Rot13 the text a motion covers;
+.B g??
+and
+.B g?g?
+take the line.
+.TP
+.B gI
+Insert at column 1, whatever the indentation.
+.TP
+.B "gp gP"
+Paste as
+.B p
+and
+.BR P ,
+but leave the cursor after what was pasted, so repeated
+.B gp
+stacks.
+.TP
+.B g&
+Run the last
+.B :s
+again over every line, keeping its flags.
+.TP
+.B g8
+Show the UTF\-8 bytes of the character under the cursor, in hex.
+.TP
+.B "gf gF"
+Open the file whose name is under the cursor, relative to the file being
+edited.
+.B gF
+also honours a trailing
+.BI : line \fR.\fP
+.TP
+.B "g; g,"
+Walk the change list backwards and forwards \(em one entry per line changed,
+so a session of scattered edits is retraced without marks.
+.TP
+.B gq\fR{motion}\fP\fR, \fPgw\fR{motion}\fP
+Reflow the lines a motion covers to
+.B wrap_column
+(79 when it is 0). Words are never split and the first line's indent is kept
+on every line produced.
+.B gq
+ends on the last line it made;
+.B gw
+puts the cursor back where it started.
+.TP
+.B gD
+Go to the declaration of the symbol under the cursor (LSP).
+.TP
+.B "g CTRL-G"
+Report the cursor's line, column and byte offset.
 .SH "VISUAL MODE"
 .B v
 character\-wise,

@@ -474,6 +474,11 @@ pub const Client = struct {
         self.sendPositionRequest(self.def_id, "textDocument/implementation", line, col);
     }
 
+    pub fn requestDeclaration(self: *Client, line: usize, col: usize) void {
+        self.def_id = self.nextId();
+        self.sendPositionRequest(self.def_id, "textDocument/declaration", line, col);
+    }
+
     pub fn requestTypeDefinition(self: *Client, line: usize, col: usize) void {
         self.def_id = self.nextId();
         self.sendPositionRequest(self.def_id, "textDocument/typeDefinition", line, col);

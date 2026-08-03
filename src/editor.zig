@@ -130,7 +130,7 @@ const WildItem = struct { text: []u8, show: usize };
 const SbEntry = struct { path: []u8, depth: u8, is_dir: bool, expanded: bool };
 const sidebar_width: usize = 28;
 
-const Operator = enum { none, delete, change, yank, indent_right, indent_left, reindent, comment, surround, fold, upper, lower, toggle_case };
+const Operator = enum { none, delete, change, yank, indent_right, indent_left, reindent, comment, surround, fold, upper, lower, toggle_case, rot13, reflow, reflow_keep };
 
 /// Which way `gu`/`gU`/`g~` and visual `u`/`U`/`~` turn a range.
 const Case = enum { upper, lower, toggle };
@@ -154,6 +154,8 @@ const Await = enum {
     mark_set, // m{a-z}
     mark_jump_back, // `{a-z} exact
     mark_jump_line, // '{a-z} line
+    mark_jump_back_nj, // g`{a-z} — the same, without a jumplist entry
+    mark_jump_line_nj, // g'{a-z}
     register, // "{a-z}
     g_prefix, // g then ...
     visual_g, // g then ... in visual mode (gg, gv, gJ, gu/gU/g~)
@@ -225,6 +227,12 @@ const Doc = struct {
     lang: syntax.Language,
     history: undo.History,
     marks: [26]?Pos = [_]?Pos{null} ** 26,
+    /// Where each change happened, oldest first — vim's change list, walked
+    /// by `g;` and `g,`. Per document, like the marks beside it.
+    changes: std.ArrayList(Pos) = .empty,
+    /// Where the `g;`/`g,` walk currently sits; == changes.len when no walk
+    /// is in progress, so the first `g;` lands on the newest entry.
+    change_idx: usize = 0,
     git_signs: git.Signs,
     lsp: ?lsp.Client = null,
     lsp_rev: u64 = 0,
@@ -353,6 +361,8 @@ pub const Editor = struct {
     /// Whether the session is `gR` rather than `R`: typing covers display
     /// *columns*, so a tab shrinks instead of being destroyed.
     repl_virtual: bool = false,
+    /// The last `:s`, for `g&` to run again over the whole file.
+    last_sub: ?Substitute = null,
     /// What the current Replace-mode session has overwritten, innermost last.
     /// Each entry is the bytes that were there — empty when the typing ran
     /// past the end of the line and appended — so backspace can walk the
@@ -687,6 +697,7 @@ pub const Editor = struct {
         if (doc.ts) |*t| t.deinit();
         doc.ts_styles.deinit(gpa);
         doc.ts_line_starts.deinit(gpa);
+        doc.changes.deinit(gpa);
         if (doc.lsp) |*c| c.deinit();
         if (doc.shell) |*s| s.deinit();
     }
@@ -1872,8 +1883,8 @@ pub const Editor = struct {
                 self.lspHover();
                 self.resetPending();
             },
-            'p' => try self.paste(true),
-            'P' => try self.paste(false),
+            'p' => try self.paste(true, false),
+            'P' => try self.paste(false, false),
             'u' => self.undoChange(),
             // visual / search / command
             'v' => self.enterVisual(.visual),
@@ -1882,8 +1893,8 @@ pub const Editor = struct {
             '?' => self.enterCmd(.search_backward),
             'n' => self.repeatSearch(true),
             'N' => self.repeatSearch(false),
-            '*' => self.searchWord(true),
-            '#' => self.searchWord(false),
+            '*' => self.searchWord(true, true),
+            '#' => self.searchWord(false, true),
             ':' => self.enterCmd(.ex),
             '.' => try self.repeatDot(),
             'Z' => self.await_arg = .z_prefix,
@@ -1939,16 +1950,18 @@ pub const Editor = struct {
                 if (markIndex(k)) |idx| self.marks[idx] = self.cursor();
                 self.resetPending();
             },
-            .mark_jump_back => {
+            // `\``/`'` record a jump; `g\``/`g'` are the same jump with the
+            // jumplist left alone, which is the whole of the difference.
+            .mark_jump_back, .mark_jump_back_nj => {
                 if (markIndex(k)) |idx| if (self.marks[idx]) |p| {
-                    self.addJump();
+                    if (a == .mark_jump_back) self.addJump();
                     self.setCursor(p);
                 };
                 self.resetPending();
             },
-            .mark_jump_line => {
+            .mark_jump_line, .mark_jump_line_nj => {
                 if (markIndex(k)) |idx| if (self.marks[idx]) |p| {
-                    self.addJump();
+                    if (a == .mark_jump_line) self.addJump();
                     self.cy = @min(p.row, self.buf.lineCount() - 1);
                     self.cx = motion.firstNonBlank(self.curLine());
                     self.updateGoal();
@@ -2003,6 +2016,69 @@ pub const Editor = struct {
                 } else if (k == .char and k.char == 'x') {
                     self.openUnderCursor(); // gx: hand it to the system handler
                     self.resetPending();
+                } else if (k == .char and k.char == '?') {
+                    // g?? and g?g? both double it; the second `g` is eaten
+                    // by the prefix, so only the letter reaches here.
+                    if (self.operator == .rot13) self.applyLinewiseOperator() else self.operator = .rot13;
+                } else if (k == .char and k.char == 'q') {
+                    self.operator = .reflow;
+                } else if (k == .char and k.char == 'w') {
+                    self.operator = .reflow_keep;
+                } else if (k == .char and k.char == 'n') {
+                    self.selectMatch(true);
+                } else if (k == .char and k.char == 'N') {
+                    self.selectMatch(false);
+                } else if (k == .char and k.char == 'e') {
+                    self.doMotion(self.repeatEndBackward(false));
+                } else if (k == .char and k.char == 'E') {
+                    self.doMotion(self.repeatEndBackward(true));
+                } else if (k == .char and k.char == '_') {
+                    self.doMotion(self.lastNonBlank(self.eff()));
+                } else if (k == .char and k.char == '^') {
+                    self.doMotion(self.screenFirstNonBlank());
+                } else if (k == .char and k.char == 'm') {
+                    self.doMotion(self.middleOfLine(true));
+                } else if (k == .char and k.char == 'M') {
+                    self.doMotion(self.middleOfLine(false));
+                } else if (k == .char and k.char == 'o') {
+                    self.doMotion(self.byteOffsetPos(self.eff()));
+                } else if (k == .char and k.char == '*') {
+                    self.searchWord(true, false); // like `*`, no word bounds
+                } else if (k == .char and k.char == '#') {
+                    self.searchWord(false, false);
+                } else if (k == .char and k.char == '&') {
+                    self.repeatSubstituteAll();
+                    self.resetPending();
+                } else if (k == .char and k.char == '8') {
+                    self.showByteValue();
+                    self.resetPending();
+                } else if (k == .char and k.char == 'I') {
+                    try self.enterInsert(.{ .row = self.cy, .col = 0 });
+                } else if (k == .char and k.char == 'p') {
+                    try self.paste(true, true); // cursor after the paste
+                    self.resetPending();
+                } else if (k == .char and k.char == 'P') {
+                    try self.paste(false, true);
+                    self.resetPending();
+                } else if (k == .char and k.char == 'f') {
+                    self.openFileUnderCursor(false);
+                    self.resetPending();
+                } else if (k == .char and k.char == 'F') {
+                    self.openFileUnderCursor(true);
+                    self.resetPending();
+                } else if (k == .char and k.char == ';') {
+                    self.changeListStep(true, self.eff());
+                    self.resetPending();
+                } else if (k == .char and k.char == ',') {
+                    self.changeListStep(false, self.eff());
+                    self.resetPending();
+                } else if (k == .char and k.char == 'D') {
+                    self.lspDeclaration();
+                    self.resetPending();
+                } else if (k == .char and (k.char == '\'' or k.char == '`')) {
+                    // `g'`/`g\`` jump to a mark without touching the jumplist,
+                    // which is the only thing that separates them from `'`/`\``.
+                    self.await_arg = if (k.char == '\'') .mark_jump_line_nj else .mark_jump_back_nj;
                 } else if (k == .char and k.char == 'j')
                     self.doMotion(self.screenVertical(false, self.eff()))
                 else if (k == .char and k.char == 'k')
@@ -2011,7 +2087,18 @@ pub const Editor = struct {
                     self.doMotion(self.screenLineEdge(false))
                 else if (k == .char and k.char == '$')
                     self.doMotion(self.screenLineEdge(true))
-                else
+                else if (k == .down)
+                    self.doMotion(self.screenVertical(false, self.eff()))
+                else if (k == .up)
+                    self.doMotion(self.screenVertical(true, self.eff()))
+                else if (k == .home)
+                    self.doMotion(self.screenLineEdge(false))
+                else if (k == .end)
+                    self.doMotion(self.screenLineEdge(true))
+                else if (k == .ctrl and k.ctrl == 'g') {
+                    self.showCursorInfo();
+                    self.resetPending();
+                } else
                     self.resetPending();
             },
             // `g` in visual mode. The selection is still live here, so these
@@ -2362,6 +2449,9 @@ pub const Editor = struct {
             .upper => c == 'U',
             .lower => c == 'u',
             .toggle_case => c == '~',
+            .rot13 => c == '?', // g?? — and g?g? doubles in the prefix
+            .reflow => c == 'q', // gqq
+            .reflow_keep => c == 'w', // gww
             .none => false,
         };
     }
@@ -2846,6 +2936,16 @@ pub const Editor = struct {
         return .{ .pos = .{ .row = @min(row, self.buf.lineCount() - 1), .col = 0 }, .kind = .linewise, .col_mode = .keep_goal };
     }
 
+    /// `ge` / `gE`, counted. Inclusive, like `e` — `dge` takes the character
+    /// it lands on.
+    fn repeatEndBackward(self: *Editor, big: bool) MotionResult {
+        var p = self.cursor();
+        var i: usize = 0;
+        const n = self.eff();
+        while (i < n) : (i += 1) p = motion.wordEndBackward(self.buf, p, big);
+        return .{ .pos = p, .kind = .inclusive, .col_mode = .exact };
+    }
+
     fn repeatWord(self: *Editor, which: WordKind, big: bool) MotionResult {
         var p = self.cursor();
         var prev = p;
@@ -2926,6 +3026,9 @@ pub const Editor = struct {
             .upper => return self.applyCase(span, .upper),
             .lower => return self.applyCase(span, .lower),
             .toggle_case => return self.applyCase(span, .toggle),
+            .rot13 => return self.applyRot13(span),
+            .reflow => return self.reflow(span, false),
+            .reflow_keep => return self.reflow(span, true),
             else => {},
         }
         const text = self.extract(span) catch return;
@@ -3283,7 +3386,7 @@ pub const Editor = struct {
         self.resetPending();
     }
 
-    fn paste(self: *Editor, after: bool) !void {
+    fn paste(self: *Editor, after: bool, cursor_after: bool) !void {
         if (self.rejectReadOnly()) return;
         const reg = self.registers.get(self.pending_register) orelse {
             self.resetPending();
@@ -3304,7 +3407,9 @@ pub const Editor = struct {
                     at += 1;
                 }
             }
-            self.cy = @min(first, self.buf.lineCount() - 1);
+            // `p` lands on the first pasted line; `gp` on the line after
+            // the last, which is what makes repeated `gp` stack pastes.
+            self.cy = @min(if (cursor_after) at else first, self.buf.lineCount() - 1);
             self.cx = motion.firstNonBlank(self.curLine());
             self.goal_col = 0;
         } else {
@@ -3315,8 +3420,14 @@ pub const Editor = struct {
             while (rep < n) : (rep += 1) {
                 insert_col = self.spliceCharwise(reg.text, insert_col);
             }
-            // Cursor on the last pasted character.
-            if (insert_col > col) self.cx = unicode.prevBoundary(self.curLine(), insert_col) else self.cx = col;
+            // `p` leaves the cursor on the last pasted character, `gp` one
+            // past it.
+            if (cursor_after)
+                self.cx = @min(insert_col, self.curLine().len)
+            else if (insert_col > col)
+                self.cx = unicode.prevBoundary(self.curLine(), insert_col)
+            else
+                self.cx = col;
             self.updateGoal();
         }
         self.resetPending();
@@ -4364,6 +4475,70 @@ pub const Editor = struct {
         self.setCursor(.{ .row = @min(start.row, self.buf.lineCount() - 1), .col = start.col });
     }
 
+    /// `g?{motion}` — rot13. A cipher nobody needs and vim has anyway; it
+    /// costs one span walk beside the case operators it sits with.
+    fn applyRot13(self: *Editor, span: Span) void {
+        self.pushUndo();
+        const start: Pos = if (span.lines) .{ .row = span.top, .col = 0 } else span.start;
+        const end: Pos = if (span.lines) .{ .row = span.bot, .col = 0 } else span.end;
+        const last = self.buf.lineCount() - 1;
+        var row = start.row;
+        while (row <= @min(end.row, last)) : (row += 1) {
+            const line = self.buf.line(row);
+            var lo: usize = 0;
+            var hi: usize = line.len;
+            if (!span.lines) {
+                if (row == start.row) lo = @min(start.col, line.len);
+                if (row == end.row) hi = @min(end.col, line.len);
+            }
+            if (lo >= hi) continue;
+            const mut = self.buf.lineMut(row) catch return;
+            for (mut[lo..hi]) |*ch| {
+                const base: u8 = if (ch.* >= 'a' and ch.* <= 'z') 'a' else if (ch.* >= 'A' and ch.* <= 'Z') 'A' else continue;
+                ch.* = base + (ch.* - base + 13) % 26;
+            }
+        }
+        self.buf.dirty = true;
+        self.buf.revision +%= 1;
+        self.setCursor(.{ .row = @min(start.row, self.buf.lineCount() - 1), .col = start.col });
+    }
+
+    /// `gn` / `gN` — select the next (previous) match of the last search, so
+    /// an operator acts on it: `dgn` deletes it, and `.` repeats that on the
+    /// one after. With no operator pending it leaves a visual selection.
+    fn selectMatch(self: *Editor, forward: bool) void {
+        if (self.last_search.items.len == 0) return self.resetPending();
+        var re = regex.Regex.compile(self.gpa, self.last_search.items, false) catch return self.resetPending();
+        defer re.deinit(self.gpa);
+        // `gn` takes the match the cursor is *inside* before looking on.
+        const from: Pos = if (forward and self.cx > 0)
+            .{ .row = self.cy, .col = self.cx - 1 }
+        else
+            self.cursor();
+        const hit = (if (forward) search.next(self.buf, from, &re) else search.prev(self.buf, self.cursor(), &re)) orelse
+            return self.resetPending();
+        const line = self.buf.line(hit.row);
+        const m = re.find(line, hit.col) orelse return self.resetPending();
+        const ms = m.span;
+        const op = self.operator;
+        self.operator = .none;
+        const span: Span = .{
+            .lines = false,
+            .start = .{ .row = hit.row, .col = ms.start },
+            .end = .{ .row = hit.row, .col = ms.end },
+        };
+        if (op != .none) {
+            self.setCursor(span.start);
+            self.applyOperator(op, span);
+            self.resetPending();
+            return;
+        }
+        // No operator: leave it selected, as vim does.
+        self.setCursor(span.start);
+        self.enterVisual(.visual);
+        self.setCursor(.{ .row = hit.row, .col = unicode.prevBoundary(line, ms.end) });
+    }
+
     fn visualCase(self: *Editor, how: Case) !void {
         if (self.rejectReadOnly()) return;
         self.pushUndo();
@@ -5038,7 +5213,7 @@ pub const Editor = struct {
 
     /// `*` / `#`: search for the word under the cursor, with vim's whole-word
     /// boundaries (the pattern becomes `\<word\>`, metacharacters escaped).
-    fn searchWord(self: *Editor, forward: bool) void {
+    fn searchWord(self: *Editor, forward: bool, bounded: bool) void {
         const word = search.wordUnder(self.buf, self.cursor());
         if (word.len == 0) {
             self.resetPending();
@@ -5046,16 +5221,249 @@ pub const Editor = struct {
         }
         var pat: std.ArrayList(u8) = .empty;
         defer pat.deinit(self.gpa);
-        pat.appendSlice(self.gpa, "\\<") catch return;
+        if (bounded) pat.appendSlice(self.gpa, "\\<") catch return;
         for (word) |ch| {
             if (std.mem.indexOfScalar(u8, ".\\*+?()[]|^$/<>{}", ch) != null)
                 pat.append(self.gpa, '\\') catch return;
             pat.append(self.gpa, ch) catch return;
         }
-        pat.appendSlice(self.gpa, "\\>") catch return;
+        if (bounded) pat.appendSlice(self.gpa, "\\>") catch return;
         self.addJump();
         self.runSearch(pat.items, forward);
         self.resetPending();
+    }
+
+    // === the rest of the `g` namespace =====================================
+
+    /// `g_`: the last non-blank of the line `count - 1` lower. An all-blank
+    /// line has none, and the cursor goes to column 0 (nvim-probed).
+    fn lastNonBlank(self: *Editor, n: usize) MotionResult {
+        const row = @min(self.cy + n - 1, self.buf.lineCount() - 1);
+        const line = self.buf.line(row);
+        var col: usize = 0;
+        var i: usize = 0;
+        while (i < line.len) : (i = unicode.nextBoundary(line, i)) {
+            if (line[i] != ' ' and line[i] != '\t') col = i;
+        }
+        return .{ .pos = .{ .row = row, .col = col }, .kind = .inclusive, .col_mode = .exact };
+    }
+
+    /// `g^`: the first non-blank of the *screen* row, so a wrapped line has
+    /// one per row rather than only at its real start.
+    fn screenFirstNonBlank(self: *Editor) MotionResult {
+        const left = self.screenLineEdge(false).pos;
+        const line = self.buf.line(left.row);
+        var i = left.col;
+        const stop = self.screenLineEdge(true).pos.col;
+        while (i < line.len and i <= stop and (line[i] == ' ' or line[i] == '\t'))
+            i = unicode.nextBoundary(line, i);
+        return .{ .pos = .{ .row = left.row, .col = @min(i, line.len) }, .kind = .exclusive, .col_mode = .exact };
+    }
+
+    /// `gm`: the character halfway across the *window*, clamped to the line.
+    /// `gM`: halfway along the line's own text.
+    fn middleOfLine(self: *Editor, screen: bool) MotionResult {
+        const line = self.curLine();
+        const target = if (screen) self.textCols() / 2 else displayCol(line, line.len) / 2;
+        return .{
+            .pos = .{ .row = self.cy, .col = byteAtDisplayCol(line, target) },
+            .kind = .exclusive,
+            .col_mode = .exact,
+        };
+    }
+
+    /// `go`: the position of byte `n` (1-based) counting the newline that ends
+    /// each line, as vim does.
+    fn byteOffsetPos(self: *Editor, n: usize) MotionResult {
+        var left = n -| 1;
+        var row: usize = 0;
+        while (row < self.buf.lineCount()) : (row += 1) {
+            const len = self.buf.line(row).len;
+            if (left <= len) return .{
+                .pos = .{ .row = row, .col = left },
+                .kind = .exclusive,
+                .col_mode = .exact,
+            };
+            left -= len + 1; // the line break is a byte too
+        }
+        const last = self.buf.lineCount() - 1;
+        return .{ .pos = .{ .row = last, .col = self.buf.line(last).len }, .kind = .exclusive, .col_mode = .exact };
+    }
+
+    /// `g8`: the UTF-8 bytes of the character under the cursor, in hex — vim's
+    /// answer to "what exactly is this character".
+    fn showByteValue(self: *Editor) void {
+        const line = self.curLine();
+        if (self.cx >= line.len) return self.setStatus("empty line", .{});
+        const d = unicode.decode(line[self.cx..]);
+        var buf: [64]u8 = undefined;
+        var w: usize = 0;
+        for (line[self.cx .. self.cx + d.len]) |b| {
+            w += (std.fmt.bufPrint(buf[w..], "{x:0>2} ", .{b}) catch break).len;
+        }
+        self.setStatus("<{u}> {d}, hex {s}", .{ d.cp, d.cp, std.mem.trimEnd(u8, buf[0..w], " ") });
+    }
+
+    /// `g Ctrl-G`: where the cursor is, in every unit vim counts.
+    fn showCursorInfo(self: *Editor) void {
+        var bytes: usize = 0;
+        var row: usize = 0;
+        while (row < self.cy) : (row += 1) bytes += self.buf.line(row).len + 1;
+        self.setStatus("line {d} of {d}; col {d}; byte {d}", .{
+            self.cy + 1,
+            self.buf.lineCount(),
+            self.cx + 1,
+            bytes + self.cx + 1,
+        });
+    }
+
+    /// `gf` / `gF`: open the file named under the cursor. The name comes from
+    /// the same reader `gx` uses, so a quoted path or a markdown link yields
+    /// the path alone. `gF` additionally honours a trailing `:line`.
+    fn openFileUnderCursor(self: *Editor, with_line: bool) void {
+        const target = motion.targetUnderCursor(self.curLine(), self.cx) orelse
+            return self.setStatus("no file name under the cursor", .{});
+        var name = target;
+        var row: usize = 0;
+        if (with_line) {
+            if (std.mem.lastIndexOfScalar(u8, target, ':')) |at| {
+                if (std.fmt.parseInt(usize, target[at + 1 ..], 10) catch null) |n| {
+                    name = target[0..at];
+                    row = n -| 1;
+                }
+            }
+        }
+        // A relative name is relative to the file being edited, as in vim.
+        var buf: [1024]u8 = undefined;
+        var full = name;
+        if (name.len > 0 and name[0] != '/' and !remote.isRemote(name)) {
+            if (self.buf.path) |p| {
+                if (std.fs.path.dirname(p)) |dir| {
+                    full = std.fmt.bufPrint(&buf, "{s}/{s}", .{ dir, name }) catch name;
+                }
+            }
+        }
+        self.openFile(full, row);
+    }
+
+    /// `g;` / `g,` — the change list. Every change records where it happened;
+    /// these walk that record backwards and forwards, which is how a session
+    /// of edits scattered through a file is retraced without marks.
+    fn changeListStep(self: *Editor, back: bool, n: usize) void {
+        const list = self.d.changes.items;
+        if (list.len == 0) return self.setStatus("change list is empty", .{});
+        var i: isize = @intCast(self.d.change_idx);
+        var k = n;
+        while (k > 0) : (k -= 1) {
+            const next = if (back) i - 1 else i + 1;
+            if (next < 0 or next >= @as(isize, @intCast(list.len))) break;
+            i = next;
+        }
+        self.d.change_idx = @intCast(@max(0, i));
+        const p = list[self.d.change_idx];
+        self.cy = @min(p.row, self.buf.lineCount() - 1);
+        self.cx = @min(p.col, self.curLine().len);
+        self.updateGoal();
+    }
+
+    /// Record where a change happened, for `g;`. Same-line changes replace the
+    /// previous entry rather than filling the list with one stop per keystroke
+    /// (vim's rule), and the list is capped like the jumplist.
+    fn noteChange(self: *Editor) void {
+        const p = self.cursor();
+        const list = &self.d.changes;
+        if (list.items.len > 0 and list.items[list.items.len - 1].row == p.row) {
+            list.items[list.items.len - 1] = p;
+        } else {
+            if (list.items.len >= 100) _ = list.orderedRemove(0);
+            list.append(self.gpa, p) catch return;
+        }
+        self.d.change_idx = list.items.len; // a fresh change resets the walk
+    }
+
+    /// `gq{motion}` / `gw{motion}`: reflow the lines a motion covers to
+    /// `wrap_column` (79 when it is 0, vim's own fallback for `textwidth=0`).
+    /// Words are never split; the paragraph's leading indent is kept on every
+    /// line it produces. `gw` puts the cursor back where it started, which is
+    /// the only difference between the two.
+    fn reflow(self: *Editor, span: Span, keep_cursor: bool) void {
+        const at = self.cursor();
+        const width = if (config.settings.wrap_column > 0) config.settings.wrap_column else 79;
+        const top = span.top;
+        const bot = @min(span.bot, self.buf.lineCount() - 1);
+        if (top > bot) return;
+
+        // Gather the words, and the indent the first line carries.
+        var words: std.ArrayList([]u8) = .empty;
+        defer {
+            for (words.items) |w| self.gpa.free(w);
+            words.deinit(self.gpa);
+        }
+        const first = self.buf.line(top);
+        const lead = self.gpa.dupe(u8, first[0..motion.firstNonBlank(first)]) catch return;
+        defer self.gpa.free(lead);
+        var row = top;
+        while (row <= bot) : (row += 1) {
+            var it = std.mem.tokenizeAny(u8, self.buf.line(row), " \t");
+            while (it.next()) |w| {
+                const owned = self.gpa.dupe(u8, w) catch return;
+                words.append(self.gpa, owned) catch {
+                    self.gpa.free(owned);
+                    return;
+                };
+            }
+        }
+        if (words.items.len == 0) return;
+
+        var out: std.ArrayList([]u8) = .empty;
+        defer {
+            for (out.items) |l| self.gpa.free(l);
+            out.deinit(self.gpa);
+        }
+        var cur: std.ArrayList(u8) = .empty;
+        defer cur.deinit(self.gpa);
+        cur.appendSlice(self.gpa, lead) catch return;
+        var empty = true;
+        for (words.items) |w| {
+            // `> width` rather than `>=`: vim fills up to and including the
+            // column, breaking only once a word would pass it.
+            if (!empty and cur.items.len + 1 + w.len > width) {
+                out.append(self.gpa, cur.toOwnedSlice(self.gpa) catch return) catch return;
+                cur.appendSlice(self.gpa, lead) catch return;
+                empty = true;
+            }
+            if (!empty) cur.append(self.gpa, ' ') catch return;
+            cur.appendSlice(self.gpa, w) catch return;
+            empty = false;
+        }
+        out.append(self.gpa, cur.toOwnedSlice(self.gpa) catch return) catch return;
+
+        self.pushUndo();
+        var r = bot;
+        while (r > top) : (r -= 1) self.buf.removeLineAt(r);
+        self.buf.setLine(top, out.items[0]) catch return;
+        var k: usize = 1;
+        while (k < out.items.len) : (k += 1) self.buf.insertLineAt(top + k, out.items[k]) catch return;
+        self.buf.dirty = true;
+
+        if (keep_cursor) {
+            self.cy = @min(at.row, self.buf.lineCount() - 1);
+            self.cx = @min(at.col, self.curLine().len);
+        } else {
+            self.cy = @min(top + out.items.len - 1, self.buf.lineCount() - 1);
+            self.cx = 0;
+        }
+        self.updateGoal();
+    }
+
+    /// `g&`: run the last `:s` again over the whole file, keeping its flags.
+    fn repeatSubstituteAll(self: *Editor) void {
+        const sub = self.last_sub orelse return self.setStatus("no previous substitute", .{});
+        self.doSubstitute(.{
+            .lo = .{ .base = .{ .line = 1 } },
+            .hi = .{ .base = .last },
+            .count = 2,
+        }, sub);
     }
 
     // === picker (file finder / global search) ==============================
@@ -7563,6 +7971,7 @@ pub const Editor = struct {
 
         const lr = self.resolveRange(range, false) orelse
             return self.setStatus("invalid range", .{});
+        self.last_sub = sub; // `g&` runs this again over the whole file
         const lo = lr.lo;
         const hi = lr.hi;
 
@@ -7805,6 +8214,7 @@ pub const Editor = struct {
     // === undo / macros / dot ===============================================
 
     fn pushUndo(self: *Editor) void {
+        self.noteChange();
         self.history.record(self.buf, self.cy, self.cx);
         self.change_started = true;
         // Every insert session starts with one of these, so a block `A`'s
@@ -8118,6 +8528,12 @@ pub const Editor = struct {
 
     fn lspHover(self: *Editor) void {
         if (self.lsp) |*c| c.requestHover(self.cy, self.charCol());
+    }
+
+    /// `gD` — the symbol's *declaration*, which AstroNvim also puts here.
+    fn lspDeclaration(self: *Editor) void {
+        const client = if (self.lsp) |*c| c else return self.setStatus("no language server", .{});
+        client.requestDeclaration(self.cy, self.charCol());
     }
 
     fn lspDefinition(self: *Editor) void {

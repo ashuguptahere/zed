@@ -164,7 +164,14 @@ there is nothing to change there.
 - [ ] More nvim ground-truth tranches: operator-pending `gj`/`gk` under soft
       wrap (they agree with wrap off, so the gap is only the wrapped case).
 
-## Done (chronological)
+- [x] The `g` namespace, 20 keys to 49 of nvim's ~50: the motions
+      (`ge gE g_ g^ gm gM go g' g\``), search (`g* g# gn gN`), edits
+      (`g? gI gp gP g&`), the change list (`g; g,`), reflow (`gq gw`),
+      `gf`/`gF`, `g8`, `g Ctrl-G` and `gD`. What is left needs a subsystem
+      zedit does not have (tab pages, Select mode, Ex mode, tags, scripting,
+      a message history) — except `gs`, which sleeps the editor and is left
+      out on principle. Four keep their AstroNvim meaning: `ga gi gr gd`.
+      (0.53.0)
 
 - [x] `gR` virtual replace: a keystroke covers display columns, so a tab
       shrinks under typing rather than dying on the first keystroke. Written

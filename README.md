@@ -44,7 +44,11 @@
   - Marks `m` `` ` `` `'` and macros `q…q` / `@`
   - `zz` / `zt` / `zb` put the cursor's line at the centre, top or bottom of
     the window without moving the cursor
-  - `gx` hands the URL or path under the cursor to the desktop's own handler
+  - `gx` hands the URL or path under the cursor to the desktop's own handler,
+    `gf` opens the file named there
+  - Nearly all of vim's `g` namespace: `ge`/`gE`, `g_`, `g^`, `gm`/`gM`, `go`,
+    `g'`/`` g` ``, `g*`/`g#`, `gn`/`gN`, `g?` rot13, `gI`, `gp`/`gP`, `g&`,
+    `g8`, `g;`/`g,` (the change list), `gq`/`gw` (reflow to `wrap_column`)
   - Jumplist: `Ctrl-o` / `Ctrl-i` walk back and forward through jumps
     (searches, `G`, marks, `gd`, buffer switches — cross-buffer)
   - Text objects incl. paragraphs (`ip`/`ap`, `{`/`}`), also in visual mode

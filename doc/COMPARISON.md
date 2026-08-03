@@ -67,8 +67,10 @@ Read off the dispatch switches, not the docs:
 - **Immediate edits** `x X D C Y s S r ~ J gJ p P u`.
 - **Insert entries** `i I a A o O` (+ `c`/`s`).
 - **Prefixes** `g` `z` `Z` `[` `]` `"` `m` `` ` `` `'` `q` `@` `Ctrl-w`.
-- **`g` namespace (20):** `gg gc gd gr gi gy ga g- g+ gj gk g0 g$` plus
-  `gu gU g~ gJ gv gx` (0.48.0) and `gR` (0.52.0).
+- **`g` namespace (49):** `gg gc gd gr gi gy ga g- g+ gj gk g0 g$`, plus
+  `gu gU g~ gJ gv gx` (0.48.0), `gR` (0.52.0), and `ge gE g_ g^ gm gM go g'
+  g` g* g# gn gN g? gI gp gP g& g8 gf gF g; g, gD gq gw` with the
+  `g<Down>/<Up>/<Home>/<End>` aliases and `g Ctrl-G` (0.53.0).
 - **`z` namespace (11):** `zf zo zc za zR zM zd zE` plus `zz zt zb`
   (0.48.0). Plus `ZZ`/`ZQ`.
 - **Brackets (7 pairs):** `]d [d`, `]b [b`, `]f [f`, `]q [q` plus
@@ -84,7 +86,7 @@ Counted against `index.txt`'s 473 normal-mode entries:
 
 | Namespace | nvim | zedit | Missing that a user would actually reach for |
 |---|---:|---:|---|
-| `g…` | ~50 | 20 | `gf`/`gF` edit file under cursor, `g;`/`g,` changelist, `gq`/`gw` reflow, `gn`/`gN` select next match, `ge`/`gE` back to word end, `gI` insert col 1, `g*`/`g#` unbounded search, `go` byte offset, `gt`/`gT` tab pages, `g&` repeat `:s` everywhere, `g_`, `gm`/`gM` |
+| `g…` | ~50 | 49 | `gt`/`gT`/`g<Tab>` (tab pages), `gh`/`gH`/`gV` (Select mode), `gQ` (Ex mode), `g@` (`'operatorfunc'`, i.e. scripting), `g]` (tags), `g<` (message history), `gs` (sleeps the editor — left out on principle). Four keep zedit's AstroNvim meaning over vim's: `ga`, `gi`, `gr`, `gd` |
 | `z…` | ~44 | 11 | `z.`/`z<CR>`/`z-`, `zj`/`zk` move between folds, `zA`/`zC`/`zO`/`zD` recursive fold ops, `zm`/`zr`/`zi`, `z=`/`zg`/`zw` spell, `zh`/`zl`/`zH`/`zL` horizontal scroll, `zp`/`zP` block paste |
 | `[…` / `]…` | 15 pairs | 7 pairs | `[ `/`] ` add blank line, `[D`/`]D` first/last diagnostic, `[l`/`]l` location list, `[a`/`]a` arglist, `[t`/`]t` tags, `[%`/`]%` matchit |
 

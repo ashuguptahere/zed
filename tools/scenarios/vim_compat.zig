@@ -695,6 +695,71 @@ fn dotAndMacros(ctx: *h.Ctx) void {
     h.case(ctx, target, "nvim#gv9 gv twice still reaches the first", &.{ "vll", ESC, "gv", ESC, "gvd", ":wq", CR }, "abcdef\n", "def\n");
     h.case(ctx, target, "nvim#gv10 gv with nothing selected yet does nothing", &.{ "gvd", ":wq", CR }, "abc\n", "abc\n");
 
+    // === the rest of the g namespace ======================================
+    const W = "one two three four\nalpha bravo charlie\n";
+    const S = "foo foobar\nbar foo\nfoobar baz\n";
+
+    // ge / gE: back to the end of the previous word.
+    h.case(ctx, target, "nvim#gn1 ge", &.{ "wwgex", ":wq", CR }, W, "one tw three four\nalpha bravo charlie\n");
+    h.case(ctx, target, "nvim#gn2 2ge", &.{ "www2gex", ":wq", CR }, W, "one tw three four\nalpha bravo charlie\n");
+    h.case(ctx, target, "nvim#gn3 ge crosses lines", &.{ "jgex", ":wq", CR }, W, "one two three fou\nalpha bravo charlie\n");
+    h.case(ctx, target, "nvim#gn4 ge stops at punctuation", &.{ "wwgex", ":wq", CR }, "a.b ccc\n", "ab ccc\n");
+    h.case(ctx, target, "nvim#gn5 gE does not", &.{ "wwgEx", ":wq", CR }, "a.b ccc\n", ".b ccc\n");
+
+    // g_ / g^ / gm / gM / go
+    h.case(ctx, target, "nvim#gn6 g_ last non-blank", &.{ "g_x", ":wq", CR }, "ab   \ncd  \n", "a   \ncd  \n");
+    h.case(ctx, target, "nvim#gn7 2g_ a line lower", &.{ "2g_x", ":wq", CR }, "ab   \ncd  \n", "ab   \nc  \n");
+    h.case(ctx, target, "nvim#gn8 g_ on a blank line", &.{ "g_x", ":wq", CR }, "   \nxy\n", "  \nxy\n");
+    h.case(ctx, target, "nvim#gn9 g^ first non-blank", &.{ "$g^x", ":wq", CR }, "    indented\n", "    ndented\n");
+    h.case(ctx, target, "nvim#gn10 gM middle of the line", &.{ "gMx", ":wq", CR }, "0123456789\n", "012346789\n");
+    h.case(ctx, target, "nvim#gn11 go is byte 1", &.{ "gox", ":wq", CR }, "abcdef\n", "bcdef\n");
+    h.case(ctx, target, "nvim#gn12 5go", &.{ "5gox", ":wq", CR }, "abcdef\n", "abcdf\n");
+    h.case(ctx, target, "nvim#gn13 go counts the line break", &.{ "4gox", ":wq", CR }, "ab\ncd\n", "ab\nd\n");
+
+    // g` / g' — the mark jump without a jumplist entry.
+    h.case(ctx, target, "nvim#gn14 g` jumps to the mark", &.{ "llma", "gg", "g`ax", ":wq", CR }, W, "on two three four\nalpha bravo charlie\n");
+    h.case(ctx, target, "nvim#gn15 g' is linewise", &.{ "jjma", "gg", "g'ax", ":wq", CR }, W, "one two three four\nlpha bravo charlie\n");
+
+    // g* / g# — search without the word bounds `*` adds.
+    h.case(ctx, target, "nvim#gn16 g* matches inside a word", &.{ "g*x", ":wq", CR }, S, "foo oobar\nbar foo\nfoobar baz\n");
+    h.case(ctx, target, "nvim#gn17 * needs a whole word", &.{ "*x", ":wq", CR }, S, "foo foobar\nbar oo\nfoobar baz\n");
+    h.case(ctx, target, "nvim#gn18 g# searches back", &.{ "jjg#x", ":wq", CR }, S, "foo oobar\nbar foo\nfoobar baz\n");
+
+    // gn / gN — operate on the next (previous) match.
+    h.case(ctx, target, "nvim#gn19 dgn deletes the next match", &.{ "/bar", CR, "ggdgnx", ":wq", CR }, S, "foo fo\nbar foo\nfoobar baz\n");
+    h.case(ctx, target, "nvim#gn20 cgn changes it", &.{ "/foo", CR, "ggcgnZ", ESC, ":wq", CR }, S, "foo Zbar\nbar foo\nfoobar baz\n");
+    h.case(ctx, target, "nvim#gn21 . repeats dgn onto the next", &.{ "/foo", CR, "ggdgn.", ":wq", CR }, S, "foo bar\nbar \nfoobar baz\n");
+    h.case(ctx, target, "nvim#gn22 dgN takes the one before", &.{ "/bar", CR, "GdgN", ":wq", CR }, S, "foo foobar\nbar foo\nfoo baz\n");
+
+    // g? rot13
+    h.case(ctx, target, "nvim#gn23 g?iw", &.{ "g?iw", ":wq", CR }, "Hello world\n", "Uryyb world\n");
+    h.case(ctx, target, "nvim#gn24 g??", &.{ "g??", ":wq", CR }, "Hello world\n", "Uryyb jbeyq\n");
+    h.case(ctx, target, "nvim#gn25 g?g? is the same", &.{ "g?g?", ":wq", CR }, "abc XYZ\n", "nop KLM\n");
+    h.case(ctx, target, "nvim#gn26 g?$ from mid-line", &.{ "llg?$", ":wq", CR }, "abcdef\n", "abpqrs\n");
+    h.case(ctx, target, "nvim#gn27 2g?? two lines", &.{ "2g??", ":wq", CR }, "abc\ndef\nghi\n", "nop\nqrs\nghi\n");
+
+    // gI, gp, gP
+    h.case(ctx, target, "nvim#gn28 gI inserts at column 1", &.{ "gIX", ESC, ":wq", CR }, "    abc\n", "X    abc\n");
+    h.case(ctx, target, "nvim#gn29 I goes to the first non-blank", &.{ "IX", ESC, ":wq", CR }, "    abc\n", "    Xabc\n");
+    h.case(ctx, target, "nvim#gn30 3gI", &.{ "3gIX", ESC, ":wq", CR }, "abc\n", "XXXabc\n");
+    h.case(ctx, target, "nvim#gn31 gp leaves the cursor after", &.{ "yygpx", ":wq", CR }, "aa\nbb\n", "aa\naa\nb\n");
+    h.case(ctx, target, "nvim#gn32 p leaves it on the paste", &.{ "yypx", ":wq", CR }, "aa\nbb\n", "aa\na\nbb\n");
+    h.case(ctx, target, "nvim#gn33 gP pastes above, cursor after", &.{ "yygPx", ":wq", CR }, "aa\nbb\n", "aa\na\nbb\n");
+    h.case(ctx, target, "nvim#gn34 charwise gp", &.{ "ylgpx", ":wq", CR }, "ab cd\n", "aa cd\n");
+
+    // g& — the last :s again, over every line.
+    h.case(ctx, target, "nvim#gn35 g& repeats :s everywhere", &.{ ":s/a/X/", CR, "g&", ":wq", CR }, "aa\naa\naa\n", "XX\nXa\nXa\n");
+    h.case(ctx, target, "nvim#gn36 g& keeps the flags", &.{ ":s/a/X/g", CR, "g&", ":wq", CR }, "aa\naa\naa\n", "XX\nXX\nXX\n");
+
+    // g; / g, — the change list.
+    const L = "aaa\nbbb\nccc\nddd\neee\n";
+    h.case(ctx, target, "nvim#gn37 g; to the newest change", &.{ "xjjxjjx", "gg", "g;iZ", ESC, ":wq", CR }, L, "aa\nbbb\ncc\nddd\nZee\n");
+    h.case(ctx, target, "nvim#gn38 g;g; one further back", &.{ "xjjxjjx", "gg", "g;g;iZ", ESC, ":wq", CR }, L, "aa\nbbb\nZcc\nddd\nee\n");
+    h.case(ctx, target, "nvim#gn39 g; three times", &.{ "xjjxjjx", "gg", "g;g;g;iZ", ESC, ":wq", CR }, L, "Zaa\nbbb\ncc\nddd\nee\n");
+    h.case(ctx, target, "nvim#gn40 g, walks back forward", &.{ "xjjxjjx", "gg", "g;g;g;g,iZ", ESC, ":wq", CR }, L, "aa\nbbb\nZcc\nddd\nee\n");
+    h.case(ctx, target, "nvim#gn41 2g; takes a count", &.{ "xjjxjjx", "gg", "2g;iZ", ESC, ":wq", CR }, L, "aa\nbbb\nZcc\nddd\nee\n");
+    h.case(ctx, target, "nvim#gn42 g; with no changes stays put", &.{ "gg", "g;iZ", ESC, ":wq", CR }, L, "Zaaa\nbbb\nccc\nddd\neee\n");
+
     // === gR: virtual replace ==============================================
     // `gR` covers display *columns* rather than characters, so a tab shrinks
     // as text is typed over it and only disappears once every column it drew
