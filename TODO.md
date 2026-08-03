@@ -60,6 +60,30 @@ behind the roadmap items.
        characterization test: it records existing behaviour and passes
        either way, deliberately.
 
+5. [ ] **Session polish.** Save/restore landed in 0.30.0 (files, cursors,
+       splits, tree open/closed). Not covered yet: the tree's *expanded*
+       directories, per-buffer cursors for files no pane shows (the editor
+       keeps a cursor per window, not per buffer — that model would have to
+       change first), named sessions beyond the one per directory, and the
+       jumplist/marks.
+6. [ ] **Terminal polish.** The shell landed in 0.31.0, scrollback in
+       0.36.0, several terminals on their own tab row in 0.40.0, and the
+       device-control/device-attribute replies a shell waits on in 0.41.0
+       (fish was printing the XTGETTCAP payload and stalling ten seconds on
+       an unanswered DA query). Not there yet: the alternate screen (a
+       full-screen program draws over the shell's output instead of restoring
+       it on exit), mouse and bracketed-paste forwarding, and
+       `TERM=xterm-256color` — which needs those first. The `hung_up` guard
+       in `term.zig` is for the platforms whose pty reports EOF before the
+       child is reapable; on Linux `waitpid` wins that race, so CI never
+       exercises it.
+
+7. [ ] **Debugger polish.** The core loop landed in 0.32.0 (breakpoints,
+       launch, stop, step, jump-to-stop). Not there yet: variables and scopes,
+       watches, REPL evaluation, conditional and function breakpoints, attach,
+       multiple threads (a `stopped` event names one and steps go to it), and
+       a launch-configuration format. No package management (agreed).
+
 8. [ ] **VS Code / Zed / Focus candidates — awaiting the owner's verdict.**
        Added to `doc/COMPARISON.md` Part 3 in 0.47.5. **Nothing here is
        agreed work yet**: none of the three editors is installed on this
