@@ -20,6 +20,7 @@ const log = @import("log.zig");
 const motion = @import("motion.zig");
 const register = @import("register.zig");
 const undo = @import("undo.zig");
+const exrange = @import("exrange.zig");
 const search = @import("search.zig");
 const theme = @import("theme.zig");
 const syntax = @import("syntax.zig");
@@ -377,6 +378,10 @@ pub const Editor = struct {
     // Only ever set while a visual mode is active (`enterVisual` clears it),
     // and whatever ends the selection lands back in insert.
     ins_visual: bool = false,
+
+    /// How deep `execLine` is nested. `:g` runs its sub-command through the
+    /// same dispatch, so `:g/x/g/y/d` has to stop somewhere.
+    ex_depth: usize = 0,
 
     /// The selection `gv` puts back — whatever was last selected, recorded as
     /// visual mode is left. Null until there has been one, which is why `gv`
@@ -1090,7 +1095,7 @@ pub const Editor = struct {
     /// Replay decoded keys (macros, dot-repeat) without re-recording them.
     /// The explicit error set breaks the inferred-error-set recursion cycle
     /// (replayBytes -> feedKey -> handleKey -> ... -> replayBytes).
-    fn replayBytes(self: *Editor, bytes: []const u8) error{OutOfMemory}!void {
+    fn replayBytes(self: *Editor, bytes: []const u8) anyerror!void {
         if (self.replay_depth > 64) return; // runaway-recursion guard
         self.replay_depth += 1;
         defer self.replay_depth -= 1;
@@ -6934,30 +6939,41 @@ pub const Editor = struct {
     fn execEx(self: *Editor) !void {
         const raw = std.mem.trim(u8, self.cmd.items, " ");
         if (raw.len == 0) return;
+        try self.execLine(raw);
+    }
 
-        // :[range]s/pat/rep/[flags] — try substitution first, since its range
-        // can start with digits that would otherwise read as :<number>.
-        if (parseSubstitute(raw)) |sub| return self.doSubstitute(sub);
+    /// One ex command, from the command line or from `:g`'s second pass.
+    fn execLine(self: *Editor, line: []const u8) anyerror!void {
+        const raw = std.mem.trim(u8, line, " ");
+        if (raw.len == 0) return;
+        // `:g/x/g/y/d` would otherwise recurse without end.
+        if (self.ex_depth > 8) return self.setStatus("commands nested too deeply", .{});
+        self.ex_depth += 1;
+        defer self.ex_depth -= 1;
 
-        // :<number> jumps to a line.
-        if (raw[0] >= '0' and raw[0] <= '9') {
-            const ln = std.fmt.parseInt(usize, raw, 10) catch return;
+        // Split the leading range off first, so every command below sees only
+        // its own text. `:5`, `:$` and `:%s/…` all come through here, which is
+        // why there is no longer a special case for any of them.
+        const parsed = exrange.parse(raw);
+        const rest = parsed.rest;
+
+        // A range with no command moves to its last line: `:5`, `:$`, `:1,5`.
+        if (rest.len == 0) {
+            if (parsed.range.count == 0) return;
+            const lr = self.resolveRange(parsed.range, false) orelse
+                return self.setStatus("invalid range", .{});
             self.addJump();
-            self.cy = if (ln == 0) 0 else @min(ln - 1, self.buf.lineCount() - 1);
+            self.cy = lr.hi;
             self.cx = motion.firstNonBlank(self.curLine());
             self.updateGoal();
             return;
         }
-        if (eql(raw, "$")) {
-            self.addJump();
-            self.cy = self.buf.lineCount() - 1;
-            self.cx = motion.firstNonBlank(self.curLine());
-            return;
-        }
 
-        var it = std.mem.tokenizeScalar(u8, raw, ' ');
+        if (try self.execRanged(parsed.range, rest)) return;
+
+        var it = std.mem.tokenizeScalar(u8, rest, ' ');
         const cmd = it.next() orelse return;
-        const arg = std.mem.trim(u8, raw[cmd.len..], " ");
+        const arg = std.mem.trim(u8, rest[cmd.len..], " ");
 
         if (eql(cmd, "w") or eql(cmd, "write")) {
             _ = try self.write(arg);
@@ -7059,39 +7075,291 @@ pub const Editor = struct {
         }
     }
 
+    // === ex ranges =========================================================
+
+    /// A resolved range: 0-based inclusive rows, already clamped to the buffer.
+    const LineRange = struct { lo: usize, hi: usize };
+
+    /// The line a parsed address names, 0-based. Null only when the address
+    /// names nothing at all — an unset mark, a pattern that does not occur —
+    /// which is the one case a command has to refuse rather than guess at.
+    ///
+    /// Everything else clamps rather than erroring: vim answers `:100` on a
+    /// five-line file with E16, zedit takes it to the last line, which is
+    /// what its `:{n}` has always done and what "never crash on bad input"
+    /// asks for.
+    fn resolveAddr(self: *Editor, a: exrange.Addr) ?usize {
+        const last = self.buf.lineCount() - 1;
+        const base: usize = switch (a.base) {
+            .current => self.cy,
+            .last => last,
+            // Line 0 is vim's "before the first line". Every command that
+            // takes a range here acts on real lines, so it means the first.
+            .line => |n| if (n == 0) 0 else @min(n - 1, last),
+            .mark => |m| blk: {
+                // `'<` / `'>` are the ends of the last selection rather than
+                // marks proper — the same record `gv` reselects from.
+                if (m == '<' or m == '>') {
+                    const s = self.last_vis orelse return null;
+                    const top = @min(s.start.row, s.end.row);
+                    const bot = @max(s.start.row, s.end.row);
+                    break :blk @min(if (m == '<') top else bot, last);
+                }
+                if (m < 'a' or m > 'z') return null;
+                break :blk @min((self.marks[m - 'a'] orelse return null).row, last);
+            },
+            .fwd => |pat| self.searchLine(pat, true) orelse return null,
+            .bwd => |pat| self.searchLine(pat, false) orelse return null,
+        };
+        const shifted = @as(i64, @intCast(base)) + a.offset;
+        return @intCast(std.math.clamp(shifted, 0, @as(i64, @intCast(last))));
+    }
+
+    /// The row of the next/previous line matching `pat`, for the `/pat/` and
+    /// `?pat?` address forms. Case-sensitive, like `/` itself.
+    fn searchLine(self: *Editor, pat: []const u8, forward: bool) ?usize {
+        var re = regex.Regex.compile(self.gpa, pat, false) catch return null;
+        defer re.deinit(self.gpa);
+        const hit = if (forward)
+            search.next(self.buf, self.cursor(), &re)
+        else
+            search.prev(self.buf, self.cursor(), &re);
+        return if (hit) |h| h.row else null;
+    }
+
+    /// Resolve a whole range. `whole` is what *no* range means for the command
+    /// asking: `:g` defaults to the file, `:d` to the cursor's line.
+    fn resolveRange(self: *Editor, r: exrange.Range, whole: bool) ?LineRange {
+        if (r.count == 0) return if (whole)
+            .{ .lo = 0, .hi = self.buf.lineCount() - 1 }
+        else
+            .{ .lo = self.cy, .hi = self.cy };
+
+        const lo = self.resolveAddr(r.lo) orelse return null;
+        // `;` moves the cursor to the first address before the second is
+        // read, so `:.;+2` counts its offset from there and not from where
+        // the cursor started. `,` leaves the cursor alone.
+        const saved = self.cy;
+        if (r.semicolon) self.cy = lo;
+        defer if (r.semicolon) {
+            self.cy = saved;
+        };
+        const hi = self.resolveAddr(r.hi) orelse return null;
+        // vim asks before running a backwards range; zedit just swaps.
+        return if (lo <= hi) .{ .lo = lo, .hi = hi } else .{ .lo = hi, .hi = lo };
+    }
+
+    /// The commands that take a leading range. Returns true when `rest` was
+    /// one of them, so `execEx` knows whether to fall through to the rest of
+    /// its table.
+    fn execRanged(self: *Editor, range: exrange.Range, rest: []const u8) !bool {
+        // `:g` / `:v` — the delimiter is whatever follows the name, so these
+        // are matched by prefix rather than by tokenising on spaces.
+        if (globalSpec(rest, "g", "global")) |spec| {
+            try self.exGlobal(range, spec, false);
+            return true;
+        }
+        if (globalSpec(rest, "v", "vglobal")) |spec| {
+            try self.exGlobal(range, spec, true);
+            return true;
+        }
+        // `:[range]s/pat/rep/[flags]`, now sharing the one address parser.
+        if (rest.len > 0 and rest[0] == 's') {
+            if (parseSubstitute(rest)) |sub| {
+                self.doSubstitute(range, sub);
+                return true;
+            }
+        }
+
+        var it = std.mem.tokenizeScalar(u8, rest, ' ');
+        const name = it.next() orelse return false;
+        const arg = std.mem.trim(u8, rest[name.len..], " ");
+
+        // `:normal` takes its keys verbatim — no trimming, no tokenising,
+        // since a leading space is a legal key.
+        if (eql(name, "normal") or eql(name, "norm") or
+            eql(name, "normal!") or eql(name, "norm!"))
+        {
+            const after = rest[name.len..];
+            const keys = if (after.len > 0 and after[0] == ' ') after[1..] else after;
+            try self.exNormal(range, keys);
+            return true;
+        }
+
+        const lr = self.resolveRange(range, false) orelse {
+            self.setStatus("invalid range", .{});
+            return true;
+        };
+        const span: Span = .{ .lines = true, .top = lr.lo, .bot = lr.hi };
+
+        if (eql(name, "d") or eql(name, "delete")) {
+            self.applyOperator(.delete, span);
+        } else if (eql(name, "y") or eql(name, "yank")) {
+            self.applyOperator(.yank, span);
+        } else if (eql(name, ">")) {
+            self.applyOperator(.indent_right, span);
+        } else if (eql(name, "<")) {
+            self.applyOperator(.indent_left, span);
+        } else if (eql(name, "j") or eql(name, "join")) {
+            if (self.rejectReadOnly()) return true;
+            self.cy = lr.lo;
+            self.cx = 0;
+            // A single-line range still joins it to the next, as `:j` does.
+            try self.joinLines(lr.hi - lr.lo + 1, true);
+        } else {
+            // Not a ranged command. A range in front of one that takes none
+            // is vim's E481; say so rather than silently dropping it.
+            if (range.count > 0 and !eql(name, "s")) {
+                self.setStatus("no range allowed for :{s}", .{name});
+                return true;
+            }
+            return false;
+        }
+        _ = arg;
+        return true;
+    }
+
+    /// `:g/pat/cmd` written any of the ways vim accepts it. Returns the text
+    /// after the command name (starting with the delimiter), or null when
+    /// `rest` is some other command that merely starts with the same letter.
+    fn globalSpec(rest: []const u8, short: []const u8, long: []const u8) ?[]const u8 {
+        for ([_][]const u8{ long, short }) |name| {
+            if (!std.mem.startsWith(u8, rest, name)) continue;
+            const after = rest[name.len..];
+            // A delimiter must follow, and it cannot be a letter or a space —
+            // otherwise `:global` would swallow `:go` and `:v` every `:vs`.
+            if (after.len == 0) continue;
+            const d = after[0];
+            if (std.ascii.isAlphanumeric(d) or d == ' ' or d == '!') continue;
+            return after;
+        }
+        return null;
+    }
+
+    /// `:[range]g/pat/cmd` and its inverse. Vim's two passes: find every
+    /// matching line first, then run the command on each — so a command that
+    /// inserts or deletes lines cannot disturb the search that is still
+    /// going. The line numbers are kept up to date through the buffer's own
+    /// edit log, the same record folds move by; it is read but never cleared
+    /// here, so the fold drain at the end of the key still sees everything.
+    fn exGlobal(self: *Editor, range: exrange.Range, spec: []const u8, invert: bool) !void {
+        if (self.rejectReadOnly()) return;
+        const delim = spec[0];
+        var i: usize = 1;
+        const pat_start = i;
+        while (i < spec.len and spec[i] != delim) : (i += 1) {
+            if (spec[i] == '\\' and i + 1 < spec.len) i += 1;
+        }
+        const pat = spec[pat_start..i];
+        if (pat.len == 0) return self.setStatus("usage: :g/pattern/command", .{});
+        const sub_raw = if (i < spec.len) std.mem.trim(u8, spec[i + 1 ..], " ") else "";
+
+        const lr = self.resolveRange(range, true) orelse
+            return self.setStatus("invalid range", .{});
+
+        var re = regex.Regex.compile(self.gpa, pat, false) catch
+            return self.setStatus("invalid pattern: {s}", .{pat});
+        defer re.deinit(self.gpa);
+
+        var rows: std.ArrayList(usize) = .empty;
+        defer rows.deinit(self.gpa);
+        var row = lr.lo;
+        while (row <= @min(lr.hi, self.buf.lineCount() - 1)) : (row += 1) {
+            const hit = re.find(self.buf.line(row), 0) != null;
+            if (hit != invert) try rows.append(self.gpa, row);
+        }
+        if (rows.items.len == 0) return self.setStatus("no lines match {s}", .{pat});
+
+        // No command: report, since zedit has no `:p` to print them with.
+        if (sub_raw.len == 0)
+            return self.setStatus("{d} line{s} match", .{ rows.items.len, if (rows.items.len == 1) "" else "s" });
+
+        // The sub-command is a slice of the command line, which running it
+        // may overwrite (`:g/x/normal :w<CR>` re-enters the command line).
+        const sub = try self.gpa.dupe(u8, sub_raw);
+        defer self.gpa.free(sub);
+
+        var n: usize = 0;
+        while (n < rows.items.len) : (n += 1) {
+            if (rows.items[n] >= self.buf.lineCount()) continue; // gone already
+            self.cy = rows.items[n];
+            self.cx = 0;
+            const before = self.buf.lineCount();
+            try self.execLine(sub);
+            // Whatever the command did to the line count moves every target
+            // still to come. Counting lines rather than reading the buffer's
+            // edit log is deliberate: `settleFolds` drains that log after
+            // *every* key, and `:normal` feeds keys, so it is empty by the
+            // time we would look. The assumption is that the command changed
+            // lines at or after the one it ran on, which is what vim's real
+            // marks would track exactly.
+            const delta = @as(i64, @intCast(self.buf.lineCount())) - @as(i64, @intCast(before));
+            if (delta != 0) for (rows.items[n + 1 ..]) |*t| {
+                t.* = @intCast(@max(0, @as(i64, @intCast(t.*)) + delta));
+            };
+            if (self.failed or self.quit) break;
+        }
+        self.clampCursor();
+    }
+
+    /// `:[range]normal[!] {keys}` — the keys run as if typed. With no range
+    /// they run once where the cursor is; with one, once per line, from
+    /// column 0. `replayBytes` already guards its own recursion and stops at
+    /// the first command that fails, which is what vim does here too.
+    fn exNormal(self: *Editor, range: exrange.Range, keys: []const u8) !void {
+        if (keys.len == 0) return self.setStatus("usage: :normal {{keys}}", .{});
+        const owned = try self.gpa.dupe(u8, keys);
+        defer self.gpa.free(owned);
+
+        if (range.count == 0) {
+            try self.runNormalKeys(owned);
+            return;
+        }
+        const lr = self.resolveRange(range, false) orelse
+            return self.setStatus("invalid range", .{});
+
+        // One line at a time, tracking what the keys do to the numbering —
+        // `:%normal dd` must not skip every other line. The count is taken
+        // before and after rather than read from the buffer's edit log,
+        // which `settleFolds` has already drained: it runs after every key,
+        // and feeding keys is exactly what this does.
+        var row = lr.lo;
+        var remaining = lr.hi - lr.lo + 1;
+        while (remaining > 0) : (remaining -= 1) {
+            if (row >= self.buf.lineCount()) break;
+            self.cy = row;
+            self.cx = 0;
+            const before = self.buf.lineCount();
+            try self.runNormalKeys(owned);
+            if (self.failed or self.quit) break;
+            const delta = @as(i64, @intCast(self.buf.lineCount())) - @as(i64, @intCast(before));
+            const next = @as(i64, @intCast(row)) + 1 + delta;
+            if (next < 0) break;
+            row = @intCast(next);
+        }
+        self.clampCursor();
+    }
+
+    /// Feed one batch of keys and make sure normal mode is where they end —
+    /// vim appends the implicit `<Esc>` that `:normal ifoo` relies on.
+    fn runNormalKeys(self: *Editor, keys: []const u8) !void {
+        try self.replayBytes(keys);
+        if (self.mode != .normal) try self.replayBytes("\x1b");
+    }
+
     const Substitute = struct {
-        lo: ?usize, // 1-based inclusive; null = current line
-        hi: ?usize,
-        whole: bool, // '%' range
         pat: []const u8,
         rep: []const u8,
         global: bool, // g flag: every occurrence on the line
         icase: bool, // i flag
     };
 
-    /// Recognise `[%|n|n,m]s/pat/rep/[flags]` (separator is `/`, escapable as
-    /// `\/`). Returns null when `raw` is not a substitution at all.
+    /// Recognise `s/pat/rep/[flags]` — the range has already been taken off
+    /// by `exrange.parse`, so this only has to read the command itself. The
+    /// separator is `/`, escapable as `\/`. Null when `raw` is not a
+    /// substitution at all.
     fn parseSubstitute(raw: []const u8) ?Substitute {
         var i: usize = 0;
-        var lo: ?usize = null;
-        var hi: ?usize = null;
-        var whole = false;
-        if (i < raw.len and raw[i] == '%') {
-            whole = true;
-            i += 1;
-        } else if (i < raw.len and std.ascii.isDigit(raw[i])) {
-            const s = i;
-            while (i < raw.len and std.ascii.isDigit(raw[i])) i += 1;
-            lo = std.fmt.parseInt(usize, raw[s..i], 10) catch return null;
-            hi = lo;
-            if (i < raw.len and raw[i] == ',') {
-                i += 1;
-                const s2 = i;
-                while (i < raw.len and std.ascii.isDigit(raw[i])) i += 1;
-                if (i == s2) return null;
-                hi = std.fmt.parseInt(usize, raw[s2..i], 10) catch return null;
-            }
-        }
         if (i >= raw.len or raw[i] != 's') return null;
         i += 1;
         if (i >= raw.len or raw[i] != '/') return null;
@@ -7120,12 +7388,12 @@ pub const Editor = struct {
             };
         }
         if (pat.len == 0) return null;
-        return .{ .lo = lo, .hi = hi, .whole = whole, .pat = pat, .rep = rep, .global = global, .icase = icase };
+        return .{ .pat = pat, .rep = rep, .global = global, .icase = icase };
     }
 
     /// Apply a parsed `:s` as a single undoable change. The replacement
     /// understands `&` (whole match), `\1`-`\9` (groups), `\\`, `\&` and `\/`.
-    fn doSubstitute(self: *Editor, sub: Substitute) void {
+    fn doSubstitute(self: *Editor, range: exrange.Range, sub: Substitute) void {
         if (self.rejectReadOnly()) return;
         var re = regex.Regex.compile(self.gpa, sub.pat, sub.icase) catch {
             self.setStatus("invalid pattern: {s}", .{sub.pat});
@@ -7133,10 +7401,10 @@ pub const Editor = struct {
         };
         defer re.deinit(self.gpa);
 
-        const last_row = self.buf.lineCount() - 1;
-        var lo: usize = if (sub.whole) 0 else if (sub.lo) |n| @min(n -| 1, last_row) else self.cy;
-        var hi: usize = if (sub.whole) last_row else if (sub.hi) |n| @min(n -| 1, last_row) else self.cy;
-        if (lo > hi) std.mem.swap(usize, &lo, &hi);
+        const lr = self.resolveRange(range, false) orelse
+            return self.setStatus("invalid range", .{});
+        const lo = lr.lo;
+        const hi = lr.hi;
 
         self.pushUndo();
         var out: std.ArrayList(u8) = .empty;

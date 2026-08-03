@@ -165,7 +165,8 @@ Source is `src/`, one responsibility per module:
 | `key.zig`     | Decoding raw input bytes into `Key` events (text, arrows, navigation). |
 | `unicode.zig` | UTF-8 decoding, codepoint boundaries, display width. |
 | `buffer.zig`  | The document: two-phase zero-copy load (`loadPartial` indexes a head so the screen can paint, `loadRest` fills the tail), a lazy `u32` line index over one shared buffer, per-line storage materialised on the first edit, save, UTF-8-aware edits. |
-| `motion.zig`  | Pure cursor motions, word/WORD rules, find-char, `%`, text objects, the double-click mouse word. |
+| `motion.zig`  | Pure cursor motions, word/WORD rules, find-char, `%`, text objects, the double-click mouse word, the `gx` target. |
+| `exrange.zig` | Ex addresses and ranges (`%`, `.`, `$`, `'a`, `/pat/`, `+n`, `,` and `;`), parsed away from the buffer that gives them meaning. |
 | `register.zig`| Vim registers (named/unnamed; charwise/linewise/blockwise kind + block width) for yank/delete/paste. |
 | `undo.zig`    | Undo history as a tree of edits — each state the diff from its parent (branches, `g-`/`g+`, `:earlier`/`:later`), optionally kept on disk. |
 | `regex.zig`   | Regex engine: Pike VM (Thompson NFA), linear time, captures; modern "very magic" syntax. |
@@ -309,7 +310,7 @@ itest` builds `zedit` plus a `mock_lsp` server, then runs the `itest` harness:
   vim_compat, feature, multicursor, extra, search, treesitter, indent, picker,
   git, windows, sidebar, mouse, titlebar, config, cmdline, robust, remote, ssh,
   lsp, bufcomplete, cpu, wrap, undotree, session, terminal, debug, quickfix,
-  fold, view), each a
+  fold, view, ex), each a
   `pub fn run(ctx: *harness.Ctx) !void`. `view` is the viewport suite
   (`zz`/`zt`/`zb`): it asserts which buffer lines the window ends up showing,
   against numbers read out of a real nvim at the same 22 text rows.
@@ -734,7 +735,34 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   `:wa` write all dirty buffers (failed saves are named, never silent),
   `:w <name>` (naming a previously-unnamed buffer detects its filetype and
   starts highlighting + LSP on the spot), `:format` LSP-format the document,
-  `:{number}` goto line, `:$`; `ZZ`/`ZQ`. **Tab completion** (nvim
+  `:{number}` goto line, `:$`; `ZZ`/`ZQ`.
+- **Ex ranges (`:[range]cmd`, `exrange.zig`):** every address vim writes —
+  `%`, `.`, `$`, a line number, `'a`, `'<`/`'>`, `/pat/`, `?pat?`, `+n`/`-n`
+  offsets that repeat and add up, joined by `,` or by `;` (which moves the
+  cursor to the first address before reading the second). Parsing is pure and
+  unit-tested; only resolution needs the buffer. Out-of-range addresses
+  **clamp** where vim raises E16, and a backwards range is swapped silently
+  where vim asks first — both because "never crash on bad input" outranks the
+  error message, and both nvim-pinned at the result.
+  The commands that take one: `d`, `y`, `>`, `<`, `j`, `s`, `normal`, `g`/`v`.
+  A range with no command moves to its last line (`:5`, `:$`, `:1,5`), which
+  is where the old `:{number}` special case went. Putting a range in front of
+  a command that takes none says so rather than dropping it.
+  **`:[range]g/pat/cmd`** and **`:v`** (inverse) are vim's two passes: collect
+  every matching line first, then run the command on each, so a command that
+  inserts or deletes cannot disturb a search still in progress. The remaining
+  targets move by the *line count's* change rather than the buffer's edit
+  log — `settleFolds` drains that log after every key and `:normal` feeds
+  keys, so it is empty by the time this could read it. That assumes the
+  command changed lines at or after the one it ran on, which is what vim's
+  real marks would track exactly. Defaults to the whole file; `:g` with no
+  command reports the match count, since there is no `:p` to print with.
+  **`:[range]normal[!] {keys}`** feeds the keys through the same `replayBytes`
+  a macro uses — once at the cursor with no range, once per line from column 0
+  with one — and appends the implicit `<Esc>` vim does, so `:%normal A!`
+  leaves normal mode. `!` is accepted and ignored: there are no mappings to
+  suppress. `execLine` is depth-capped at 8, so `:g/x/g/y/d` terminates.
+  **Tab completion** (nvim
   `wildmode=full` semantics, pinned by pty probes of the real thing): Tab
   completes command names, `:e`/`:w` file paths (a unique directory gets a
   trailing `/` and the next Tab descends into it; hidden files only offered

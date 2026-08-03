@@ -166,6 +166,15 @@ there is nothing to change there.
 
 ## Done (chronological)
 
+- [x] Ex ranges: `exrange.zig` (a pure, unit-tested address parser),
+      `:[range]cmd` on `d y > < j s normal g v`, `:g`/`:v` in vim's two
+      passes, and `:[range]normal` through the macro replay path. `:s` moved
+      onto the shared parser, so the codebase has one address parser instead
+      of two. The trap worth remembering: `settleFolds` drains the buffer's
+      line-edit log after every key, and `:normal` feeds keys, so tracking
+      line numbers through that log silently saw nothing — counting lines
+      before and after each command is what works. (0.50.0)
+
 - [x] The nine keymap gaps, all shipped together: `zz`/`zt`/`zb`, `gv`,
       `gu`/`gU`/`g~`, `gJ`, `gx`, `]e`/`[e` + `]w`/`[w`, `]g`/`[g`,
       `Space x` and `Space h`. Ground truth for every vim behaviour came out

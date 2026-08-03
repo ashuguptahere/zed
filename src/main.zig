@@ -288,6 +288,7 @@ test {
     _ = @import("term.zig");
     _ = @import("log.zig");
     _ = @import("motion.zig");
+    _ = @import("exrange.zig");
     _ = @import("register.zig");
     _ = @import("undo.zig");
     _ = @import("search.zig");

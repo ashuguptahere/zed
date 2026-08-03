@@ -36,6 +36,7 @@ const scenarios = .{
     .{ "quickfix", @import("scenarios/quickfix.zig") },
     .{ "fold", @import("scenarios/fold.zig") },
     .{ "view", @import("scenarios/view.zig") },
+    .{ "ex", @import("scenarios/ex.zig") },
 };
 
 /// Whether suite `name` was asked for: everything when no filter was given.

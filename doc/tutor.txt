@@ -183,6 +183,26 @@
 ---> And again in teh middle of this one.
 ---> One last teh to hunt down and fix.
 
+  4. Or fix all three at once with a substitution over the whole file:
+     :%s/teh/the/g   ( %  means every line;  g  means every match on it)
+
+  RANGES:  most  :  commands take a range in front of them.   :2,5d
+  deletes lines 2 to 5,  :.,+3y  yanks this line and the three below,
+  :$-1,$d  drops the last two, and  :1,5>  indents that block.  A range
+  on its own just moves:  :12  goes to line 12.
+
+  ON EVERY MATCHING LINE:  :g/pat/cmd  runs a command on each line that
+  matches, and  :v/pat/cmd  on each line that does not.  So  :g/TODO/d
+  deletes every TODO line, and  :g/^/normal A;  appends a semicolon to
+  every line in the file.
+
+  5. Delete every line below that mentions a wombat, with  :g/wombat/d
+
+---> keep this line
+---> a wombat lives here
+---> keep this one too
+---> another wombat sighting
+
 ------------------------------------------------------------------------------
                 Lesson 6: TEXT OBJECTS, SURROUND AND COMMENTS
 ------------------------------------------------------------------------------

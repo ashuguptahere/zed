@@ -254,11 +254,13 @@ snippets, auto-completion). Remaining: multiple language servers per language
 
 ## Vim/Neovim core features zedit LACKS
 
-- **Ex range machinery — `:g`, `:v`, `:normal`, general `{range}cmd`** — the
-  command table is 32 names with no address parser; `:[range]s///` is
-  special-cased ahead of dispatch. The deepest remaining vim hole, and several
-  smaller items (`:cfile`, `:grep`, location lists) fall out of it once the
-  parser exists — **high**
+- ~~**Ex range machinery — `:g`, `:v`, `:normal`, general `{range}cmd`**~~ —
+  **DONE in 0.50.0** (`exrange.zig`: `%`, `.`, `$`, line numbers, `'a`,
+  `'<`/`'>`, `/pat/`, `?pat?`, `+n`/`-n`, `,` and `;`; ranges on `d y > < j s
+  normal g v`; `:g`/`:v` in vim's two passes; `:normal` through the macro
+  replay path). `:s` moved onto the shared parser, so there is one address
+  parser rather than two. Still absent from the family: `:cfile`/`:grep` and
+  the location list, which now have somewhere to hang — **low**
 - **Replace mode (`R`, `gR`)** — single-char `r` only — **medium**
 - **Changelist (`g;`/`g,`) and `''`** — **medium**
 - **`gq`/`gw` reflow + `'textwidth'`** — painful for prose and comments — **medium**

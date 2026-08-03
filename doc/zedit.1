@@ -1003,12 +1003,58 @@ all (refuses while any buffer has unsaved changes;
 discards), write all dirty buffers (failed saves are reported by name),
 go to line \fIn\fP, write\-and\-quit, quit without writing.
 .TP
+.B :\fR[\fPrange\fR]\fP
+A range on its own moves to its last line \(em
+.BR :5 ", " :$ ", " "1,5" .
+An address is
+.BR % " (the whole file, i.e. " 1,$ "), " . " (the current line), " $
+(the last),
+a line number,
+.BI ' mark
+(including
+.B '<
+and
+.B '>
+for the last selection),
+.BI / pattern /
+or
+.BI ? pattern ?
+(the next or previous matching line), each optionally followed by
+.BI + n
+or
+.BI \- n
+offsets, which repeat and add up. Two addresses are joined by
+.B ,
+or by
+.BR ; ,
+which moves the cursor to the first before reading the second. An address
+past the end of the buffer is clamped rather than refused, and a backwards
+range is swapped without asking.
+.TP
+.B :\fR[\fPrange\fR]\fPd :\fR[\fPrange\fR]\fPy :\fR[\fPrange\fR]\fP> :\fR[\fPrange\fR]\fP< :\fR[\fPrange\fR]\fPj
+Delete, yank, indent, dedent and join the range. Without one they act on the
+cursor's line.
+.TP
+.B :\fR[\fPrange\fR]\fPg/pat/cmd\fR, \fP:\fR[\fPrange\fR]\fPv/pat/cmd
+Run \fIcmd\fP on every line of the range matching \fIpat\fP \(em or every line
+\fInot\fP matching it, for
+.BR :v .
+The range defaults to the whole file. Every matching line is found before any
+command runs, so a command that inserts or deletes lines cannot disturb the
+search. With no \fIcmd\fP, the number of matching lines is reported.
+.TP
+.B :\fR[\fPrange\fR]\fPnormal\fR[\fP!\fR]\fP {keys}
+Type \fIkeys\fP as though in normal mode: once at the cursor with no range,
+once per line of the range from column 0 with one. An implicit
+.B <Esc>
+ends each run, so
+.B :%normal A;
+returns to normal mode.
+.B !
+is accepted and ignored \(em zedit has no mappings to suppress.
+.TP
 .B :\fR[\fPrange\fR]\fPs/pat/rep/\fR[\fPflags\fR]\fP
-Substitute. Ranges:
-.B %
-(whole file),
-.BR n,m ,
-or none (current line). Flags:
+Substitute over the range (the current line without one). Flags:
 .B g
 (every occurrence on the line),
 .B i

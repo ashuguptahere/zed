@@ -30,8 +30,14 @@
   - Search `/ ? n N * #` — **regex** (modern syntax, linear-time engine, no
     catastrophic backtracking), incremental (jumps as you type), highlighted;
     `*`/`#` match whole words
-  - `:%s/pat/rep/g` substitution with ranges (`%`, `n,m`), flags `g`/`i`,
-    `&` and `\1`–`\9` in replacements — behaviour pinned to real-nvim outputs
+  - `:%s/pat/rep/g` substitution with flags `g`/`i`, `&` and `\1`–`\9` in
+    replacements — behaviour pinned to real-nvim outputs
+  - **Ex ranges** on `d y > < j s normal g v`: `%`, `.`, `$`, line numbers,
+    `'a`, `'<`/`'>`, `/pat/`, `?pat?`, `+n`/`-n`, joined by `,` or `;` —
+    so `:2,4d`, `:.,+3y`, `:$-1,$d`, `:/foo/,/bar/d` and `:'<,'>normal A;`
+    all work, and a bare range moves (`:5`, `:1,5`)
+  - `:g/pat/cmd` and `:v/pat/cmd` run a command on every matching (or
+    non-matching) line; `:[range]normal {keys}` types keys on each line
   - Marks `m` `` ` `` `'` and macros `q…q` / `@`
   - `zz` / `zt` / `zb` put the cursor's line at the centre, top or bottom of
     the window without moving the cursor
