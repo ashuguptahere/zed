@@ -51,6 +51,10 @@
   - Nearly all of vim's `g` namespace: `ge`/`gE`, `g_`, `g^`, `gm`/`gM`, `go`,
     `g'`/`` g` ``, `g*`/`g#`, `gn`/`gN`, `g?` rot13, `gI`, `gp`/`gP`, `g&`,
     `g8`, `g;`/`g,` (the change list), `gq`/`gw` (reflow to `wrap_column`)
+  - Bracket motions: `]`/`[` with a space (blank lines), `'`/`` ` `` (marks),
+    `)`/`(`/`}`/`{` (out of a bracket), `]`/`[` (sections), `/` (C comments),
+    `#` (preprocessor), `p`/`P` (paste re-indented), `m` (members), `z`
+    (fold ends), `c` (git hunks), plus `D`/`Q`/`B` for a list's ends
   - Jumplist: `Ctrl-o` / `Ctrl-i` walk back and forward through jumps
     (searches, `G`, marks, `gd`, buffer switches — cross-buffer)
   - Text objects incl. paragraphs (`ip`/`ap`, `{`/`}`), also in visual mode

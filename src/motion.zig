@@ -151,6 +151,15 @@ pub fn wordEndBackward(buf: *const buffer.Buffer, pos: Pos, big: bool) Pos {
     return p;
 }
 
+/// One position forward / backward across the buffer, for callers outside
+/// this module (the bracket motions walk character by character).
+pub fn stepForwardPub(buf: *const buffer.Buffer, p: Pos) Pos {
+    return stepForward(buf, p.row, p.col);
+}
+pub fn stepBackwardPub(buf: *const buffer.Buffer, p: Pos) Pos {
+    return stepBackward(buf, p.row, p.col);
+}
+
 /// `f`/`t` forward, `F`/`T` backward search within the current line for `target`.
 /// `till` stops one cell short (t/T). Returns null if not found.
 pub fn findChar(line: []const u8, col: usize, target: u21, forward: bool, till: bool) ?usize {

@@ -179,6 +179,17 @@ pub const Set = struct {
         return acted;
     }
 
+    /// `[z` / `]z`: the innermost fold covering `row`, open or closed — the
+    /// one whose ends those two motions jump to.
+    pub fn enclosing(self: *const Set, row: usize) ?Fold {
+        var best: ?Fold = null;
+        for (self.items.items) |f| {
+            if (!f.covers(row)) continue;
+            if (best == null or f.end - f.start < best.?.end - best.?.start) best = f;
+        }
+        return best;
+    }
+
     /// `zv`: open just enough that `row` is visible — every fold covering it.
     pub fn reveal(self: *Set, row: usize) void {
         for (self.items.items) |*f| {

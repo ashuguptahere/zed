@@ -1018,6 +1018,45 @@ round it out, and
 .B Space x
 reaches the list from the leader tree.
 .TP
+.B "] [ \fR(space)\fP"
+Add \fIN\fP blank lines below or above, leaving the cursor where it is.
+.TP
+.B "]' [' ]\` [\`"
+Step to the next or previous mark \(em on its first non\-blank for the
+quote forms, on its exact column for the backtick ones.
+.TP
+.B "]) [( ]} [{"
+Leave the enclosing bracket, forwards or backwards. Nesting is counted, so a
+balanced pair on the way is skipped.
+.TP
+.B "]] [[ ][ []"
+Sections: a brace in column 0. With none in the file the motion runs to the
+start or end of it.
+.TP
+.B "]/ [/ ]* [*"
+The end of the next C comment, or the start of the previous one.
+.TP
+.B "]# [#"
+The preprocessor conditional around the cursor, nesting counted.
+.TP
+.B "]p [p ]P [P"
+Paste linewise with each line's indent replaced by the current line's.
+.TP
+.B "]m [m"
+The brace that opens the next or previous member.
+.TP
+.B "]z [z"
+The end or start of the fold the cursor is in.
+.TP
+.B "]c [c"
+The next or previous changed hunk \(em vim's diff-mode motion, which here is
+the same one
+.B ]g
+walks.
+.TP
+.B "]D [D ]Q [Q ]B [B"
+The last or first diagnostic, quickfix entry or buffer, rather than the next.
+.TP
 .B ]d\fR, \fP[d\fR, \fP]e\fR, \fP[e\fR, \fP]w\fR, \fP[w
 Walk diagnostics, wrapping and taking a count:
 .BR ]d / [d

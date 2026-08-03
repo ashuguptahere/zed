@@ -2,6 +2,42 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.55.0 - 2026-08-03
+
+The bracket namespace: **20 of vim's 22 pairs**, up from 7. Ground truth via
+`nvim -s`; 24 of the 25 new checks fail without the implementation.
+
+### Added
+
+- `] `/`[ ` add blank lines without moving the cursor (an nvim 0.12 default).
+- `]'`/`['` and `` ]` ``/`` [` `` step between marks — to the first non-blank
+  or to the exact column.
+- `])`/`[(` and `]}`/`[{` leave the enclosing bracket, counting depth so a
+  balanced pair in between is skipped.
+- `]]`/`[[` and `][`/`[]` are vim's sections: a brace in **column 0**, with
+  the crossed spelling vim uses (`]]` looks for `{`, `][` for `}`), running
+  to the file's ends when there is none — which is what nvim answers rather
+  than refusing.
+- `]/`/`[/` (and `]*`/`[*`) reach a C comment's ends; `]#`/`[#` the
+  preprocessor conditional around the cursor, nesting counted.
+- `]p`/`[p` and `]P`/`[P` paste linewise with each line's indent replaced by
+  the current line's.
+- `]m`/`[m` land on the brace that opens a member; `]z`/`[z` on the ends of
+  the fold the cursor is in.
+- `]c`/`[c` — vim's diff-mode change motion, which here is the git hunk
+  `]g`/`[g` already walks.
+- `]D`/`[D`, `]Q`/`[Q`, `]B`/`[B` take the *last* or *first* of a list rather
+  than the next.
+
+### Not implemented, and why
+
+`[s`/`]s` is spell — the same missing dictionary as `z=`. The
+`'include'`/`'define'` family (`[d` `]d` `[i` `]i` `[D` `]D` `[I` `]I` and the
+`Ctrl-D`/`Ctrl-I` forms) all search *included files*, a concept zedit has no
+notion of. `[l`/`]l`, `[a`/`]a` and `[t`/`]t` want a location list, an
+argument list and tags, none of which exist. `[f`/`]f` and `[d`/`]d` keep
+zedit's own meanings — functions and diagnostics — as the naming note has it.
+
 ## 0.54.0 - 2026-08-03
 
 The `z` namespace: **40 of nvim's ~44**, up from 11.

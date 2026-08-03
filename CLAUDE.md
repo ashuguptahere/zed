@@ -588,6 +588,27 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   reaching the handler as a flag. `term.openExternal` forks *twice* so the
   grandchild is orphaned and reaped by init: the editor never blocks on a
   browser starting and no zombie accumulates.
+- **The bracket namespace.** `] `/`[ ` add blank lines without moving the
+  cursor; `]'`/`['` and `` ]` ``/`` [` `` step between marks (linewise to the
+  first non-blank, or exactly); `])`/`[(` and `]}`/`[{` leave the enclosing
+  bracket, counting depth so a balanced pair in between is skipped;
+  `]]`/`[[` and `][`/`[]` are vim's sections — a brace in **column 0**, with
+  the crossed spelling vim uses, running to the file's ends when there is
+  none; `]/`/`[/` (and `]*`/`[*`) reach a C comment's ends; `]#`/`[#` the
+  preprocessor conditional around the cursor, nesting counted; `]p`/`[p` and
+  `]P`/`[P` paste linewise with each line's indent replaced by the current
+  line's; `]m`/`[m` land on the brace that opens a member; `]z`/`[z` on the
+  ends of the fold the cursor is in; `]c`/`[c` is vim's diff-mode change
+  motion, which here is the git hunk `]g`/`[g` already walks; and
+  `]D`/`[D`, `]Q`/`[Q`, `]B`/`[B` take the *last* or *first* of a list
+  rather than the next.
+  Not implemented: `[s`/`]s` (spell, the same missing dictionary as `z=`),
+  and the `'include'`/`'define'` family — `[d`/`]d`, `[i`/`]i`, `[D`/`]D`,
+  `[I`/`]I` and the `Ctrl-D`/`Ctrl-I` forms all search *included files*, a
+  concept zedit has no notion of. `[l`/`]l`, `[a`/`]a` and `[t`/`]t` want a
+  location list, an argument list and tags, none of which exist. `[f`/`]f`
+  and `[d`/`]d` keep zedit's own meanings (functions and diagnostics), as
+  the naming note has it.
 - **Jumplist:** `Ctrl-o` / `Ctrl-i` (also `Tab`) walk back/forward through
   jump-motions — `G`/`gg`/`{n}G`, `H M L`, `%`, committed searches (back to the
   origin), `n N * #`, mark jumps, `:{n}`, and every buffer switch (`:e`,

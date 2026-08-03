@@ -695,6 +695,56 @@ fn dotAndMacros(ctx: *h.Ctx) void {
     h.case(ctx, target, "nvim#gv9 gv twice still reaches the first", &.{ "vll", ESC, "gv", ESC, "gvd", ":wq", CR }, "abcdef\n", "def\n");
     h.case(ctx, target, "nvim#gv10 gv with nothing selected yet does nothing", &.{ "gvd", ":wq", CR }, "abc\n", "abc\n");
 
+    // === the bracket namespace ===========================================
+    const secs = "int a() {\n  x;\n}\nint b() {\n  y;\n}\nint c() {\n  z;\n}\n";
+
+    // `] ` / `[ ` add blank lines without moving the cursor.
+    h.case(ctx, target, "nvim#br1 ] space adds below", &.{ "] ", ":wq", CR }, "a\nb\n", "a\n\nb\n");
+    h.case(ctx, target, "nvim#br2 [ space adds above", &.{ "j[ ", ":wq", CR }, "a\nb\n", "a\n\nb\n");
+    h.case(ctx, target, "nvim#br3 a count adds that many", &.{ "3] ", ":wq", CR }, "a\nb\n", "a\n\n\n\nb\n");
+
+    // Marks: `['`/`]'` land on the first non-blank, `` [` ``/`` ]` `` exactly.
+    const five = "l1\nl2\nl3\nl4\nl5\n";
+    h.case(ctx, target, "nvim#br4 [' to the previous mark", &.{ "jma", "jjmb", "G", "['x", ":wq", CR }, five, "l1\nl2\nl3\n4\nl5\n");
+    h.case(ctx, target, "nvim#br5 ]' to the next", &.{ "jma", "jjmb", "gg", "]'x", ":wq", CR }, five, "l1\n2\nl3\nl4\nl5\n");
+    h.case(ctx, target, "nvim#br6 [` keeps the column", &.{ "jllma", "G", "[`x", ":wq", CR }, "abc\ndef\nghi\n", "abc\nde\nghi\n");
+
+    // Unmatched brackets.
+    h.case(ctx, target, "nvim#br7 [( out of the parens", &.{ "fb[(x", ":wq", CR }, "foo(bar, baz)\n", "foobar, baz)\n");
+    h.case(ctx, target, "nvim#br8 ]) out the other way", &.{ "fb])x", ":wq", CR }, "foo(bar, baz)\n", "foo(bar, baz\n");
+    h.case(ctx, target, "nvim#br9 [{ out of the block", &.{ "jj[{x", ":wq", CR }, "if {\n  a;\n  b;\n}\n", "if \n  a;\n  b;\n}\n");
+    h.case(ctx, target, "nvim#br10 ]} to its close", &.{ "jj]}x", ":wq", CR }, "if {\n  a;\n  b;\n}\n", "if {\n  a;\n  b;\n\n");
+
+    // Sections — a brace in column 0. This file has none at column 0 for
+    // `{`, so `]]` runs to the end of the file, which is nvim's answer.
+    h.case(ctx, target, "nvim#br11 ]] with no section runs to EOF", &.{ "]]x", ":wq", CR }, secs, "int a() {\n  x;\n}\nint b() {\n  y;\n}\nint c() {\n  z;\n\n");
+    h.case(ctx, target, "nvim#br12 [[ runs to the start", &.{ "G[[x", ":wq", CR }, secs, "nt a() {\n  x;\n}\nint b() {\n  y;\n}\nint c() {\n  z;\n}\n");
+    h.case(ctx, target, "nvim#br13 ][ to the next closing brace", &.{ "][x", ":wq", CR }, secs, "int a() {\n  x;\n\nint b() {\n  y;\n}\nint c() {\n  z;\n}\n");
+    h.case(ctx, target, "nvim#br14 [] to the previous one", &.{ "G[]x", ":wq", CR }, secs, "int a() {\n  x;\n}\nint b() {\n  y;\n\nint c() {\n  z;\n}\n");
+
+    // A C comment's ends.
+    const cmt = "a;\n/* one\n   two */\nb;\n";
+    h.case(ctx, target, "nvim#br15 [/ to the comment's start", &.{ "G[/x", ":wq", CR }, cmt, "a;\n* one\n   two */\nb;\n");
+    h.case(ctx, target, "nvim#br16 ]/ to its end", &.{ "]/x", ":wq", CR }, cmt, "a;\n/* one\n   two *\nb;\n");
+
+    // The preprocessor conditional around the cursor.
+    const pp = "#if X\na;\n#else\nb;\n#endif\n";
+    h.case(ctx, target, "nvim#br17 [# back to the #else", &.{ "4G[#x", ":wq", CR }, pp, "#if X\na;\nelse\nb;\n#endif\n");
+    h.case(ctx, target, "nvim#br18 ]# forward to it", &.{ "j]#x", ":wq", CR }, pp, "#if X\na;\nelse\nb;\n#endif\n");
+
+    // `]p`/`[p` re-indent what they paste to the current line.
+    h.case(ctx, target, "nvim#br19 ]p adopts the indent", &.{ "yyj]p", ":wq", CR }, "a\n\tb\n", "a\n\tb\n\ta\n");
+    h.case(ctx, target, "nvim#br20 p does not (control)", &.{ "yyjp", ":wq", CR }, "a\n\tb\n", "a\n\tb\na\n");
+    h.case(ctx, target, "nvim#br21 [p pastes above, indented", &.{ "yyj[p", ":wq", CR }, "a\n\tb\n", "a\n\ta\n\tb\n");
+
+    // `[m`/`]m` land on the brace that opens a member.
+    h.case(ctx, target, "nvim#br22 ]m to the next member", &.{ "]mx", ":wq", CR }, secs, "int a() \n  x;\n}\nint b() {\n  y;\n}\nint c() {\n  z;\n}\n");
+    h.case(ctx, target, "nvim#br23 [m back to one", &.{ "G[mx", ":wq", CR }, secs, "int a() {\n  x;\n}\nint b() {\n  y;\n}\nint c() \n  z;\n}\n");
+
+    // `[z`/`]z` reach the ends of the fold the cursor is in.
+    h.case(ctx, target, "nvim#br24 [z to the fold's start", &.{ "jzf2j", "zo", "3G[zx", ":wq", CR }, five, "l1\n2\nl3\nl4\nl5\n");
+    h.case(ctx, target, "nvim#br25 ]z to its end", &.{ "jzf2j", "zo", "3G]zx", ":wq", CR }, five, "l1\nl2\nl3\n4\nl5\n");
+
     // === zp / zP / zy : blockwise without the padding =====================
     // Ground truth via `nvim -s`, which replays a key file: a pty swallows
     // Ctrl-V before nvim ever sees it, so the ordinary probe could not build

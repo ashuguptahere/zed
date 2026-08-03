@@ -2257,6 +2257,41 @@ pub const Editor = struct {
                 }
             },
             .bracket_next, .bracket_prev => {
+                const fwd = a == .bracket_next;
+                const cnt = self.eff();
+                if (k == .char) switch (k.char) {
+                    ' ' => self.addBlankLines(fwd, cnt),
+                    // Marks, exact and linewise.
+                    '\'' => self.markStep(fwd, false),
+                    '`' => self.markStep(fwd, true),
+                    // Unmatched brackets: `[(`/`])` and `[{`/`]}`.
+                    '(', ')' => if (self.unmatchedBracket('(', ')', fwd, cnt)) |p| self.setCursor(p),
+                    '{', '}' => if (self.unmatchedBracket('{', '}', fwd, cnt)) |p| self.setCursor(p),
+                    // Sections: a brace in column 0. `[[`/`]]` take `{`,
+                    // `[]`/`][` take `}` — note the crossed spelling, which
+                    // is vim's.
+                    '[' => self.setCursor(self.sectionMove(if (fwd) '}' else '{', fwd, cnt)),
+                    ']' => self.setCursor(self.sectionMove(if (fwd) '{' else '}', fwd, cnt)),
+                    // A C comment's ends.
+                    '/', '*' => if (self.commentEdge(fwd)) |p| self.setCursor(p),
+                    // The preprocessor conditional around the cursor.
+                    '#' => if (self.preprocEdge(fwd)) |p| self.setCursor(p),
+                    // A member's opening brace.
+                    'm' => self.memberStep(fwd, cnt),
+                    // The open fold's own ends.
+                    'z' => if (self.d.folds.enclosing(self.cy)) |f|
+                        self.setCursor(.{ .row = if (fwd) f.end else f.start, .col = 0 }),
+                    // Paste with the indent adjusted to this line.
+                    'p', 'P' => self.pasteIndented(fwd and k.char == 'p'),
+                    // `]c`/`[c` is vim's diff-mode change motion; zedit's
+                    // changes are the git hunks `]g`/`[g` already walk.
+                    'c' => self.gotoHunk(fwd),
+                    // First/last of a list, rather than next/previous.
+                    'D' => self.gotoDiagnosticEnd(fwd),
+                    'Q' => self.qfEnd(fwd),
+                    'B' => self.docEnd(fwd),
+                    else => {},
+                };
                 if (k == .char and k.char == 'd') self.gotoDiagnostic(a == .bracket_next, null);
                 if (k == .char and k.char == 'e') self.gotoDiagnostic(a == .bracket_next, 1); // ]e / [e errors
                 if (k == .char and k.char == 'w') self.gotoDiagnostic(a == .bracket_next, 2); // ]w / [w warnings
@@ -5339,6 +5374,199 @@ pub const Editor = struct {
         self.addJump();
         self.runSearch(pat.items, forward);
         self.resetPending();
+    }
+
+    // === the bracket namespace =============================================
+
+    /// `[(` `])` `[{` `]}` — the nearest *unmatched* bracket in a direction,
+    /// counting depth so a balanced pair in between is skipped. Null when the
+    /// cursor is not inside one.
+    fn unmatchedBracket(self: *Editor, open: u8, close: u8, forward: bool, n: usize) ?Pos {
+        var depth: usize = 0;
+        var found: usize = 0;
+        var p = self.cursor();
+        while (true) {
+            const next = if (forward) motion.stepForwardPub(self.buf, p) else motion.stepBackwardPub(self.buf, p);
+            if (next.row == p.row and next.col == p.col) return null; // hit an end
+            p = next;
+            const line = self.buf.line(p.row);
+            if (p.col >= line.len) continue;
+            const c = line[p.col];
+            // Walking *out*: the bracket we came through deepens, the one we
+            // are looking for closes the level — and at depth 0 it is ours.
+            const inner = if (forward) open else close;
+            const outer = if (forward) close else open;
+            if (c == inner) {
+                depth += 1;
+            } else if (c == outer) {
+                if (depth == 0) {
+                    found += 1;
+                    if (found == n) return p;
+                } else depth -= 1;
+            }
+        }
+    }
+
+    /// `[[` `]]` `[]` `][` — vim's sections: a `{` (or `}`) in column 0. With
+    /// none in the file the motion runs to the start or end of it, which is
+    /// what nvim does rather than refusing.
+    fn sectionMove(self: *Editor, brace: u8, forward: bool, n: usize) Pos {
+        var found: usize = 0;
+        var row = self.cy;
+        while (true) {
+            if (forward) {
+                if (row + 1 >= self.buf.lineCount()) return .{ .row = self.buf.lineCount() - 1, .col = 0 };
+                row += 1;
+            } else {
+                if (row == 0) return .{ .row = 0, .col = 0 };
+                row -= 1;
+            }
+            const line = self.buf.line(row);
+            if (line.len > 0 and line[0] == brace) {
+                found += 1;
+                if (found == n) return .{ .row = row, .col = 0 };
+            }
+        }
+    }
+
+    /// `[/` `[*` and `]/` `]*` — the start of the previous C comment, or the
+    /// end of the next one.
+    fn commentEdge(self: *Editor, forward: bool) ?Pos {
+        const needle = if (forward) "*/" else "/*";
+        var row = self.cy;
+        var col = self.cx;
+        while (true) {
+            const line = self.buf.line(row);
+            if (forward) {
+                if (col < line.len) {
+                    if (std.mem.indexOfPos(u8, line, col, needle)) |at|
+                        return .{ .row = row, .col = at + 1 }; // the `/` of `*/`
+                }
+                if (row + 1 >= self.buf.lineCount()) return null;
+                row += 1;
+                col = 0;
+            } else {
+                const upto = @min(col, line.len);
+                if (std.mem.lastIndexOf(u8, line[0..upto], needle)) |at|
+                    return .{ .row = row, .col = at };
+                if (row == 0) return null;
+                row -= 1;
+                col = self.buf.line(row).len;
+            }
+        }
+    }
+
+    /// `[#` `]#` — the previous unmatched `#if`/`#else`, or the next
+    /// `#else`/`#endif`, counting nesting on the way.
+    fn preprocEdge(self: *Editor, forward: bool) ?Pos {
+        var depth: usize = 0;
+        var row = self.cy;
+        while (true) {
+            if (forward) {
+                if (row + 1 >= self.buf.lineCount()) return null;
+                row += 1;
+            } else {
+                if (row == 0) return null;
+                row -= 1;
+            }
+            const t = std.mem.trimStart(u8, self.buf.line(row), " \t");
+            if (t.len == 0 or t[0] != '#') continue;
+            const d = std.mem.trimStart(u8, t[1..], " \t");
+            const opens = std.mem.startsWith(u8, d, "if");
+            const ends = std.mem.startsWith(u8, d, "endif");
+            const mid = std.mem.startsWith(u8, d, "else") or std.mem.startsWith(u8, d, "elif");
+            // Going up, an `#endif` deepens and an `#if` closes the level;
+            // going down it is the other way round.
+            const deepen = if (forward) opens else ends;
+            const shallow = if (forward) ends else opens;
+            if (deepen) {
+                depth += 1;
+            } else if (shallow) {
+                if (depth == 0) return .{ .row = row, .col = 0 };
+                depth -= 1;
+            } else if (mid and depth == 0) {
+                return .{ .row = row, .col = 0 };
+            }
+        }
+    }
+
+    /// `['` `]'` `` [` `` `` ]` `` — the nearest mark before or after the
+    /// cursor. `exact` keeps its column; otherwise the first non-blank.
+    fn markStep(self: *Editor, forward: bool, exact: bool) void {
+        var best: ?Pos = null;
+        for (self.marks) |m| {
+            const p = m orelse continue;
+            const rel = cmpPos(p, self.cursor());
+            if (forward and rel <= 0) continue;
+            if (!forward and rel >= 0) continue;
+            if (best) |b| {
+                if (forward and cmpPos(p, b) >= 0) continue;
+                if (!forward and cmpPos(p, b) <= 0) continue;
+            }
+            best = p;
+        }
+        const p = best orelse return;
+        self.cy = @min(p.row, self.buf.lineCount() - 1);
+        self.cx = if (exact) @min(p.col, self.curLine().len) else motion.firstNonBlank(self.curLine());
+        self.updateGoal();
+    }
+
+    /// `[m` `]m` — the previous or next `{`, which is where a member's body
+    /// begins (nvim-probed: on a C file it lands on the brace, not the line).
+    fn memberStep(self: *Editor, forward: bool, n: usize) void {
+        var found: usize = 0;
+        var p = self.cursor();
+        while (true) {
+            const next = if (forward) motion.stepForwardPub(self.buf, p) else motion.stepBackwardPub(self.buf, p);
+            if (next.row == p.row and next.col == p.col) return;
+            p = next;
+            const line = self.buf.line(p.row);
+            if (p.col < line.len and line[p.col] == '{') {
+                found += 1;
+                if (found == n) {
+                    self.setCursor(p);
+                    return;
+                }
+            }
+        }
+    }
+
+    /// `] ` and `[ ` — blank lines below or above, without moving the cursor.
+    fn addBlankLines(self: *Editor, below: bool, n: usize) void {
+        if (self.rejectReadOnly()) return;
+        self.pushUndo();
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            self.buf.insertLineAt(if (below) self.cy + 1 else self.cy, "") catch return;
+            if (!below) self.cy += 1; // the cursor's line moved down with it
+        }
+        self.buf.dirty = true;
+    }
+
+    /// `]p` `[p` `]P` `[P` — paste linewise with each line's indent replaced
+    /// by the current line's, which is what makes a snippet land level with
+    /// where it is going.
+    fn pasteIndented(self: *Editor, after: bool) void {
+        if (self.rejectReadOnly()) return;
+        const reg = self.registers.get(self.pending_register) orelse return;
+        const cur = self.curLine();
+        const lead = self.gpa.dupe(u8, cur[0..motion.firstNonBlank(cur)]) catch return;
+        defer self.gpa.free(lead);
+        self.pushUndo();
+        var at = if (after) self.cy + 1 else self.cy;
+        const first = at;
+        var it = std.mem.splitScalar(u8, trimTrailingNewline(reg.text), '\n');
+        while (it.next()) |ln| {
+            const body = std.mem.trimStart(u8, ln, " \t");
+            const joined = std.mem.concat(self.gpa, u8, &.{ lead, body }) catch return;
+            defer self.gpa.free(joined);
+            self.buf.insertLineAt(at, joined) catch return;
+            at += 1;
+        }
+        self.buf.dirty = true;
+        self.cy = @min(first, self.buf.lineCount() - 1);
+        self.cx = motion.firstNonBlank(self.curLine());
+        self.updateGoal();
     }
 
     // === the rest of the `g` namespace =====================================
@@ -8735,6 +8963,33 @@ pub const Editor = struct {
             }
         }
         return near orelse wrap;
+    }
+
+    /// `]D` / `[D`: the first or last diagnostic in the buffer, rather than
+    /// the next one — nvim 0.12 binds both pairs.
+    fn gotoDiagnosticEnd(self: *Editor, last: bool) void {
+        const client = if (self.lsp) |*c| c else return self.setStatus("no language server", .{});
+        var best: ?usize = null;
+        for (client.diags.items) |d| {
+            if (best == null or (if (last) d.line > best.? else d.line < best.?)) best = d.line;
+        }
+        const target = best orelse return self.setStatus("no diagnostics", .{});
+        self.cy = @min(target, self.buf.lineCount() - 1);
+        self.cx = motion.firstNonBlank(self.curLine());
+        self.updateGoal();
+    }
+
+    /// `]Q` / `[Q`: the last or first quickfix entry, rather than the next.
+    fn qfEnd(self: *Editor, last: bool) void {
+        if (self.qf.len() == 0) return self.setStatus("quickfix list is empty", .{});
+        self.qf.idx = if (last) self.qf.len() - 1 else 0;
+        self.qfJump(self.qf.entries.items[self.qf.idx]);
+    }
+
+    /// `]B` / `[B`: the last or first buffer.
+    fn docEnd(self: *Editor, last: bool) void {
+        if (self.docs.items.len == 0) return;
+        self.focusDoc(self.docs.items[if (last) self.docs.items.len - 1 else 0]);
     }
 
     /// `]g` / `[g` — jump to the next/previous hunk. Counted, and no jumplist

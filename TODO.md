@@ -166,6 +166,13 @@ there is nothing to change there.
 
 ## Done (chronological)
 
+- [x] The bracket namespace, 7 pairs to 20 of vim's 22: blank lines, marks,
+      unmatched brackets, sections, C comments, preprocessor conditionals,
+      re-indenting paste, members, fold ends, `]c`/`[c` onto the git hunks,
+      and the `D`/`Q`/`B` list-ends. Left out: spell, and the
+      `'include'`/`'define'` family, which searches included files — a
+      concept zedit does not have. (0.55.0)
+
 - [x] The `z` namespace, 11 keys to 40 of nvim's ~44: the view commands
       (`z<CR> z. z- z+ z^`), horizontal scroll (`zh zl zH zL zs ze`), the
       rest of the folds (`zA zC zO zD zF zj zk zv zx zX zi zn zN zm zr`)

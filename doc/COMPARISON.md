@@ -74,8 +74,10 @@ Read off the dispatch switches, not the docs:
 - **`z` namespace (40):** `zf zo zc za zR zM zd zE`, `zz zt zb` (0.48.0),
   and `z<CR> z. z- z+ z^ zA zC zD zF zO zX zx zi zj zk zm zn zN zr zv zh zl
   zH zL zs ze zp zP zy z<Left> z<Right>` (0.54.0). Plus `ZZ`/`ZQ`.
-- **Brackets (7 pairs):** `]d [d`, `]b [b`, `]f [f`, `]q [q` plus
-  `]e [e`, `]w [w`, `]g [g` (0.48.0).
+- **Brackets (20 pairs):** `]d [d`, `]b [b`, `]f [f`, `]q [q`, `]e [e`,
+  `]w [w`, `]g [g` (0.48.0), and `] [ `(space)`, ]' [', ]` [`, ]) [(, ]} [{,
+  ]] [[, ][ [], ]/ [/, ]* [*, ]# [#, ]p [p, ]P [P, ]m [m, ]z [z, ]c [c,
+  ]D [D, ]Q [Q, ]B [B` (0.55.0).
 - **Ctrl (normal):** `Ctrl-r v n p f b d u w o i` + `Ctrl-h/j/k/l`.
 - **Leader (`Space`), 9 groups:** `f`(5) `l`(8) `g`(3) `d`(7) `b`(3) `u`(8)
   `S`(3) `n`(3) `x`(4, 0.48.0), plus `e c w q t h` (`h` 0.48.0).
@@ -89,7 +91,7 @@ Counted against `index.txt`'s 473 normal-mode entries:
 |---|---:|---:|---|
 | `g…` | ~50 | 49 | `gt`/`gT`/`g<Tab>` (tab pages), `gh`/`gH`/`gV` (Select mode), `gQ` (Ex mode), `g@` (`'operatorfunc'`, i.e. scripting), `g]` (tags), `g<` (message history), `gs` (sleeps the editor — left out on principle). Four keep zedit's AstroNvim meaning over vim's: `ga`, `gi`, `gr`, `gd` |
 | `z…` | ~44 | 40 | the spell family (`z=` `zg` `zG` `zw` `zW` `zug` `zuG` `zuw` `zuW`) needs a dictionary and a suggestion engine; `z{height}<CR>` sets an absolute window height, where zedit's layout is weight-based on purpose |
-| `[…` / `]…` | 15 pairs | 7 pairs | `[ `/`] ` add blank line, `[D`/`]D` first/last diagnostic, `[l`/`]l` location list, `[a`/`]a` arglist, `[t`/`]t` tags, `[%`/`]%` matchit |
+| `[…` / `]…` | 22 pairs | 20 pairs | `[s`/`]s` (spell), `[d`/`]d`/`[i`/`]i`/`[D`/`]D`/`[I`/`]I` + the `Ctrl-D`/`Ctrl-I` forms (`'include'`/`'define'` search through included files), `[l`/`]l` (location list), `[a`/`]a` (arglist), `[t`/`]t` (tags). `[f`/`]f` and `[d`/`]d` keep zedit's meanings — functions and diagnostics |
 
 **Stock nvim 0.12 defaults zedit does not have** (from the `--clean` dump, so
 these are things a user gets with *no config at all*): `gO` (document
