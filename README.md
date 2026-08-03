@@ -46,6 +46,9 @@
     the window without moving the cursor (`z<CR>`/`z.`/`z-` also go to the
     first non-blank, `z+`/`z^` page from the window's edges), and
     `zh`/`zl`/`zH`/`zL`/`zs`/`ze` scroll sideways when soft wrap is off
+  - `Ctrl-a` / `Ctrl-x` increment and decrement the number at the cursor
+    (decimal, hex, negative, leading zeros kept), `Ctrl-e`/`Ctrl-y` scroll a
+    line, `Ctrl-^` flips to the previous buffer
   - `gx` hands the URL or path under the cursor to the desktop's own handler,
     `gf` opens the file named there
   - Nearly all of vim's `g` namespace: `ge`/`gE`, `g_`, `g^`, `gm`/`gM`, `go`,

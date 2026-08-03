@@ -2,6 +2,49 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.56.0 - 2026-08-03
+
+The Ctrl namespace, plain keys and the `Ctrl-W` family.
+
+### Added
+
+- **`Ctrl-A` / `Ctrl-X`** add or subtract from the number at or after the
+  cursor — the long-standing gap COMPARISON has carried since the first
+  audit. vim's rules, nvim-probed: a leading `-` belongs to the number, `0x`
+  makes it hexadecimal, leading zeros keep the written width (`0042` →
+  `0043`; nvim's default `nrformats` has no octal, so `007` → `008`), a count
+  multiplies, and the cursor ends on the number's last character. The finding
+  rule is pure and unit-tested (`motion.numberAt`).
+- **`Ctrl-E` / `Ctrl-Y`** scroll one line, taking the cursor only when it
+  would otherwise leave the screen.
+- **`Ctrl-G`** names the file and says where in it the cursor is; **`Ctrl-^`**
+  flips to the buffer shown before this one.
+- **`Ctrl-W`** gained `t`/`b` (first/last window), `p` (the *last accessed*
+  one, which is not the previous one in the tiling), `W`, `x` (swap),
+  `r`/`R` (rotate), `H`/`J`/`K`/`L` (move to an end), `n`, `f`/`F`, `d`/`i`
+  (split then goto definition/declaration), `^`, and `_`/`|`, which maximise
+  along an axis — the honest reading of an absolute size on a layout that
+  carries relative weights.
+- `key.zig` decodes **`Ctrl-^`** (0x1e), which sat outside the letter run and
+  was reaching nothing at all.
+
+### Not implemented, and why
+
+`Ctrl-T` and `Ctrl-]` want tags; `Ctrl-<Tab>` wants tab pages; `<Help>`/`<F1>`
+want a help system. **`Ctrl-Z` (suspend)** would have to leave the alternate
+screen and restore it on resume — worth doing, and not done here rather than
+done badly. `Ctrl-H`/`J`/`K`/`L`, `Ctrl-N`/`Ctrl-P` and `<Space>` keep zedit's
+meanings (window navigation, multiple cursors, the leader) over vim's plain
+motions, as they always have.
+
+### Note
+
+`Ctrl-E`/`Ctrl-Y` hit the same trap `z+`/`z^` did last release: a burst of
+keys (`50G` then Ctrl-E in one read) reaches the handler before the frame
+that would have settled the viewport, so they scroll from a stale top unless
+they call `scroll()` first. That is now twice; anything reading window state
+inside a key handler needs it.
+
 ## 0.55.0 - 2026-08-03
 
 The bracket namespace: **20 of vim's 22 pairs**, up from 7. Ground truth via

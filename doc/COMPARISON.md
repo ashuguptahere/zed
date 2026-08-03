@@ -162,7 +162,7 @@ one; these are the entries that name a capability zedit could have:
 | `Space '` | `last_picker` | **absent** (AstroNvim's `Space f<CR>` is the same idea — two editors agree) |
 | `Space j` | `jumplist_picker` | absent (the jumplist itself is done) |
 | `Space g` | `changed_file_picker` | absent — a picker of VCS-modified files |
-| `Ctrl-a` / `Ctrl-x` | increment / decrement | **absent** |
+| `Ctrl-a` / `Ctrl-x` | increment / decrement | **done in 0.56.0** |
 | `Alt-o` / `Alt-i` | expand / shrink selection | absent (nvim 0.12 has this too, as `an`/`in`) |
 | `Alt-n` / `Alt-p` | next / prev sibling node | absent |
 | `\|` `!` `$` `Alt-\|` | shell pipe / insert output / keep-pipe | **absent** — no way to filter text through a command |
@@ -228,7 +228,7 @@ behaviour and passes with or without any change, deliberately.
   command", not "filter this selection")
 - Tree-sitter selection expand/shrink and sibling navigation (`Alt-o`/`Alt-i`,
   `Alt-n`/`Alt-p`) — **medium** (nvim 0.12 ships this as a default too)
-- Increment/decrement numbers (`Ctrl-a`/`Ctrl-x`) — **low**
+- ~~Increment/decrement numbers (`Ctrl-a`/`Ctrl-x`)~~ — **DONE** (decimal, hex, negative, leading-zero width, counted)
 - Autosave (focus-lost, after-delay) — **low**
 - `:reflow` text wrapping — **low** (explicit case commands are done: `gu`/`gU`/`g~`)
 

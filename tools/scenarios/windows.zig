@@ -6,6 +6,7 @@ const std = @import("std");
 const h = @import("../harness.zig");
 
 const CTRL_W = "\x17";
+const CR = "\r";
 
 /// More splits than the terminal has cells must degrade, not abort: a
 /// zero-width window used to underflow the row painter's `gw - 1`. Reachable
@@ -177,6 +178,86 @@ pub fn run(ctx: *h.Ctx) !void {
     }
 
     try bufferClose(ctx);
+    try ctrlWRest(ctx);
+    try altFileAndInfo(ctx);
+}
+
+/// The rest of `Ctrl-W`: first/last/last-accessed window, rotate, swap and
+/// maximise. Which window has focus is read off the statusline's filename,
+/// so each split shows a different file.
+fn ctrlWRest(ctx: *h.Ctx) !void {
+    const dir = try ctx.tempDir();
+    for ([_][]const u8{ "one.txt", "two.txt", "three.txt" }, 0..) |name, i| {
+        const p = h.join(ctx, dir, name);
+        defer ctx.gpa.free(p);
+        var body: [32]u8 = undefined;
+        h.writeFile(ctx.io, p, std.fmt.bufPrint(&body, "body{d}\n", .{i + 1}) catch "x\n");
+    }
+    var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "--lsp", "", "one.txt" }, .cwd = dir, .cols = 100 });
+    defer s.finish();
+    s.drain(600);
+    s.send(":split" ++ CR ++ ":e two.txt" ++ CR);
+    s.drain(500);
+    s.send(":split" ++ CR ++ ":e three.txt" ++ CR);
+    s.drain(500);
+
+    var scr0 = try h.screenOf(ctx, &s, 24, 100);
+    defer scr0.deinit();
+    ctx.check("three splits, three files", scr0.has(ctx.gpa, "body1") and
+        scr0.has(ctx.gpa, "body2") and scr0.has(ctx.gpa, "body3"));
+
+    // Rotating, swapping and maximising must keep every window alive.
+    s.send("\x17t");
+    s.drain(300);
+    s.send("\x17b");
+    s.drain(300);
+    s.send("\x17p"); // back to the last-accessed one
+    s.drain(300);
+    s.send("\x17r\x17x\x17R");
+    s.drain(500);
+    var scr = try h.screenOf(ctx, &s, 24, 100);
+    defer scr.deinit();
+    ctx.check("Ctrl-w t/b/p/r/x/R keep all three windows", scr.has(ctx.gpa, "body1") and
+        scr.has(ctx.gpa, "body2") and scr.has(ctx.gpa, "body3"));
+    s.send("\x17_");
+    s.drain(400);
+    ctx.check("Ctrl-w _ maximises without losing the others", !s.containsPlain(ctx.gpa, "panic"));
+    s.send(":qa!" ++ CR);
+    s.drain(300);
+}
+
+/// `Ctrl-^` flips between the two most recent buffers, and `Ctrl-G` says
+/// where the cursor is.
+fn altFileAndInfo(ctx: *h.Ctx) !void {
+    const dir = try ctx.tempDir();
+    const a = h.join(ctx, dir, "a.txt");
+    defer ctx.gpa.free(a);
+    const b = h.join(ctx, dir, "b.txt");
+    defer ctx.gpa.free(b);
+    h.writeFile(ctx.io, a, "alpha\nl2\nl3\nl4\n");
+    h.writeFile(ctx.io, b, "bravo\n");
+    var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "--lsp", "", "a.txt" }, .cwd = dir });
+    defer s.finish();
+    s.drain(600);
+    s.send(":e b.txt" ++ CR);
+    s.drain(500);
+    ctx.check("the second file is showing", s.containsPlain(ctx.gpa, "bravo"));
+    var m = s.mark();
+    s.send("\x1e"); // Ctrl-^
+    s.drain(500);
+    ctx.check("Ctrl-^ flips back to the first", s.containsPlainSince(ctx.gpa, m, "alpha"));
+    m = s.mark();
+    s.send("\x1e");
+    s.drain(500);
+    ctx.check("...and flips forward again", s.containsPlainSince(ctx.gpa, m, "bravo"));
+
+    m = s.mark();
+    s.send("\x07"); // Ctrl-G
+    s.drain(400);
+    ctx.check("Ctrl-G names the file", s.containsPlainSince(ctx.gpa, m, "b.txt"));
+    ctx.check("Ctrl-G reports the line count", s.containsPlainSince(ctx.gpa, m, "1 lines"));
+    s.send(":qa!" ++ CR);
+    s.drain(300);
 }
 
 /// `:bd` semantics, pinned to nvim ground truth (0.12.4 --clean through a

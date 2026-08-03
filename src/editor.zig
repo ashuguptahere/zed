@@ -362,6 +362,12 @@ pub const Editor = struct {
     /// Whether the session is `gR` rather than `R`: typing covers display
     /// *columns*, so a tab shrinks instead of being destroyed.
     repl_virtual: bool = false,
+    /// The buffer shown before the current one — vim's alternate file, which
+    /// `Ctrl-^` flips back to.
+    alt_doc: ?*Doc = null,
+    /// The window focused before this one — `Ctrl-w p`, which is the *last
+    /// accessed* window rather than the previous one in the tiling.
+    prev_win: ?*Win = null,
     /// False while `zp`/`zP` paste: a blockwise paste normally pads a short
     /// line out to the block's column, and these are the variants that do not.
     block_pad: bool = true,
@@ -1927,6 +1933,12 @@ pub const Editor = struct {
             },
             'w' => self.await_arg = .ctrl_w, // window command prefix
             'o' => self.jumpBack(), // jumplist back
+            'a' => self.incrementNumber(1, self.eff()),
+            'x' => self.incrementNumber(-1, self.eff()),
+            'e' => self.scrollLines(true, self.eff()),
+            'y' => self.scrollLines(false, self.eff()),
+            'g' => self.showFileInfo(),
+            '^' => self.editAlternate(), // Ctrl-^ (0x1e on the wire)
             // AstroNvim's window navigation. Directional rather than a cycle,
             // and the explorer is one of the places you can move to, which is
             // the keyboard route into the tree that `Space e` alone gave.
@@ -2311,11 +2323,47 @@ pub const Editor = struct {
                 };
                 switch (ch) {
                     'v' => self.splitWindow(true), // vertical split (columns)
-                    's' => self.splitWindow(false), // horizontal split (rows)
+                    's', 'S', 'n' => self.splitWindow(false), // horizontal split (rows)
                     'c', 'q' => self.closeWindow(),
                     'o' => self.onlyWindow(),
                     'w', 'l', 'j' => self.nextWindow(true),
-                    'h', 'k', 'p' => self.nextWindow(false),
+                    'h', 'k' => self.nextWindow(false),
+                    'W' => self.nextWindow(false),
+                    // `p` is the *last accessed* window, which is not the
+                    // same as the previous one in the tiling order.
+                    'p' => self.focusPrevWindow(),
+                    // First and last in the tiling, whatever the orientation.
+                    't' => self.focusWinAt(0),
+                    'b' => self.focusWinAt(self.wins.items.len - 1),
+                    // Move this window to the far end, or swap it with the
+                    // next — the flat tiling makes both a reorder.
+                    'H', 'K' => self.moveWindowTo(0),
+                    'L', 'J' => self.moveWindowTo(self.wins.items.len - 1),
+                    'x' => self.swapWindow(),
+                    'r' => self.rotateWindows(true),
+                    'R' => self.rotateWindows(false),
+                    // Split, then open what is under the cursor there.
+                    'f', 'F' => {
+                        self.splitWindow(false);
+                        self.openFileUnderCursor(ch == 'F');
+                    },
+                    'd' => {
+                        self.splitWindow(false);
+                        self.lspDefinition();
+                    },
+                    'i' => {
+                        self.splitWindow(false);
+                        self.lspDeclaration();
+                    },
+                    '^' => { // Ctrl-w ^: the alternate file in a split
+                        self.splitWindow(false);
+                        self.editAlternate();
+                    },
+                    // `_` and `|` maximise along an axis; zedit's windows
+                    // carry weights, so "as big as it can be" is the honest
+                    // reading of an absolute height on a relative layout.
+                    '_' => self.resizeWindow(@intCast(self.win.rows), false),
+                    '|' => self.resizeWindow(@intCast(self.win.cols), true),
                     // Resize, vim's keys. A count is the number of cells:
                     // `5Ctrl-w +` grows by five, as `Ctrl-w +` grows by one.
                     '+' => self.resizeWindow(@intCast(cnt), false),
@@ -5376,6 +5424,111 @@ pub const Editor = struct {
         self.resetPending();
     }
 
+    // === the Ctrl namespace ================================================
+
+    /// `Ctrl-A` / `Ctrl-X` — add or subtract `n` from the number at or after
+    /// the cursor. vim's rules, nvim-probed: a leading `-` belongs to the
+    /// number, `0x` makes it hexadecimal, leading zeros keep the width
+    /// (`0042` becomes `0043`), and the cursor ends on its last character.
+    fn incrementNumber(self: *Editor, by: i64, n: usize) void {
+        if (self.rejectReadOnly()) return;
+        const line = self.curLine();
+        const span = motion.numberAt(line, self.cx) orelse
+            return self.setStatus("no number under or after the cursor", .{});
+        const text = line[span.start..span.end];
+
+        const delta = by * @as(i64, @intCast(n));
+        var body: [64]u8 = undefined; // the digits, unpadded
+        var buf: [80]u8 = undefined; // the finished literal
+        var neg = false;
+        var want: usize = 0; // digits the source had, for keeping its width
+        const digits: []const u8 = if (span.hex) blk: {
+            const v = std.fmt.parseInt(u64, text[2..], 16) catch return;
+            const nv = @as(u64, @bitCast(@as(i64, @bitCast(v)) +% delta));
+            want = text.len - 2;
+            break :blk std.fmt.bufPrint(&body, "{x}", .{nv}) catch return;
+        } else blk: {
+            const v = std.fmt.parseInt(i64, text, 10) catch return;
+            const nv = v +% delta;
+            neg = nv < 0;
+            // Leading zeros are inside the span, so the width is kept — but
+            // only when the source actually had them (`41` stays two wide by
+            // accident, `0042` on purpose).
+            const src = if (text.len > 0 and text[0] == '-') text[1..] else text;
+            if (src.len > 1 and src[0] == '0') want = src.len;
+            break :blk std.fmt.bufPrint(&body, "{d}", .{@abs(nv)}) catch return;
+        };
+
+        const pad = if (want > digits.len) want - digits.len else 0;
+        var w: usize = 0;
+        if (span.hex) {
+            buf[0] = '0';
+            buf[1] = 'x';
+            w = 2;
+        } else if (neg) {
+            buf[0] = '-';
+            w = 1;
+        }
+        if (w + pad + digits.len > buf.len) return;
+        var k: usize = 0;
+        while (k < pad) : (k += 1) {
+            buf[w] = '0';
+            w += 1;
+        }
+        @memcpy(buf[w .. w + digits.len], digits);
+        const out: []const u8 = buf[0 .. w + digits.len];
+
+        self.pushUndo();
+        const owned = self.gpa.dupe(u8, out) catch return;
+        defer self.gpa.free(owned);
+        var i = span.end;
+        while (i > span.start) : (i -= 1) self.buf.deleteForward(self.cy, span.start) catch return;
+        self.buf.insertBytes(self.cy, span.start, owned) catch return;
+        self.buf.dirty = true;
+        // vim leaves the cursor on the number's last character.
+        self.cx = span.start + owned.len - 1;
+        self.updateGoal();
+    }
+
+    /// `Ctrl-E` / `Ctrl-Y` — scroll the window one line without moving the
+    /// cursor, which follows only when it would otherwise leave the screen.
+    fn scrollLines(self: *Editor, down: bool, n: usize) void {
+        // Settle the viewport first: a burst of keys (`50G` then Ctrl-E in
+        // one read) arrives before the frame that would have scrolled, and
+        // scrolling from a stale top lands somewhere else entirely.
+        self.scroll();
+        const rows = self.textRows();
+        const last = self.buf.lineCount() - 1;
+        if (down) self.top = @min(self.top + n, last) else self.top -|= n;
+        if (self.cy < self.top) self.cy = self.top;
+        const bot = self.lineAtScreenRow(rows - 1);
+        if (self.cy > bot) self.cy = bot;
+        self.clampCursor();
+        self.updateGoal();
+    }
+
+    /// `Ctrl-G` — the file, where the cursor is in it, and whether it has
+    /// unsaved changes. vim's shortest status line.
+    fn showFileInfo(self: *Editor) void {
+        const pct = if (self.buf.lineCount() == 0) 0 else (self.cy + 1) * 100 / self.buf.lineCount();
+        self.setStatus("\"{s}\"{s} {d} lines --{d}%--", .{
+            docLabel(self.d),
+            if (self.buf.dirty) " [+]" else "",
+            self.buf.lineCount(),
+            pct,
+        });
+    }
+
+    /// `Ctrl-^` — back to the buffer shown before this one, which is what
+    /// makes flipping between two files a single keystroke.
+    fn editAlternate(self: *Editor) void {
+        const alt = self.alt_doc orelse return self.setStatus("no alternate file", .{});
+        for (self.docs.items) |d| {
+            if (d == alt) return self.focusDoc(alt);
+        }
+        self.setStatus("no alternate file", .{});
+    }
+
     // === the bracket namespace =============================================
 
     /// `[(` `])` `[{` `]}` — the nearest *unmatched* bracket in a direction,
@@ -6495,6 +6648,7 @@ pub const Editor = struct {
     /// Point the active window at `doc` (e.g. `:e`, `:bn`).
     fn focusDoc(self: *Editor, doc: *Doc) void {
         if (doc == self.cur.doc) return;
+        self.alt_doc = self.cur.doc; // what `Ctrl-^` flips back to
         self.loadDoc(doc);
         self.cur.doc = doc;
         self.comp_open = false;
@@ -6510,6 +6664,7 @@ pub const Editor = struct {
     /// Move focus to window `w`, swapping its document in if different.
     fn focusWin(self: *Editor, w: *Win) void {
         if (w == self.cur) return;
+        self.prev_win = self.cur; // what `Ctrl-w p` goes back to
         const prev = self.cur;
         const prev_cy = self.cy;
         self.saveViewport();
@@ -6571,6 +6726,60 @@ pub const Editor = struct {
         } else if (!forward and idx > 0) {
             self.focusWin(self.wins.items[idx - 1]);
         }
+    }
+
+    /// `Ctrl-w p` — back to the last window that had focus.
+    fn focusPrevWindow(self: *Editor) void {
+        const w = self.prev_win orelse return;
+        for (self.wins.items) |x| {
+            if (x == w) return self.focusWin(w);
+        }
+    }
+
+    /// `Ctrl-w t` / `Ctrl-w b` — the first or last window in the tiling.
+    fn focusWinAt(self: *Editor, i: usize) void {
+        if (i < self.wins.items.len) self.focusWin(self.wins.items[i]);
+    }
+
+    /// `Ctrl-w H/J/K/L` — move this window to one end of the tiling. The
+    /// layout is flat and single-orientation, so "far left" and "very top"
+    /// are the same move; the pair that means the other end likewise.
+    fn moveWindowTo(self: *Editor, to: usize) void {
+        const n = self.wins.items.len;
+        if (n <= 1) return;
+        const from = self.winIndex(self.cur);
+        if (from == to) return;
+        const w = self.wins.orderedRemove(from);
+        self.wins.insert(self.gpa, @min(to, self.wins.items.len), w) catch {
+            self.wins.insert(self.gpa, from, w) catch {};
+            return;
+        };
+        self.layout();
+    }
+
+    /// `Ctrl-w x` — swap this window with the next (the previous, when it is
+    /// already last), which is what vim does with no count.
+    fn swapWindow(self: *Editor) void {
+        const n = self.wins.items.len;
+        if (n <= 1) return;
+        const i = self.winIndex(self.cur);
+        const j = if (i + 1 < n) i + 1 else i - 1;
+        std.mem.swap(*Win, &self.wins.items[i], &self.wins.items[j]);
+        self.layout();
+    }
+
+    /// `Ctrl-w r` / `Ctrl-w R` — rotate the tiling one place.
+    fn rotateWindows(self: *Editor, down: bool) void {
+        const n = self.wins.items.len;
+        if (n <= 1) return;
+        if (down) {
+            const last = self.wins.orderedRemove(n - 1);
+            self.wins.insert(self.gpa, 0, last) catch return;
+        } else {
+            const first = self.wins.orderedRemove(0);
+            self.wins.append(self.gpa, first) catch return;
+        }
+        self.layout();
     }
 
     fn nextWindow(self: *Editor, forward: bool) void {

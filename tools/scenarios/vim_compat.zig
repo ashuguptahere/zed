@@ -695,6 +695,27 @@ fn dotAndMacros(ctx: *h.Ctx) void {
     h.case(ctx, target, "nvim#gv9 gv twice still reaches the first", &.{ "vll", ESC, "gv", ESC, "gvd", ":wq", CR }, "abcdef\n", "def\n");
     h.case(ctx, target, "nvim#gv10 gv with nothing selected yet does nothing", &.{ "gvd", ":wq", CR }, "abc\n", "abc\n");
 
+    // === Ctrl-A / Ctrl-X : the number at or after the cursor ==============
+    const CA = "\x01";
+    const CX = "\x18";
+    h.case(ctx, target, "nvim#ca1 Ctrl-A on the number", &.{ "w" ++ CA, ":wq", CR }, "x 41 y\n", "x 42 y\n");
+    h.case(ctx, target, "nvim#ca2 …and from before it", &.{ CA, ":wq", CR }, "x 41 y\n", "x 42 y\n");
+    h.case(ctx, target, "nvim#ca3 a count adds that much", &.{ "5" ++ CA, ":wq", CR }, "x 41 y\n", "x 46 y\n");
+    h.case(ctx, target, "nvim#ca4 Ctrl-X subtracts", &.{ CX, ":wq", CR }, "x 41 y\n", "x 40 y\n");
+    h.case(ctx, target, "nvim#ca5 it carries", &.{ CA, ":wq", CR }, "a9b\n", "a10b\n");
+    h.case(ctx, target, "nvim#ca6 a leading minus belongs to it", &.{ CA, ":wq", CR }, "x -3 y\n", "x -2 y\n");
+    h.case(ctx, target, "nvim#ca7 …and can be reached", &.{ CX, ":wq", CR }, "x 0 y\n", "x -1 y\n");
+    h.case(ctx, target, "nvim#ca8 hex", &.{ CA, ":wq", CR }, "x 0x0f y\n", "x 0x10 y\n");
+    h.case(ctx, target, "nvim#ca9 hex carrying into a new digit", &.{ CA, ":wq", CR }, "x 0xFF y\n", "x 0x100 y\n");
+    // Leading zeros keep the width; nvim's default 'nrformats' has no octal,
+    // so 007 is seven, not eight-in-octal.
+    h.case(ctx, target, "nvim#ca10 leading zeros keep the width", &.{ CA, ":wq", CR }, "x 007 y\n", "x 008 y\n");
+    h.case(ctx, target, "nvim#ca11 …with more of them", &.{ CA, ":wq", CR }, "x 0042 y\n", "x 0043 y\n");
+    h.case(ctx, target, "nvim#ca12 a line with no number is left alone", &.{ CA, ":wq", CR }, "abc\n", "abc\n");
+    h.case(ctx, target, "nvim#ca13 from inside the digits", &.{ "3l" ++ CA, ":wq", CR }, "x 1234 y\n", "x 1235 y\n");
+    // vim leaves the cursor on the number's last character.
+    h.case(ctx, target, "nvim#ca14 the cursor ends on the last digit", &.{ CA ++ "x", ":wq", CR }, "x 41 y\n", "x 4 y\n");
+
     // === the bracket namespace ===========================================
     const secs = "int a() {\n  x;\n}\nint b() {\n  y;\n}\nint c() {\n  z;\n}\n";
 

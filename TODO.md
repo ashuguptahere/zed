@@ -166,6 +166,13 @@ there is nothing to change there.
 
 ## Done (chronological)
 
+- [x] The Ctrl namespace: `Ctrl-A`/`Ctrl-X` (the number increment COMPARISON
+      had carried since the first audit), `Ctrl-E`/`Ctrl-Y`, `Ctrl-G`,
+      `Ctrl-^`, and the rest of `Ctrl-W` (t b p W x r R H J K L n f F d i ^
+      _ |). Left out: tags, tab pages, a help system, and `Ctrl-Z` suspend —
+      which needs to leave and re-enter the alternate screen. `Ctrl-H/J/K/L`,
+      `Ctrl-N/P` and `<Space>` keep zedit's meanings. (0.56.0)
+
 - [x] The bracket namespace, 7 pairs to 20 of vim's 22: blank lines, marks,
       unmatched brackets, sections, C comments, preprocessor conditionals,
       re-indenting paste, members, fold ends, `]c`/`[c` onto the git hunks,

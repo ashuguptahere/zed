@@ -119,6 +119,28 @@ pub fn run(ctx: *h.Ctx) !void {
         }
     }
 
+    // --- Ctrl-E / Ctrl-Y : scroll one line, cursor only if pushed --------
+    // nvim from 50G (centred, w0=40): Ctrl-E -> w0=41, 3Ctrl-E -> 43,
+    // Ctrl-Y -> 39. From `zt` (w0=50, cursor on the top row) Ctrl-E pushes
+    // the cursor down with it, to line 51.
+    try viewCase(ctx, dir, "nvim#ce1 Ctrl-E scrolls one down", "50G\x05", "L041", "L062", "L040", "L063");
+    try viewCase(ctx, dir, "nvim#ce2 a count scrolls that many", "50G3\x05", "L043", "L064", "L042", "L065");
+    try viewCase(ctx, dir, "nvim#ce3 Ctrl-Y scrolls one up", "50G\x19", "L039", "L060", "L038", "L061");
+    try viewCase(ctx, dir, "nvim#ce4 from zt, Ctrl-E takes the cursor", "50Gzt\x05", "L051", "L072", "L050", "L073");
+    try viewCase(ctx, dir, "nvim#ce5 from zt, Ctrl-Y does not", "50Gzt\x19", "L049", "L070", "L048", "L071");
+    // The cursor follows only when it would leave the screen: from zt,
+    // Ctrl-E then `x` edits line 51, not 50.
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "lines.txt", "--lsp", "" }, .cwd = dir });
+        defer s.finish();
+        s.drain(600);
+        s.send("50Gzt\x05x:wq\r");
+        s.drain(600);
+        const got = h.readFile(ctx.gpa, ctx.io, path);
+        defer ctx.gpa.free(got);
+        ctx.check("Ctrl-E pushes the cursor off the top row", std.mem.indexOf(u8, got, "\n051\n") != null);
+    }
+
     // The cursor stays on its line: `zt` then `x` edits line 50, not line 1.
     {
         var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "lines.txt", "--lsp", "" }, .cwd = dir });

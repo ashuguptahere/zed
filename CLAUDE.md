@@ -1185,6 +1185,30 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   with nothing showing there is no deadline at all — so an idle editor is back
   to blocking in `poll(2)` for ever (pty-checked: under 20 ms of CPU over 2 s
   idle after a toast).
+- **The Ctrl namespace.** `Ctrl-a`/`Ctrl-x` add or subtract from the number
+  at or after the cursor — vim's rules, nvim-probed: a leading `-` belongs to
+  it, `0x` makes it hexadecimal, leading zeros keep the written width (`0042`
+  → `0043`, and nvim's default `nrformats` has no octal, so `007` → `008`),
+  and the cursor ends on the number's last character. The finding rule is
+  pure and unit-tested (`motion.numberAt`), including the case the first
+  attempt got wrong: a cursor sitting on a hex *letter*, which no forward
+  scan for a decimal digit ever reaches.
+  `Ctrl-e`/`Ctrl-y` scroll one line, taking the cursor only when it would
+  otherwise leave the screen; `Ctrl-g` names the file and says where in it
+  the cursor is; `Ctrl-^` flips to the buffer shown before this one.
+  `Ctrl-w` gained `t`/`b` (first/last window), `p` (the *last accessed* one,
+  which is not the previous one in the tiling), `W`, `x` (swap), `r`/`R`
+  (rotate), `H`/`J`/`K`/`L` (move to an end — the tiling is flat and
+  single-orientation, so each pair means one end), `n`, `f`/`F`, `d`/`i`
+  (split then goto definition/declaration), `^`, and `_`/`|` which maximise
+  along an axis, that being the honest reading of an absolute size on a
+  relative layout.
+  Not implemented: `Ctrl-t` and `Ctrl-]` want tags, `Ctrl-<Tab>` wants tab
+  pages, `<Help>`/`<F1>` want a help system, and `Ctrl-z` (suspend) would
+  have to leave the alternate screen and restore it on resume — worth doing,
+  not done. `Ctrl-h`/`j`/`k`/`l`, `Ctrl-n`/`Ctrl-p` and `<Space>` keep
+  zedit's meanings (window navigation, multiple cursors, the leader) over
+  vim's plain motions, as they always have.
 - **Window navigation (`Ctrl-h`/`j`/`k`/`l`):** AstroNvim's window keys, moving
   focus directionally rather than cycling, with the **file tree as the window
   beyond the edge it is docked to** — so `Ctrl-h` steps into the explorer and

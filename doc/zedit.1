@@ -1021,6 +1021,22 @@ reaches the list from the leader tree.
 .B "] [ \fR(space)\fP"
 Add \fIN\fP blank lines below or above, leaving the cursor where it is.
 .TP
+.B "CTRL-A CTRL-X"
+Add or subtract \fIN\fP from the number at or after the cursor. A leading
+minus belongs to it,
+.B 0x
+makes it hexadecimal, and leading zeros keep the written width.
+.TP
+.B "CTRL-E CTRL-Y"
+Scroll the window one line down or up. The cursor follows only when it would
+otherwise leave the screen.
+.TP
+.B CTRL-G
+Name the file, its line count and how far through it the cursor is.
+.TP
+.B CTRL-^
+Edit the alternate file \(em the buffer shown before this one.
+.TP
 .B "]' [' ]\` [\`"
 Step to the next or previous mark \(em on its first non\-blank for the
 quote forms, on its exact column for the backtick ones.

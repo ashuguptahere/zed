@@ -75,6 +75,9 @@ pub fn decode(bytes: []const u8) Decoded {
         // with a space because that is the one a user is most likely to name.
         0x00 => .{ .key = .{ .ctrl = ' ' }, .consumed = 1 },
         0x01...0x07, 0x0b, 0x0c, 0x0e...0x1a => .{ .key = .{ .ctrl = b - 1 + 'a' }, .consumed = 1 },
+        // Ctrl-^ sits outside the letter run; it keeps its own name rather
+        // than being folded onto one, since vim gives it a command of its own.
+        0x1e => .{ .key = .{ .ctrl = '^' }, .consumed = 1 },
         else => decodeChar(bytes),
     };
 }
@@ -247,6 +250,7 @@ test "decode control keys" {
     try std.testing.expectEqual(Key{ .ctrl = 'c' }, decode(&[_]u8{0x03}).key);
     // Ctrl-` / Ctrl-Space / Ctrl-@ all arrive as NUL.
     try std.testing.expectEqual(Key{ .ctrl = ' ' }, decode(&[_]u8{0x00}).key);
+    try std.testing.expectEqual(Key{ .ctrl = '^' }, decode(&[_]u8{0x1e}).key);
     try std.testing.expectEqual(Key.enter, decode("\r").key);
     try std.testing.expectEqual(Key.backspace, decode(&[_]u8{0x7f}).key);
     try std.testing.expectEqual(Key.escape, decode(&[_]u8{0x1b}).key);

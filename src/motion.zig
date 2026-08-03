@@ -151,6 +151,64 @@ pub fn wordEndBackward(buf: *const buffer.Buffer, pos: Pos, big: bool) Pos {
     return p;
 }
 
+/// The number `Ctrl-A` would act on: the one at or after the cursor, on this
+/// line only. A leading `-` belongs to it, `0x`/`0X` makes it hexadecimal,
+/// and leading zeros are inside the span so the width can be kept (`0042`
+/// increments to `0043`, nvim-probed). Null when the line holds no number.
+pub const NumberSpan = struct { start: usize, end: usize, hex: bool };
+
+fn isDec(c: u8) bool {
+    return c >= '0' and c <= '9';
+}
+fn isHex(c: u8) bool {
+    return isDec(c) or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F');
+}
+
+pub fn numberAt(line: []const u8, col: usize) ?NumberSpan {
+    const at = @min(col, line.len);
+    // The cursor may already be sitting on a hex *letter*, which no forward
+    // scan for a decimal digit would ever reach: walk back over the digits
+    // and see whether an `0x` introduced them.
+    if (at < line.len and isHex(line[at])) {
+        var h = at;
+        while (h > 0 and isHex(line[h - 1])) h -= 1;
+        if (h >= 2 and (line[h - 1] == 'x' or line[h - 1] == 'X') and line[h - 2] == '0') {
+            var e = h;
+            while (e < line.len and isHex(line[e])) e += 1;
+            return .{ .start = h - 2, .end = e, .hex = true };
+        }
+    }
+    // The first decimal digit at or after the cursor. Hex digits alone do not
+    // start a number — `abc` is a word, `0xabc` is a number.
+    var i = at;
+    while (i < line.len and !isDec(line[i])) i += 1;
+    if (i >= line.len) return null;
+
+    // A hex literal starting right here.
+    if (line[i] == '0' and i + 2 < line.len and (line[i + 1] == 'x' or line[i + 1] == 'X') and isHex(line[i + 2])) {
+        var e = i + 2;
+        while (e < line.len and isHex(line[e])) e += 1;
+        return .{ .start = i, .end = e, .hex = true };
+    }
+    // …or one the cursor has landed inside: walk back over its digits and
+    // see whether an `0x` introduced them.
+    var h = i;
+    while (h > 0 and isHex(line[h - 1])) h -= 1;
+    if (h >= 2 and (line[h - 1] == 'x' or line[h - 1] == 'X') and line[h - 2] == '0') {
+        var e = h;
+        while (e < line.len and isHex(line[e])) e += 1;
+        return .{ .start = h - 2, .end = e, .hex = true };
+    }
+
+    // Plain decimal, with any leading zeros and a sign.
+    var s = i;
+    while (s > 0 and isDec(line[s - 1])) s -= 1;
+    var e = s;
+    while (e < line.len and isDec(line[e])) e += 1;
+    if (s > 0 and line[s - 1] == '-') s -= 1;
+    return .{ .start = s, .end = e, .hex = false };
+}
+
 /// One position forward / backward across the buffer, for callers outside
 /// this module (the bracket motions walk character by character).
 pub fn stepForwardPub(buf: *const buffer.Buffer, p: Pos) Pos {
@@ -863,4 +921,33 @@ test "the URL or file name under the cursor (gx)" {
     try std.testing.expect(targetUnderCursor("   ", 1) == null);
     // A column past the end clamps rather than reading out of bounds.
     try eq("abc", targetUnderCursor("abc", 99).?);
+}
+
+
+test "the number Ctrl-A acts on" {
+    const eq = std.testing.expectEqualStrings;
+    const at = numberAt;
+    // At or after the cursor, on this line only.
+    try eq("41", "x 41 y"[at("x 41 y", 0).?.start..at("x 41 y", 0).?.end]);
+    try eq("41", "x 41 y"[at("x 41 y", 2).?.start..at("x 41 y", 2).?.end]);
+    // Inside the digits still takes the whole number.
+    try eq("1234", "x 1234 y"[at("x 1234 y", 4).?.start..at("x 1234 y", 4).?.end]);
+    // A leading minus belongs to it; leading zeros stay in the span.
+    try eq("-3", "x -3 y"[at("x -3 y", 0).?.start..at("x -3 y", 0).?.end]);
+    try eq("0042", "x 0042 y"[at("x 0042 y", 0).?.start..at("x 0042 y", 0).?.end]);
+    // Hex, reached from before it and from inside it.
+    {
+        const l = "x 0x0f y";
+        const a = at(l, 0).?;
+        try eq("0x0f", l[a.start..a.end]);
+        try std.testing.expect(a.hex);
+        const b = at(l, 5).?; // on the `f`
+        try eq("0x0f", l[b.start..b.end]);
+        try std.testing.expect(b.hex);
+    }
+    // Hex digits on their own are a word, not a number.
+    try std.testing.expect(at("abc", 0) == null);
+    try std.testing.expect(at("", 0) == null);
+    // A column past the end still finds nothing rather than reading out.
+    try std.testing.expect(at("abc", 99) == null);
 }
