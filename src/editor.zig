@@ -159,6 +159,7 @@ const Await = enum {
     register, // "{a-z}
     g_prefix, // g then ...
     visual_g, // g then ... in visual mode (gg, gv, gJ, gu/gU/g~)
+    visual_z, // z then y in visual mode (zy)
     z_prefix, // Z then Z/Q
     fold_prefix, // z then a fold command (f o c a R M d E)
     bracket_next, // ] then d (next diagnostic)
@@ -361,6 +362,9 @@ pub const Editor = struct {
     /// Whether the session is `gR` rather than `R`: typing covers display
     /// *columns*, so a tab shrinks instead of being destroyed.
     repl_virtual: bool = false,
+    /// False while `zp`/`zP` paste: a blockwise paste normally pads a short
+    /// line out to the block's column, and these are the variants that do not.
+    block_pad: bool = true,
     /// The last `:s`, for `g&` to run again over the whole file.
     last_sub: ?Substitute = null,
     /// What the current Replace-mode session has overwritten, innermost last.
@@ -2101,6 +2105,12 @@ pub const Editor = struct {
                 } else
                     self.resetPending();
             },
+            .visual_z => {
+                self.await_arg = .none;
+                if (k == .char and k.char == 'y') {
+                    if (self.mode == .visual_block) try self.blockYank(true) else try self.visualOperator(.yank);
+                }
+            },
             // `g` in visual mode. The selection is still live here, so these
             // act on it rather than taking a motion.
             .visual_g => {
@@ -2164,8 +2174,87 @@ pub const Editor = struct {
                     'z' => self.positionView(.centre),
                     't' => self.positionView(.top),
                     'b' => self.positionView(.bottom),
+                    // The same three, but also to the line's first non-blank —
+                    // which is the only thing separating them (nvim-probed).
+                    '.' => {
+                        self.positionView(.centre);
+                        self.toFirstNonBlank();
+                    },
+                    '-' => {
+                        self.positionView(.bottom);
+                        self.toFirstNonBlank();
+                    },
+                    // `z+` starts on the line below the window, `z^` on the
+                    // one above it, then behave like z<CR> and z- from there.
+                    '+' => {
+                        // These two read the *window*, so it has to be where
+                        // it will be drawn: a burst of keys (`50Gz+` in one
+                        // read) reaches here before the frame that would
+                        // have settled the viewport.
+                        self.scroll();
+                        self.cy = if (n > 0) @min(n - 1, self.buf.lineCount() - 1) else @min(self.bottomLine() + 1, self.buf.lineCount() - 1);
+                        self.positionView(.top);
+                        self.toFirstNonBlank();
+                    },
+                    '^' => {
+                        self.scroll();
+                        self.cy = if (n > 0) @min(n - 1, self.buf.lineCount() - 1) else self.top -| 1;
+                        self.positionView(.bottom);
+                        self.toFirstNonBlank();
+                    },
+                    // Folds, the rest of them.
+                    'A' => _ = self.d.folds.toggleRecursive(self.cy),
+                    'C' => _ = self.d.folds.setClosedRecursive(self.cy, true),
+                    'O' => _ = self.d.folds.setClosedRecursive(self.cy, false),
+                    'D' => _ = self.d.folds.removeRecursive(self.cy),
+                    'F' => self.foldCreate(self.cy, @min(self.cy + @max(n, 1) - 1, self.buf.lineCount() - 1)),
+                    'v' => self.d.folds.reveal(self.cy),
+                    'x' => {
+                        self.d.folds.applyLevel();
+                        self.d.folds.reveal(self.cy);
+                    },
+                    'X' => self.d.folds.applyLevel(),
+                    'm' => self.d.folds.stepLevel(false, @max(n, 1)),
+                    'r' => self.d.folds.stepLevel(true, @max(n, 1)),
+                    'i' => self.d.folds.enabled = !self.d.folds.enabled,
+                    'n' => self.d.folds.enabled = false,
+                    'N' => self.d.folds.enabled = true,
+                    'j' => if (self.d.folds.nextFold(self.cy, true)) |r| {
+                        self.cy = @min(r, self.buf.lineCount() - 1);
+                        self.toFirstNonBlank();
+                    },
+                    'k' => if (self.d.folds.nextFold(self.cy, false)) |r| {
+                        self.cy = @min(r, self.buf.lineCount() - 1);
+                        self.toFirstNonBlank();
+                    },
+                    // Horizontal scrolling (soft wrap off).
+                    'h' => self.scrollSideways(false, @max(n, 1)),
+                    'l' => self.scrollSideways(true, @max(n, 1)),
+                    'H' => self.scrollSideways(false, self.textCols() / 2),
+                    'L' => self.scrollSideways(true, self.textCols() / 2),
+                    's' => self.scrollCursorTo(true),
+                    'e' => self.scrollCursorTo(false),
+                    // Blockwise paste/yank with no padding (see pasteBlock).
+                    'p' => {
+                        self.block_pad = false;
+                        self.paste(true, false) catch {};
+                        self.block_pad = true;
+                    },
+                    'P' => {
+                        self.block_pad = false;
+                        self.paste(false, false) catch {};
+                        self.block_pad = true;
+                    },
                     else => {},
                 };
+                if (k == .enter) { // z<CR>
+                    self.positionView(.top);
+                    self.toFirstNonBlank();
+                } else if (k == .left) {
+                    self.scrollSideways(false, @max(n, 1));
+                } else if (k == .right) {
+                    self.scrollSideways(true, @max(n, 1));
+                }
             },
             .bracket_next, .bracket_prev => {
                 if (k == .char and k.char == 'd') self.gotoDiagnostic(a == .bracket_next, null);
@@ -3488,7 +3577,9 @@ pub const Editor = struct {
             // Reach `dcol`, padding a line that stops short of it.
             const line = self.buf.line(row);
             const have = displayCol(line, line.len);
-            if (have < dcol) {
+            // `zp`/`zP` are the variants that add no padding at all: a line
+            // too short simply takes the block at its own end.
+            if (have < dcol and self.block_pad) {
                 pad.clearRetainingCapacity();
                 pad.appendNTimes(self.gpa, ' ', dcol - have) catch return;
                 self.buf.insertBytes(row, line.len, pad.items) catch return;
@@ -3507,7 +3598,7 @@ pub const Editor = struct {
             while (rep < n) : (rep += 1) {
                 pad.appendSlice(self.gpa, seg) catch return;
                 // Square the rectangle up for whatever comes after it.
-                if ((rep + 1 < n or tail) and seg_w < reg.width)
+                if ((rep + 1 < n or tail) and seg_w < reg.width and self.block_pad)
                     pad.appendNTimes(self.gpa, ' ', reg.width - seg_w) catch return;
             }
             self.buf.insertBytes(row, col, pad.items) catch return;
@@ -4357,7 +4448,9 @@ pub const Editor = struct {
                     self.cx = tmp.col;
                 },
                 'd', 'x' => if (self.mode == .visual_block) try self.blockDelete() else try self.visualOperator(.delete),
-                'y' => if (self.mode == .visual_block) try self.blockYank() else try self.visualOperator(.yank),
+                'y' => if (self.mode == .visual_block) try self.blockYank(false) else try self.visualOperator(.yank),
+                // `z` in visual mode exists for `zy` alone.
+                'z' => self.await_arg = .visual_z,
                 'c', 's' => if (self.mode == .visual_block) try self.blockChange() else try self.visualOperator(.change),
                 'I' => if (self.mode == .visual_block) try self.blockInsert(false),
                 'A' => if (self.mode == .visual_block) try self.blockInsert(true),
@@ -4780,12 +4873,27 @@ pub const Editor = struct {
         self.updateGoal();
     }
 
-    fn blockYank(self: *Editor) !void {
+    /// `y` in blockwise visual, and `zy` — which is the same yank with each
+    /// segment's trailing whitespace dropped, so pasting it back adds no
+    /// blanks the source did not have (nvim-probed via `nvim -s`, which is
+    /// the only way to get a Ctrl-V through a pty intact).
+    fn blockYank(self: *Editor, trim: bool) !void {
         const r = self.blockCols();
         var out: std.ArrayList(u8) = .empty;
         defer out.deinit(self.gpa);
         const w = try self.blockText(r, &out);
-        self.yankTo(out.items, .blockwise, w);
+        if (trim) {
+            var trimmed: std.ArrayList(u8) = .empty;
+            defer trimmed.deinit(self.gpa);
+            var it = std.mem.splitScalar(u8, out.items, '\n');
+            var first = true;
+            while (it.next()) |seg| {
+                if (!first) try trimmed.append(self.gpa, '\n');
+                first = false;
+                try trimmed.appendSlice(self.gpa, std.mem.trimEnd(u8, seg, " \t"));
+            }
+            self.yankTo(trimmed.items, .blockwise, w);
+        } else self.yankTo(out.items, .blockwise, w);
         self.mode = .normal;
         self.cy = r.top;
         self.cx = byteAtDisplayCol(self.buf.line(r.top), r.left);
@@ -10863,6 +10971,43 @@ pub const Editor = struct {
     /// `(rows-1)/2` lines above it, clamped at the start of the buffer.
     fn centredTop(self: *Editor, rows: usize) usize {
         return self.cy -| (rows -| 1) / 2;
+    }
+
+    /// The cursor to this line's first non-blank — what `z<CR>`, `z.` and
+    /// `z-` add over `zt`, `zz` and `zb`.
+    fn toFirstNonBlank(self: *Editor) void {
+        self.cx = motion.firstNonBlank(self.curLine());
+        self.updateGoal();
+    }
+
+    /// The last buffer line the window is showing, for `z+`.
+    fn bottomLine(self: *Editor) usize {
+        return self.lineAtScreenRow(self.textRows() - 1);
+    }
+
+    /// `zh`/`zl` (N columns), `zH`/`zL` (half a screen) and `z<Left>`/
+    /// `z<Right>`. Horizontal scrolling only exists with soft wrap off, which
+    /// is exactly what vim documents these as needing; with wrap on they do
+    /// nothing, as there is nowhere sideways to go.
+    fn scrollSideways(self: *Editor, right: bool, n: usize) void {
+        if (self.wrapping()) return;
+        const cols = self.textCols();
+        if (right) self.left += n else self.left -|= n;
+        // The cursor follows only as far as it must to stay on screen, which
+        // is what leaves it put when the scroll was small (nvim-probed).
+        const cur = displayCol(self.curLine(), self.cx);
+        if (cur < self.left)
+            self.cx = byteAtDisplayCol(self.curLine(), self.left)
+        else if (cur >= self.left + cols)
+            self.cx = byteAtDisplayCol(self.curLine(), self.left + cols - 1);
+        self.updateGoal();
+    }
+
+    /// `zs` / `ze`: scroll so the cursor sits at the left or right edge.
+    fn scrollCursorTo(self: *Editor, start: bool) void {
+        if (self.wrapping()) return;
+        const cur = displayCol(self.curLine(), self.cx);
+        self.left = if (start) cur else cur -| (self.textCols() - 1);
     }
 
     /// `zz`/`zt`/`zb` — put the cursor's line at the centre, the top or the

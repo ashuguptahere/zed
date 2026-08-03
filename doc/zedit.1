@@ -949,6 +949,40 @@ and
 in normal mode. Also
 .BR :terminal .
 .TP
+.B "z<CR> z. z-"
+As
+.BR zt ", " zz " and " zb ,
+but also to the line's first non\-blank.
+.TP
+.B "z+ z^"
+Start on the line below (above) the window, then behave like
+.B z<CR>
+and
+.BR z- .
+.TP
+.B "zh zl zH zL zs ze z<Left> z<Right>"
+Scroll sideways \(em by \fIN\fP columns, by half a screen, or so the cursor
+sits at the left or right edge. These need soft wrap off; with it on there is
+nowhere sideways to go.
+.TP
+.B "zA zC zO zD zF zj zk zv zx zX zi zn zN zm zr"
+The rest of the folds: toggle/close/open recursively, delete a fold and all
+nested in it, fold \fIN\fP lines, step to the next or previous fold, open just
+enough to see the cursor, re\-apply the fold level, toggle
+.RB ' foldenable ',
+and lower or raise
+.RB ' foldlevel '.
+A fold is closed when its nesting depth exceeds the level;
+.B zo
+and
+.B zc
+set one fold directly and stand until the level moves again.
+.TP
+.B "zp zP zy"
+Blockwise paste and yank without the trailing whitespace the ordinary
+.BR p / P / y
+add or keep.
+.TP
 .B zf\fImotion\fP
 Fold the lines the motion covered into one row.
 .B zo

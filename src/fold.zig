@@ -10,9 +10,15 @@
 //! sorted by start (then by widest first), which makes that lookup a scan in
 //! document order rather than a search.
 //!
-//! Deliberately absent: `foldlevel`/`foldmethod` as settings, fold columns,
-//! and persistence — a fold is a thing you make while reading, and vim loses
-//! them on close too unless `:mkview` is used.
+//! `foldlevel` and `foldenable` are here as *state* rather than settings: a
+//! fold is closed when its nesting depth exceeds the level, which is what
+//! `zm`/`zr`/`zM`/`zR` move and `zX` re-applies, while `zo`/`zc`/`za` set one
+//! fold's flag directly and stand until the level moves again. That is vim's
+//! model exactly (nvim-probed with `foldclosed()`).
+//!
+//! Deliberately absent: `foldmethod` (every fold here is manual), fold
+//! columns, and persistence — a fold is a thing you make while reading, and
+//! vim loses them on close too unless `:mkview` is used.
 
 const std = @import("std");
 
@@ -29,6 +35,12 @@ pub const Fold = struct {
 pub const Set = struct {
     gpa: std.mem.Allocator,
     items: std.ArrayList(Fold) = .empty,
+    /// vim's 'foldlevel': a fold deeper than this is closed when the level is
+    /// applied. Starts at 0, which is what makes `zf` produce a closed fold.
+    level: usize = 0,
+    /// vim's 'foldenable' (`zi`/`zn`/`zN`). False hides nothing, without
+    /// forgetting which folds were closed.
+    enabled: bool = true,
 
     pub fn deinit(self: *Set) void {
         self.items.deinit(self.gpa);
@@ -66,10 +78,127 @@ pub const Set = struct {
     /// The outermost closed fold covering `row` — the one whose header is what
     /// the screen actually shows.
     pub fn closedAt(self: *const Set, row: usize) ?Fold {
+        if (!self.enabled) return null; // 'nofoldenable': nothing is hidden
         for (self.items.items) |f| {
             if (f.closed and f.covers(row)) return f;
         }
         return null;
+    }
+
+    /// How deeply nested the fold at index `i` is: 1 for an outermost fold,
+    /// 2 for one inside it, and so on. Counted rather than stored, since a
+    /// fold's depth changes whenever another is added around it.
+    fn depthOf(self: *const Set, i: usize) usize {
+        const f = self.items.items[i];
+        var d: usize = 1;
+        for (self.items.items, 0..) |o, j| {
+            if (j == i) continue;
+            if (o.start <= f.start and o.end >= f.end and (o.end - o.start) > (f.end - f.start)) d += 1;
+        }
+        return d;
+    }
+
+    /// The deepest nesting in the set — what `zR` raises the level to.
+    pub fn maxDepth(self: *const Set) usize {
+        var m: usize = 0;
+        for (0..self.items.items.len) |i| m = @max(m, self.depthOf(i));
+        return m;
+    }
+
+    /// Close every fold deeper than `level`, open the rest — vim's `zX`, and
+    /// what `zm`/`zr`/`zM`/`zR` each do after moving the level.
+    pub fn applyLevel(self: *Set) void {
+        for (self.items.items, 0..) |*f, i| f.closed = self.depthOf(i) > self.level;
+    }
+
+    /// `zm` / `zr`: one level less or more, then apply it.
+    pub fn stepLevel(self: *Set, up: bool, n: usize) void {
+        const max = self.maxDepth();
+        if (up) self.level = @min(self.level + n, max) else self.level -|= n;
+        self.applyLevel();
+    }
+
+    /// `zC` / `zO`: every fold covering `row`, *and* everything nested inside
+    /// those — so `zC` on an inner fold shuts the outer one too, and `zO` on
+    /// an outer one opens all the way down. Both nvim-probed; the phrase
+    /// "recursively" in vim's help covers both directions.
+    pub fn setClosedRecursive(self: *Set, row: usize, closed: bool) bool {
+        var acted = false;
+        // Two passes: the enclosing folds, then whatever nests inside any of
+        // them. One pass would miss a sibling nested in an enclosing fold.
+        for (self.items.items) |*f| {
+            if (!f.covers(row)) continue;
+            f.closed = closed;
+            acted = true;
+        }
+        var again = true;
+        while (again) {
+            again = false;
+            for (self.items.items, 0..) |*f, i| {
+                if (f.closed == closed) continue;
+                for (self.items.items, 0..) |o, j| {
+                    if (i == j or o.closed != closed) continue;
+                    if (o.start <= f.start and o.end >= f.end) {
+                        f.closed = closed;
+                        acted = true;
+                        again = true;
+                        break;
+                    }
+                }
+            }
+        }
+        return acted;
+    }
+
+    /// `zA`: toggle recursively, deciding from whatever is showing now.
+    pub fn toggleRecursive(self: *Set, row: usize) bool {
+        const open_it = self.closedAt(row) != null;
+        return self.setClosedRecursive(row, !open_it);
+    }
+
+    /// `zD`: delete the innermost fold at `row` and everything nested inside
+    /// it. `zd` (`removeAt`) takes only the innermost one.
+    pub fn removeRecursive(self: *Set, row: usize) bool {
+        var inner: ?Fold = null;
+        for (self.items.items) |f| {
+            if (!f.covers(row)) continue;
+            if (inner == null or f.end - f.start < inner.?.end - inner.?.start) inner = f;
+        }
+        const target = inner orelse return false;
+        var i: usize = 0;
+        var acted = false;
+        while (i < self.items.items.len) {
+            const f = self.items.items[i];
+            if (f.start >= target.start and f.end <= target.end) {
+                _ = self.items.orderedRemove(i);
+                acted = true;
+                continue;
+            }
+            i += 1;
+        }
+        return acted;
+    }
+
+    /// `zv`: open just enough that `row` is visible — every fold covering it.
+    pub fn reveal(self: *Set, row: usize) void {
+        for (self.items.items) |*f| {
+            if (f.covers(row)) f.closed = false;
+        }
+    }
+
+    /// `zj` / `zk`: the start of the next fold below `row`, or the end of the
+    /// previous one above it. Null when there is none that way.
+    pub fn nextFold(self: *const Set, row: usize, forward: bool) ?usize {
+        var best: ?usize = null;
+        for (self.items.items) |f| {
+            const at = if (forward) f.start else f.end;
+            if (forward) {
+                if (at > row and (best == null or at < best.?)) best = at;
+            } else {
+                if (at < row and (best == null or at > best.?)) best = at;
+            }
+        }
+        return best;
     }
 
     /// The first visible row at or after `row` (`last` is the final row of the
@@ -124,7 +253,10 @@ pub const Set = struct {
         return self.setClosed(row, !open_it);
     }
 
+    /// `zM` / `zR`: everything shut or everything open, which is the level
+    /// moved to its ends — so a later `zm`/`zr` steps from the right place.
     pub fn setAll(self: *Set, closed: bool) void {
+        self.level = if (closed) 0 else self.maxDepth();
         for (self.items.items) |*f| f.closed = closed;
     }
 

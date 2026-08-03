@@ -695,6 +695,21 @@ fn dotAndMacros(ctx: *h.Ctx) void {
     h.case(ctx, target, "nvim#gv9 gv twice still reaches the first", &.{ "vll", ESC, "gv", ESC, "gvd", ":wq", CR }, "abcdef\n", "def\n");
     h.case(ctx, target, "nvim#gv10 gv with nothing selected yet does nothing", &.{ "gvd", ":wq", CR }, "abc\n", "abc\n");
 
+    // === zp / zP / zy : blockwise without the padding =====================
+    // Ground truth via `nvim -s`, which replays a key file: a pty swallows
+    // Ctrl-V before nvim ever sees it, so the ordinary probe could not build
+    // a blockwise register at all.
+    const rag = "abcd\ne\nxx\nyy\n";
+    h.case(ctx, target, "nvim#zp1 p pads the short segment", &.{ CV ++ "jlly", "3Gp", ":wq", CR }, rag, "abcd\ne\nxabx\nye y\n");
+    h.case(ctx, target, "nvim#zp2 zp does not", &.{ CV ++ "jlly", "3Gzp", ":wq", CR }, rag, "abcd\ne\nxabx\nyey\n");
+    h.case(ctx, target, "nvim#zp3 P pads too", &.{ CV ++ "jlly", "3GP", ":wq", CR }, rag, "abcd\ne\nabxx\ne yy\n");
+    h.case(ctx, target, "nvim#zp4 zP does not", &.{ CV ++ "jlly", "3GzP", ":wq", CR }, rag, "abcd\ne\nabxx\neyy\n");
+    // `zy` drops each segment's own trailing blanks, so what comes back has
+    // none the source did not have.
+    const blanks = "ab  \ncd  \nzz\n";
+    h.case(ctx, target, "nvim#zp5 y keeps the blanks", &.{ CV ++ "jlll y", "3GP", ":wq", CR }, blanks, "ab  \ncd  \nab   zz\ncd  \n");
+    h.case(ctx, target, "nvim#zp6 zy trims them", &.{ CV ++ "jlll zy", "3GP", ":wq", CR }, blanks, "ab  \ncd  \nab   zz\ncd\n");
+
     // === the rest of the g namespace ======================================
     const W = "one two three four\nalpha bravo charlie\n";
     const S = "foo foobar\nbar foo\nfoobar baz\n";

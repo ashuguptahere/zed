@@ -1026,6 +1026,30 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   the pty after each feed. Absent by design: the
   alternate screen (a full-screen program draws over the shell's output
   instead of restoring it), and any mouse or bracketed-paste mode of its own.
+- **The rest of the `z` namespace.** `z<CR>`/`z.`/`z-` are `zt`/`zz`/`zb`
+  plus the line's first non-blank, which is the only thing separating them;
+  `z+` starts on the line below the window and `z^` on the one above it, then
+  behave like those two — both call `scroll()` first, since a burst of keys
+  (`50Gz+` in one read) reaches the handler before the frame that would have
+  settled the viewport. `zh`/`zl`, `zH`/`zL` (half a screen), `zs`/`ze` and
+  `z<Left>`/`z<Right>` scroll sideways, and do nothing while soft wrap is on
+  — which is exactly what vim documents them as needing. `zp`/`zP` are the
+  blockwise pastes that add **no padding** to a short line, and `zy` the yank
+  that drops each segment's trailing blanks (`block_pad`, and the trim in
+  `blockYank`). Fold-wise: `zA`/`zC`/`zO` act recursively, `zD` deletes a fold
+  and everything nested in it, `zF` folds N lines, `zj`/`zk` step between
+  folds, `zv` opens just enough to see the cursor, and `zi`/`zn`/`zN` are
+  'foldenable'.
+  **`foldlevel` is real state now** (`fold.zig`): a fold is closed when its
+  nesting depth exceeds the level, which is what `zm`/`zr` move, `zM`/`zR`
+  drive to the ends and `zX`/`zx` re-apply — while `zo`/`zc`/`za` set one
+  fold's flag directly and stand until the level moves again. vim's model,
+  nvim-probed with `foldclosed()`.
+  Not implemented: the **spell family** (`z=` `zg` `zG` `zw` `zW` and the
+  `zu*` undos) needs a dictionary and a suggestion engine, and
+  `z{height}<CR>` sets an *absolute* window height where zedit's windows
+  carry relative weights on purpose — an absolute height means something
+  different on every terminal, which is the reason the weights exist.
 - **Folds (`zf`, `zo`/`zc`/`za`, `zR`/`zM`, `zd`/`zE`):** `zf{motion}`
   collapses the lines the motion covered into a single header row —
   `▸ N lines: text`, the header's own text with what it hides — and the body

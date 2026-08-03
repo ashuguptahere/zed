@@ -164,6 +164,18 @@ there is nothing to change there.
 - [ ] More nvim ground-truth tranches: operator-pending `gj`/`gk` under soft
       wrap (they agree with wrap off, so the gap is only the wrapped case).
 
+## Done (chronological)
+
+- [x] The `z` namespace, 11 keys to 40 of nvim's ~44: the view commands
+      (`z<CR> z. z- z+ z^`), horizontal scroll (`zh zl zH zL zs ze`), the
+      rest of the folds (`zA zC zO zD zF zj zk zv zx zX zi zn zN zm zr`)
+      with a real `foldlevel` in `fold.zig`, and `zp`/`zP`/`zy`. Left out:
+      the spell family (needs a dictionary and a suggestion engine) and
+      `z{height}<CR>` (an absolute height, where zedit's windows carry
+      relative weights on purpose). Two probing lessons: a pty eats Ctrl-V,
+      so blockwise ground truth needs `nvim -s`; and `zf` closes what it
+      makes, so a nested-fold setup has to reopen between cuts. (0.54.0)
+
 - [x] The `g` namespace, 20 keys to 49 of nvim's ~50: the motions
       (`ge gE g_ g^ gm gM go g' g\``), search (`g* g# gn gN`), edits
       (`g? gI gp gP g&`), the change list (`g; g,`), reflow (`gq gw`),

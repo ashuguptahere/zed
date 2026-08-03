@@ -85,6 +85,40 @@ pub fn run(ctx: *h.Ctx) !void {
     // `zz` then `zt` must land exactly where a bare `zt` does (nvim: w0=50).
     try viewCase(ctx, dir, "nvim#zzt 50G zz zt", "50Gzzzt", "L050", "L071", "L049", "L072");
 
+    // --- z<CR> / z. / z- : the same three, plus the first non-blank -------
+    // nvim, same 22-row window: z<CR> w0=50, z. w0=40, z- w0=29 — identical
+    // to zt/zz/zb. What separates them is the column, checked below.
+    try viewCase(ctx, dir, "nvim#zcr 50G z<CR>", "50Gz\r", "L050", "L071", "L049", "L072");
+    try viewCase(ctx, dir, "nvim#zdot 50G z.", "50Gz.", "L040", "L061", "L039", "L062");
+    try viewCase(ctx, dir, "nvim#zdash 50G z-", "50Gz-", "L029", "L050", "L028", "L051");
+    // `z+` starts on the line below the window, `z^` on the one above it.
+    // From 50G (which centres: w0=40, w$=61) that is 62 and 39.
+    try viewCase(ctx, dir, "nvim#zplus 50G z+", "50Gz+", "L062", "L083", "L061", "L084");
+    try viewCase(ctx, dir, "nvim#zcaret 50G z^", "50Gz^", "L018", "L039", "L017", "L040");
+
+    // The column: z<CR>/z./z- go to the first non-blank, zt/zz/zb keep it.
+    {
+        const ind = try std.fmt.allocPrint(ctx.gpa, "{s}/ind.txt", .{dir});
+        defer ctx.gpa.free(ind);
+        const Case = struct { name: []const u8, keys: []const u8, want: []const u8 };
+        for ([_]Case{
+            .{ .name = "nvim#zcol1 z<CR> goes to the first non-blank", .keys = "2G$z\rx:wq\r", .want = "a\n    ndented\nc\n" },
+            .{ .name = "nvim#zcol2 z. does too", .keys = "2G$z.x:wq\r", .want = "a\n    ndented\nc\n" },
+            .{ .name = "nvim#zcol3 z- does too", .keys = "2G$z-x:wq\r", .want = "a\n    ndented\nc\n" },
+            .{ .name = "nvim#zcol4 zt keeps the column", .keys = "2G$ztx:wq\r", .want = "a\n    indente\nc\n" },
+        }) |c| {
+            h.writeFile(ctx.io, ind, "a\n    indented\nc\n");
+            var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "ind.txt", "--lsp", "" }, .cwd = dir });
+            defer s.finish();
+            s.drain(500);
+            s.send(c.keys);
+            s.drain(500);
+            const got = h.readFile(ctx.gpa, ctx.io, ind);
+            defer ctx.gpa.free(got);
+            ctx.check(c.name, std.mem.eql(u8, got, c.want));
+        }
+    }
+
     // The cursor stays on its line: `zt` then `x` edits line 50, not line 1.
     {
         var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "lines.txt", "--lsp", "" }, .cwd = dir });

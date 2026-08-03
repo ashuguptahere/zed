@@ -2,6 +2,48 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.54.0 - 2026-08-03
+
+The `z` namespace: **40 of nvim's ~44**, up from 11.
+
+### Added
+
+- **View:** `z<CR>`/`z.`/`z-` are `zt`/`zz`/`zb` plus the line's first
+  non-blank, which is all that separates them; `z+`/`z^` start from the line
+  below/above the window. Both of the latter call `scroll()` first — a burst
+  of keys (`50Gz+` in one read) reaches the handler before the frame that
+  would have settled the viewport, which is a trap worth knowing about for
+  anything else that reads the window mid-key.
+- **Horizontal scroll:** `zh`/`zl`, `zH`/`zL` (half a screen), `zs`/`ze`
+  (cursor to the left/right edge) and `z<Left>`/`z<Right>`. They do nothing
+  while soft wrap is on, which is exactly what vim documents them as needing.
+- **Folds:** `zA`/`zC`/`zO` recursively, `zD` (a fold and everything nested
+  in it), `zF` (fold N lines), `zj`/`zk` (step between folds), `zv` (open
+  just enough to see the cursor), `zi`/`zn`/`zN` ('foldenable').
+- **`foldlevel` is real state now.** A fold is closed when its nesting depth
+  exceeds the level, which `zm`/`zr` move, `zM`/`zR` drive to the ends and
+  `zX`/`zx` re-apply — while `zo`/`zc`/`za` set one fold's flag directly and
+  stand until the level moves again. vim's model, probed with `foldclosed()`.
+- **`zp`/`zP`/`zy`** — blockwise paste and yank without the padding the
+  ordinary ones add.
+
+### Not implemented, and why
+
+The **spell family** (`z=` `zg` `zG` `zw` `zW` and the four `zu*` undos)
+needs a dictionary and a suggestion engine — a subsystem, not a keybinding.
+`z{height}<CR>` sets an *absolute* window height, where zedit's windows carry
+relative weights on purpose: an absolute height means something different on
+every terminal, which is the reason the weights exist.
+
+### Note on the ground truth
+
+Two probes had to change technique. A pty swallows Ctrl-V before nvim sees
+it, so the blockwise cases could not build a register at all through the
+usual harness; `nvim -s`, which replays a key *file*, gets the byte through
+intact. And `zf` closes what it makes, so a second `zf` measures its motion
+over a collapsed view — the nested-fold setup reopens with `zR` between the
+two, or the outer fold silently swallows the inner.
+
 ## 0.53.0 - 2026-08-03
 
 Vim's `g` namespace, as far as it goes: **49 of nvim's ~50** are now bound,
