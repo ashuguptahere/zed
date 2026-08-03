@@ -248,17 +248,25 @@
 
 ---> const answer = 42;
 
+  REPLACE MODE:  R  is like insert, except what you type overwrites what is
+  already there.   Backspace  puts the original characters back one at a
+  time, and  Esc  ends the session.
+
+  6. Press  R  on the first character below and type  1234 :
+
+---> abcdefgh
+
   CASE:  gU  uppercases what a motion covers,  gu  lowercases it and  g~
   swaps it.  Doubled ( gUU ,  guu ,  g~~ ) they take the whole line.
 
-  6. Put the cursor on the word below and press  gUiw :
+  7. Put the cursor on the word below and press  gUiw :
 
 ---> shout this word
 
   JOINING:  J  joins the next line onto this one with a space between.
   gJ  joins them with nothing at all, keeping whatever indent was there.
 
-  7. Try  J  on the first line, undo with  u , then try  gJ :
+  8. Try  J  on the first line, undo with  u , then try  gJ :
 
 ---> the two halves of
 --->      one sentence

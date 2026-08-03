@@ -261,7 +261,11 @@ snippets, auto-completion). Remaining: multiple language servers per language
   replay path). `:s` moved onto the shared parser, so there is one address
   parser rather than two. Still absent from the family: `:cfile`/`:grep` and
   the location list, which now have somewhere to hang — **low**
-- **Replace mode (`R`, `gR`)** — single-char `r` only — **medium**
+- ~~**Replace mode (`R`)**~~ — **DONE in 0.51.0** (overwrite typing, the
+  backspace-restores stack, counts, dot-repeat, one undo step). `gR`, vim's
+  *virtual* replace, is still absent: it types into a tab's display columns
+  without destroying the tab, which needs display-column bookkeeping this
+  does not have — **low**
 - **Changelist (`g;`/`g,`) and `''`** — **medium**
 - **`gq`/`gw` reflow + `'textwidth'`** — painful for prose and comments — **medium**
 - **Autocommands / user hooks / key remapping** — `format_on_save` is a

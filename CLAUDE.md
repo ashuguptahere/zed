@@ -594,6 +594,21 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   `:bn/:bp`, pickers, `gd`). Entries are per position across buffers (capped at
   100, same-line entries replaced); closing a buffer purges its entries.
   Behaviour pinned to nvim ground truth in `vim_compat`.
+- **Replace (`R`):** typing overwrites what is already there instead of
+  pushing it right, `Esc` returns to normal one column back as insert does.
+  Vim's model exactly: each overwritten character is pushed on a stack and
+  **backspace pops it back**, so a session can be walked all the way to the
+  text it started from. Past the end of the line typing appends, and
+  backspace over one of those removes it rather than restoring anything. With
+  the stack empty — the cursor has walked back past where the session began —
+  backspace only moves, changing no text (nvim-probed with `\x08`, since a
+  pty swallows `\x7f` when there is nothing to restore). `Enter` breaks the
+  line without replacing anything and ends the run backspace can reach. A
+  `[count]` types the text that many times, overwriting each time (`3Rab` on
+  `abcdefghij` gives `abababghij`), `.` repeats the whole session and the
+  session is one undo step. Absent: `gR`, vim's *virtual* replace, which types
+  into a tab's display columns without destroying the tab — that needs
+  display-column bookkeeping the plain mode does not.
 - **Insert:** `i I a A o O` (and `c`/`s` entries), `Esc` to normal. Auto-pairs:
   typing an opener inserts its closer; typing the closer steps over it.
   Autoindent (config `autoindent`, on by default): `o`/`O`/Enter/`cc` inherit

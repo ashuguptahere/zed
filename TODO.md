@@ -166,6 +166,13 @@ there is nothing to change there.
 
 ## Done (chronological)
 
+- [x] `R` replace mode: overwrite typing, vim's backspace-restores stack,
+      counts, dot-repeat, one undo step. `gR` (virtual replace over a tab's
+      display columns) is deliberately not built. Probing turned up that a
+      pty swallows `\x7f` in Replace mode when there is nothing to restore
+      while `\x08` always lands — worth knowing before pinning any other
+      backspace behaviour. (0.51.0)
+
 - [x] Ex ranges: `exrange.zig` (a pure, unit-tested address parser),
       `:[range]cmd` on `d y > < j s normal g v`, `:g`/`:v` in vim's two
       passes, and `:[range]normal` through the macro replay path. `:s` moved

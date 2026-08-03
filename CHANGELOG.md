@@ -2,6 +2,33 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.51.0 - 2026-08-03
+
+### Added
+
+- **`R` — replace mode.** Typing overwrites what is already there instead of
+  pushing it right; `Esc` returns to normal one column back, as insert does.
+  Vim's model exactly: every overwritten character is pushed on a stack and
+  **backspace pops it back**, so a session can be walked all the way to the
+  text it started from. Past the end of the line typing appends, and
+  backspace over one of those removes it rather than restoring anything;
+  with the stack empty — the cursor has walked back past where the session
+  began — backspace only moves and changes nothing. `Enter` breaks the line
+  without replacing anything. A `[count]` types the text that many times,
+  overwriting each time (`3Rab` on `abcdefghij` leaves `abababghij`), `.`
+  repeats the session, and the whole session is one undo step. Sixteen cases
+  in `vim_compat`, all generated from a real Neovim.
+
+Not implemented: `gR`, vim's *virtual* replace, which types into a tab's
+display columns without destroying the tab. It needs display-column
+bookkeeping the plain mode has no use for, and is recorded as a gap rather
+than half-built.
+
+One note from the probing: a pty swallows `\x7f` (DEL) in Replace mode when
+there is nothing to restore, while `\x08` (BS) always arrives. The
+before-the-session-start behaviour was pinned with the latter, which is why
+two of the sixteen cases send a different byte from the rest.
+
 ## 0.50.0 - 2026-08-03
 
 Ex ranges — the deepest remaining vim gap, and the one several smaller ones

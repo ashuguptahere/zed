@@ -72,6 +72,7 @@ fn tabWidth() usize {
 pub const Mode = enum {
     normal,
     insert,
+    replace, // `R`: typing overwrites rather than inserts
     visual,
     visual_line,
     visual_block,
@@ -83,6 +84,7 @@ pub const Mode = enum {
         return switch (self) {
             .normal => "NORMAL",
             .insert => "INSERT",
+            .replace => "REPLACE",
             .visual => "VISUAL",
             .visual_line => "V-LINE",
             .visual_block => "V-BLOCK",
@@ -348,6 +350,11 @@ pub const Editor = struct {
     /// vim types the text that many times. The anchor is where the session
     /// started, so the text can be read back out of the buffer on Esc.
     ins_count: usize = 1,
+    /// What the current Replace-mode session has overwritten, innermost last.
+    /// Each entry is the bytes that were there — empty when the typing ran
+    /// past the end of the line and appended — so backspace can walk the
+    /// session back to the text it started from.
+    repl_stack: std.ArrayList([]u8) = .empty,
     ins_anchor: Pos = .{ .row = 0, .col = 0 },
     ins_open_line: bool = false, // `o`/`O`: each repeat brings its own line
     yank_from_visual: bool = false,
@@ -756,6 +763,8 @@ pub const Editor = struct {
         self.macro_buf.deinit(self.gpa);
         self.dot_keys.deinit(self.gpa);
         self.dot_temp.deinit(self.gpa);
+        self.clearReplaceStack();
+        self.repl_stack.deinit(self.gpa);
         self.ai_indent.deinit(self.gpa);
         self.frame.deinit(self.gpa);
         self.seg_marks.deinit(self.gpa);
@@ -1203,7 +1212,7 @@ pub const Editor = struct {
             .scroll_up, .scroll_down => |m, tag| {
                 const up = tag == .scroll_up;
                 switch (self.mode) {
-                    .normal, .insert, .visual, .visual_line, .visual_block => self.mouseScroll(self.wheelWin(m), up),
+                    .normal, .insert, .replace, .visual, .visual_line, .visual_block => self.mouseScroll(self.wheelWin(m), up),
                     .picker => self.scrollPreview(if (up) -3 else 3),
                     // Over a shell, the wheel walks its scrollback.
                     .terminal => self.shellScroll(up, 3),
@@ -1268,7 +1277,7 @@ pub const Editor = struct {
     fn showcmdPush(self: *Editor, raw: []const u8) void {
         switch (self.mode) {
             .normal, .visual, .visual_line, .visual_block => {},
-            .insert, .command, .picker, .terminal => return,
+            .insert, .replace, .command, .picker, .terminal => return,
         }
         if (self.showcmd_done) { // the previous command is still displayed
             self.showcmd_len = 0;
@@ -1305,7 +1314,7 @@ pub const Editor = struct {
             .normal, .visual, .visual_line, .visual_block => if (self.atNeutral()) {
                 self.showcmd_done = self.showcmd_len > 0;
             },
-            .insert, .command, .picker, .terminal => {
+            .insert, .replace, .command, .picker, .terminal => {
                 self.showcmd_len = 0;
                 self.showcmd_done = false;
             },
@@ -1490,7 +1499,7 @@ pub const Editor = struct {
             // press left it. From insert that can be the column one past the
             // last character, and nvim keeps it there (probed: `getpos("v")`
             // reports column 4 on a 3-character line) rather than clamping.
-            .normal, .insert => {
+            .normal, .insert, .replace => {
                 self.enterVisual(.visual);
                 self.ins_visual = from_insert; // nvim's Insert Visual
             },
@@ -1620,7 +1629,7 @@ pub const Editor = struct {
         if (self.isCountDigit(k)) return;
         if (self.mode == .normal and (self.count > 0 or self.count2 > 0)) self.dot_count_tmp = self.eff();
         switch (self.mode) {
-            .normal, .insert, .visual, .visual_line, .visual_block => self.dot_temp.appendSlice(self.gpa, raw) catch {},
+            .normal, .insert, .replace, .visual, .visual_line, .visual_block => self.dot_temp.appendSlice(self.gpa, raw) catch {},
             .command, .picker, .terminal => {},
         }
     }
@@ -1664,6 +1673,7 @@ pub const Editor = struct {
             .terminal => self.terminalKey(k, raw),
             .normal => try self.normalKey(k),
             .insert => try self.insertKey(k),
+            .replace => try self.replaceKey(k),
             .visual, .visual_line, .visual_block => {
                 const iv = self.ins_visual;
                 try self.visualKey(k);
@@ -1852,6 +1862,7 @@ pub const Editor = struct {
             's' => try self.substituteChars(self.eff()),
             'S' => try self.changeLines(self.eff()),
             'r' => self.await_arg = .replace,
+            'R' => try self.enterReplace(),
             '~' => try self.toggleCase(self.eff()),
             'J' => try self.joinLines(self.eff(), true),
             'K' => {
@@ -3677,6 +3688,113 @@ pub const Editor = struct {
         if (n <= 1) return false;
         c.sig_active = (c.sig_active + n - 1) % n; // previous overload, wrapping
         return true;
+    }
+
+    // === Replace mode (`R`) ================================================
+
+    /// `R` — typing overwrites what is already there. Vim's model exactly:
+    /// each overwritten character is pushed onto a stack, and backspace pops
+    /// it back, so a session can be walked backwards to the text it started
+    /// from. Past the end of the line typing appends instead, and backspace
+    /// over one of those removes it rather than restoring anything.
+    fn enterReplace(self: *Editor) !void {
+        if (self.rejectReadOnly()) return;
+        self.pushUndo();
+        self.mode = .replace;
+        self.beginInsertCount(false);
+        self.clearReplaceStack();
+        self.resetPending();
+    }
+
+    fn clearReplaceStack(self: *Editor) void {
+        for (self.repl_stack.items) |s| self.gpa.free(s);
+        self.repl_stack.clearRetainingCapacity();
+    }
+
+    /// Overwrite the codepoint under the cursor with `cp` and step past it,
+    /// appending when there is nothing to overwrite. `record` is false for the
+    /// `[count]` repeat, which runs after the session's stack is done with.
+    fn replaceCodepoint(self: *Editor, cp: u21, record: bool) !void {
+        const line = self.buf.line(self.cy);
+        const past_end = self.cx >= line.len;
+        if (record) {
+            // An empty slice means "there was nothing here" — backspace
+            // deletes rather than restores.
+            const orig = if (past_end) "" else line[self.cx..unicode.nextBoundary(line, self.cx)];
+            try self.repl_stack.append(self.gpa, try self.gpa.dupe(u8, orig));
+        }
+        if (!past_end) try self.buf.deleteForward(self.cy, self.cx);
+        self.cx = try self.buf.insertCodepoint(self.cy, self.cx, cp);
+        self.updateGoal();
+    }
+
+    /// Backspace in Replace mode. Vim puts back what the last keystroke
+    /// overwrote; with nothing left on the stack — the cursor has walked back
+    /// past where the session began — it only moves, changing no text
+    /// (nvim-probed, with `\x08`: `llR<BS>X` gives `aXcdef`).
+    fn replaceBackspace(self: *Editor) !void {
+        if (self.repl_stack.pop()) |orig| {
+            defer self.gpa.free(orig);
+            if (self.cx > 0) self.cx = unicode.prevBoundary(self.curLine(), self.cx);
+            try self.buf.deleteForward(self.cy, self.cx);
+            if (orig.len > 0) try self.buf.insertBytes(self.cy, self.cx, orig);
+        } else if (self.cx > 0) {
+            self.cx = unicode.prevBoundary(self.curLine(), self.cx);
+        }
+        self.updateGoal();
+    }
+
+    /// On Esc: type the session's text the remaining `[count] - 1` times,
+    /// overwriting as it goes — `3Rab` leaves `ababab`, not `ab` and two
+    /// inserted copies.
+    fn repeatReplaceCount(self: *Editor) void {
+        if (self.ins_count <= 1) return;
+        const n = self.ins_count;
+        self.ins_count = 1; // never repeat a repeat
+        const text = self.insertedText() orelse return;
+        defer self.gpa.free(text);
+        if (text.len == 0) return;
+        var i: usize = 1;
+        while (i < n) : (i += 1) {
+            var j: usize = 0;
+            while (j < text.len) {
+                const d = unicode.decode(text[j..]);
+                j += d.len;
+                if (d.cp == '\n') continue; // a repeat never re-splits the line
+                self.replaceCodepoint(d.cp, false) catch return;
+            }
+        }
+    }
+
+    fn replaceKey(self: *Editor, k: key.Key) !void {
+        if (self.moveKey(k)) {
+            // A move ends the run of characters backspace can put back: the
+            // stack is only meaningful where the cursor has been typing.
+            self.clearReplaceStack();
+            return;
+        }
+        switch (k) {
+            .escape => {
+                self.repeatReplaceCount();
+                self.clearReplaceStack();
+                self.mode = .normal;
+                if (self.cx > 0) self.cx = unicode.prevBoundary(self.curLine(), self.cx);
+                self.updateGoal();
+            },
+            // vim inserts a line break rather than replacing one: nothing is
+            // overwritten, so there is nothing to put back either.
+            .enter => {
+                try self.buf.splitLine(self.cy, self.cx);
+                self.cy += 1;
+                self.cx = 0;
+                self.goal_col = 0;
+                self.clearReplaceStack();
+            },
+            .backspace => try self.replaceBackspace(),
+            .tab => try self.replaceCodepoint('\t', true),
+            .char => |c| try self.replaceCodepoint(c, true),
+            else => {},
+        }
     }
 
     fn insertKeyOne(self: *Editor, k: key.Key) !void {
@@ -9961,7 +10079,9 @@ pub const Editor = struct {
             // Blockwise visual reaches one column past the last character, so
             // a block can be built one wider than the short line under it and
             // `$` can mean "past every line's end" (nvim-verified).
-            .visual_block, .insert, .command, .picker, .terminal => line.len,
+            // Replace mode reaches one past the last character too: typing
+            // there appends rather than overwriting.
+            .visual_block, .insert, .replace, .command, .picker, .terminal => line.len,
         };
     }
 
@@ -13194,7 +13314,9 @@ pub const Editor = struct {
         const th = theme.current;
         return switch (self.mode) {
             .normal => th.mode_normal,
-            .insert => th.mode_insert,
+            // Replace is a kind of typing, and shares insert's colour as it
+            // does in AstroNvim's statusline.
+            .insert, .replace => th.mode_insert,
             .visual, .visual_line, .visual_block => th.mode_visual,
             .command, .picker => th.mode_command,
             .terminal => th.mode_insert, // typing goes somewhere: insert's colour

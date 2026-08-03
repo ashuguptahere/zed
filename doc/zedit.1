@@ -560,6 +560,20 @@ Toggle comments.
 Delete/change to end of line, delete char, substitute, replace char, toggle
 case, join lines.
 .TP
+.B R
+Replace mode: typed characters overwrite what is already there instead of
+pushing it right, and
+.B Backspace
+puts back exactly what each keystroke covered. Past the end of the line typing
+appends. A count types the text that many times
+.RB ( 3Rab
+leaves
+.BR ababab ),
+and the whole session is one undo step. Vim's
+.B gR
+(virtual replace, which types into a tab's display columns without destroying
+the tab) is not implemented.
+.TP
 .B gu\fR{motion}\fP gU\fR{motion}\fP g~\fR{motion}\fP
 Lowercase, uppercase and toggle the case of the text a motion covers; doubled
 .RB ( guu ", " gUU ", " g~~ )

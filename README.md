@@ -15,7 +15,7 @@
 
 ## Features
 
-- Modal editing: normal / insert / visual / command modes
+- Modal editing: normal / insert / replace / visual / command modes
 - A comprehensive **vim keymap**:
   - Motions: `h j k l`, `w W b B e E`, `0 ^ $`, `gg G {n}G`, `f F t T` + `; ,`,
     `%`, `H M L`, `Ctrl-d/u/f/b`, arrows
@@ -23,6 +23,8 @@
     `r ~ J`, e.g. `3dw`, `d2j`, `ci"`, `da(`, `diw`
   - Case operators `gu` / `gU` / `g~` with any motion (and `guu`/`gUU`/`g~~`),
     `gJ` to join without a separator, `gv` to reselect the last selection
+  - `R` **replace mode**: typing overwrites, and backspace puts back exactly
+    what each keystroke covered
   - Registers and paste: `"a`, `p` / `P` (linewise & charwise); `"+`/`"*`
     talk to the **system clipboard via OSC 52** — works over SSH
   - Undo `u`, redo `Ctrl-r`, repeat `.`

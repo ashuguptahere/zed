@@ -29,6 +29,8 @@ fn multi(comptime n: usize, comptime l: usize, comptime b: usize) []const u8 {
 const ESC = "\x1b";
 const CR = "\r";
 const CV = "\x16"; // Ctrl-v: blockwise visual
+const BS = "\x7f"; // what a terminal sends for Backspace
+const BS8 = "\x08"; // the other one, which nvim treats identically
 const target = "/tmp/zedit_it_compat.txt";
 
 // SGR mouse reports at a *buffer* position. nvim (driven with `-u NONE -i NONE
@@ -750,6 +752,28 @@ fn dotAndMacros(ctx: *h.Ctx) void {
     // place. What proves the prefix is real is `gj12`/`gc18` above, where
     // the key *after* `g` is lost without it.
     h.case(ctx, target, "nvim#vg1 visual gg extends to the first line", &.{ "jjvggd", ":wq", CR }, "aa\nbb\ncc\n", "c\n");
+    // === R: replace mode =================================================
+    // Typing overwrites; backspace puts back exactly what each keystroke
+    // covered, and only for the run this session typed.
+    h.case(ctx, target, "nvim#R1 R overwrites", &.{ "Rxyz", ESC, ":wq", CR }, "abcdef\n", "xyzdef\n");
+    h.case(ctx, target, "nvim#R2 R from mid-line", &.{ "llRxyz", ESC, ":wq", CR }, "abcdef\n", "abxyzf\n");
+    h.case(ctx, target, "nvim#R3 R runs past the end and appends", &.{ "llRxyz", ESC, ":wq", CR }, "abc\n", "abxyz\n");
+    h.case(ctx, target, "nvim#R4 R on an empty line", &.{ "Rabc", ESC, ":wq", CR }, "\nsecond\n", "abc\nsecond\n");
+    h.case(ctx, target, "nvim#R5 Esc steps back one, like insert", &.{ "Rxy", ESC, "x", ":wq", CR }, "abcdef\n", "xcdef\n");
+    h.case(ctx, target, "nvim#R6 backspace restores what was there", &.{ "Rxy", BS, BS, ESC, ":wq", CR }, "abcdef\n", "abcdef\n");
+    h.case(ctx, target, "nvim#R7 restore then overwrite again", &.{ "Rxy", BS, " z", ESC, ":wq", CR }, "abcdef\n", "x zdef\n");
+    h.case(ctx, target, "nvim#R8 more backspaces than replacements", &.{ "llRxyz", BS, BS, BS, BS, ESC, ":wq", CR }, "abcdef\n", "abcdef\n");
+    h.case(ctx, target, "nvim#R9 backspace over an appended char removes it", &.{ "llRxyz", BS, ESC, ":wq", CR }, "abc\n", "abxy\n");
+    // With nothing left to put back the cursor only moves — it does not
+    // delete, and it does not stop at where the session began.
+    h.case(ctx, target, "nvim#R10 backspace past the start only moves", &.{ "llR", BS8, "X", ESC, ":wq", CR }, "abcdef\n", "aXcdef\n");
+    h.case(ctx, target, "nvim#R11 backspace at column 0 does nothing", &.{ "R", BS8, "X", ESC, ":wq", CR }, "abcdef\n", "Xbcdef\n");
+    h.case(ctx, target, "nvim#R12 Enter breaks the line, replacing nothing", &.{ "Rab", CR, "cd", ESC, ":wq", CR }, "abcdef\nghijkl\n", "ab\ncdef\nghijkl\n");
+    h.case(ctx, target, "nvim#R13 a count types the text that many times", &.{ "3Rab", ESC, ":wq", CR }, "abcdefghij\n", "abababghij\n");
+    h.case(ctx, target, "nvim#R14 R is dot-repeatable", &.{ "Rxy", ESC, "lll", ".", ":wq", CR }, "abcdefgh\n", "xycdxygh\n");
+    h.case(ctx, target, "nvim#R15 the whole session is one undo step", &.{ "Rxyz", ESC, "u", ":wq", CR }, "abcdef\n", "abcdef\n");
+    h.case(ctx, target, "nvim#R16 R replaces a tab like any character", &.{ "Rxyz", ESC, ":wq", CR }, "a\tb\n", "xyz\n");
+
     // The screen-line motions have to keep working through the new prefix.
     // They used to work by accident (jump to line 1, then apply the second
     // key from there), so a prefix that only knew `gg`/`gv`/`gU`/`gJ` would
