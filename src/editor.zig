@@ -350,6 +350,9 @@ pub const Editor = struct {
     /// vim types the text that many times. The anchor is where the session
     /// started, so the text can be read back out of the buffer on Esc.
     ins_count: usize = 1,
+    /// Whether the session is `gR` rather than `R`: typing covers display
+    /// *columns*, so a tab shrinks instead of being destroyed.
+    repl_virtual: bool = false,
     /// What the current Replace-mode session has overwritten, innermost last.
     /// Each entry is the bytes that were there — empty when the typing ran
     /// past the end of the line and appended — so backspace can walk the
@@ -1862,7 +1865,7 @@ pub const Editor = struct {
             's' => try self.substituteChars(self.eff()),
             'S' => try self.changeLines(self.eff()),
             'r' => self.await_arg = .replace,
-            'R' => try self.enterReplace(),
+            'R' => try self.enterReplace(false),
             '~' => try self.toggleCase(self.eff()),
             'J' => try self.joinLines(self.eff(), true),
             'K' => {
@@ -1989,6 +1992,8 @@ pub const Editor = struct {
                     // `gUgU` is `gUU`: arriving here with the same operator
                     // already pending means the user doubled it the long way.
                     if (self.operator == op) self.applyLinewiseOperator() else self.operator = op;
+                } else if (k == .char and k.char == 'R') {
+                    try self.enterReplace(true); // gR: virtual replace
                 } else if (k == .char and k.char == 'J') {
                     try self.joinLines(self.eff(), false); // gJ: join, no space
                     self.resetPending();
@@ -3697,10 +3702,11 @@ pub const Editor = struct {
     /// it back, so a session can be walked backwards to the text it started
     /// from. Past the end of the line typing appends instead, and backspace
     /// over one of those removes it rather than restoring anything.
-    fn enterReplace(self: *Editor) !void {
+    fn enterReplace(self: *Editor, virtual: bool) !void {
         if (self.rejectReadOnly()) return;
         self.pushUndo();
         self.mode = .replace;
+        self.repl_virtual = virtual;
         self.beginInsertCount(false);
         self.clearReplaceStack();
         self.resetPending();
@@ -3711,19 +3717,55 @@ pub const Editor = struct {
         self.repl_stack.clearRetainingCapacity();
     }
 
-    /// Overwrite the codepoint under the cursor with `cp` and step past it,
-    /// appending when there is nothing to overwrite. `record` is false for the
-    /// `[count]` repeat, which runs after the session's stack is done with.
+    /// How many bytes the next typed character covers in a `gR` session: the
+    /// characters whose display columns *all* fall inside the `w` columns it
+    /// draws. A tab joins them only once every column it draws is covered —
+    /// until then it stays put and simply shrinks, which is the whole point
+    /// of virtual replace. The walk measures each character as it goes, so
+    /// deleting one never invalidates the widths of those after it.
+    fn virtualCover(self: *Editor, w: usize) usize {
+        const line = self.buf.line(self.cy);
+        const start = displayCol(line, self.cx);
+        const covered = start + w;
+        var col = start;
+        var i = self.cx;
+        while (i < line.len) {
+            const d = unicode.decode(line[i..]);
+            const cw = cellWidth(d.cp, col);
+            if (col + cw > covered) break;
+            col += cw;
+            i += d.len;
+        }
+        return i - self.cx;
+    }
+
+    /// Overwrite at the cursor with `cp` and step past it, appending when
+    /// there is nothing to overwrite. `record` is false for the `[count]`
+    /// repeat, which runs after the session's stack is done with.
     fn replaceCodepoint(self: *Editor, cp: u21, record: bool) !void {
         const line = self.buf.line(self.cy);
         const past_end = self.cx >= line.len;
+        // `R` takes exactly the character under the cursor; `gR` takes
+        // whatever the typed character's display columns cover, which is
+        // nothing at all while a tab still has slack to shrink into.
+        const del: usize = if (past_end) 0 else if (self.repl_virtual)
+            self.virtualCover(cellWidth(cp, displayCol(line, self.cx)))
+        else
+            unicode.nextBoundary(line, self.cx) - self.cx;
+
         if (record) {
-            // An empty slice means "there was nothing here" — backspace
-            // deletes rather than restores.
-            const orig = if (past_end) "" else line[self.cx..unicode.nextBoundary(line, self.cx)];
-            try self.repl_stack.append(self.gpa, try self.gpa.dupe(u8, orig));
+            // An empty slice means "nothing was covered" — backspace then
+            // deletes the typed character rather than restoring anything.
+            try self.repl_stack.append(self.gpa, try self.gpa.dupe(u8, line[self.cx .. self.cx + del]));
         }
-        if (!past_end) try self.buf.deleteForward(self.cy, self.cx);
+        // `del` can span several codepoints once a tab is finally consumed.
+        var left = del;
+        while (left > 0) {
+            const cur = self.buf.line(self.cy);
+            const n = unicode.nextBoundary(cur, self.cx) - self.cx;
+            try self.buf.deleteForward(self.cy, self.cx);
+            left -= @min(n, left);
+        }
         self.cx = try self.buf.insertCodepoint(self.cy, self.cx, cp);
         self.updateGoal();
     }
@@ -13301,6 +13343,9 @@ pub const Editor = struct {
     /// insert mode is nvim's Insert Visual, which it writes as
     /// `-- (insert) VISUAL --`; leaving it returns to insert.
     fn modeLabel(self: *Editor) []const u8 {
+        // vim distinguishes the two replace modes on the statusline, and so
+        // does this: `R` is REPLACE, `gR` is VREPLACE.
+        if (self.mode == .replace and self.repl_virtual) return "VREPLACE";
         if (!self.ins_visual) return self.mode.label();
         return switch (self.mode) {
             .visual => "(insert) VISUAL",

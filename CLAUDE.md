@@ -606,9 +606,18 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   line without replacing anything and ends the run backspace can reach. A
   `[count]` types the text that many times, overwriting each time (`3Rab` on
   `abcdefghij` gives `abababghij`), `.` repeats the whole session and the
-  session is one undo step. Absent: `gR`, vim's *virtual* replace, which types
-  into a tab's display columns without destroying the tab — that needs
-  display-column bookkeeping the plain mode does not.
+  session is one undo step.
+- **Virtual replace (`gR`):** the same session, except a keystroke covers
+  display *columns* rather than characters — so typing over a tab shrinks it
+  instead of destroying it, and the tab only goes once every column it drew
+  has been covered. `virtualCover` measures each character as the walk passes
+  it, so deleting one never invalidates the widths of those after it, and the
+  byte run it returns can span several codepoints once a tab is finally
+  consumed. Backspace puts back whatever the keystroke covered, a swallowed
+  tab included. The statusline says `VREPLACE`, as vim's does. With no tab in
+  reach `gR` is exactly `R`, which is most of what makes it cheap: one flag,
+  one width walk, and everything else — the stack, counts, dot, undo — is
+  already there.
 - **Insert:** `i I a A o O` (and `c`/`s` entries), `Esc` to normal. Auto-pairs:
   typing an opener inserts its closer; typing the closer steps over it.
   Autoindent (config `autoindent`, on by default): `o`/`O`/Enter/`cc` inherit

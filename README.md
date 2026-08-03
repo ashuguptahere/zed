@@ -24,7 +24,8 @@
   - Case operators `gu` / `gU` / `g~` with any motion (and `guu`/`gUU`/`g~~`),
     `gJ` to join without a separator, `gv` to reselect the last selection
   - `R` **replace mode**: typing overwrites, and backspace puts back exactly
-    what each keystroke covered
+    what each keystroke covered; `gR` **virtual replace** covers display
+    columns instead, so typing over a tab shrinks it rather than losing it
   - Registers and paste: `"a`, `p` / `P` (linewise & charwise); `"+`/`"*`
     talk to the **system clipboard via OSC 52** — works over SSH
   - Undo `u`, redo `Ctrl-r`, repeat `.`

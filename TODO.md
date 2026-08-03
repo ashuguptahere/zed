@@ -166,6 +166,12 @@ there is nothing to change there.
 
 ## Done (chronological)
 
+- [x] `gR` virtual replace: a keystroke covers display columns, so a tab
+      shrinks under typing rather than dying on the first keystroke. Written
+      off in 0.51.0 as needing bookkeeping the plain mode had no use for; it
+      was one width walk and one flag, because the stack, counts, dot and
+      undo already existed. 16 nvim-pinned cases. (0.52.0)
+
 - [x] `R` replace mode: overwrite typing, vim's backspace-restores stack,
       counts, dot-repeat, one undo step. `gR` (virtual replace over a tab's
       display columns) is deliberately not built. Probing turned up that a

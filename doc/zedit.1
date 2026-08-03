@@ -569,10 +569,17 @@ appends. A count types the text that many times
 .RB ( 3Rab
 leaves
 .BR ababab ),
-and the whole session is one undo step. Vim's
+and the whole session is one undo step.
+.TP
 .B gR
-(virtual replace, which types into a tab's display columns without destroying
-the tab) is not implemented.
+Virtual replace: as
+.BR R ,
+except a keystroke covers display \fIcolumns\fP rather than characters. Typing
+over a tab shrinks it instead of destroying it, and the tab goes only once
+every column it drew has been covered. Backspace puts back whatever the
+keystroke covered, a swallowed tab included. With no tab in reach it behaves
+exactly like
+.BR R .
 .TP
 .B gu\fR{motion}\fP gU\fR{motion}\fP g~\fR{motion}\fP
 Lowercase, uppercase and toggle the case of the text a motion covers; doubled

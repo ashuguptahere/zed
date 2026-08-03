@@ -67,8 +67,8 @@ Read off the dispatch switches, not the docs:
 - **Immediate edits** `x X D C Y s S r ~ J gJ p P u`.
 - **Insert entries** `i I a A o O` (+ `c`/`s`).
 - **Prefixes** `g` `z` `Z` `[` `]` `"` `m` `` ` `` `'` `q` `@` `Ctrl-w`.
-- **`g` namespace (19):** `gg gc gd gr gi gy ga g- g+ gj gk g0 g$` plus
-  `gu gU g~ gJ gv gx` (0.48.0).
+- **`g` namespace (20):** `gg gc gd gr gi gy ga g- g+ gj gk g0 g$` plus
+  `gu gU g~ gJ gv gx` (0.48.0) and `gR` (0.52.0).
 - **`z` namespace (11):** `zf zo zc za zR zM zd zE` plus `zz zt zb`
   (0.48.0). Plus `ZZ`/`ZQ`.
 - **Brackets (7 pairs):** `]d [d`, `]b [b`, `]f [f`, `]q [q` plus
@@ -84,7 +84,7 @@ Counted against `index.txt`'s 473 normal-mode entries:
 
 | Namespace | nvim | zedit | Missing that a user would actually reach for |
 |---|---:|---:|---|
-| `g…` | ~50 | 19 | `gf`/`gF` edit file under cursor, `g;`/`g,` changelist, `gq`/`gw` reflow, `gn`/`gN` select next match, `ge`/`gE` back to word end, `gI` insert col 1, `g*`/`g#` unbounded search, `go` byte offset, `gt`/`gT` tab pages, `g&` repeat `:s` everywhere, `gR` virtual replace, `g_`, `gm`/`gM` |
+| `g…` | ~50 | 20 | `gf`/`gF` edit file under cursor, `g;`/`g,` changelist, `gq`/`gw` reflow, `gn`/`gN` select next match, `ge`/`gE` back to word end, `gI` insert col 1, `g*`/`g#` unbounded search, `go` byte offset, `gt`/`gT` tab pages, `g&` repeat `:s` everywhere, `g_`, `gm`/`gM` |
 | `z…` | ~44 | 11 | `z.`/`z<CR>`/`z-`, `zj`/`zk` move between folds, `zA`/`zC`/`zO`/`zD` recursive fold ops, `zm`/`zr`/`zi`, `z=`/`zg`/`zw` spell, `zh`/`zl`/`zH`/`zL` horizontal scroll, `zp`/`zP` block paste |
 | `[…` / `]…` | 15 pairs | 7 pairs | `[ `/`] ` add blank line, `[D`/`]D` first/last diagnostic, `[l`/`]l` location list, `[a`/`]a` arglist, `[t`/`]t` tags, `[%`/`]%` matchit |
 
@@ -261,11 +261,10 @@ snippets, auto-completion). Remaining: multiple language servers per language
   replay path). `:s` moved onto the shared parser, so there is one address
   parser rather than two. Still absent from the family: `:cfile`/`:grep` and
   the location list, which now have somewhere to hang — **low**
-- ~~**Replace mode (`R`)**~~ — **DONE in 0.51.0** (overwrite typing, the
-  backspace-restores stack, counts, dot-repeat, one undo step). `gR`, vim's
-  *virtual* replace, is still absent: it types into a tab's display columns
-  without destroying the tab, which needs display-column bookkeeping this
-  does not have — **low**
+- ~~**Replace mode (`R`, `gR`)**~~ — **DONE** (0.51.0 and 0.52.0): overwrite
+  typing, the backspace-restores stack, counts, dot-repeat, one undo step,
+  and virtual replace, where a keystroke covers display columns so a tab
+  shrinks rather than dying. 32 nvim-pinned cases between them.
 - **Changelist (`g;`/`g,`) and `''`** — **medium**
 - **`gq`/`gw` reflow + `'textwidth'`** — painful for prose and comments — **medium**
 - **Autocommands / user hooks / key remapping** — `format_on_save` is a

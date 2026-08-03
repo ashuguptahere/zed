@@ -695,6 +695,35 @@ fn dotAndMacros(ctx: *h.Ctx) void {
     h.case(ctx, target, "nvim#gv9 gv twice still reaches the first", &.{ "vll", ESC, "gv", ESC, "gvd", ":wq", CR }, "abcdef\n", "def\n");
     h.case(ctx, target, "nvim#gv10 gv with nothing selected yet does nothing", &.{ "gvd", ":wq", CR }, "abc\n", "abc\n");
 
+    // === gR: virtual replace ==============================================
+    // `gR` covers display *columns* rather than characters, so a tab shrinks
+    // as text is typed over it and only disappears once every column it drew
+    // has been covered. Ground truth taken from nvim with `:set ts=4` typed
+    // interactively, to match zedit's default `tab_width`.
+    const tabbed = "a\tb\n";
+    h.case(ctx, target, "nvim#gR1 one column into the tab", &.{ "gRx", ESC, ":wq", CR }, tabbed, "x\tb\n");
+    h.case(ctx, target, "nvim#gR2 two — the tab just shrinks", &.{ "gRxy", ESC, ":wq", CR }, tabbed, "xy\tb\n");
+    h.case(ctx, target, "nvim#gR3 three, still shrinking", &.{ "gRxyz", ESC, ":wq", CR }, tabbed, "xyz\tb\n");
+    h.case(ctx, target, "nvim#gR4 the fourth column consumes the tab", &.{ "gRxyzw", ESC, ":wq", CR }, tabbed, "xyzwb\n");
+    h.case(ctx, target, "nvim#gR5 the fifth takes the character after it", &.{ "gRxyzwv", ESC, ":wq", CR }, tabbed, "xyzwv\n");
+    // Plain `R` destroys the tab on the first keystroke — the whole reason
+    // `gR` exists.
+    h.case(ctx, target, "nvim#gR6 R over the same tab loses it at once", &.{ "Rxyz", ESC, ":wq", CR }, tabbed, "xyz\n");
+    // Starting *on* the tab rather than before it.
+    h.case(ctx, target, "nvim#gR7 gR starting on the tab", &.{ "lgRxy", ESC, ":wq", CR }, tabbed, "axy\tb\n");
+    h.case(ctx, target, "nvim#gR8 …until it is filled", &.{ "lgRxyz", ESC, ":wq", CR }, tabbed, "axyzb\n");
+    // With no tab in sight, `gR` is exactly `R`.
+    h.case(ctx, target, "nvim#gR9 gR on plain text is R", &.{ "gRxyz", ESC, ":wq", CR }, "abcdef\n", "xyzdef\n");
+    h.case(ctx, target, "nvim#gR10 gR past the end appends", &.{ "llgRxyz", ESC, ":wq", CR }, "abc\n", "abxyz\n");
+    // Backspace puts back whatever the keystroke covered — including a tab
+    // that had already been consumed.
+    h.case(ctx, target, "nvim#gR11 backspace over a shrunk tab", &.{ "gRxyz", BS, ESC, ":wq", CR }, tabbed, "xy\tb\n");
+    h.case(ctx, target, "nvim#gR12 backspace all the way out", &.{ "gRxyz", BS, BS, BS, ESC, ":wq", CR }, tabbed, "a\tb\n");
+    h.case(ctx, target, "nvim#gR13 backspace brings a consumed tab back", &.{ "gRxyzw", BS, ESC, ":wq", CR }, tabbed, "xyz\tb\n");
+    h.case(ctx, target, "nvim#gR14 a count repeats it", &.{ "2gRab", ESC, ":wq", CR }, "abcdefgh\n", "ababefgh\n");
+    h.case(ctx, target, "nvim#gR15 gR is dot-repeatable", &.{ "gRxy", ESC, "lll", ".", ":wq", CR }, "abcdefgh\n", "xycdxygh\n");
+    h.case(ctx, target, "nvim#gR16 one undo step", &.{ "gRxyz", ESC, "u", ":wq", CR }, tabbed, "a\tb\n");
+
     // === gu / gU / g~ : the case operators ================================
     h.case(ctx, target, "nvim#gc1 gUiw", &.{ "gUiw", ":wq", CR }, "hello world\n", "HELLO world\n");
     h.case(ctx, target, "nvim#gc2 guiw", &.{ "guiw", ":wq", CR }, "HELLO WORLD\n", "hello WORLD\n");

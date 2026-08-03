@@ -2,6 +2,28 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.52.0 - 2026-08-03
+
+### Added
+
+- **`gR` — virtual replace.** The same session as `R`, except a keystroke
+  covers display *columns* rather than characters: typing over a tab shrinks
+  it instead of destroying it, and the tab goes only once every column it
+  drew has been covered. Backspace puts back whatever the keystroke covered,
+  a swallowed tab included. The statusline says `VREPLACE`, as vim's does.
+  With no tab in reach `gR` is exactly `R`.
+
+  On `a<Tab>b` at `tab_width = 4`: `gRxyz` leaves `xyz<Tab>b` where plain
+  `R` leaves `xyz` — the tab survives three keystrokes and dies on the
+  fourth. Sixteen nvim-pinned cases (ground truth taken with `:set ts=4` so
+  nvim's tabstop matches zedit's default), fourteen of which fail without
+  the implementation.
+
+  0.51.0 recorded this as a deliberate gap needing "display-column
+  bookkeeping the plain mode has no use for". That turned out to be one
+  width walk (`virtualCover`) and one flag: the stack, counts, dot-repeat
+  and undo were all already there. The estimate was wrong, and cheaply so.
+
 ## 0.51.0 - 2026-08-03
 
 ### Added
