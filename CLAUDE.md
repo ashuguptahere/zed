@@ -550,7 +550,11 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   prefix being the one exception, which is how `gv` sees the *previous*
   selection rather than the one it is standing in. `g` in visual mode now
   waits for its second key as vim does; it used to jump to line 1 on the
-  bare `g`.
+  bare `g`. The prefix carries the screen-line motions too — `g0`, `g$`,
+  `gj`, `gk` extend the selection like any other motion — because those had
+  only ever worked by accident (the bare `g` jumped, then the second key
+  applied from line 1), and a prefix that did not know them would have
+  swallowed them silently instead.
 - **Search:** `/pat` `?pat` (incremental — jumps live as you type, `Esc`
   cancels and restores the cursor), `n N`, `*` `#` (whole-word, `\<word\>`).
   Matches are highlighted; wraps. Patterns are modern regexes (regex.zig:

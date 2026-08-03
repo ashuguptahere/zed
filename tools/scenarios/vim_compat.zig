@@ -745,6 +745,17 @@ fn dotAndMacros(ctx: *h.Ctx) void {
     h.case(ctx, target, "nvim#gj18 J onto an empty first line", &.{ "J", ":wq", CR }, "\ndef\n", "def\n");
 
     // `vg` used to jump to line 1 on the bare `g`; vim waits for the second
-    // key, and `gg` still gets there.
+    // key. `vg1` is the regression guard that `gg` still gets there — it
+    // passes either way by design, since the old code landed in the same
+    // place. What proves the prefix is real is `gj12`/`gc18` above, where
+    // the key *after* `g` is lost without it.
     h.case(ctx, target, "nvim#vg1 visual gg extends to the first line", &.{ "jjvggd", ":wq", CR }, "aa\nbb\ncc\n", "c\n");
+    // The screen-line motions have to keep working through the new prefix.
+    // They used to work by accident (jump to line 1, then apply the second
+    // key from there), so a prefix that only knew `gg`/`gv`/`gU`/`gJ` would
+    // have swallowed them without a sound.
+    h.case(ctx, target, "nvim#vg2 visual g$ extends to end of line", &.{ "vg$d", ":wq", CR }, "abcdef\n", "\n");
+    h.case(ctx, target, "nvim#vg3 visual g0 extends to the start", &.{ "llvg0d", ":wq", CR }, "abcdef\n", "def\n");
+    h.case(ctx, target, "nvim#vg4 visual gj extends a screen line down", &.{ "vgjd", ":wq", CR }, "aa\nbb\ncc\n", "b\ncc\n");
+    h.case(ctx, target, "nvim#vg5 visual gk extends a screen line up", &.{ "jjvgkd", ":wq", CR }, "aa\nbb\ncc\n", "aa\nc\n");
 }

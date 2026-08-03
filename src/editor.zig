@@ -1996,13 +1996,25 @@ pub const Editor = struct {
             // `g` in visual mode. The selection is still live here, so these
             // act on it rather than taking a motion.
             .visual_g => {
+                const n = self.eff();
                 self.await_arg = .none;
+                self.count = 0;
+                self.count2 = 0;
                 if (k == .char) switch (k.char) {
                     'g' => self.setCursorKeep(.{ .row = 0, .col = 0 }), // gg
                     'v' => self.reselect(), // gv swaps the two selections
                     'U' => try self.visualCase(.upper),
                     'u' => try self.visualCase(.lower),
                     '~' => try self.visualCase(.toggle),
+                    // The screen-line motions, which extend the selection
+                    // like any other. They worked by accident before — the
+                    // bare `g` jumped to line 1 and the second key applied
+                    // from there — and making `g` a real prefix would have
+                    // swallowed them silently instead (nvim-pinned).
+                    '0' => self.setCursorKeep(self.screenLineEdge(false).pos),
+                    '$' => self.setCursorKeep(self.screenLineEdge(true).pos),
+                    'j' => self.setCursorKeep(self.screenVertical(false, n).pos),
+                    'k' => self.setCursorKeep(self.screenVertical(true, n).pos),
                     'J' => { // gJ: join the selected lines, no separator
                         const from = self.vstart.row;
                         const to = self.cy;

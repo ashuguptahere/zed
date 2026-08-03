@@ -2,6 +2,27 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.49.0 - 2026-08-03
+
+### Added
+
+- **Visual `g0`, `g$`, `gj`, `gk`** — the screen-line motions extend a
+  selection like any other motion (nvim-pinned). They had never worked
+  properly: before 0.48.0 the bare `g` jumped to line 1 and the second key
+  applied *from there*, and 0.48.0's new `g` prefix knew only
+  `gg`/`gv`/`gU`/`gu`/`g~`/`gJ` and swallowed the rest without a sound.
+  Found by auditing whether each bug fixed in 0.48.0 had a test that fails
+  without it — the audit itself turned this up.
+
+### Changed
+
+- `nvim#vg1` is documented for what it is: a regression guard that `vgg`
+  still reaches line 1, passing with or without the prefix because the old
+  code landed in the same place. What actually proves the prefix works is
+  `nvim#gj12` (visual `gJ`) and `nvim#gc18` (visual `gu`), where the key
+  after `g` is lost without it. Four new cases (`nvim#vg2`-`vg5`) pin the
+  screen-line motions, and all four fail without the arms above.
+
 ## 0.48.0 - 2026-08-02
 
 The nine gaps the 0.47.5 keymap sweep turned up, all of them keys that other
