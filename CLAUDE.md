@@ -1203,10 +1203,24 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   (split then goto definition/declaration), `^`, and `_`/`|` which maximise
   along an axis, that being the honest reading of an absolute size on a
   relative layout.
+  **`Ctrl-z` suspends** (`term.suspendSelf`): everything the editor took goes
+  back before the process stops — raw mode, the alternate screen, mouse
+  reporting, bracketed paste and the window background, which is exactly
+  `restore` — and is taken again when the shell continues us, with the window
+  size re-read and the whole frame redrawn since the shell has been writing
+  over the primary screen. The signal is *raised* rather than left to the
+  terminal driver, because raw mode turns `ISIG` off: Ctrl-Z reaches zedit as
+  a byte, which is why this is a key handler at all.
+  Testing it needed the harness to learn job control (`job_control` in
+  `SpawnOpts`): its child is a session leader whose parent lives in another
+  session, so its process group is **orphaned**, and POSIX requires a stop
+  signal sent to an orphaned group to be discarded. A test written against
+  the plain spawn passed with the `raise` deleted. The option adds the middle
+  process a shell would have — session stub forks the job into its own group
+  and hands it the terminal with `tcsetpgrp`, SIGTTOU ignored across the call
+  as every shell does.
   Not implemented: `Ctrl-t` and `Ctrl-]` want tags, `Ctrl-<Tab>` wants tab
-  pages, `<Help>`/`<F1>` want a help system, and `Ctrl-z` (suspend) would
-  have to leave the alternate screen and restore it on resume — worth doing,
-  not done. `Ctrl-h`/`j`/`k`/`l`, `Ctrl-n`/`Ctrl-p` and `<Space>` keep
+  pages, and `<Help>`/`<F1>` want a help system. `Ctrl-h`/`j`/`k`/`l`, `Ctrl-n`/`Ctrl-p` and `<Space>` keep
   zedit's meanings (window navigation, multiple cursors, the leader) over
   vim's plain motions, as they always have.
 - **Window navigation (`Ctrl-h`/`j`/`k`/`l`):** AstroNvim's window keys, moving

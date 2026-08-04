@@ -206,6 +206,33 @@ pub const Terminal = struct {
         self.disableRaw();
     }
 
+    /// `Ctrl-Z` — hand the terminal back to the shell, stop, and take it all
+    /// back when we are continued.
+    ///
+    /// Everything the editor took has to go back *before* the process stops,
+    /// or the shell inherits a raw, cursor-less alternate screen: raw mode,
+    /// the alternate screen, mouse reporting, bracketed paste and the window
+    /// background all come off, which is exactly `restore`.
+    ///
+    /// The signal is raised rather than left to the terminal driver, because
+    /// raw mode turns `ISIG` off — Ctrl-Z reaches zedit as a byte, not as a
+    /// signal, which is why this is a key handler at all. Its disposition is
+    /// untouched (nothing here ever changes it), so the default action stops
+    /// us.
+    ///
+    /// Execution continues on the line after `raise` when the shell resumes
+    /// us. The caller repaints: the window may have been resized while we
+    /// were stopped, and the shell has been writing over the primary screen.
+    pub fn suspendSelf(self: *Terminal, mouse: bool) void {
+        self.restore();
+        _ = c.raise(c.SIGTSTP);
+        // --- resumed ---
+        self.enableRaw() catch {};
+        self.enterAltScreen(mouse) catch {};
+        // `restoreBackground` cleared the applied colour but kept what the
+        // terminal started with, so the next frame re-applies the theme's.
+    }
+
     /// True (and cleared) if a resize happened since the last check.
     pub fn takeResize(_: *Terminal) bool {
         return resize_pending.swap(false, .acquire);

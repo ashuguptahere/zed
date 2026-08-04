@@ -163,6 +163,7 @@ one; these are the entries that name a capability zedit could have:
 | `Space j` | `jumplist_picker` | absent (the jumplist itself is done) |
 | `Space g` | `changed_file_picker` | absent — a picker of VCS-modified files |
 | `Ctrl-a` / `Ctrl-x` | increment / decrement | **done in 0.56.0** |
+| `Ctrl-z` | suspend to the shell | **done in 0.57.0** |
 | `Alt-o` / `Alt-i` | expand / shrink selection | absent (nvim 0.12 has this too, as `an`/`in`) |
 | `Alt-n` / `Alt-p` | next / prev sibling node | absent |
 | `\|` `!` `$` `Alt-\|` | shell pipe / insert output / keep-pipe | **absent** — no way to filter text through a command |

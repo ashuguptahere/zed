@@ -166,6 +166,12 @@ there is nothing to change there.
 
 ## Done (chronological)
 
+- [x] `Ctrl-Z` suspend, the one left out of 0.56.0 on the grounds that it
+      needed real terminal hand-back. It does, and it now has it. Testing it
+      needed the harness to learn job control: its child's process group is
+      orphaned, and POSIX discards stop signals there, so the first version
+      of the test passed with the `raise` deleted. (0.57.0)
+
 - [x] The Ctrl namespace: `Ctrl-A`/`Ctrl-X` (the number increment COMPARISON
       had carried since the first audit), `Ctrl-E`/`Ctrl-Y`, `Ctrl-G`,
       `Ctrl-^`, and the rest of `Ctrl-W` (t b p W x r R H J K L n f F d i ^

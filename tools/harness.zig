@@ -105,11 +105,22 @@ pub const SpawnOpts = struct {
     cwd: ?[]const u8 = null,
     term: []const u8 = "xterm",
     cols: u16 = 80,
+    /// Spawn the way a job-control shell does: an intermediate process takes
+    /// the session and the controlling terminal, then forks the editor into
+    /// a process group of its own.
+    ///
+    /// Without that middle process the editor's group is *orphaned* — its
+    /// only parent lives in another session — and POSIX requires a stop
+    /// signal sent to an orphaned group to be discarded. `Ctrl-Z` then does
+    /// nothing at all, and a test for it would pass with the `raise` deleted.
+    job_control: bool = false,
 };
 
 pub const Session = struct {
     master: c_int,
     pid: c.pid_t,
+    /// The session stub under job control, which owns `pid`; -1 otherwise.
+    stub: c.pid_t = -1,
     out: std.ArrayList(u8),
     gpa: std.mem.Allocator,
 
@@ -128,6 +139,12 @@ pub const Session = struct {
         if (master < 0) return error.OpenPt;
         if (c.grantpt(master) != 0 or c.unlockpt(master) != 0) return error.GrantPt;
 
+        // Under job control the middle process reports the editor's real pid
+        // back through a pipe, since the caller needs *that* one to watch and
+        // signal — the process it forked is only the session stub.
+        var pfd: [2]c_int = .{ -1, -1 };
+        if (opts.job_control and c.pipe(&pfd) != 0) return error.Fork;
+
         const pid = c.fork();
         if (pid < 0) return error.Fork;
         if (pid == 0) {
@@ -135,6 +152,33 @@ pub const Session = struct {
             const sname = c.ptsname(master);
             const slave = c.open(sname, c.O_RDWR);
             _ = c.ioctl(slave, c.TIOCSCTTY, @as(c_int, 0));
+            if (opts.job_control) {
+                _ = c.close(pfd[0]);
+                // Fork again: the stub keeps the session, the grandchild gets
+                // a process group of its own with the terminal handed to it,
+                // which is exactly a shell starting a foreground job.
+                const inner = c.fork();
+                if (inner != 0) {
+                    // The stub is the shell here: it puts the job in its own
+                    // process group and hands it the terminal. `tcsetpgrp`
+                    // from a process that is not the foreground group raises
+                    // SIGTTOU at the caller, which is why every shell ignores
+                    // it across this call — doing it in the child instead
+                    // stopped the editor before it ever drew a frame.
+                    _ = c.signal(c.SIGTTOU, c.SIG_IGN);
+                    _ = c.setpgid(inner, inner);
+                    _ = c.tcsetpgrp(slave, inner);
+                    var w: c_int = @intCast(inner);
+                    _ = c.write(pfd[1], &w, @sizeOf(c_int));
+                    _ = c.close(pfd[1]);
+                    var st: c_int = undefined;
+                    while (c.waitpid(inner, &st, 0) < 0) {}
+                    c._exit(0);
+                }
+                _ = c.close(pfd[1]);
+                // Both sides set it, so neither races the other.
+                _ = c.setpgid(0, 0);
+            }
             _ = c.dup2(slave, 0);
             _ = c.dup2(slave, 1);
             _ = c.dup2(slave, 2);
@@ -146,10 +190,19 @@ pub const Session = struct {
             c._exit(127);
         }
 
+        var watch = pid;
+        if (opts.job_control) {
+            _ = c.close(pfd[1]);
+            var got: c_int = 0;
+            _ = c.read(pfd[0], &got, @sizeOf(c_int));
+            _ = c.close(pfd[0]);
+            if (got > 0) watch = got;
+        }
+
         var ws = c.winsize{ .ws_row = 24, .ws_col = opts.cols, .ws_xpixel = 0, .ws_ypixel = 0 };
         _ = c.ioctl(master, c.TIOCSWINSZ, &ws);
         arena_state.deinit(); // child has its own copy of argv
-        return .{ .master = master, .pid = pid, .out = .empty, .gpa = gpa };
+        return .{ .master = master, .pid = watch, .stub = if (opts.job_control) pid else -1, .out = .empty, .gpa = gpa };
     }
 
     /// Write every byte, looping over short writes. A pty master can accept
@@ -291,6 +344,36 @@ pub const Session = struct {
     }
 
     /// utime+stime in clock ticks, from /proc/<pid>/stat (Linux).
+    /// The process state letter from `/proc/<pid>/stat` — `T` while stopped,
+    /// which is how a suspend is checked for what it actually did rather
+    /// than for what it printed on the way.
+    pub fn procState(self: *Session) u8 {
+        // Read it with open/read rather than `readFileAlloc`: a /proc file
+        // reports a size of zero, and a reader that trusts that hands back
+        // an empty buffer — which is what made the first version of this
+        // report "no state" for a process that was stopped perfectly well.
+        var pbuf: [64]u8 = undefined;
+        const path = std.fmt.bufPrintZ(&pbuf, "/proc/{d}/stat", .{self.pid}) catch return 0;
+        const fd = c.open(path.ptr, c.O_RDONLY);
+        if (fd < 0) return 0;
+        defer _ = c.close(fd);
+        var buf: [512]u8 = undefined;
+        const n = c.read(fd, &buf, buf.len);
+        if (n <= 0) return 0;
+        const data = buf[0..@intCast(n)];
+        // The comm field is parenthesised and may hold spaces; the state is
+        // the first token after its closing paren.
+        const close_at = std.mem.lastIndexOfScalar(u8, data, ')') orelse return 0;
+        var it = std.mem.tokenizeScalar(u8, data[close_at + 1 ..], ' ');
+        const st = it.next() orelse return 0;
+        return st[0];
+    }
+
+    /// Send a signal to the session's process (SIGCONT, to resume it).
+    pub fn signal(self: *Session, sig: c_int) void {
+        _ = c.kill(self.pid, sig);
+    }
+
     pub fn cpuTicks(self: *Session, gpa: std.mem.Allocator, io: std.Io) !u64 {
         var pbuf: [64]u8 = undefined;
         const path = try std.fmt.bufPrint(&pbuf, "/proc/{d}/stat", .{self.pid});

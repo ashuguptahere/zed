@@ -133,4 +133,55 @@ pub fn run(ctx: *h.Ctx) !void {
         defer ctx.gpa.free(t);
         ctx.check(":qa! discards the edit", std.mem.eql(u8, t, "aa\n"));
     }
+
+    // --- Ctrl-Z suspends, and picks everything back up on resume ---------
+    // The point is not that zedit prints the right escapes but that it
+    // really stops: the check reads the process state out of /proc, which is
+    // `T` only when the kernel has actually stopped it.
+    {
+        const sdir = try ctx.tempDir();
+        const f = h.join(ctx, sdir, "s.txt");
+        defer ctx.gpa.free(f);
+        h.writeFile(ctx.io, f, "suspendable\n");
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "--lsp", "", "s.txt" }, .cwd = sdir, .job_control = true });
+        defer s.finish();
+        s.drain(700);
+        ctx.check("the file is showing before suspending", s.containsPlain(ctx.gpa, "suspendable"));
+
+        const m = s.mark();
+        s.send("\x1a"); // Ctrl-Z
+        s.drain(500);
+        // Everything the editor took has to go back before it stops.
+        ctx.check("suspend leaves the alternate screen", s.containsSince(m, "\x1b[?1049l"));
+        ctx.check("...and shows the cursor again", s.containsSince(m, "\x1b[?25h"));
+        ctx.check("...and turns mouse reporting off", s.containsSince(m, "\x1b[?1006l"));
+
+        // Poll for the stop rather than assuming a fixed delay: CI is slower
+        // than a workstation, and waiting longer can only help.
+        var stopped = false;
+        var waited: usize = 0;
+        while (waited < 2000) : (waited += 50) {
+            const st = s.procState();
+            if (st == 'T') {
+                stopped = true;
+                break;
+            }
+            s.drain(50);
+        }
+        ctx.check("Ctrl-Z actually stops the process", stopped);
+
+        // Resume it the way a shell's `fg` would.
+        const m2 = s.mark();
+        s.signal(18); // SIGCONT
+        s.drain(800);
+        ctx.check("resuming re-enters the alternate screen", s.containsSince(m2, "\x1b[?1049h"));
+        ctx.check("...and repaints the file", s.containsPlainSince(ctx.gpa, m2, "suspendable"));
+
+        // And the editor still works afterwards.
+        s.send("x:wq\r");
+        s.drain(700);
+        const got = h.readFile(ctx.gpa, ctx.io, f);
+        defer ctx.gpa.free(got);
+        ctx.check("editing works again after a resume", std.mem.eql(u8, got, "uspendable\n"));
+    }
 }

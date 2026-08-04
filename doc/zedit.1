@@ -1034,6 +1034,12 @@ otherwise leave the screen.
 .B CTRL-G
 Name the file, its line count and how far through it the cursor is.
 .TP
+.B CTRL-Z
+Suspend to the shell. The terminal is handed back exactly as it was \(em raw
+mode, the alternate screen, mouse reporting and the window background all
+restored \(em and taken again when the shell resumes zedit with
+.BR fg (1).
+.TP
 .B CTRL-^
 Edit the alternate file \(em the buffer shown before this one.
 .TP

@@ -2,6 +2,36 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.57.0 - 2026-08-04
+
+### Added
+
+- **`Ctrl-Z` suspends to the shell.** Everything the editor took goes back
+  before the process stops — raw mode, the alternate screen, mouse reporting,
+  bracketed paste and the window background — and is taken again when the
+  shell continues it, with the window size re-read and the whole frame
+  redrawn, since the shell has been writing over the primary screen
+  meanwhile. The signal is *raised* rather than left to the terminal driver:
+  raw mode turns `ISIG` off, so Ctrl-Z reaches zedit as a byte, which is why
+  this is a key handler and not a signal handler.
+
+### Changed
+
+- The pty harness learned **job control** (`job_control` in `SpawnOpts`).
+  Its child is a session leader whose only parent lives in another session,
+  which makes the child's process group *orphaned* — and POSIX requires a
+  stop signal sent to an orphaned group to be discarded. A suspend test
+  written against the plain spawn therefore passed with the `raise` deleted,
+  which is a test that proves nothing. The option adds the middle process a
+  shell would have: a session stub forks the job into a process group of its
+  own and hands it the terminal with `tcsetpgrp`, SIGTTOU ignored across that
+  call exactly as a shell does. Three of the eight suspend checks fail
+  without the `raise` now.
+- `Session.procState` reads `/proc/<pid>/stat` with open/read rather than
+  `readFileAlloc`: a /proc file reports a size of zero, and a reader that
+  trusts that hands back an empty buffer — which had this reporting "no
+  state" for a process the kernel had stopped perfectly well.
+
 ## 0.56.0 - 2026-08-03
 
 The Ctrl namespace, plain keys and the `Ctrl-W` family.

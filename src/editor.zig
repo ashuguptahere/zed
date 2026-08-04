@@ -1939,6 +1939,7 @@ pub const Editor = struct {
             'y' => self.scrollLines(false, self.eff()),
             'g' => self.showFileInfo(),
             '^' => self.editAlternate(), // Ctrl-^ (0x1e on the wire)
+            'z' => self.suspendEditor(),
             // AstroNvim's window navigation. Directional rather than a cycle,
             // and the explorer is one of the places you can move to, which is
             // the keyboard route into the tree that `Space e` alone gave.
@@ -5517,6 +5518,17 @@ pub const Editor = struct {
             self.buf.lineCount(),
             pct,
         });
+    }
+
+    /// `Ctrl-Z` — stop, and pick everything back up when the shell resumes
+    /// us. The window may have been resized while we were away and the shell
+    /// has printed over the primary screen, so the size is taken again and
+    /// the whole frame redrawn rather than diffed against a stale one.
+    fn suspendEditor(self: *Editor) void {
+        self.term.suspendSelf(config.settings.mouse);
+        self.win = self.term.size();
+        self.prev_valid = false;
+        self.resetPending();
     }
 
     /// `Ctrl-^` — back to the buffer shown before this one, which is what
