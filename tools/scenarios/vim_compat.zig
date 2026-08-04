@@ -31,6 +31,8 @@ const CR = "\r";
 const CV = "\x16"; // Ctrl-v: blockwise visual
 const BS = "\x7f"; // what a terminal sends for Backspace
 const BS8 = "\x08"; // the other one, which nvim treats identically
+const CA = "\x01"; // Ctrl-A
+const CX = "\x18"; // Ctrl-X
 const target = "/tmp/zedit_it_compat.txt";
 
 // SGR mouse reports at a *buffer* position. nvim (driven with `-u NONE -i NONE
@@ -695,9 +697,58 @@ fn dotAndMacros(ctx: *h.Ctx) void {
     h.case(ctx, target, "nvim#gv9 gv twice still reaches the first", &.{ "vll", ESC, "gv", ESC, "gvd", ":wq", CR }, "abcdef\n", "def\n");
     h.case(ctx, target, "nvim#gv10 gv with nothing selected yet does nothing", &.{ "gvd", ":wq", CR }, "abc\n", "abc\n");
 
+    // === visual mode: the rest of the namespace ===========================
+    const nums = "1\n1\n1\n1\n";
+    const abc3 = "aaa\nbbb\nccc\n";
+
+    // Ctrl-A / Ctrl-X over a selection, and the `g` forms that step.
+    h.case(ctx, target, "nvim#v1 V j Ctrl-A", &.{ "Vj" ++ CA, ":wq", CR }, nums, "2\n2\n1\n1\n");
+    h.case(ctx, target, "nvim#v2 V j Ctrl-X", &.{ "Vj" ++ CX, ":wq", CR }, nums, "0\n0\n1\n1\n");
+    h.case(ctx, target, "nvim#v3 g Ctrl-A steps per line", &.{ "VGg" ++ CA, ":wq", CR }, nums, "2\n3\n4\n5\n");
+    h.case(ctx, target, "nvim#v4 g Ctrl-X steps down", &.{ "VGg" ++ CX, ":wq", CR }, nums, "0\n-1\n-2\n-3\n");
+    h.case(ctx, target, "nvim#v5 a count applies to each", &.{ "Vj5" ++ CA, ":wq", CR }, nums, "6\n6\n1\n1\n");
+    h.case(ctx, target, "nvim#v6 charwise takes the one it covers", &.{ "v$" ++ CA, ":wq", CR }, "a 7 b\n", "a 8 b\n");
+    h.case(ctx, target, "nvim#v7 lines with no number are skipped", &.{ "VG" ++ CA, ":wq", CR }, "1\nx\n1\n", "2\nx\n2\n");
+
+    // The linewise forms take whole lines however the selection was made.
+    h.case(ctx, target, "nvim#v8 D takes the line", &.{ "vlD", ":wq", CR }, abc3, "bbb\nccc\n");
+    h.case(ctx, target, "nvim#v9 X too", &.{ "vlX", ":wq", CR }, abc3, "bbb\nccc\n");
+    h.case(ctx, target, "nvim#v10 Y yanks it linewise", &.{ "vlY", "GP", ":wq", CR }, abc3, "aaa\nbbb\naaa\nccc\n");
+    h.case(ctx, target, "nvim#v11 C opens insert on a fresh line", &.{ "vlCZ", ESC, ":wq", CR }, abc3, "Z\nbbb\nccc\n");
+    h.case(ctx, target, "nvim#v12 R is the same", &.{ "vlRZ", ESC, ":wq", CR }, abc3, "Z\nbbb\nccc\n");
+    h.case(ctx, target, "nvim#v13 V j D", &.{ "VjD", ":wq", CR }, abc3, "ccc\n");
+
+    // J joins the selected lines; gJ does it without the separator.
+    h.case(ctx, target, "nvim#v14 visual J", &.{ "VjJ", ":wq", CR }, abc3, "aaa bbb\nccc\n");
+    h.case(ctx, target, "nvim#v15 charwise J joins them too", &.{ "vlJ", ":wq", CR }, abc3, "aaa bbb\nccc\n");
+
+    // r replaces every character in the selection.
+    h.case(ctx, target, "nvim#v16 charwise r", &.{ "vllrZ", ":wq", CR }, "abcdef\n", "ZZZdef\n");
+    h.case(ctx, target, "nvim#v17 linewise r", &.{ "VrZ", ":wq", CR }, abc3, "ZZZ\nbbb\nccc\n");
+    h.case(ctx, target, "nvim#v18 blockwise r", &.{ CV ++ "jlrZ", ":wq", CR }, abc3, "ZZa\nZZb\nccc\n");
+
+    // O swaps the block's horizontal corner, so a later `l` grows the other
+    // edge: without it the block widens, with it it narrows.
+    h.case(ctx, target, "nvim#v19 block widens without O", &.{ CV ++ "jlld", ":wq", CR }, "abcd\nefgh\n", "d\nh\n");
+    h.case(ctx, target, "nvim#v20 O swaps the corner", &.{ CV ++ "jlOld", ":wq", CR }, "abcd\nefgh\n", "acd\negh\n");
+
+    // v / V / Ctrl-V stop visual mode when they are already that kind.
+    h.case(ctx, target, "nvim#v21 v in charwise stops it", &.{ "vvx", ":wq", CR }, "abcdef\n", "bcdef\n");
+    h.case(ctx, target, "nvim#v22 V in linewise stops it", &.{ "VVx", ":wq", CR }, "abcdef\n", "bcdef\n");
+    h.case(ctx, target, "nvim#v23 v then V switches kind", &.{ "vVd", ":wq", CR }, abc3, "bbb\nccc\n");
+    h.case(ctx, target, "nvim#v24 Ctrl-C stops visual", &.{ "vll\x03x", ":wq", CR }, "abcdef\n", "abdef\n");
+
+    // it / at — the innermost markup tag block.
+    const html = "<div>\n  <p>hi</p>\n</div>\n";
+    h.case(ctx, target, "nvim#v25 dit empties the tag", &.{ "jfhdit", ":wq", CR }, html, "<div>\n  <p></p>\n</div>\n");
+    h.case(ctx, target, "nvim#v26 dat takes the tags too", &.{ "jfhdat", ":wq", CR }, html, "<div>\n  \n</div>\n");
+    h.case(ctx, target, "nvim#v27 dit on the outer tag", &.{ "fddit", ":wq", CR }, html, "<div></div>\n");
+
+    // `!` filters the range through a command.
+    h.case(ctx, target, "nvim#v28 visual ! sorts", &.{ "VG!sort", CR, ":wq", CR }, "ccc\naaa\nbbb\n", "aaa\nbbb\nccc\n");
+    h.case(ctx, target, "nvim#v29 …and pipes work", &.{ "Vj!tr a-z A-Z", CR, ":wq", CR }, "abc\ndef\n", "ABC\nDEF\n");
+
     // === Ctrl-A / Ctrl-X : the number at or after the cursor ==============
-    const CA = "\x01";
-    const CX = "\x18";
     h.case(ctx, target, "nvim#ca1 Ctrl-A on the number", &.{ "w" ++ CA, ":wq", CR }, "x 41 y\n", "x 42 y\n");
     h.case(ctx, target, "nvim#ca2 …and from before it", &.{ CA, ":wq", CR }, "x 41 y\n", "x 42 y\n");
     h.case(ctx, target, "nvim#ca3 a count adds that much", &.{ "5" ++ CA, ":wq", CR }, "x 41 y\n", "x 46 y\n");

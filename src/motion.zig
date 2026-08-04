@@ -209,6 +209,98 @@ pub fn numberAt(line: []const u8, col: usize) ?NumberSpan {
     return .{ .start = s, .end = e, .hex = false };
 }
 
+/// `it` / `at` — the innermost HTML/XML tag block containing the cursor.
+/// `around` takes the tags themselves, `inner` only what they wrap.
+///
+/// Matching is textual rather than grammatical on purpose: the object has to
+/// work in any file that happens to hold markup — a template, a docstring, a
+/// string literal — not only where a grammar was vendored.
+pub fn objTag(buf: *const buffer.Buffer, pos: Pos, around: bool) ?Span {
+    // Walk back from the cursor for an opening tag whose match encloses it,
+    // taking the *nearest* such — that is the innermost block.
+    var row = pos.row;
+    while (true) : (row -= 1) {
+        const line = buf.line(row);
+        var i: usize = if (row == pos.row) @min(pos.col + 1, line.len) else line.len;
+        while (i > 0) {
+            i -= 1;
+            if (line[i] != '<' or i + 1 >= line.len) continue;
+            if (line[i + 1] == '/') continue; // a closer, not an opener
+            const name_end = tagNameEnd(line, i + 1);
+            if (name_end == i + 1) continue;
+            const name = line[i + 1 .. name_end];
+            const open_end = closeBracket(buf, .{ .row = row, .col = i }) orelse continue;
+            if (line[open_end.col -| 1] == '/') continue; // self-closing
+            const close = findCloser(buf, open_end, name) orelse continue;
+            // Does it actually contain the cursor?
+            if (cmpPosM(pos, .{ .row = row, .col = i }) < 0) continue;
+            if (cmpPosM(pos, close.end) > 0) continue;
+            // Both ends are returned **exclusive**, like `objSentence` — the
+            // caller passes them straight through. An inclusive end could not
+            // say "up to the `<`, line breaks and all", and `dit` over a tag
+            // whose content owns whole lines would leave them behind.
+            if (around) return .{
+                .start = .{ .row = row, .col = i },
+                .end = .{ .row = close.end.row, .col = close.end.col + 1 },
+            };
+            const istart: Pos = .{ .row = open_end.row, .col = open_end.col + 1 };
+            if (cmpPosM(istart, close.start) >= 0)
+                return .{ .start = istart, .end = istart, .empty = true };
+            return .{ .start = istart, .end = close.start };
+        }
+        if (row == 0) return null;
+    }
+}
+
+fn cmpPosM(a: Pos, b: Pos) i8 {
+    if (a.row != b.row) return if (a.row < b.row) -1 else 1;
+    if (a.col != b.col) return if (a.col < b.col) -1 else 1;
+    return 0;
+}
+
+fn tagNameEnd(line: []const u8, from: usize) usize {
+    var i = from;
+    while (i < line.len and (std.ascii.isAlphanumeric(line[i]) or line[i] == '-' or line[i] == '_' or line[i] == ':')) i += 1;
+    return i;
+}
+
+/// The `>` closing the tag that starts at `at`.
+fn closeBracket(buf: *const buffer.Buffer, at: Pos) ?Pos {
+    var p = at;
+    while (true) {
+        const line = buf.line(p.row);
+        if (p.col < line.len and line[p.col] == '>') return p;
+        const next = stepForward(buf, p.row, p.col);
+        if (next.row == p.row and next.col == p.col) return null;
+        p = next;
+    }
+}
+
+const TagClose = struct { start: Pos, end: Pos };
+
+/// The matching `</name>` after `from`, counting nested opens of the same name.
+fn findCloser(buf: *const buffer.Buffer, from: Pos, name: []const u8) ?TagClose {
+    var depth: usize = 0;
+    var p = from;
+    while (true) {
+        const next = stepForward(buf, p.row, p.col);
+        if (next.row == p.row and next.col == p.col) return null;
+        p = next;
+        const line = buf.line(p.row);
+        if (p.col >= line.len or line[p.col] != '<') continue;
+        const closing = p.col + 1 < line.len and line[p.col + 1] == '/';
+        const ns = p.col + if (closing) @as(usize, 2) else 1;
+        const ne = tagNameEnd(line, ns);
+        if (ne == ns or !std.mem.eql(u8, line[ns..ne], name)) continue;
+        const gt = closeBracket(buf, p) orelse return null;
+        if (closing) {
+            if (depth == 0) return .{ .start = p, .end = gt };
+            depth -= 1;
+        } else if (line[gt.col -| 1] != '/') depth += 1;
+        p = gt;
+    }
+}
+
 /// One position forward / backward across the buffer, for callers outside
 /// this module (the bracket motions walk character by character).
 pub fn stepForwardPub(buf: *const buffer.Buffer, p: Pos) Pos {

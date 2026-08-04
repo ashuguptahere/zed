@@ -160,6 +160,7 @@ const Await = enum {
     g_prefix, // g then ...
     visual_g, // g then ... in visual mode (gg, gv, gJ, gu/gU/g~)
     visual_z, // z then y in visual mode (zy)
+    visual_replace, // r{char} over a selection
     z_prefix, // Z then Z/Q
     fold_prefix, // z then a fold command (f o c a R M d E)
     bracket_next, // ] then d (next diagnostic)
@@ -2118,6 +2119,10 @@ pub const Editor = struct {
                 } else
                     self.resetPending();
             },
+            .visual_replace => {
+                self.await_arg = .none;
+                if (k == .char) self.visualReplaceChar(k.char);
+            },
             .visual_z => {
                 self.await_arg = .none;
                 if (k == .char and k.char == 'y') {
@@ -2129,6 +2134,12 @@ pub const Editor = struct {
             .visual_g => {
                 const n = self.eff();
                 self.await_arg = .none;
+                if (k == .ctrl) switch (k.ctrl) {
+                    // The stepping forms: 1st line +1, 2nd +2, and so on.
+                    'a' => self.visualIncrement(1, n, true),
+                    'x' => self.visualIncrement(-1, n, true),
+                    else => {},
+                };
                 self.count = 0;
                 self.count2 = 0;
                 if (k == .char) switch (k.char) {
@@ -2146,6 +2157,12 @@ pub const Editor = struct {
                     '$' => self.setCursorKeep(self.screenLineEdge(true).pos),
                     'j' => self.setCursorKeep(self.screenVertical(false, n).pos),
                     'k' => self.setCursorKeep(self.screenVertical(true, n).pos),
+                    'q' => { // gq: reflow the selected lines
+                        const top = @min(self.vstart.row, self.cy);
+                        const bot = @max(self.vstart.row, self.cy);
+                        self.mode = .normal;
+                        self.reflow(.{ .lines = true, .top = top, .bot = bot }, false);
+                    },
                     'J' => { // gJ: join the selected lines, no separator
                         const from = self.vstart.row;
                         const to = self.cy;
@@ -2732,6 +2749,10 @@ pub const Editor = struct {
         if (c == 'f' or c == 'c') return self.treeObjectSpan(around, c == 'f');
         if (c == 'a') return self.treeListItemSpan(around);
         if (c == 'C') return self.treeCommentSpan(around);
+        if (c == 't') { // tag block: charwise, ends already exclusive
+            const o = motion.objTag(self.buf, self.cursor(), around) orelse return null;
+            return .{ .lines = false, .start = o.start, .end = o.end };
+        }
         if (c == 's') { // sentence: charwise, its end already exclusive
             const o = motion.objSentence(self.buf, self.cursor(), around) orelse return null;
             return .{ .lines = false, .start = o.start, .end = o.end };
@@ -4545,8 +4566,47 @@ pub const Editor = struct {
                 '>' => try self.visualOperator(.indent_right),
                 '=' => try self.visualOperator(.reindent),
                 '<' => try self.visualOperator(.indent_left),
-                'V' => self.mode = .visual_line,
-                'v' => self.mode = .visual,
+                // Each of the three either switches to its own kind or, when
+                // it is already that kind, stops visual mode (vim's rule).
+                'V' => self.mode = if (self.mode == .visual_line) .normal else .visual_line,
+                'v' => self.mode = if (self.mode == .visual) .normal else .visual,
+                // The linewise forms: they take whole lines however the
+                // selection was made.
+                'D', 'X' => try self.visualLinewise(.delete),
+                'Y' => try self.visualLinewise(.yank),
+                'C', 'R' => {
+                    try self.visualLinewise(.delete);
+                    self.buf.insertLineAt(self.cy, "") catch {};
+                    try self.enterInsert(.{ .row = self.cy, .col = 0 });
+                },
+                'J' => {
+                    const top = @min(self.vstart.row, self.cy);
+                    const bot = @max(self.vstart.row, self.cy);
+                    self.mode = .normal;
+                    self.setCursor(.{ .row = top, .col = 0 });
+                    try self.joinLines(bot - top + 1, true);
+                },
+                'r' => self.await_arg = .visual_replace,
+                // `O` swaps the *horizontal* corner of a block; for the other
+                // two kinds it is `o` (nvim-probed).
+                'O' => if (self.mode == .visual_block) {
+                    const c0 = self.vstart.col;
+                    self.vstart.col = self.cx;
+                    self.cx = c0;
+                } else {
+                    const tmp = self.vstart;
+                    self.vstart = self.cursor();
+                    self.cy = tmp.row;
+                    self.cx = tmp.col;
+                },
+                // vim says `Q` does not start Ex mode here; nor does it here.
+                'Q' => {},
+                '!' => {
+                    // Prefill the range, as vim does, and let `:!` do the rest.
+                    self.enterCmd(.ex);
+                    self.cmd.appendSlice(self.gpa, "'<,'>!") catch {};
+                    self.cmd_cur = self.cmd.items.len;
+                },
                 'i' => self.await_arg = .visual_object_inner,
                 'a' => self.await_arg = .visual_object_around,
                 // `"{reg}` picks the register the next y/d/c fills, in visual
@@ -4562,6 +4622,13 @@ pub const Editor = struct {
                     self.setCursorKeep(res.pos);
                 },
                 ':' => self.enterCmd(.ex),
+                else => {},
+            },
+            .ctrl => |c| switch (c) {
+                'a' => self.visualIncrement(1, n, false),
+                'x' => self.visualIncrement(-1, n, false),
+                'c' => self.mode = .normal, // stop visual, like Esc
+                'v' => self.mode = if (self.mode == .visual_block) .normal else .visual_block,
                 else => {},
             },
             else => {},
@@ -5433,23 +5500,31 @@ pub const Editor = struct {
     /// (`0042` becomes `0043`), and the cursor ends on its last character.
     fn incrementNumber(self: *Editor, by: i64, n: usize) void {
         if (self.rejectReadOnly()) return;
-        const line = self.curLine();
-        const span = motion.numberAt(line, self.cx) orelse
-            return self.setStatus("no number under or after the cursor", .{});
+        self.pushUndo();
+        if (!self.incrementAt(self.cy, self.cx, by * @as(i64, @intCast(n))))
+            self.setStatus("no number under or after the cursor", .{});
+    }
+
+    /// Bump the number at or after `col` on `row` by `delta`. True when there
+    /// was one — the visual forms walk lines and simply skip those without.
+    /// The caller has already pushed an undo state, so a selection's worth of
+    /// bumps is one change.
+    fn incrementAt(self: *Editor, row: usize, col: usize, delta: i64) bool {
+        const line = self.buf.line(row);
+        const span = motion.numberAt(line, col) orelse return false;
         const text = line[span.start..span.end];
 
-        const delta = by * @as(i64, @intCast(n));
         var body: [64]u8 = undefined; // the digits, unpadded
         var buf: [80]u8 = undefined; // the finished literal
         var neg = false;
         var want: usize = 0; // digits the source had, for keeping its width
         const digits: []const u8 = if (span.hex) blk: {
-            const v = std.fmt.parseInt(u64, text[2..], 16) catch return;
+            const v = std.fmt.parseInt(u64, text[2..], 16) catch return false;
             const nv = @as(u64, @bitCast(@as(i64, @bitCast(v)) +% delta));
             want = text.len - 2;
-            break :blk std.fmt.bufPrint(&body, "{x}", .{nv}) catch return;
+            break :blk std.fmt.bufPrint(&body, "{x}", .{nv}) catch return false;
         } else blk: {
-            const v = std.fmt.parseInt(i64, text, 10) catch return;
+            const v = std.fmt.parseInt(i64, text, 10) catch return false;
             const nv = v +% delta;
             neg = nv < 0;
             // Leading zeros are inside the span, so the width is kept — but
@@ -5457,7 +5532,7 @@ pub const Editor = struct {
             // accident, `0042` on purpose).
             const src = if (text.len > 0 and text[0] == '-') text[1..] else text;
             if (src.len > 1 and src[0] == '0') want = src.len;
-            break :blk std.fmt.bufPrint(&body, "{d}", .{@abs(nv)}) catch return;
+            break :blk std.fmt.bufPrint(&body, "{d}", .{@abs(nv)}) catch return false;
         };
 
         const pad = if (want > digits.len) want - digits.len else 0;
@@ -5470,7 +5545,7 @@ pub const Editor = struct {
             buf[0] = '-';
             w = 1;
         }
-        if (w + pad + digits.len > buf.len) return;
+        if (w + pad + digits.len > buf.len) return false;
         var k: usize = 0;
         while (k < pad) : (k += 1) {
             buf[w] = '0';
@@ -5479,16 +5554,90 @@ pub const Editor = struct {
         @memcpy(buf[w .. w + digits.len], digits);
         const out: []const u8 = buf[0 .. w + digits.len];
 
-        self.pushUndo();
-        const owned = self.gpa.dupe(u8, out) catch return;
+        const owned = self.gpa.dupe(u8, out) catch return false;
         defer self.gpa.free(owned);
         var i = span.end;
-        while (i > span.start) : (i -= 1) self.buf.deleteForward(self.cy, span.start) catch return;
-        self.buf.insertBytes(self.cy, span.start, owned) catch return;
+        while (i > span.start) : (i -= 1) self.buf.deleteForward(row, span.start) catch return false;
+        self.buf.insertBytes(row, span.start, owned) catch return false;
         self.buf.dirty = true;
         // vim leaves the cursor on the number's last character.
+        self.cy = row;
         self.cx = span.start + owned.len - 1;
         self.updateGoal();
+        return true;
+    }
+
+    /// Visual `Ctrl-A`/`Ctrl-X`, and their `g` forms which step the amount
+    /// line by line: `g Ctrl-A` over `1 1 1 1` leaves `2 3 4 5`. Only lines
+    /// that actually hold a number advance the step (nvim's rule), and the
+    /// whole selection is one undoable change.
+    fn visualIncrement(self: *Editor, by: i64, n: usize, progressive: bool) void {
+        if (self.rejectReadOnly()) return;
+        var a = self.vstart;
+        var b = self.cursor();
+        if (cmpPos(b, a) < 0) std.mem.swap(Pos, &a, &b);
+        const charwise = self.mode == .visual;
+        self.mode = .normal;
+        self.pushUndo();
+        var step: i64 = 0;
+        var row = a.row;
+        while (row <= @min(b.row, self.buf.lineCount() - 1)) : (row += 1) {
+            // Charwise starts where the selection did on its first line.
+            const from: usize = if (charwise and row == a.row) a.col else 0;
+            const mult = if (progressive) step + 1 else 1;
+            if (self.incrementAt(row, from, by * @as(i64, @intCast(n)) * mult)) step += 1;
+        }
+        self.setCursor(.{ .row = a.row, .col = @min(a.col, self.buf.line(a.row).len) });
+        self.resetPending();
+    }
+
+    /// `D` `X` `Y` `C` `R` in visual — the forms that take whole *lines*
+    /// however the selection was made, so `vlD` deletes the line rather than
+    /// the two characters under it.
+    fn visualLinewise(self: *Editor, op: Operator) !void {
+        const top = @min(self.vstart.row, self.cy);
+        const bot = @max(self.vstart.row, self.cy);
+        self.mode = .normal;
+        self.applyOperator(op, .{ .lines = true, .top = top, .bot = bot });
+        self.resetPending();
+    }
+
+    /// Visual `r` — every character in the selection becomes `ch`, the line
+    /// keeping its length.
+    fn visualReplaceChar(self: *Editor, ch: u21) void {
+        if (self.rejectReadOnly()) return;
+        var a = self.vstart;
+        var b = self.cursor();
+        if (cmpPos(b, a) < 0) std.mem.swap(Pos, &a, &b);
+        const linewise = self.mode == .visual_line;
+        const block = self.mode == .visual_block;
+        const cols = if (block) self.blockCols() else undefined;
+        self.mode = .normal;
+        self.pushUndo();
+        var row = a.row;
+        while (row <= @min(b.row, self.buf.lineCount() - 1)) : (row += 1) {
+            const line = self.buf.line(row);
+            var lo: usize = 0;
+            var hi: usize = line.len;
+            if (block) {
+                lo = @min(byteAtDisplayCol(line, cols.left), line.len);
+                hi = @min(unicode.nextBoundary(line, byteAtDisplayCol(line, cols.right)), line.len);
+            } else if (!linewise) {
+                if (row == a.row) lo = @min(a.col, line.len);
+                if (row == b.row) hi = @min(unicode.nextBoundary(line, b.col), line.len);
+            }
+            var i = lo;
+            while (i < hi) {
+                const w = unicode.nextBoundary(self.buf.line(row), i) - i;
+                self.buf.deleteForward(row, i) catch break;
+                i = self.buf.insertCodepoint(row, i, ch) catch break;
+                _ = w;
+                if (i > hi) break;
+            }
+        }
+        self.buf.dirty = true;
+        self.setCursor(.{ .row = a.row, .col = @min(a.col, self.buf.line(a.row).len) });
+        self.resetPending();
     }
 
     /// `Ctrl-E` / `Ctrl-Y` — scroll the window one line without moving the
@@ -8317,6 +8466,10 @@ pub const Editor = struct {
         };
         const span: Span = .{ .lines = true, .top = lr.lo, .bot = lr.hi };
 
+        if (rest.len > 0 and rest[0] == '!') {
+            self.filterRange(range, std.mem.trim(u8, rest[1..], " "));
+            return true;
+        }
         if (eql(name, "d") or eql(name, "delete")) {
             self.applyOperator(.delete, span);
         } else if (eql(name, "y") or eql(name, "yank")) {
@@ -8359,6 +8512,74 @@ pub const Editor = struct {
             return after;
         }
         return null;
+    }
+
+    /// `:[range]!cmd` — hand the range to a command's stdin and put what it
+    /// writes back in their place. Visual `!` prefills the range and lands
+    /// here; the classic use is `:'<,'>!sort`.
+    ///
+    /// The command line is the user's own, so this is the one place zedit
+    /// runs a *shell*: `sh -c` is what makes pipes and redirection work, and
+    /// is exactly what vim does. Nothing from a file or a language server
+    /// ever reaches it.
+    fn filterRange(self: *Editor, range: exrange.Range, cmd: []const u8) void {
+        if (cmd.len == 0) return self.setStatus("usage: :[range]!command", .{});
+        if (self.rejectReadOnly()) return;
+        const lr = self.resolveRange(range, false) orelse
+            return self.setStatus("invalid range", .{});
+
+        var input: std.ArrayList(u8) = .empty;
+        defer input.deinit(self.gpa);
+        var row = lr.lo;
+        while (row <= @min(lr.hi, self.buf.lineCount() - 1)) : (row += 1) {
+            input.appendSlice(self.gpa, self.buf.line(row)) catch return;
+            input.append(self.gpa, '\n') catch return;
+        }
+
+        const cmd_z = self.gpa.dupe(u8, cmd) catch return;
+        defer self.gpa.free(cmd_z);
+        var child = std.process.spawn(self.io, .{
+            .argv = &.{ "sh", "-c", cmd_z },
+            .stdin = .pipe,
+            .stdout = .pipe,
+            .stderr = .ignore,
+        }) catch return self.setStatus("cannot run: {s}", .{cmd});
+
+        child.stdin.?.writeStreamingAll(self.io, input.items) catch {};
+        child.stdin.?.close(self.io);
+        child.stdin = null;
+        // Read what it wrote before waiting: a command that outputs more than
+        // a pipe buffer would block on the write while we blocked on the wait.
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(self.gpa);
+        var rbuf: [16 << 10]u8 = undefined;
+        while (true) {
+            const n = child.stdout.?.readStreaming(self.io, &.{&rbuf}) catch break;
+            if (n == 0) break;
+            out.appendSlice(self.gpa, rbuf[0..n]) catch break;
+        }
+        _ = child.wait(self.io) catch {};
+
+        self.pushUndo();
+        var r = @min(lr.hi, self.buf.lineCount() - 1);
+        while (r > lr.lo) : (r -= 1) self.buf.removeLineAt(r);
+        var at = lr.lo;
+        var first = true;
+        var it = std.mem.splitScalar(u8, trimTrailingNewline(out.items), '\n');
+        while (it.next()) |ln| {
+            if (first) {
+                self.buf.setLine(at, ln) catch return;
+                first = false;
+            } else {
+                at += 1;
+                self.buf.insertLineAt(at, ln) catch return;
+            }
+        }
+        if (first) self.buf.setLine(lr.lo, "") catch {}; // the command ate it all
+        self.buf.dirty = true;
+        self.cy = @min(lr.lo, self.buf.lineCount() - 1);
+        self.cx = motion.firstNonBlank(self.curLine());
+        self.updateGoal();
     }
 
     /// `:[range]g/pat/cmd` and its inverse. Vim's two passes: find every

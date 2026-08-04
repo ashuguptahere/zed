@@ -224,9 +224,9 @@ behaviour and passes with or without any change, deliberately.
 - Multiple selections as the core model (`s` select-regex-in-selection, `S`
   split, keep/remove by regex, `C` copy to next line, rotate/align/trim/merge)
   — zedit's multicursor is one-caret-per-line column editing — **high**
-- Shell integration — pipe selections through commands (`|`, `!`, `$`),
-  insert command output — **medium** (the embedded terminal covers "run a
-  command", not "filter this selection")
+- Shell integration — ~~filter a selection through a command~~ **DONE** in
+  0.58.0 as `:[range]!cmd`, with visual `!` prefilling the range. Helix's
+  `|` (pipe-to) and `$` (keep-if) variants are still absent — **low**
 - Tree-sitter selection expand/shrink and sibling navigation (`Alt-o`/`Alt-i`,
   `Alt-n`/`Alt-p`) — **medium** (nvim 0.12 ships this as a default too)
 - ~~Increment/decrement numbers (`Ctrl-a`/`Ctrl-x`)~~ — **DONE** (decimal, hex, negative, leading-zero width, counted)
@@ -289,8 +289,8 @@ snippets, auto-completion). Remaining: multiple language servers per language
 - **`q:` cmdline window** — **low**
 - Folding: no `foldmethod`/`foldexpr`, no tree-sitter/LSP fold providers, no
   fold column, no `zj`/`zk`/`zA`/`zC`/`zO` — manual folds are done — **low**
-- `it`/`at` tag objects — the HTML grammar is already vendored, so this is
-  cheap — **medium**
+- ~~`it`/`at` tag objects~~ — **DONE** in 0.58.0, matched textually rather
+  than through the grammar so they work in any file holding markup
 - No `'inccommand'` live `:s` preview — **low**
 - In-buffer search/`:s` are regex but "very magic"-style, not vim's magic mode
   — deliberate — **low**

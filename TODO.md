@@ -166,6 +166,12 @@ there is nothing to change there.
 
 ## Done (chronological)
 
+- [x] The visual-mode namespace: `Ctrl-A`/`Ctrl-X` and their stepping `g`
+      forms, the linewise `D X Y C R`, `J`, `r`, `gq`, `O`, the `v`/`V`/
+      `Ctrl-V` stop-if-same-kind rule and `Ctrl-C`. Plus `it`/`at` tag
+      objects and `:[range]!cmd` with visual `!`, which close two
+      COMPARISON gaps of their own. (0.58.0)
+
 - [x] `Ctrl-Z` suspend, the one left out of 0.56.0 on the grounds that it
       needed real terminal hand-back. It does, and it now has it. Testing it
       needed the harness to learn job control: its child's process group is

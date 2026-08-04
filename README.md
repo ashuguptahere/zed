@@ -61,7 +61,11 @@
     (fold ends), `c` (git hunks), plus `D`/`Q`/`B` for a list's ends
   - Jumplist: `Ctrl-o` / `Ctrl-i` walk back and forward through jumps
     (searches, `G`, marks, `gd`, buffer switches — cross-buffer)
-  - Text objects incl. paragraphs (`ip`/`ap`, `{`/`}`), also in visual mode
+  - Text objects incl. paragraphs (`ip`/`ap`, `{`/`}`) and markup tags
+    (`it`/`at`), also in visual mode
+  - Visual mode in full: `Ctrl-A`/`Ctrl-X` over a selection (`g Ctrl-A`
+    steps line by line), the linewise `D X Y C R`, `J`, `r`, `gq`, `O`, and
+    `!` to filter the selection through a shell command
   - Soft wrap (on by default, `soft_wrap = false` to scroll sideways instead):
     breaks at word boundaries, keeps the line's indent on continuation rows,
     optional `wrap_column`, and `gj`/`gk`/`g0`/`g$` for screen-row movement

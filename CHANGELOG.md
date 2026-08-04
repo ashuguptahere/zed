@@ -2,6 +2,40 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.58.0 - 2026-08-04
+
+The visual-mode namespace, plus the two objects that hang off it.
+
+### Added
+
+- **`Ctrl-A`/`Ctrl-X` over a selection**, and **`g Ctrl-A`/`g Ctrl-X`** which
+  *step* the amount line by line: `1 1 1 1` becomes `2 3 4 5`. Only lines
+  that hold a number advance the step, and the whole selection is one
+  undoable change.
+- **`D` `X` `Y` `C` `R`** — the forms that take whole *lines* however the
+  selection was made, so `vlD` deletes the line rather than the two
+  characters under it. `S` keeps zedit's surround, which `C` and `R` cover.
+- **`J`** joins the selected lines, **`r`** replaces every character in the
+  selection, **`gq`** reflows it, and **`O`** swaps a block's *horizontal*
+  corner where `o` swaps the whole one.
+- **`v`/`V`/`Ctrl-V` stop visual mode** when it is already their kind, and
+  **`Ctrl-C`** stops it outright. `Q` does nothing, vim being explicit that
+  it does not start Ex mode here.
+- **`it`/`at`** — the innermost markup tag block, matched textually rather
+  than through a grammar, so it works in any file that happens to hold
+  markup rather than only where one was vendored.
+- **`:[range]!cmd`** hands the range to a command's stdin and puts what it
+  writes back in its place; visual `!` prefills the range, making `!sort`
+  over a selection the classic use. This is the one place zedit runs a
+  shell, because pipes are the point and the command line is the user's own.
+
+### Note
+
+`it`/`at` return both ends **exclusive**, like `objSentence`. An inclusive
+end cannot express "up to the `<`, line breaks and all", and the first
+version left the newlines behind when a tag's content owned whole lines —
+`dit` on an outer `<div>` gave `<div>\n</div>` instead of `<div></div>`.
+
 ## 0.57.0 - 2026-08-04
 
 ### Added

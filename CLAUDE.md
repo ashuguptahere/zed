@@ -556,6 +556,32 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   only ever worked by accident (the bare `g` jumped, then the second key
   applied from line 1), and a prefix that did not know them would have
   swallowed them silently instead.
+- **The rest of visual mode.** `Ctrl-A`/`Ctrl-X` bump the number on every
+  selected line, and `g Ctrl-A`/`g Ctrl-X` *step* the amount line by line —
+  `1 1 1 1` becomes `2 3 4 5` — with only lines that hold a number advancing
+  the step, and the whole selection one undoable change. `D`/`X`/`Y`/`C`/`R`
+  are the forms that take whole *lines* however the selection was made, so
+  `vlD` deletes the line rather than the two characters under it. `J` joins
+  the selected lines (`gJ` without the separator), `r` replaces every
+  character in the selection, `gq` reflows it, and `O` swaps a block's
+  *horizontal* corner where `o` swaps the whole one. `v`/`V`/`Ctrl-V` each
+  stop visual mode when it is already their kind, `Ctrl-C` stops it outright,
+  and `Q` does nothing — vim is explicit that it does not start Ex mode here.
+  `S` keeps zedit's surround rather than vim's change-lines, which `C` and
+  `R` both provide.
+- **`it`/`at`:** the innermost markup tag block, matched *textually* rather
+  than through a grammar so it works in any file that happens to hold markup
+  — a template, a docstring, a string literal — not only where one was
+  vendored. Both ends come back **exclusive**, like `objSentence`: an
+  inclusive end cannot say "up to the `<`, line breaks and all", and `dit`
+  over a tag whose content owns whole lines would leave them behind.
+- **`:[range]!cmd`** hands the range to a command's stdin and puts what it
+  writes back in its place; visual `!` prefills the range, so `!sort` over a
+  selection is the classic use. This is the one place zedit runs a *shell*
+  (`sh -c`), because pipes and redirection are the point and the command line
+  is the user's own — nothing from a file or a language server reaches it.
+  Its output is read before the wait, so a command writing more than a pipe
+  buffer cannot deadlock against it.
 - **Search:** `/pat` `?pat` (incremental — jumps live as you type, `Esc`
   cancels and restores the cursor), `n N`, `*` `#` (whole-word, `\<word\>`).
   Matches are highlighted; wraps. Patterns are modern regexes (regex.zig:

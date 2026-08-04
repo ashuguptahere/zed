@@ -797,6 +797,32 @@ paste back as one \(em padding short lines, growing the file past its end,
 and laying the block side by side under a count. Press
 .B S{char}
 to surround the selection.
+.TP
+.B "CTRL-A CTRL-X \fR(and\fP g CTRL-A\fR,\fP g CTRL-X\fR)\fP"
+Add or subtract from the number on every selected line. The
+.B g
+forms step the amount line by line, so a column of
+.B 1
+becomes 2, 3, 4 \(em handy for renumbering.
+.TP
+.B "D X Y C R"
+Delete, yank or change whole \fIlines\fP, however the selection was made.
+.TP
+.B "J r gq O"
+Join the selected lines; replace every character in the selection; reflow it;
+and, in blockwise, swap the block's horizontal corner.
+.TP
+.B "v V CTRL-V CTRL-C"
+Each of the first three switches to its own kind, or stops Visual mode when it
+is already that kind.
+.B CTRL-C
+stops it outright.
+.TP
+.B !\fIcommand\fP
+Filter the selected lines through \fIcommand\fP \(em
+.B !sort
+being the classic. Equivalent to
+.BI :[range]! command \fR.\fP
 .SH "PICKERS (Space leader, AstroNvim-style groups)"
 Every picker shares one layout: the file tree on its side (when open), the
 results beside it, and a live preview of the selected file on the right,
