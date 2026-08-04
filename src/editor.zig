@@ -1694,6 +1694,7 @@ pub const Editor = struct {
         // A pending leader menu owns the keyboard even while the explorer has
         // focus, so `Space` works the same in both places.
         if (self.sb_focus and self.mode == .normal and self.await_arg == .none) return self.sidebarKey(k);
+        if (try self.keymapKey(k)) return;
         switch (self.mode) {
             .terminal => self.terminalKey(k, raw),
             .normal => try self.normalKey(k),
@@ -5492,6 +5493,268 @@ pub const Editor = struct {
         self.resetPending();
     }
 
+    // === the non-modal keymaps (vscode / zed) ==============================
+
+    /// True while the editor is answering VS Code's keys rather than vim's.
+    fn nonModal(_: *Editor) bool {
+        return config.settings.keymap != .vim;
+    }
+
+    /// A selection under the non-modal keymaps is an ordinary visual
+    /// selection; what differs is how it starts and ends. Shift+motion opens
+    /// one at the cursor and extends it, and any *unshifted* motion drops it —
+    /// which is what makes arrow keys behave the way everyone outside vim
+    /// expects.
+    fn shiftSelect(self: *Editor, extend: bool) void {
+        const in_visual = self.mode == .visual or self.mode == .visual_line or self.mode == .visual_block;
+        if (extend) {
+            if (!in_visual) {
+                const at = self.cursor();
+                self.enterVisual(.visual);
+                self.vstart = at;
+            }
+        } else if (in_visual) {
+            self.mode = .insert;
+        }
+    }
+
+    /// Whatever is selected, as text — for `Ctrl-C` / `Ctrl-X`.
+    fn selectionText(self: *Editor) ?[]u8 {
+        const in_visual = self.mode == .visual or self.mode == .visual_line or self.mode == .visual_block;
+        if (!in_visual) return null;
+        var a = self.vstart;
+        var b = self.cursor();
+        if (cmpPos(b, a) < 0) std.mem.swap(Pos, &a, &b);
+        const line = self.buf.line(b.row);
+        const span: Span = if (self.mode == .visual_line)
+            .{ .lines = true, .top = a.row, .bot = b.row }
+        else
+            .{ .lines = false, .start = a, .end = .{ .row = b.row, .col = unicode.nextBoundary(line, b.col) } };
+        return self.extract(span) catch null;
+    }
+
+    /// `Alt-Up` / `Alt-Down` — move the current line (or the selected lines)
+    /// one row, taking the selection with it. VS Code's, and one of the few
+    /// chords with no vim equivalent to delegate to.
+    fn moveLines(self: *Editor, down: bool) void {
+        if (self.rejectReadOnly()) return;
+        const in_visual = self.mode == .visual or self.mode == .visual_line;
+        var top = self.cy;
+        var bot = self.cy;
+        if (in_visual) {
+            top = @min(self.vstart.row, self.cy);
+            bot = @max(self.vstart.row, self.cy);
+        }
+        const last = self.buf.lineCount() - 1;
+        if (down and bot >= last) return;
+        if (!down and top == 0) return;
+        self.pushUndo();
+        if (down) {
+            // Lift the line below the block and drop it above.
+            const moved = self.gpa.dupe(u8, self.buf.line(bot + 1)) catch return;
+            defer self.gpa.free(moved);
+            self.buf.removeLineAt(bot + 1);
+            self.buf.insertLineAt(top, moved) catch return;
+        } else {
+            const moved = self.gpa.dupe(u8, self.buf.line(top - 1)) catch return;
+            defer self.gpa.free(moved);
+            self.buf.removeLineAt(top - 1);
+            self.buf.insertLineAt(bot, moved) catch return;
+        }
+        self.buf.dirty = true;
+        const delta: isize = if (down) 1 else -1;
+        self.cy = @intCast(@as(isize, @intCast(self.cy)) + delta);
+        if (in_visual) self.vstart.row = @intCast(@as(isize, @intCast(self.vstart.row)) + delta);
+        self.clampCursor();
+        self.updateGoal();
+    }
+
+    /// `Shift-Alt-Up` / `Shift-Alt-Down` — copy the line (or the selected
+    /// lines) above or below.
+    fn duplicateLines(self: *Editor, down: bool) void {
+        if (self.rejectReadOnly()) return;
+        const in_visual = self.mode == .visual or self.mode == .visual_line;
+        const top = if (in_visual) @min(self.vstart.row, self.cy) else self.cy;
+        const bot = if (in_visual) @max(self.vstart.row, self.cy) else self.cy;
+        self.pushUndo();
+        var copies: std.ArrayList([]u8) = .empty;
+        defer {
+            for (copies.items) |c| self.gpa.free(c);
+            copies.deinit(self.gpa);
+        }
+        var row = top;
+        while (row <= bot) : (row += 1) {
+            const c = self.gpa.dupe(u8, self.buf.line(row)) catch return;
+            copies.append(self.gpa, c) catch {
+                self.gpa.free(c);
+                return;
+            };
+        }
+        var at = if (down) bot + 1 else top;
+        for (copies.items) |c| {
+            self.buf.insertLineAt(at, c) catch return;
+            at += 1;
+        }
+        self.buf.dirty = true;
+        if (down) {
+            const n = bot - top + 1;
+            self.cy += n;
+            if (in_visual) self.vstart.row += n;
+        }
+        self.clampCursor();
+        self.updateGoal();
+    }
+
+    /// The non-modal dispatch. Returns true when the key was one of these
+    /// keymaps' own, so the caller knows not to run the modal path.
+    ///
+    /// Everything here delegates to a command the editor already had; what is
+    /// new is only which key reaches it. Where VS Code has something zedit
+    /// does not — `Ctrl-D`'s add-cursor-at-next-match above all — the chord
+    /// does the nearest honest thing rather than pretending.
+    fn keymapKey(self: *Editor, k: key.Key) !bool {
+        if (!self.nonModal()) return false;
+        // The command line, pickers and the shell own the keyboard outright.
+        switch (self.mode) {
+            .command, .picker, .terminal => return false,
+            else => {},
+        }
+
+        // An *unmodified* motion collapses a selection, which is what makes
+        // arrow keys behave the way everyone outside vim expects. The key
+        // itself is then left to the ordinary insert handling.
+        switch (k) {
+            .left, .right, .up, .down, .home, .end, .page_up, .page_down => {
+                self.shiftSelect(false);
+                return false;
+            },
+            else => {},
+        }
+
+        switch (k) {
+            .modified => |m| {
+                // Shift extends a selection; anything else drops it first.
+                self.shiftSelect(m.mods.shift);
+                switch (m.nav) {
+                    // `repeatMotion` and `repeatWord` take their direction at
+                    // comptime, so the two sides are written out rather than
+                    // selected into.
+                    .left => if (m.mods.ctrl)
+                        self.doMotion(self.repeatWord(.b, false))
+                    else
+                        self.doMotion(self.repeatMotion(.left)),
+                    .right => if (m.mods.ctrl)
+                        self.doMotion(self.repeatWord(.f, false))
+                    else
+                        self.doMotion(self.repeatMotion(.right)),
+                    .up, .down => {
+                        // Alt moves the line rather than the cursor; with
+                        // Shift as well it copies it.
+                        if (m.mods.alt) {
+                            if (m.mods.shift) self.duplicateLines(m.nav == .down) else self.moveLines(m.nav == .down);
+                            return true;
+                        }
+                        self.doMotion(self.vertical(m.nav == .up, 1));
+                    },
+                    .home => if (m.mods.ctrl) {
+                        self.setCursor(.{ .row = 0, .col = 0 });
+                    } else self.doMotion(.{ .pos = .{ .row = self.cy, .col = 0 }, .kind = .exclusive, .col_mode = .exact }),
+                    .end => if (m.mods.ctrl) {
+                        const last = self.buf.lineCount() - 1;
+                        self.setCursor(.{ .row = last, .col = self.buf.line(last).len });
+                    } else self.setCursor(.{ .row = self.cy, .col = self.curLine().len }),
+                    .page_up, .page_down => self.pageMove(m.nav == .page_up),
+                    .delete => try self.buf.deleteForward(self.cy, self.cx),
+                }
+                return true;
+            },
+            .ctrl => |c| switch (c) {
+                's' => {
+                    _ = try self.write("");
+                    return true;
+                },
+                'p' => {
+                    self.openFilePicker();
+                    return true;
+                },
+                'f' => {
+                    self.enterCmd(.search_forward);
+                    return true;
+                },
+                'h' => { // VS Code's replace; zedit's is `:%s`
+                    self.enterCmd(.ex);
+                    self.cmd.appendSlice(self.gpa, "%s/") catch {};
+                    self.cmd_cur = self.cmd.items.len;
+                    return true;
+                },
+                'g' => { // goto line
+                    self.enterCmd(.ex);
+                    return true;
+                },
+                'z' => {
+                    self.undoChange();
+                    return true;
+                },
+                'y' => {
+                    self.redoChange();
+                    return true;
+                },
+                'a' => { // select the whole file
+                    self.setCursor(.{ .row = 0, .col = 0 });
+                    self.enterVisual(.visual_line);
+                    const last = self.buf.lineCount() - 1;
+                    self.setCursor(.{ .row = last, .col = self.buf.line(last).len });
+                    return true;
+                },
+                'c', 'x' => {
+                    if (self.selectionText()) |text| {
+                        defer self.gpa.free(text);
+                        self.yankTo(text, if (self.mode == .visual_line) .linewise else .charwise, 0);
+                        self.osc52Copy(text);
+                        if (c == 'x') try self.visualOperator(.delete) else self.mode = .insert;
+                    }
+                    return true;
+                },
+                'v' => {
+                    try self.paste(true, true);
+                    self.mode = .insert;
+                    return true;
+                },
+                'd' => { // VS Code selects the word; adding a caret per match
+                    self.selectWord(.e); // needs the multi-selection model.
+                    return true;
+                },
+                'b' => {
+                    self.sidebarToggle();
+                    return true;
+                },
+                'w' => {
+                    self.closeDoc(false);
+                    return true;
+                },
+                '/' => { // Ctrl-/ — comment toggle, 0x1f on the wire
+                    const in_visual = self.mode == .visual or self.mode == .visual_line;
+                    const top = if (in_visual) @min(self.vstart.row, self.cy) else self.cy;
+                    const bot = if (in_visual) @max(self.vstart.row, self.cy) else self.cy;
+                    if (in_visual) self.mode = .insert;
+                    self.toggleComment(.{ .lines = true, .top = top, .bot = bot });
+                    return true;
+                },
+                else => return false,
+            },
+            .escape => {
+                // VS Code's Esc: drop the selection or close a popup, and
+                // never leave you unable to type.
+                if (self.comp_open or self.sig_open) {
+                    self.comp_open = false;
+                    self.sig_open = false;
+                } else self.mode = .insert;
+                return true;
+            },
+            else => return false,
+        }
+    }
+
     // === the Ctrl namespace ================================================
 
     /// `Ctrl-A` / `Ctrl-X` — add or subtract `n` from the number at or after
@@ -6124,6 +6387,15 @@ pub const Editor = struct {
         self.recents = recent.load(self.gpa, self.io);
         self.dashboard = show_dashboard and self.recents.entries.items.len > 0;
         self.dash_sel = 0;
+        // The non-modal keymaps start where their users expect to be: able to
+        // type. There is no normal mode to return to under them.
+        if (self.nonModal() and !self.dashboard) {
+            self.mode = .insert;
+            // `enterInsert` is what normally records the state undo returns
+            // to, and it never runs here — without this, `Ctrl-Z` after the
+            // first keystrokes has nothing to go back to.
+            self.pushUndo();
+        }
     }
 
     /// Record a file or directory in the recently-opened list. Local paths are

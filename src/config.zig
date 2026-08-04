@@ -12,6 +12,13 @@ const theme = @import("theme.zig");
 
 pub const Side = enum { left, right };
 
+/// Which set of keys the editor answers to. `vim` is modal, as zedit has
+/// always been; the other two are **non-modal** — typing inserts, and the
+/// commands live on Ctrl/Alt chords. `zed` is the same table as `vscode`
+/// (Zed ships VS Code's bindings on Linux by design) with its own name, so a
+/// user who reaches for one is not told the other.
+pub const Keymap = enum { vim, vscode, zed };
+
 pub const Settings = struct {
     /// Cells a tab character occupies (rendering only; tabs are stored verbatim).
     tab_width: usize = 4,
@@ -20,6 +27,9 @@ pub const Settings = struct {
     nerd_font: bool = true,
     /// Which side the file-tree sidebar (`Space e`) opens on.
     sidebar: Side = .left,
+    /// Which keys the editor answers to: modal `vim`, or the non-modal
+    /// `vscode`/`zed` chords.
+    keymap: Keymap = .vim,
     /// Relative line numbers in the gutter (the cursor line stays absolute,
     /// AstroNvim's hybrid style). False shows absolute numbers everywhere.
     relative_numbers: bool = true,
@@ -130,6 +140,16 @@ pub const default_text =
     \\
     \\# Which side the file-tree sidebar (Space e) opens on: left or right.
     \\sidebar = left
+    \\
+    \\# Which keys the editor answers to.
+    \\#   vim    - modal editing (the default): normal / insert / visual
+    \\#   vscode - non-modal: typing always inserts, commands on Ctrl chords
+    \\#            (Ctrl-s save, Ctrl-p files, Ctrl-f find, Ctrl-/ comment,
+    \\#            Shift+arrows select, Alt+Up/Down move a line...)
+    \\#   zed    - the same table under Zed's name
+    \\# Non-modal means the vim commands are not reachable: it is an
+    \\# emulation, not a hybrid.
+    \\keymap = vim
     \\
     \\# Relative line numbers in the gutter (the cursor line stays absolute).
     \\# Set to false for absolute numbers everywhere.
@@ -247,6 +267,8 @@ pub fn apply(text: []const u8) void {
             if (n >= 1 and n <= 16) settings.tab_width = n;
         } else if (std.mem.eql(u8, key, "nerd_font")) {
             if (parseBool(value)) |b| settings.nerd_font = b;
+        } else if (std.mem.eql(u8, key, "keymap")) {
+            if (std.meta.stringToEnum(Keymap, value)) |k| settings.keymap = k;
         } else if (std.mem.eql(u8, key, "sidebar")) {
             if (std.meta.stringToEnum(Side, value)) |s| settings.sidebar = s;
         } else if (std.mem.eql(u8, key, "relative_numbers")) {
@@ -474,7 +496,15 @@ test "every setting is documented and parsed" {
         const want: []const u8 = switch (@typeInfo(f.type)) {
             .bool => if (dflt) "false" else "true",
             .int => "7",
-            .@"enum" => if (dflt == .left) "right" else "left",
+            // Any value that is not the default, whatever the enum is —
+            // this used to assume `Side` was the only one, and said so by
+            // failing to compile the moment a second appeared.
+            .@"enum" => |e| lbl: {
+                inline for (e.fields) |ef| {
+                    if (@as(f.type, @enumFromInt(ef.value)) != dflt) break :lbl @as([]const u8, ef.name);
+                }
+                continue;
+            },
             else => continue,
         };
         var buf: [128]u8 = undefined;

@@ -110,6 +110,31 @@ or the
 .B Space f t
 picker.
 .TP
+.B keymap
+.BR vim " (default), " vscode " or " zed .
+.B vim
+is modal editing. The other two make the editor \fInon-modal\fP: typing always
+inserts, and the commands live on chords \(em
+.BR Ctrl-s " save, " Ctrl-p " files, " Ctrl-f " find, " Ctrl-h " replace,"
+.BR Ctrl-z / Ctrl-y " undo/redo, " Ctrl-c / Ctrl-x / Ctrl-v " clipboard,"
+.BR Ctrl-a " select all, " Ctrl-/ " comment, " Ctrl-b " explorer,"
+.B Ctrl-w
+close \(em with Shift+arrows selecting, Ctrl+arrows moving by word, and
+Alt+Up/Down moving a line (add Shift to copy it).
+.B zed
+is the same table under its own name.
+.PP
+It is an emulation, not a hybrid: the vim commands are not reachable under
+them. Three limits are worth knowing. A selection includes the cell under the
+caret (zedit's visual model), so it is one character wider at that end than
+VS Code's.
+.B Ctrl-D
+selects the word but does not add a caret at the next match. And
+.BI Ctrl+Shift+ letter
+chords cannot work at all, because a terminal does not pass the shift bit for
+them \(em which rules out the command palette and project search on their
+real keys.
+.TP
 .B tab_width
 Cells a tab occupies when rendered (1\-16, default 4). Tabs are stored
 verbatim.

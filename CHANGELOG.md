@@ -2,6 +2,57 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.59.0 - 2026-08-04
+
+### Added
+
+- **A non-modal keymap: `keymap = vscode | zed`.** The default stays `vim`
+  and nothing about it changes. Set either of the others and the editor
+  starts able to type, letters are always text, and the commands live on
+  chords: `Ctrl-s` save, `Ctrl-p` files, `Ctrl-f` find, `Ctrl-h` replace,
+  `Ctrl-z`/`Ctrl-y` undo/redo, `Ctrl-c`/`Ctrl-x`/`Ctrl-v` clipboard,
+  `Ctrl-a` select all, `Ctrl-/` comment, `Ctrl-b` explorer, `Ctrl-w` close,
+  `Ctrl-d` select the word. Shift+arrows select, Ctrl+arrows move by word,
+  Ctrl+Home/End reach the file's ends, Alt+Up/Down move a line and
+  Shift+Alt+Up/Down copy it. `Esc` drops a selection or closes a popup and
+  never leaves you unable to type.
+
+  `zed` is the same table under its own name — Zed ships VS Code's bindings
+  on Linux by design, and a user who reaches for one should not be told
+  about the other.
+
+- **`key.zig` decodes modified navigation keys** (`Shift-Left`, `Ctrl-Right`,
+  `Alt-Up`, `Ctrl-Delete`, …), which it never had. A new `modified` tag
+  rather than a payload on `up`/`down`/`left`/`right`: those are matched bare
+  in about a hundred places, and widening them would have rippled through
+  every one. An unmodified sequence still decodes to its plain tag, including
+  the long `ESC [ 1 ; 1 D` spelling.
+
+### Not faithful, and why
+
+It is an emulation, not a hybrid: the vim commands are genuinely unreachable
+under it. Beyond that, three things are recorded rather than papered over.
+
+- **A selection includes the cell under the caret**, because that is zedit's
+  visual model; VS Code's caret sits between characters, so a selection here
+  is one character wider at that end. Exactness needs the selection model
+  itself to change — the multi-selection item still on the roadmap.
+- **`Ctrl-D` selects the word but adds no caret at the next match**, for the
+  same reason.
+- **`Ctrl+Shift+<letter>` cannot work at all**: a terminal does not pass the
+  shift bit for those, so `Ctrl+Shift+P` is indistinguishable from `Ctrl+P`.
+  That rules out the command palette and project search on their real keys,
+  whatever the emulation does.
+
+Undo granularity is coarser than VS Code's too: everything typed since the
+last command is one step, where VS Code breaks on word boundaries and pauses.
+
+### Changed
+
+- `config.zig`'s completeness test no longer assumes `Side` is the only enum
+  setting — it picks any value that differs from the default. It failed to
+  compile the moment a second enum appeared, which is exactly what it is for.
+
 ## 0.58.0 - 2026-08-04
 
 The visual-mode namespace, plus the two objects that hang off it.

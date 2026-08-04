@@ -15,6 +15,11 @@
 
 ## Features
 
+- **Not a vim user?** `keymap = vscode` (or `zed`) in the config makes zedit
+  **non-modal**: typing always inserts, `Ctrl-s`/`Ctrl-p`/`Ctrl-f`/`Ctrl-z`
+  and the rest do what they do everywhere else, Shift+arrows select and
+  Alt+Up/Down move a line. The default stays `vim`.
+
 - Modal editing: normal / insert / replace / visual / command modes
 - A comprehensive **vim keymap**:
   - Motions: `h j k l`, `w W b B e E`, `0 ^ $`, `gg G {n}G`, `f F t T` + `; ,`,

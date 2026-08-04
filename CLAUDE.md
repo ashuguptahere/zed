@@ -1450,6 +1450,42 @@ with that many windows picks them up by itself. A plain split still tiles
 evenly: the new window inherits its parent's weight, so nothing changes until
 a resize or a saved layout says otherwise.
 
+**A non-modal keymap (`keymap = vscode | zed`).** The default is `vim` and
+nothing about it changes. Set either of the others and the editor is
+**non-modal**: it starts able to type, letters are always text, and the
+commands live on chords — `Ctrl-s` save, `Ctrl-p` files, `Ctrl-f` find,
+`Ctrl-h` replace, `Ctrl-z`/`Ctrl-y` undo/redo, `Ctrl-c`/`Ctrl-x`/`Ctrl-v`
+clipboard, `Ctrl-a` select all, `Ctrl-/` comment, `Ctrl-b` explorer, `Ctrl-w`
+close, `Ctrl-d` select the word; Shift+arrows select, Ctrl+arrows move by
+word, Ctrl+Home/End reach the file's ends, Alt+Up/Down move a line and
+Shift+Alt+Up/Down copy it. `Esc` drops a selection or closes a popup and
+never leaves you unable to type. `zed` is the same table under its own name:
+Zed ships VS Code's bindings on Linux by design, and a user who reaches for
+one should not be told about the other.
+
+It is an *emulation, not a hybrid* — the vim commands are genuinely not
+reachable, which is the point. Three things it does **not** do, all recorded
+rather than papered over:
+  * **A selection includes the cell under the caret**, because that is zedit's
+    visual model. VS Code's caret sits between characters, so a selection here
+    is one character wider at that end. Making it exact needs the selection
+    model itself to change — the multi-selection item still on the roadmap.
+  * **`Ctrl-D` selects the word but does not add a caret at the next match**,
+    for the same reason. It does the honest nearest thing rather than
+    pretending.
+  * **`Ctrl+Shift+…` chords are unavailable**, because a terminal cannot tell
+    `Ctrl+Shift+P` from `Ctrl+P` — the shift bit never reaches the
+    application for a letter. That rules out the command palette and project
+    search on their real keys, whatever the emulation does.
+  Undo granularity is also coarser than VS Code's: everything typed since the
+  last command is one step, where VS Code breaks on word boundaries and
+  pauses.
+
+  `key.zig` grew a `modified` tag to make any of this possible — Shift+Left
+  and Ctrl+Right had never been decoded at all. It is deliberately a separate
+  tag rather than a payload on `up`/`down`/`left`/`right`, which are matched
+  bare in about a hundred places.
+
 Runtime configuration is one documented file (see `config.zig`): theme,
 `tab_width`, `nerd_font`, `sidebar` (left/right), `relative_numbers`,
 `large_file_mb`, `autoindent`, `buffer_tabs`, `auto_completion`,

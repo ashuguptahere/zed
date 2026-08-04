@@ -15,6 +15,14 @@ pub const Mouse = struct { row: u16, col: u16 };
 /// An 8-bit-per-channel colour, as an OSC colour report carries it.
 pub const Rgb = struct { r: u8, g: u8, b: u8 };
 
+/// Which modifiers a navigation key arrived with.
+pub const Mods = packed struct { shift: bool = false, alt: bool = false, ctrl: bool = false };
+
+/// The navigation keys a modifier can be attached to.
+pub const Nav = enum { up, down, left, right, home, end, delete, page_up, page_down };
+
+pub const Modified = struct { nav: Nav, mods: Mods };
+
 pub const Key = union(enum) {
     char: u21,
     /// The terminal's answer to `OSC 11 ; ? ST` — the background colour it is
@@ -29,6 +37,12 @@ pub const Key = union(enum) {
     mouse_release: Mouse, // left button up
     mouse_other, // a mouse report that never acts: other buttons, modifiers, tilt
     ctrl: u8, // the associated lowercase letter, e.g. 0x03 -> 'c'
+    /// A navigation key with a modifier held — `Shift-Left`, `Ctrl-Right`,
+    /// `Alt-Up`. Deliberately its own tag rather than a payload on `up`,
+    /// `down` and the rest: those are matched bare in a hundred places, and
+    /// widening them would have rippled through every one. An unmodified key
+    /// still decodes to its plain tag, so nothing that existed changes.
+    modified: Modified,
     enter,
     tab,
     shift_tab,
@@ -78,6 +92,8 @@ pub fn decode(bytes: []const u8) Decoded {
         // Ctrl-^ sits outside the letter run; it keeps its own name rather
         // than being folded onto one, since vim gives it a command of its own.
         0x1e => .{ .key = .{ .ctrl = '^' }, .consumed = 1 },
+        // Ctrl-/ is 0x1f on most terminals, and is VS Code's comment toggle.
+        0x1f => .{ .key = .{ .ctrl = '/' }, .consumed = 1 },
         else => decodeChar(bytes),
     };
 }
@@ -219,25 +235,93 @@ fn decodeSgrMouse(bytes: []const u8) Decoded {
 }
 
 /// Parse ESC [ <number> ~  style sequences (Home/End/Delete/PageUp/PageDown).
+/// xterm's modifier parameter: 1 + a bitfield, 1 = shift, 2 = alt, 4 = ctrl.
+/// So `2` is Shift, `5` is Ctrl, `6` is Ctrl+Shift, and so on.
+fn modsFromParam(p: usize) Mods {
+    const bits = p -| 1;
+    return .{ .shift = bits & 1 != 0, .alt = bits & 2 != 0, .ctrl = bits & 4 != 0 };
+}
+
+fn navFromFinal(f: u8) ?Nav {
+    return switch (f) {
+        'A' => .up,
+        'B' => .down,
+        'C' => .right,
+        'D' => .left,
+        'H' => .home,
+        'F' => .end,
+        else => null,
+    };
+}
+
+/// `ESC [ <n> ; <m> ~` and `ESC [ <n> ; <m> <letter>`. The first number picks
+/// the key (or is 1 for the letter forms), the second carries the modifiers.
+/// Without a `;` this is the plain form the editor has always seen.
 fn decodeCsiNumeric(bytes: []const u8) Decoded {
     var i: usize = 2;
     var num: usize = 0;
     while (i < bytes.len and bytes[i] >= '0' and bytes[i] <= '9') : (i += 1) {
         num = num * 10 + (bytes[i] - '0');
     }
-    // Need the terminating '~'; if the sequence is truncated, drop what we have.
     if (i >= bytes.len) return .{ .key = .unknown, .consumed = bytes.len };
+
+    // A modifier parameter, when one is there.
+    var mods: ?Mods = null;
+    if (bytes[i] == ';') {
+        i += 1;
+        var m: usize = 0;
+        const start = i;
+        while (i < bytes.len and bytes[i] >= '0' and bytes[i] <= '9') : (i += 1) {
+            m = m * 10 + (bytes[i] - '0');
+        }
+        if (i >= bytes.len) return .{ .key = .unknown, .consumed = bytes.len };
+        if (i == start) return .{ .key = .unknown, .consumed = i + 1 };
+        mods = modsFromParam(m);
+    }
+
     const consumed = i + 1; // include the final byte
-    if (bytes[i] != '~') return .{ .key = .unknown, .consumed = consumed };
-    const key: Key = switch (num) {
+    const final = bytes[i];
+
+    if (final != '~') {
+        // The letter forms: `ESC [ 1 ; 5 C` is Ctrl-Right.
+        const nav = navFromFinal(final) orelse return .{ .key = .unknown, .consumed = consumed };
+        const m = mods orelse return .{ .key = plainNav(nav), .consumed = consumed };
+        if (isBare(m)) return .{ .key = plainNav(nav), .consumed = consumed };
+        return .{ .key = .{ .modified = .{ .nav = nav, .mods = m } }, .consumed = consumed };
+    }
+
+    const nav: ?Nav = switch (num) {
         1, 7 => .home,
         4, 8 => .end,
         3 => .delete,
         5 => .page_up,
         6 => .page_down,
-        else => .unknown,
+        else => null,
     };
-    return .{ .key = key, .consumed = consumed };
+    const n = nav orelse return .{ .key = .unknown, .consumed = consumed };
+    const m = mods orelse return .{ .key = plainNav(n), .consumed = consumed };
+    if (isBare(m)) return .{ .key = plainNav(n), .consumed = consumed };
+    return .{ .key = .{ .modified = .{ .nav = n, .mods = m } }, .consumed = consumed };
+}
+
+fn isBare(m: Mods) bool {
+    return !m.shift and !m.alt and !m.ctrl;
+}
+
+/// The plain tag a navigation key has always decoded to, so an unmodified
+/// sequence is indistinguishable from the short form.
+fn plainNav(n: Nav) Key {
+    return switch (n) {
+        .up => .up,
+        .down => .down,
+        .left => .left,
+        .right => .right,
+        .home => .home,
+        .end => .end,
+        .delete => .delete,
+        .page_up => .page_up,
+        .page_down => .page_down,
+    };
 }
 
 test "decode ascii char" {
@@ -384,4 +468,28 @@ test "Ctrl-h and Ctrl-j are distinct from Backspace and Enter" {
     try std.testing.expectEqual(Key.enter, decode(&[_]u8{0x0d}).key);
     try std.testing.expectEqual(Key{ .ctrl = 'k' }, decode(&[_]u8{0x0b}).key);
     try std.testing.expectEqual(Key{ .ctrl = 'l' }, decode(&[_]u8{0x0c}).key);
+}
+
+test "decode modified navigation keys" {
+    const eq = std.testing.expectEqual;
+    // xterm's letter forms: ESC [ 1 ; <mod> <letter>.
+    try eq(Key{ .modified = .{ .nav = .left, .mods = .{ .shift = true } } }, decode("\x1b[1;2D").key);
+    try eq(Key{ .modified = .{ .nav = .right, .mods = .{ .ctrl = true } } }, decode("\x1b[1;5C").key);
+    try eq(Key{ .modified = .{ .nav = .up, .mods = .{ .alt = true } } }, decode("\x1b[1;3A").key);
+    try eq(Key{ .modified = .{ .nav = .down, .mods = .{ .shift = true, .alt = true } } }, decode("\x1b[1;4B").key);
+    try eq(Key{ .modified = .{ .nav = .right, .mods = .{ .shift = true, .ctrl = true } } }, decode("\x1b[1;6C").key);
+    try eq(Key{ .modified = .{ .nav = .home, .mods = .{ .ctrl = true } } }, decode("\x1b[1;5H").key);
+    // The tilde forms: ESC [ <n> ; <mod> ~.
+    try eq(Key{ .modified = .{ .nav = .delete, .mods = .{ .ctrl = true } } }, decode("\x1b[3;5~").key);
+    try eq(Key{ .modified = .{ .nav = .page_up, .mods = .{ .shift = true } } }, decode("\x1b[5;2~").key);
+    // A modifier parameter of 1 means *no* modifier, and must come back as
+    // the plain key so nothing downstream has to know about both spellings.
+    try eq(Key.left, decode("\x1b[1;1D").key);
+    try eq(Key.delete, decode("\x1b[3;1~").key);
+    // The short forms are untouched.
+    try eq(Key.left, decode("\x1b[D").key);
+    try eq(Key.delete, decode("\x1b[3~").key);
+    // Consumed lengths.
+    try eq(@as(usize, 6), decode("\x1b[1;5C").consumed);
+    try eq(@as(usize, 6), decode("\x1b[3;5~").consumed);
 }

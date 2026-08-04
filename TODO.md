@@ -166,6 +166,15 @@ there is nothing to change there.
 
 ## Done (chronological)
 
+- [x] A non-modal keymap (`keymap = vscode | zed`): the editor starts able to
+      type and the commands live on Ctrl chords. Needed `key.zig` to decode
+      modified navigation keys, which it never had. Three limits recorded
+      rather than hidden: a selection is one character wider than VS Code's
+      at the caret (zedit's visual model), `Ctrl-D` selects the word but adds
+      no caret at the next match, and `Ctrl+Shift+<letter>` cannot reach the
+      application at all through a terminal. The first two are the
+      multi-selection roadmap item wearing a different hat. (0.59.0)
+
 - [x] The visual-mode namespace: `Ctrl-A`/`Ctrl-X` and their stepping `g`
       forms, the linewise `D X Y C R`, `J`, `r`, `gq`, `O`, the `v`/`V`/
       `Ctrl-V` stop-if-same-kind rule and `Ctrl-C`. Plus `it`/`at` tag
