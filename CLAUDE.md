@@ -753,8 +753,8 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   themes, `f u` the undo tree — `:undolist`'s picker, which had no key —
   and `f C` the **command palette**, AstroNvim's `<leader>fC`); `Space l` = Language tools (`l a` code action, `l r` rename, `l R`
   references, `l s` document symbols, `l S` workspace symbols, `l d` line
-  diagnostic, `l D` all diagnostics, `l f` format, `l p` **peek
-  definition**);
+  diagnostic, `l D` all diagnostics, `l f` format, `l p`/`l P` **peek
+  definition / references**);
   `Space g` = Git (`g d` inline diff,
   `g s` side-by-side, `g l` line diff); `Space d` = Debug (`d b` breakpoint,
   `d c` start/continue, `d n`/`d i`/`d o` step, `d q` stop); `Space t` = a terminal; `Space S` = Session for this
@@ -1325,6 +1325,17 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   outside dismisses it) and borrows the picker's preview cache: the same
   read, the same shared tree-sitter highlighter, because it is the same job —
   show a region of another file quickly without opening it.
+  `Space l P` **peeks the references** — VS Code's `Shift+F12` — which is the
+  same window holding more than one place: the title counts them (`(2/5
+  references)`), `n`/`p` (or `Tab`/`Shift-Tab`) step and the view follows,
+  wrapping, and `Ctrl-q` sends the whole set to the quickfix list, the
+  binding a picker already has for the same reason. A single-place peek says
+  "only one definition" rather than pretending to step. What it deliberately
+  does *not* draw is VS Code's side list of the references: `Space l R` **is**
+  that list, with a fuzzy prompt and a preview, and a second copy of it would
+  be duplication rather than a feature. The difference between the two is
+  therefore real — `l R` is for finding one among many, `l P` for reading
+  them where they are.
   `gr` renames the symbol under the cursor
   (prompts on the command line, pre-filled with the identifier), `Space l R`
   lists references in a picker ("path:line: text", Enter jumps there),

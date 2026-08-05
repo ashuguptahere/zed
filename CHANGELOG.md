@@ -2,6 +2,24 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.64.0 - 2026-08-05
+
+### Added
+
+- **Peek references** — `Space l P`. VS Code's `Shift+F12`, and the peek
+  window generalised from one place to a list: the title counts them
+  (`(2/5 references)`), `n`/`p` — or `Tab`/`Shift-Tab` — step and the view
+  follows, wrapping at both ends, `Enter` takes the jump to whichever one is
+  showing, and `Ctrl-q` sends the whole set to the quickfix list, the binding
+  a picker already has for the same reason. A peek holding a single place
+  says "only one definition" rather than pretending to step.
+
+  It deliberately does **not** draw VS Code's side list of the references
+  beside the source. `Space l R` already *is* that list, with a fuzzy prompt
+  and a live preview, and a second copy of it would be duplication rather
+  than a feature — so the two differ in purpose: `l R` to find one among
+  many, `l P` to read them where they are.
+
 ## 0.63.0 - 2026-08-05
 
 ### Added

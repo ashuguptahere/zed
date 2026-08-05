@@ -602,6 +602,74 @@ pub fn run(ctx: *h.Ctx) !void {
             std.mem.eql(u8, other_text, "const q = 1;\nconst r = 2;\nEEKED LINE\n"));
     }
 
+    // Peek references (`Space l P`): the same window with more than one place
+    // in it. The mock answers with two references, on lines 1 and 3.
+    {
+        h.writeFile(ctx.io, target, initial);
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "--lsp", ctx.mock, target }, .cols = 120 });
+        defer s.finish();
+        s.drain(1500);
+        var m = s.mark();
+        s.send(" lP");
+        s.drain(900);
+        ctx.check("Space l P peeks the references", s.containsPlainSince(ctx.gpa, m, "(1/2 references)"));
+        ctx.check("...naming the place it is showing", s.containsPlainSince(ctx.gpa, m, "zedit_it_lsp.zig:1"));
+        ctx.check("...and saying how to walk them", s.containsPlainSince(ctx.gpa, m, "n/p next"));
+        m = s.mark();
+        s.send("n");
+        s.drain(500);
+        ctx.check("n steps to the next one", s.containsPlainSince(ctx.gpa, m, "(2/2 references)") and
+            s.containsPlainSince(ctx.gpa, m, "zedit_it_lsp.zig:3"));
+        m = s.mark();
+        s.send("n"); // wraps
+        s.drain(500);
+        ctx.check("...wrapping at the end", s.containsPlainSince(ctx.gpa, m, "(1/2 references)"));
+        m = s.mark();
+        s.send("p");
+        s.drain(500);
+        ctx.check("p steps back the other way", s.containsPlainSince(ctx.gpa, m, "(2/2 references)"));
+        s.send("\x1b:q!\r");
+        s.drain(400);
+    }
+
+    // Enter takes the jump to whichever reference is showing.
+    {
+        const r = drive(ctx, &.{
+            .{ .keys = " lP", .ms = 900 },
+            .{ .keys = "n", .ms = 500 },
+            .{ .keys = "\r", .ms = 600 },
+            .{ .keys = "x", .ms = 300 },
+        }, ":wq\r");
+        defer r.deinit(ctx.gpa);
+        ctx.check("Enter opens the reference the window was showing",
+            std.mem.eql(u8, r.text, "const a = 1;\nconst b = 2;\nconst  = 3;\n"));
+    }
+
+    // Ctrl-q keeps every place instead of choosing one — the picker's binding,
+    // for the same reason.
+    {
+        const r = drive(ctx, &.{
+            .{ .keys = " lP", .ms = 900 },
+            .{ .keys = "\x11", .ms = 600 },
+            .{ .keys = "]q", .ms = 500 },
+        }, ":q!\r");
+        defer r.deinit(ctx.gpa);
+        ctx.check("Ctrl-q sends the peeked references to the quickfix list",
+            r.plainHas("2 references in the quickfix list"));
+        ctx.check("...where ]q then walks them", r.plainHas("of 2)"));
+    }
+
+    // A peek with one place in it says so rather than pretending to step.
+    {
+        const r = drive(ctx, &.{
+            .{ .keys = " lp", .ms = 900 },
+            .{ .keys = "n", .ms = 400 },
+        }, "\x1b:q!\r");
+        defer r.deinit(ctx.gpa);
+        ctx.check("stepping a single-place peek says there is only one",
+            r.plainHas("only one definition"));
+    }
+
     // Document symbols: Space-o opens a picker (kind tag + indented names);
     // filtering to "main" and Enter jumps to line 2 col 6, where x deletes.
     {

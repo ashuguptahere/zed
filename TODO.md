@@ -178,6 +178,13 @@ there is nothing to change there.
       application at all through a terminal. The first two are the
       multi-selection roadmap item wearing a different hat. (0.59.0)
 
+- [x] Peek references (`Space l P`): the peek window generalised from one
+      place to a list — the title counts them, `n`/`p` step and the view
+      follows, `Ctrl-q` sends the set to the quickfix list. Deliberately no
+      side list of the references: `Space l R` already is that list, with a
+      prompt and a preview, so the two differ in purpose (find one among
+      many vs read them where they are) rather than duplicating. (0.64.0)
+
 - [x] Peek definition (`Space l p`): the definition in a floating window over
       the file being read, `Enter` to take the jump. VS Code's `Alt+F12`,
       which no terminal delivers, so it lives on the leader tree. Shares the

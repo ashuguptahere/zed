@@ -437,13 +437,17 @@ whole document:
 - ~~**Command palette** (`Ctrl+Shift+P`)~~ — **DONE** in 0.61.0. Not on that
   key, which a terminal cannot deliver: on `Ctrl+P` then `>`, which is VS
   Code's own second route to it, and on `Space f C` under the vim keymap.
-- ~~**Peek definition**~~ (`Alt+F12`) — **DONE** in 0.63.0 as `Space l p`
-  (the real key cannot reach a terminal application): a floating window over
-  the file being read, `Enter` to take the jump, `Esc` to drop it. Writing it
-  found that cross-file `gd` had never worked — the server's uri was freed
-  unread and the line applied to the buffer already open. Peek *references*
-  is still absent, though `Space l R` lists them in a picker with a preview,
-  which is most of what it is for.
+- ~~**Peek definition / references**~~ (`Alt+F12`, `Shift+F12`) — **DONE**,
+  the definition in 0.63.0 as `Space l p` and the references in 0.64.0 as
+  `Space l P` (neither real key can reach a terminal application): a floating
+  window over the file being read, `Enter` to take the jump, `Esc` to drop
+  it, and for references a counted title with `n`/`p` walking them in place
+  and `Ctrl-q` sending the set to the quickfix list. Writing the first found
+  that cross-file `gd` had never worked — the server's uri was freed unread
+  and the line applied to the buffer already open. One deliberate
+  difference: VS Code draws a side list of the references beside the source,
+  where zedit leaves that to `Space l R`, which already *is* that list with a
+  fuzzy prompt and a preview.
 - **Breadcrumbs + sticky scroll** — the enclosing symbol path shown above the
   text, and the enclosing scope pinned to the top row while scrolling. zedit
   has the tree for both already.

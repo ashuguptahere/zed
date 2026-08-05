@@ -116,9 +116,11 @@
   - signature help (on `(` and `,`),
     hover (`K` / `Ctrl-k`), goto definition (`gd`), implementation (`gi`) and
     type definition (`gy`) — each opening the file the server names, wherever
-    it is — plus **peek definition** (`Space l p`): the definition in a
-    floating window over the file you are reading, `Enter` to take the jump,
-    `Esc` to drop it (VS Code's `Alt+F12`, on a key a terminal can deliver)
+    it is — plus **peek definition / references** (`Space l p` / `Space l P`):
+    shown in a floating window over the file you are reading, `Enter` to take
+    the jump, `Esc` to drop it; with references the title counts them and
+    `n`/`p` walk them in place, `Ctrl-q` sending the set to the quickfix list
+    (VS Code's `Alt+F12`/`Shift+F12`, on keys a terminal can deliver)
   - rename (`gr`), find references (`Space l R`), code actions (`ga`,
     including `executeCommand`/`applyEdit`), document symbols (`Space l s`),
     inlay hints rendered as virtual text

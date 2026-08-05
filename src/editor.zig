@@ -523,7 +523,9 @@ pub const Editor = struct {
     /// `Space l p` — the definition shown in a floating window rather than
     /// jumped to, and whether the definition request in flight is for one.
     peek: ?Peek = null,
-    peek_pending: bool = false,
+    /// Which answer the request in flight is for: a jump (`.none`), or a peek
+    /// window over the definition or the references.
+    peek_want: enum { none, definition, references } = .none,
     preview_path: ?[]u8 = null,
     preview_text: ?[]u8 = null,
     preview_top: usize = 0, // first line of the file to show (grep/reference hits centre)
@@ -817,7 +819,7 @@ pub const Editor = struct {
     }
 
     pub fn deinit(self: *Editor) void {
-        if (self.peek) |pk| self.gpa.free(pk.path);
+        if (self.peek) |*pk| pk.deinit(self.gpa);
         if (self.walker) |*w| w.deinit();
         if (self.walk_dir) |*d| d.close(self.io);
         self.clearPreview();
@@ -2594,6 +2596,7 @@ pub const Editor = struct {
                     'd' => self.lineDiagnostic(), // show the line's diagnostic
                     'f' => self.lspFormat(), // format buffer
                     'p' => self.peekDefinition(), // peek definition
+                    'P' => self.peekReferences(), // peek references
                     else => {},
                 };
             },
@@ -6760,7 +6763,7 @@ pub const Editor = struct {
         files,        grep,        buffers,     themes,      explorer,
         home,         new_buffer,  new_file,    new_folder,  close_others,
         code_action,  rename,      references,  doc_symbols, ws_symbols,
-        line_diag,    all_diags,   peek,        breakpoint,  clear_bps,   dbg_continue,
+        line_diag,    all_diags,   peek,        peek_refs,   breakpoint,  clear_bps,   dbg_continue,
         step_over,    step_into,   step_out,    dbg_stop,    mouse,
         undo,         redo,        comment,
     };
@@ -6842,6 +6845,7 @@ pub const Editor = struct {
         .{ .title = "All diagnostics", .vim = "Space l D", .run = .{ .act = .all_diags } },
         .{ .title = "Format buffer", .vim = "Space l f", .run = .{ .ex = "format" } },
         .{ .title = "Peek definition", .vim = "Space l p", .run = .{ .act = .peek } },
+        .{ .title = "Peek references", .vim = "Space l P", .run = .{ .act = .peek_refs } },
 
         // --- git ------------------------------------------------------------
         .{ .title = "Diff (inline)", .vim = "Space g d", .run = .{ .ex = "diff" } },
@@ -6940,6 +6944,7 @@ pub const Editor = struct {
                 .line_diag => self.lineDiagnostic(),
                 .all_diags => self.openDiagnosticPicker(),
                 .peek => self.peekDefinition(),
+                .peek_refs => self.peekReferences(),
                 .breakpoint => self.toggleBreakpoint(),
                 .clear_bps => self.clearBreakpoints(),
                 .dbg_continue => self.debugContinue(),
@@ -9972,9 +9977,9 @@ pub const Editor = struct {
         }
         if (client.takeDefinition()) |loc| {
             defer self.gpa.free(loc.uri);
-            if (self.peek_pending) {
-                self.peek_pending = false;
-                self.openPeek(loc);
+            if (self.peek_want == .definition) {
+                self.peek_want = .none;
+                self.openPeek("definition", &.{loc});
             } else self.gotoLocation(loc);
         }
         if (client.comp_ready) {
@@ -10030,8 +10035,14 @@ pub const Editor = struct {
         }
         if (client.refs_ready) {
             client.refs_ready = false;
+            const peeking = self.peek_want == .references;
+            self.peek_want = .none;
             if (self.mode == .normal) {
-                if (client.references.items.len > 0) self.openReferencePicker() else self.setStatus("no references", .{});
+                if (client.references.items.len == 0) {
+                    self.setStatus("no references", .{});
+                } else if (peeking) {
+                    self.openPeek("references", client.references.items);
+                } else self.openReferencePicker();
             }
         }
         if (client.fmt_ready) {
@@ -10124,41 +10135,124 @@ pub const Editor = struct {
 
     // === peek definition ===================================================
 
-    /// `Space l p` — VS Code's peek definition: the definition shown in a
-    /// floating window over the file being read, instead of jumping to it and
-    /// relying on `Ctrl-o` to come back. `Enter` turns the peek into the jump
-    /// once it is the right one.
+    /// `Space l p` / `Space l P` — VS Code's peek definition and peek
+    /// references: what the server pointed at, shown in a floating window over
+    /// the file being read, instead of jumping to it and relying on `Ctrl-o`
+    /// to come back. `Enter` turns the peek into the jump once it is the right
+    /// one.
     ///
     /// The window borrows the picker's preview cache — the same read, the same
     /// shared tree-sitter highlighter — because it is the same job: show a
     /// region of another file, quickly, without opening it.
+    ///
+    /// References are the same window with more than one place in it: `n`/`p`
+    /// step and the view follows, so a symbol's uses are read where they are
+    /// without a filter prompt or a second list. That last part is the
+    /// deliberate difference from `Space l R`, which *is* the list — VS Code
+    /// draws both at once, and drawing a second copy of a list zedit already
+    /// has would be duplication rather than a feature.
+    const PeekLoc = struct { path: []u8, line: usize, col: usize };
+
     const Peek = struct {
-        path: []u8, // owned; the file the definition is in
-        line: usize, // 0-based, the definition's line
-        col: usize,
+        /// What is being peeked, for the window's title: "definition",
+        /// "references".
+        what: []const u8,
+        locs: std.ArrayList(PeekLoc) = .empty,
+        idx: usize = 0,
+
+        fn at(self: *const Peek) PeekLoc {
+            return self.locs.items[self.idx];
+        }
+
+        fn deinit(self: *Peek, gpa: Allocator) void {
+            for (self.locs.items) |l| gpa.free(l.path);
+            self.locs.deinit(gpa);
+        }
     };
 
     fn peekDefinition(self: *Editor) void {
         const client = if (self.lsp) |*c| c else return self.setStatus("no language server", .{});
         if (!client.ready()) return self.setStatus("language server still starting", .{});
-        self.peek_pending = true;
+        self.peek_want = .definition;
         client.requestDefinition(self.cy, self.charCol());
     }
 
-    fn openPeek(self: *Editor, loc: lsp.Location) void {
-        const path = self.locPath(loc) orelse (self.gpa.dupe(u8, self.buf.path orelse "") catch return);
-        if (path.len == 0) {
-            self.gpa.free(path);
-            return self.setStatus("cannot peek an unnamed buffer", .{});
+    /// `Space l P` — every use of the symbol, walked in place.
+    fn peekReferences(self: *Editor) void {
+        const client = if (self.lsp) |*c| c else return self.setStatus("no language server", .{});
+        if (!client.ready()) return self.setStatus("language server still starting", .{});
+        self.peek_want = .references;
+        client.requestReferences(self.cy, self.charCol());
+    }
+
+    /// The absolute path a Location names — the current file's when the uri
+    /// points at it, since a peek shows a place, not necessarily another file.
+    fn peekPath(self: *Editor, loc: lsp.Location) ?[]u8 {
+        if (self.locPath(loc)) |p| return p;
+        // Absolute either way: `Ctrl-q` and the quickfix list's line lookup
+        // both compare against the cwd, and the open file's own path may be
+        // the relative one it was opened with.
+        const here = self.buf.path orelse return null;
+        const cwd = std.process.currentPathAlloc(self.io, self.gpa) catch return self.gpa.dupe(u8, here) catch null;
+        defer self.gpa.free(cwd);
+        return self.absPath(cwd, here);
+    }
+
+    fn openPeek(self: *Editor, what: []const u8, locs: []const lsp.Location) void {
+        var pk: Peek = .{ .what = what };
+        for (locs) |loc| {
+            const path = self.peekPath(loc) orelse continue;
+            pk.locs.append(self.gpa, .{ .path = path, .line = loc.line, .col = loc.col }) catch {
+                self.gpa.free(path);
+                break;
+            };
+        }
+        if (pk.locs.items.len == 0) {
+            pk.deinit(self.gpa);
+            return self.setStatus("nothing to peek here", .{});
         }
         self.closePeek();
-        self.peek = .{ .path = path, .line = loc.line, .col = loc.col };
-        self.loadPreview(path, loc.line);
+        self.peek = pk;
+        self.peekShow();
+    }
+
+    /// Load whatever the current index points at into the preview cache.
+    fn peekShow(self: *Editor) void {
+        const pk = self.peek orelse return;
+        const loc = pk.at();
+        self.loadPreview(loc.path, loc.line);
         self.prev_valid = false;
     }
 
+    /// `n` / `p` — the next or previous place, wrapping, like every other
+    /// walk-a-list key here (`]q`, `]d`, `]g`).
+    fn peekStep(self: *Editor, forward: bool) void {
+        const pk = if (self.peek) |*x| x else return;
+        const n = pk.locs.items.len;
+        if (n < 2) return self.setStatus("only one {s}", .{pk.what});
+        pk.idx = if (forward) (pk.idx + 1) % n else (pk.idx + n - 1) % n;
+        self.peekShow();
+    }
+
+    /// `Ctrl-q` — keep every place instead of choosing one, the same binding
+    /// (and the same reason) as in a picker.
+    fn peekToQuickfix(self: *Editor) void {
+        const pk = self.peek orelse return;
+        const cwd = std.process.currentPathAlloc(self.io, self.gpa) catch return;
+        defer self.gpa.free(cwd);
+        self.qf.clear();
+        self.qf.setTitle(pk.what);
+        for (pk.locs.items) |l| {
+            const rel = relativeTo(cwd, l.path);
+            self.qf.add(rel, l.line + 1, l.col, self.openDocLine(cwd, l.path, l.line));
+        }
+        const n = self.qf.len();
+        self.closePeek();
+        self.setStatus("{d} {s} in the quickfix list (]q / [q to walk)", .{ n, pk.what });
+    }
+
     fn closePeek(self: *Editor) void {
-        if (self.peek) |pk| self.gpa.free(pk.path);
+        if (self.peek) |*pk| pk.deinit(self.gpa);
         self.peek = null;
         self.clearPreview();
         self.prev_valid = false;
@@ -10175,14 +10269,19 @@ pub const Editor = struct {
                 'q' => self.closePeek(),
                 'j' => self.scrollPreview(1),
                 'k' => self.scrollPreview(-1),
+                'n' => self.peekStep(true),
+                'p' => self.peekStep(false),
                 else => {},
             },
+            .tab => self.peekStep(true),
+            .shift_tab => self.peekStep(false),
             .enter => {
                 // Take the peek: open the file for real, where it points.
-                const path = self.gpa.dupe(u8, pk.path) catch return;
+                const loc = pk.at();
+                const path = self.gpa.dupe(u8, loc.path) catch return;
                 defer self.gpa.free(path);
-                const line = pk.line;
-                const col = pk.col;
+                const line = loc.line;
+                const col = loc.col;
                 self.closePeek();
                 self.openFile(path, line);
                 self.cx = @min(col, self.curLine().len);
@@ -10194,6 +10293,7 @@ pub const Editor = struct {
                 'd' => self.scrollPreview(@intCast(self.peekBox().h / 2)),
                 'u' => self.scrollPreview(-@as(isize, @intCast(self.peekBox().h / 2))),
                 'c' => self.closePeek(),
+                'q' => self.peekToQuickfix(),
                 else => {},
             },
             .scroll_up => self.scrollPreview(-3),
@@ -10216,11 +10316,17 @@ pub const Editor = struct {
 
     fn renderPeek(self: *Editor) !void {
         const pk = self.peek orelse return;
+        const loc = pk.at();
         const box = self.peekBox();
-        var title: [160]u8 = undefined;
-        const name = std.fs.path.basename(pk.path);
-        const t = std.fmt.bufPrint(&title, " {s}:{d} ", .{ name, pk.line + 1 }) catch " definition ";
-        try self.drawBox(box, t, " Enter opens, Esc closes ");
+        var title: [192]u8 = undefined;
+        const name = std.fs.path.basename(loc.path);
+        const n = pk.locs.items.len;
+        const t = if (n > 1)
+            std.fmt.bufPrint(&title, " {s}:{d}  ({d}/{d} {s}) ", .{ name, loc.line + 1, pk.idx + 1, n, pk.what }) catch " references "
+        else
+            std.fmt.bufPrint(&title, " {s}:{d} ", .{ name, loc.line + 1 }) catch " definition ";
+        const hint = if (n > 1) " Enter opens, n/p next, Ctrl-q lists, Esc closes " else " Enter opens, Esc closes ";
+        try self.drawBox(box, t, hint);
         if (self.preview_text == null) {
             try self.emitFmt("\x1b[{d};{d}H", .{ box.y + 1, box.x + 2 });
             try self.setFg(theme.current.fg_dim);
@@ -10228,7 +10334,7 @@ pub const Editor = struct {
             return;
         }
         const rows = box.h -| 2;
-        try self.renderPreviewRows(box.x + 1, box.y + 1, box.w -| 2, rows, self.previewFirst(rows), pk.line);
+        try self.renderPreviewRows(box.x + 1, box.y + 1, box.w -| 2, rows, self.previewFirst(rows), loc.line);
     }
 
     fn lspDocumentSymbol(self: *Editor) void {
@@ -14579,6 +14685,7 @@ pub const Editor = struct {
         .{ .key = "D", .desc = "all diagnostics" },
         .{ .key = "f", .desc = "format buffer" },
         .{ .key = "p", .desc = "peek definition" },
+        .{ .key = "P", .desc = "peek references" },
     };
     /// `Space x` — the quickfix list. It was complete and reachable only by
     /// typing `:copen`; AstroNvim puts it on `<leader>x`, and `:cnext`/

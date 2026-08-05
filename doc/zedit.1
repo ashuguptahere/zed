@@ -934,14 +934,14 @@ Quick Open prefix, and the route to it under the non\-modal keymap, where
 .B Ctrl+Shift+P
 cannot reach the application.
 .TP
-.B Space l a\fR, \fPSpace l r\fR, \fPSpace l R\fR, \fPSpace l s\fR, \fPSpace l S\fR, \fPSpace l d\fR, \fPSpace l D\fR, \fPSpace l f\fR, \fPSpace l p
+.B Space l a\fR, \fPSpace l r\fR, \fPSpace l R\fR, \fPSpace l s\fR, \fPSpace l S\fR, \fPSpace l d\fR, \fPSpace l D\fR, \fPSpace l f\fR, \fPSpace l p\fR, \fPSpace l P
 Code action, rename symbol, references (picker), document symbols, workspace
 symbols (the server matches the query across the project), line diagnostic,
 every diagnostic in the open buffers, format document, and
 .I peek
-the definition \(em VS Code's
-.BR Alt+F12 ,
-which no terminal can deliver. The peek is a floating window over the file
+the definition or the references \(em VS Code's
+.BR Alt+F12 " and " Shift+F12 ,
+neither of which a terminal can deliver. The peek is a floating window over the file
 you are reading, syntax\-highlighted and centred on the definition:
 .B Enter
 takes the jump for real,
@@ -950,7 +950,23 @@ close it,
 .BR j / k ", " Ctrl-d / Ctrl-u
 and the wheel scroll it, and a click outside dismisses it. Nothing is opened
 and no jumplist entry is made unless you press
-.BR Enter . Rename and code-action edits apply across all the
+.BR Enter .
+.IP
+Peeked \fIreferences\fP are the same window holding more than one place: the
+title counts them,
+.BR n / p
+(or
+.BR Tab / Shift-Tab )
+step and the view follows, wrapping at both ends, and
+.B Ctrl-q
+sends the whole set to the quickfix list. It does not draw VS Code's side
+list of the references \(em
+.B Space l R
+is that list, with a fuzzy prompt and a preview. Use
+.B l R
+to find one among many and
+.B l P
+to read them where they are. Rename and code-action edits apply across all the
 files they touch (unopened ones load into background buffers;
 .B :wa
 saves them).
