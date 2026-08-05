@@ -2,6 +2,45 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.61.0 - 2026-08-05
+
+### Added
+
+- **A command palette** — `Space f C` (AstroNvim's `<leader>fC`), or `>`
+  typed as the first character in the file picker, which is VS Code's own
+  Quick Open prefix and the route to it under the non-modal keymap, where
+  `Ctrl+Shift+P` cannot reach a terminal application at all. VS Code, Helix
+  and AstroNvim all ship one; three editors agreeing was the argument for it.
+
+  It lists every command with the key that runs it, and the key it shows is
+  the one that works **under the keymap in force** — telling a VS Code user
+  to press `Space f f` is worse than telling them nothing, so an entry with
+  no binding there simply shows none, which is most of what a palette is for.
+  The filter matches the title *and* the command's spelling, so `vsplit`
+  finds "Split window vertically".
+
+  One table holds the lot. Most entries name an ex command rather than
+  duplicating a call; the ones that take an argument (`:theme`, `:edit`,
+  `:earlier`) open the command line pre-filled instead of guessing one; the
+  `Space u` flags carry a pointer to the setting; and only the key-only
+  commands need an arm of their own, each a single call to the function the
+  key handler already calls. The palette is another way in, never a second
+  implementation.
+
+### Fixed
+
+- **The pty suite no longer writes to the developer's own config.** Choosing
+  a theme saves it, so a test that opened the theme picker and pressed Enter
+  wrote `theme = gruvbox` into `~/.config/zedit/config` — and every colour
+  assertion in the rest of the run then checked whatever theme it had picked
+  (76 failures across nine suites, the first time it happened). The harness
+  now points `XDG_CONFIG_HOME` and `XDG_STATE_HOME` at a per-process scratch
+  directory for every session, so no test can reach the real one. A suite
+  that wraps the editor in `env XDG_…=…` still wins, since that runs after.
+
+- The man page still said `Ctrl-D` adds no caret at the next match, and
+  counted three emulation limits where 0.60.0 left two.
+
 ## 0.60.0 - 2026-08-05
 
 ### Added

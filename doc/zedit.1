@@ -136,21 +136,26 @@ Alt+Up/Down moving a line (add Shift to copy it).
 .B Ctrl-d
 selects the word under the cursor, and each further press adds a caret at the
 next occurrence, so typing edits them all at once.
+.B Ctrl-p
+then
+.B >
+opens the command palette.
 .B zed
 is the same table under its own name.
 .B vim
 is modal editing, and is what the rest of this page documents.
 .PP
 It is an emulation, not a hybrid: the vim commands are not reachable under
-them. Three limits are worth knowing. A selection includes the cell under the
+them. Two limits are worth knowing. A selection includes the cell under the
 caret (zedit's visual model), so it is one character wider at that end than
-VS Code's.
-.B Ctrl-D
-selects the word but does not add a caret at the next match. And
+VS Code's. And
 .BI Ctrl+Shift+ letter
 chords cannot work at all, because a terminal does not pass the shift bit for
-them \(em which rules out the command palette and project search on their
-real keys.
+them \(em so the command palette is reached the way VS Code also offers,
+.B Ctrl-p
+then
+.BR > ,
+and project search has no key of its own.
 .TP
 .B tab_width
 Cells a tab occupies when rendered (1\-16, default 4). Tabs are stored
@@ -911,6 +916,23 @@ Open-buffer picker.
 .TP
 .B Space f t
 Theme picker.
+.TP
+.B Space f C
+The command palette \(em a searchable list of every command with the key
+that runs it. The binding shown is the one that works under the keymap in
+force, so nothing here names a key you cannot press. Filtering matches the
+title
+.I and
+the command's spelling, so
+.B vsplit
+finds "Split window vertically"; a command that takes an argument
+.RB ( :theme ", " :edit ", " :earlier )
+puts itself on the command line rather than guessing one. Typing
+.B >
+as the first character in the file picker opens the same list \(em VS Code's
+Quick Open prefix, and the route to it under the non\-modal keymap, where
+.B Ctrl+Shift+P
+cannot reach the application.
 .TP
 .B Space l a\fR, \fPSpace l r\fR, \fPSpace l R\fR, \fPSpace l s\fR, \fPSpace l S\fR, \fPSpace l d\fR, \fPSpace l D\fR, \fPSpace l f
 Code action, rename symbol, references (picker), document symbols, workspace

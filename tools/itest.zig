@@ -38,6 +38,7 @@ const scenarios = .{
     .{ "view", @import("scenarios/view.zig") },
     .{ "ex", @import("scenarios/ex.zig") },
     .{ "keymap", @import("scenarios/keymap.zig") },
+    .{ "palette", @import("scenarios/palette.zig") },
 };
 
 /// Whether suite `name` was asked for: everything when no filter was given.

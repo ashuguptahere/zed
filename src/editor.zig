@@ -95,7 +95,7 @@ pub const Mode = enum {
     }
 };
 
-const PickerKind = enum { files, grep, code_action, symbol, wsymbol, diagnostic, theme, buffer, reference, undo };
+const PickerKind = enum { files, grep, code_action, symbol, wsymbol, diagnostic, theme, buffer, reference, undo, command };
 /// A picker row. Text lives in one shared byte arena (`picker_text`) and is
 /// referenced by offset, so populating 20k results costs one growing buffer
 /// instead of 40k small allocations — and closing the picker resets the arena
@@ -2536,6 +2536,7 @@ pub const Editor = struct {
                     'b' => self.openBufferPicker(), // find buffers
                     't' => self.openThemePicker(), // find themes
                     'u' => self.openUndoPicker(), // the undo tree (:undolist)
+                    'C' => self.openCommandPalette(), // AstroNvim's <leader>fC
                     else => {},
                 };
             },
@@ -5642,7 +5643,7 @@ pub const Editor = struct {
     // === the non-modal keymaps (vscode / zed) ==============================
 
     /// True while the editor is answering VS Code's keys rather than vim's.
-    fn nonModal(_: *Editor) bool {
+    fn nonModal() bool {
         return config.settings.keymap != .vim;
     }
 
@@ -5759,7 +5760,7 @@ pub const Editor = struct {
     /// does not — `Ctrl-D`'s add-cursor-at-next-match above all — the chord
     /// does the nearest honest thing rather than pretending.
     fn keymapKey(self: *Editor, k: key.Key) !bool {
-        if (!self.nonModal()) return false;
+        if (!nonModal()) return false;
         // The command line, pickers and the shell own the keyboard outright.
         switch (self.mode) {
             .command, .picker, .terminal => return false,
@@ -6564,7 +6565,7 @@ pub const Editor = struct {
         self.dash_sel = 0;
         // The non-modal keymaps start where their users expect to be: able to
         // type. There is no normal mode to return to under them.
-        if (self.nonModal() and !self.dashboard) {
+        if (nonModal() and !self.dashboard) {
             self.mode = .insert;
             // `enterInsert` is what normally records the state undo returns
             // to, and it never runs here — without this, `Ctrl-Z` after the
@@ -6691,6 +6692,221 @@ pub const Editor = struct {
         }
         self.mode = .picker;
         self.refilter();
+    }
+
+    // === the command palette ===============================================
+
+    /// What running a palette entry does. Most commands already have an ex
+    /// spelling, so the table names it rather than duplicating a call; the
+    /// rest are the ones that only ever had a key.
+    const Run = union(enum) {
+        /// Run this ex command line now (no colon).
+        ex: []const u8,
+        /// Open the command line pre-filled with this text, cursor at the end
+        /// — for the commands that take an argument (`:theme `, `:edit `).
+        prompt: []const u8,
+        /// One of the config flags `Space u` toggles.
+        toggle: struct { flag: *bool, name: []const u8 },
+        act: Act,
+    };
+
+    /// The commands with no ex spelling. Each arm is one call to the function
+    /// the key handler already calls — the palette is another way in, never a
+    /// second implementation.
+    const Act = enum {
+        files,        grep,        buffers,     themes,      explorer,
+        home,         new_buffer,  new_file,    new_folder,  close_others,
+        code_action,  rename,      references,  doc_symbols, ws_symbols,
+        line_diag,    all_diags,   breakpoint,  clear_bps,   dbg_continue,
+        step_over,    step_into,   step_out,    dbg_stop,    mouse,
+        undo,         redo,        comment,
+    };
+
+    /// One palette entry: what it is called, how it is spelled on the keyboard
+    /// under each keymap, and what it does.
+    ///
+    /// Both bindings are carried because the palette shows the one that
+    /// actually works *here*: telling a VS Code user to press `Space f f` is
+    /// worse than telling them nothing. An empty string means the command has
+    /// no key under that keymap, which is most of the point of having a
+    /// palette — under the non-modal table almost nothing below is on a chord.
+    const Cmd = struct {
+        title: []const u8,
+        vim: []const u8 = "",
+        code: []const u8 = "",
+        run: Run,
+    };
+
+    const commands = [_]Cmd{
+        // --- files and buffers ---------------------------------------------
+        .{ .title = "Find files", .vim = "Space f f", .code = "Ctrl-p", .run = .{ .act = .files } },
+        .{ .title = "Find in project (grep)", .vim = "Space f w", .run = .{ .act = .grep } },
+        .{ .title = "Find buffers", .vim = "Space f b", .run = .{ .act = .buffers } },
+        .{ .title = "Open file\u{2026}", .vim = ":e", .run = .{ .prompt = "edit " } },
+        .{ .title = "Save", .vim = "Space w", .code = "Ctrl-s", .run = .{ .ex = "write" } },
+        .{ .title = "Save as\u{2026}", .run = .{ .prompt = "write " } },
+        .{ .title = "Save all", .vim = ":wa", .run = .{ .ex = "wall" } },
+        .{ .title = "Save and quit", .vim = "ZZ", .run = .{ .ex = "x" } },
+        .{ .title = "Quit", .vim = "Space q", .run = .{ .ex = "quit" } },
+        .{ .title = "Quit all", .vim = ":qa", .run = .{ .ex = "quitall" } },
+        .{ .title = "New empty buffer", .vim = "Space n b", .run = .{ .act = .new_buffer } },
+        .{ .title = "New file\u{2026}", .vim = "Space n f", .run = .{ .act = .new_file } },
+        .{ .title = "New folder\u{2026}", .vim = "Space n d", .run = .{ .act = .new_folder } },
+        .{ .title = "Next buffer", .vim = "]b", .run = .{ .ex = "bnext" } },
+        .{ .title = "Previous buffer", .vim = "[b", .run = .{ .ex = "bprevious" } },
+        .{ .title = "Close buffer", .vim = "Space c", .code = "Ctrl-w", .run = .{ .ex = "bdelete" } },
+        .{ .title = "Close other buffers", .vim = "Space b c", .run = .{ .act = .close_others } },
+        .{ .title = "List buffers", .vim = ":ls", .run = .{ .ex = "buffers" } },
+        .{ .title = "Edit over SSH\u{2026}", .run = .{ .prompt = "ssh " } },
+
+        // --- windows --------------------------------------------------------
+        .{ .title = "Split window", .vim = "Ctrl-w s", .run = .{ .ex = "split" } },
+        .{ .title = "Split window vertically", .vim = "Ctrl-w v", .run = .{ .ex = "vsplit" } },
+        .{ .title = "Close window", .vim = "Ctrl-w c", .run = .{ .ex = "close" } },
+        .{ .title = "Close other windows", .vim = "Ctrl-w o", .run = .{ .ex = "only" } },
+        .{ .title = "Save the split layout", .run = .{ .ex = "winsave" } },
+
+        // --- editing --------------------------------------------------------
+        .{ .title = "Undo", .vim = "u", .code = "Ctrl-z", .run = .{ .act = .undo } },
+        .{ .title = "Redo", .vim = "Ctrl-r", .code = "Ctrl-y", .run = .{ .act = .redo } },
+        .{ .title = "Toggle comment", .vim = "gcc", .code = "Ctrl-/", .run = .{ .act = .comment } },
+        .{ .title = "Search and replace\u{2026}", .vim = ":%s", .code = "Ctrl-h", .run = .{ .prompt = "%s/" } },
+        .{ .title = "Undo history", .vim = "Space f u", .run = .{ .ex = "undolist" } },
+        .{ .title = "Go to an earlier state\u{2026}", .run = .{ .prompt = "earlier " } },
+        .{ .title = "Go to a later state\u{2026}", .run = .{ .prompt = "later " } },
+
+        // --- appearance and settings ---------------------------------------
+        .{ .title = "Toggle explorer", .vim = "Space e", .code = "Ctrl-b", .run = .{ .act = .explorer } },
+        .{ .title = "Home screen", .vim = "Space h", .run = .{ .act = .home } },
+        .{ .title = "Choose a theme", .vim = "Space f t", .run = .{ .act = .themes } },
+        .{ .title = "Set theme\u{2026}", .vim = ":theme", .run = .{ .prompt = "theme " } },
+        .{ .title = "Toggle relative numbers", .vim = "Space u n", .run = .{ .toggle = .{ .flag = &config.settings.relative_numbers, .name = "relative numbers" } } },
+        .{ .title = "Toggle soft wrap", .vim = "Space u w", .run = .{ .toggle = .{ .flag = &config.settings.soft_wrap, .name = "soft wrap" } } },
+        .{ .title = "Toggle inline diagnostics", .vim = "Space u d", .run = .{ .toggle = .{ .flag = &config.settings.inline_diagnostics, .name = "inline diagnostics" } } },
+        .{ .title = "Toggle buffer tabs", .vim = "Space u t", .run = .{ .toggle = .{ .flag = &config.settings.buffer_tabs, .name = "buffer tabs" } } },
+        .{ .title = "Toggle autoindent", .vim = "Space u i", .run = .{ .toggle = .{ .flag = &config.settings.autoindent, .name = "autoindent" } } },
+        .{ .title = "Toggle auto completion", .vim = "Space u c", .run = .{ .toggle = .{ .flag = &config.settings.auto_completion, .name = "auto completion" } } },
+        .{ .title = "Toggle format on save", .vim = "Space u f", .run = .{ .toggle = .{ .flag = &config.settings.format_on_save, .name = "format on save" } } },
+        .{ .title = "Toggle mouse reporting", .vim = "Space u m", .run = .{ .act = .mouse } },
+
+        // --- language tools -------------------------------------------------
+        .{ .title = "Code action", .vim = "Space l a", .run = .{ .act = .code_action } },
+        .{ .title = "Rename symbol", .vim = "Space l r", .run = .{ .act = .rename } },
+        .{ .title = "Find references", .vim = "Space l R", .run = .{ .act = .references } },
+        .{ .title = "Document symbols", .vim = "Space l s", .run = .{ .act = .doc_symbols } },
+        .{ .title = "Workspace symbols", .vim = "Space l S", .run = .{ .act = .ws_symbols } },
+        .{ .title = "Line diagnostic", .vim = "Space l d", .run = .{ .act = .line_diag } },
+        .{ .title = "All diagnostics", .vim = "Space l D", .run = .{ .act = .all_diags } },
+        .{ .title = "Format buffer", .vim = "Space l f", .run = .{ .ex = "format" } },
+
+        // --- git ------------------------------------------------------------
+        .{ .title = "Diff (inline)", .vim = "Space g d", .run = .{ .ex = "diff" } },
+        .{ .title = "Diff (side by side)", .vim = "Space g s", .run = .{ .ex = "vdiff" } },
+        .{ .title = "Diff (line view)", .vim = "Space g l", .run = .{ .ex = "ldiff" } },
+
+        // --- the quickfix list ----------------------------------------------
+        .{ .title = "Quickfix: open the list", .vim = "Space x q", .run = .{ .ex = "copen" } },
+        .{ .title = "Quickfix: next entry", .vim = "]q", .run = .{ .ex = "cnext" } },
+        .{ .title = "Quickfix: previous entry", .vim = "[q", .run = .{ .ex = "cprevious" } },
+        .{ .title = "Quickfix: close the list", .vim = "Space x c", .run = .{ .ex = "cclose" } },
+
+        // --- session, terminal, debugger -------------------------------------
+        .{ .title = "Session: save", .vim = "Space S s", .run = .{ .ex = "session save" } },
+        .{ .title = "Session: load", .vim = "Space S l", .run = .{ .ex = "session load" } },
+        .{ .title = "Session: delete", .vim = "Space S d", .run = .{ .ex = "session delete" } },
+        .{ .title = "Terminal", .vim = "Space t", .run = .{ .ex = "terminal" } },
+        .{ .title = "Debug: launch\u{2026}", .run = .{ .prompt = "debug " } },
+        .{ .title = "Debug: toggle breakpoint", .vim = "Space d b", .run = .{ .act = .breakpoint } },
+        .{ .title = "Debug: clear breakpoints", .vim = "Space d B", .run = .{ .act = .clear_bps } },
+        .{ .title = "Debug: start / continue", .vim = "Space d c", .run = .{ .act = .dbg_continue } },
+        .{ .title = "Debug: step over", .vim = "Space d n", .run = .{ .act = .step_over } },
+        .{ .title = "Debug: step into", .vim = "Space d i", .run = .{ .act = .step_into } },
+        .{ .title = "Debug: step out", .vim = "Space d o", .run = .{ .act = .step_out } },
+        .{ .title = "Debug: stop", .vim = "Space d q", .run = .{ .act = .dbg_stop } },
+
+        // --- zedit itself -----------------------------------------------------
+        .{ .title = "Check for updates", .vim = ":update", .run = .{ .ex = "checkupdate" } },
+    };
+
+    /// The binding to show for `c` under the keymap in force. A command with
+    /// none there shows nothing rather than another editor's key.
+    fn cmdBinding(c: Cmd) []const u8 {
+        return if (nonModal()) c.code else c.vim;
+    }
+
+    /// The text the fuzzy filter matches against: the title *and* the
+    /// binding, so `vsplit` finds "Split window vertically" and `Space g`
+    /// finds the git group.
+    fn cmdMatchText(c: Cmd, buf: []u8) []const u8 {
+        const spell: []const u8 = switch (c.run) {
+            .ex => |e| e,
+            .prompt => |p| p,
+            .toggle => |t| t.name,
+            .act => "",
+        };
+        return std.fmt.bufPrint(buf, "{s} {s} {s}", .{ c.title, cmdBinding(c), spell }) catch c.title;
+    }
+
+    /// `Space f C`, or `>` typed into the file picker — VS Code's own Quick
+    /// Open prefix, which is how the palette is reached under the non-modal
+    /// keymap: `Ctrl+Shift+P` cannot be told from `Ctrl+P` by a terminal.
+    fn openCommandPalette(self: *Editor) void {
+        self.startPicker(.command);
+        var disp: [96]u8 = undefined;
+        var match: [160]u8 = undefined;
+        for (commands, 0..) |c, i| {
+            const bind = cmdBinding(c);
+            const row = std.fmt.bufPrint(&disp, "{s: <32}{s}", .{ c.title, bind }) catch c.title;
+            self.addPickItem(row, cmdMatchText(c, &match), i);
+        }
+        self.mode = .picker;
+        self.refilter();
+    }
+
+    /// Run the chosen command. The picker is closed first: several of these
+    /// open a picker of their own, and one that opened underneath this one
+    /// would be closed by the next Esc rather than shown.
+    fn runCommand(self: *Editor, idx: usize) !void {
+        if (idx >= commands.len) return;
+        switch (commands[idx].run) {
+            .ex => |line| try self.execLine(line),
+            .prompt => |text| {
+                self.enterCmd(.ex);
+                self.cmd.appendSlice(self.gpa, text) catch {};
+                self.cmd_cur = self.cmd.items.len;
+            },
+            .toggle => |t| self.toggleSetting(t.flag, t.name),
+            .act => |a| switch (a) {
+                .files => self.openFilePicker(),
+                .grep => self.openGrepPicker(),
+                .buffers => self.openBufferPicker(),
+                .themes => self.openThemePicker(),
+                .explorer => self.sidebarToggle(),
+                .home => self.showHome(),
+                .new_buffer => self.newBuffer(),
+                .new_file => self.enterNewEntry(false),
+                .new_folder => self.enterNewEntry(true),
+                .close_others => self.closeOthers(),
+                .code_action => self.lspCodeAction(),
+                .rename => self.enterRename(),
+                .references => self.lspReferences(),
+                .doc_symbols => self.lspDocumentSymbol(),
+                .ws_symbols => self.openWorkspaceSymbolPicker(),
+                .line_diag => self.lineDiagnostic(),
+                .all_diags => self.openDiagnosticPicker(),
+                .breakpoint => self.toggleBreakpoint(),
+                .clear_bps => self.clearBreakpoints(),
+                .dbg_continue => self.debugContinue(),
+                .step_over => self.debugStep(.over),
+                .step_into => self.debugStep(.into),
+                .step_out => self.debugStep(.out),
+                .dbg_stop => self.debugStop(),
+                .mouse => self.toggleMouse(),
+                .undo => self.undoChange(),
+                .redo => self.redoChange(),
+                .comment => self.toggleComment(.{ .lines = true, .top = self.cy, .bot = self.cy }),
+            },
+        }
     }
 
     /// Reset the picker. Nothing is freed: the arena and the index arrays keep
@@ -7113,6 +7329,12 @@ pub const Editor = struct {
                 }
             },
             .char => |c| {
+                // VS Code's Quick Open prefix: `>` on an empty query turns
+                // the file picker into the command palette. It is the only
+                // route there under the non-modal keymap, where the real key
+                // (`Ctrl+Shift+P`) cannot be told from `Ctrl+P` by a terminal.
+                if (c == '>' and self.picker_kind == .files and self.picker_query.items.len == 0)
+                    return self.openCommandPalette();
                 var enc: [4]u8 = undefined;
                 const n = std.unicode.utf8Encode(c, &enc) catch return;
                 try self.picker_query.appendSlice(self.gpa, enc[0..n]);
@@ -7174,6 +7396,11 @@ pub const Editor = struct {
             self.setStatus("state {d}", .{seq});
             self.afterHistoryMove();
             return;
+        }
+        if (self.picker_kind == .command) {
+            const idx = it.line; // the table index stashed at population time
+            self.closePicker();
+            return self.runCommand(idx);
         }
         if (self.picker_kind == .symbol) {
             const idx = it.line; // the symbol index stashed at population time
@@ -7654,6 +7881,7 @@ pub const Editor = struct {
             .wsymbol => " WORKSPACE SYMBOLS ",
             .diagnostic => " DIAGNOSTICS ",
             .undo => " UNDO TREE ",
+            .command => " COMMANDS ",
         };
     }
 
@@ -7876,7 +8104,7 @@ pub const Editor = struct {
             .buffer => .file,
             .grep, .reference => .line,
             .diagnostic, .wsymbol => .line,
-            .theme, .code_action, .symbol, .undo => .none,
+            .theme, .code_action, .symbol, .undo, .command => .none,
         };
     }
 
@@ -13817,6 +14045,7 @@ pub const Editor = struct {
         .{ .key = "b", .desc = "find buffers" },
         .{ .key = "t", .desc = "find themes" },
         .{ .key = "u", .desc = "undo history" },
+        .{ .key = "C", .desc = "find commands" },
     };
     const lang_keys = [_]WhichKey{
         .{ .key = "a", .desc = "code action" },

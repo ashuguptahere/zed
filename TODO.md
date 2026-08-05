@@ -99,8 +99,9 @@ behind the roadmap items.
          `Ctrl+Shift+L` (all occurrences at once — unreachable through a
          terminal), `Ctrl+K Ctrl+D` (skip a match), Alt+click, a selection
          spanning more than one line, and Helix's build-a-set-from-a-regex.
-       - **Command palette** — searchable list of every command with its
-         binding. VS Code, Helix *and* AstroNvim all have it: three votes.
+       - ~~**Command palette**~~ — **DONE** in 0.61.0 (`Space f C`, or `>`
+         in the file picker, which is how it is reached under the non-modal
+         keymap). VS Code, Helix *and* AstroNvim all had it: three votes.
        - **Multibuffer** (Zed) — project search / diagnostics / references
          as one editable buffer of excerpts, saved together. The editable
          rendering of the quickfix list zedit already keeps, and the natural
@@ -175,6 +176,19 @@ there is nothing to change there.
       no caret at the next match, and `Ctrl+Shift+<letter>` cannot reach the
       application at all through a terminal. The first two are the
       multi-selection roadmap item wearing a different hat. (0.59.0)
+
+- [x] The command palette (`Space f C`, or `>` in the file picker — VS Code's
+      Quick Open prefix, and the only route under the non-modal keymap since
+      `Ctrl+Shift+P` cannot reach a terminal application). One table of
+      title + binding-per-keymap + what to run, showing the key that works
+      *here*; most entries name an ex command rather than duplicating a
+      call, argument-taking ones open the command line pre-filled, and only
+      the key-only commands need an arm. Third of the three Part 3 tier-1
+      candidates, and the last of the "three editors agree" items.
+      Along the way: the pty harness now isolates `XDG_CONFIG_HOME` and
+      `XDG_STATE_HOME` per process, because a test that chose a theme wrote
+      it to the developer's real config and reddened 76 colour checks in the
+      suites that ran after. (0.61.0)
 
 - [x] The multi-selection model, and `keymap = vscode` as the **default**.
       `extra` holds `Sel { head, anchor }` rather than a bare position, so a

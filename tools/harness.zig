@@ -159,6 +159,18 @@ pub const Session = struct {
         for (eff_argv, 0..) |arg, i| argv[i] = (try a.dupeZ(u8, arg)).ptr;
         argv[eff_argv.len] = null;
         const term_z = try a.dupeZ(u8, opts.term);
+        // Point XDG at a per-process scratch directory. A test that saves a
+        // setting — the theme picker's Enter does, and so does the palette
+        // entry that opens it — would otherwise write to the *developer's*
+        // own `~/.config/zedit/config`, and every colour assertion in the
+        // run after it would be checking whatever theme it happened to pick.
+        // That is exactly what happened once; nothing but this stops it.
+        // A caller wrapping the editor in `env XDG_…=…` still wins, since
+        // that `env` runs after this and sets its own child's environment.
+        var xdg_cfg: [64]u8 = undefined;
+        var xdg_state: [64]u8 = undefined;
+        const xdg_cfg_z = try std.fmt.bufPrintZ(&xdg_cfg, "/tmp/zedit_it_xdg_{d}/config", .{c.getpid()});
+        const xdg_state_z = try std.fmt.bufPrintZ(&xdg_state, "/tmp/zedit_it_xdg_{d}/state", .{c.getpid()});
         const cwd_z: ?[*:0]const u8 = if (opts.cwd) |cw| (try a.dupeZ(u8, cw)).ptr else null;
 
         const master = c.posix_openpt(c.O_RDWR | c.O_NOCTTY);
@@ -211,6 +223,8 @@ pub const Session = struct {
             if (slave > 2) _ = c.close(slave);
             _ = c.close(master);
             _ = c.setenv("TERM", term_z, 1);
+            _ = c.setenv("XDG_CONFIG_HOME", xdg_cfg_z.ptr, 1);
+            _ = c.setenv("XDG_STATE_HOME", xdg_state_z.ptr, 1);
             if (cwd_z) |cw| _ = c.chdir(cw);
             _ = c.execvp(argv[0].?, @ptrCast(argv.ptr));
             c._exit(127);

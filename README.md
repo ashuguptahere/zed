@@ -126,7 +126,11 @@
 - **Pickers** via the AstroNvim-style `Space` leader tree with nested
   which-key menus: `Space f f` find files, `Space f w` find words (regex grep,
   same syntax as `/`),
-  `Space f b` buffers, `Space f t` themes, `Space f u` the undo tree;
+  `Space f b` buffers, `Space f t` themes, `Space f u` the undo tree, and
+  `Space f C` the **command palette** — every command with the key that runs
+  it, filtered by name or by spelling, showing the binding for the keymap you
+  are actually using (`>` typed into the file picker opens the same list,
+  which is the route under the non-modal keys);
   **Folds**: `zf{motion}` collapses a range to one row, `zo`/`zc`/`za` open
   and close, `zR`/`zM` all of them — and `j`/`k` step over a closed fold as
   though it were one line;

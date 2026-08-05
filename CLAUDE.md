@@ -745,7 +745,8 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   next/previous, `b c` **close others** — AstroNvim's `bc`, which refuses
   while any of them is unsaved and names it; it used to duplicate `Space c`);
   `Space f` = Find (`f f` files, `f w` words/grep, `f b` buffers, `f t`
-  themes, `f u` the undo tree — `:undolist`'s picker, which had no key); `Space l` = Language tools (`l a` code action, `l r` rename, `l R`
+  themes, `f u` the undo tree — `:undolist`'s picker, which had no key —
+  and `f C` the **command palette**, AstroNvim's `<leader>fC`); `Space l` = Language tools (`l a` code action, `l r` rename, `l R`
   references, `l s` document symbols, `l S` workspace symbols, `l d` line
   diagnostic, `l D` all diagnostics, `l f` format);
   `Space g` = Git (`g d` inline diff,
@@ -1488,11 +1489,28 @@ recorded rather than papered over:
     regex over the current selection. None of those are here.
   * **`Ctrl+Shift+…` chords are unavailable**, because a terminal cannot tell
     `Ctrl+Shift+P` from `Ctrl+P` — the shift bit never reaches the
-    application for a letter. That rules out the command palette and project
-    search on their real keys, whatever the emulation does.
+    application for a letter. The command palette is reached the way VS Code
+    also offers (`Ctrl-p` then `>`); project search has no key of its own.
   Undo granularity is also coarser than VS Code's: everything typed since the
   last command is one step, where VS Code breaks on word boundaries and
   pauses.
+
+**The command palette (`Space f C`, or `>` in the file picker).** A
+searchable list of every command with the key that runs it — VS Code's
+`Ctrl+Shift+P`, Helix's `Space ?` and AstroNvim's `<leader>fC`, which is
+three editors agreeing. One `commands` table in `editor.zig` holds the title,
+the binding under *each* keymap and what to run; the palette shows the
+binding for the keymap in force, because telling a VS Code user to press
+`Space f f` is worse than telling them nothing. `Run` is a union rather than
+one enum: most commands already have an ex spelling (`.ex = "vsplit"`), the
+ones taking an argument open the command line pre-filled (`.prompt =
+"theme "` — guessing the argument is worse than handing over the prompt),
+the `Space u` flags are `.toggle` with a pointer to the setting, and only the
+key-only actions need an `Act` arm, each one call to the function the key
+handler already calls. The fuzzy filter matches the title *and* the
+spelling, so `vsplit` finds "Split window vertically". The `>` route is VS
+Code's own Quick Open prefix and is how the palette is reached under the
+non-modal keymap, where `Ctrl+Shift+P` cannot reach the application at all.
 
 **The multi-selection model.** `extra` holds `Sel { head, anchor }` rather
 than a bare `Pos`, so a secondary caret can *cover* text: `Ctrl-D` selects

@@ -158,7 +158,7 @@ one; these are the entries that name a capability zedit could have:
 
 | Helix key | Command | zedit |
 |---|---|---|
-| `Space ?` | `command_palette` | **absent** — searchable list of every command + binding |
+| `Space ?` | `command_palette` | **done in 0.61.0** as `Space f C` (AstroNvim's key), or `>` in the file picker |
 | `Space '` | `last_picker` | **absent** (AstroNvim's `Space f<CR>` is the same idea — two editors agree) |
 | `Space j` | `jumplist_picker` | absent (the jumplist itself is done) |
 | `Space g` | `changed_file_picker` | absent — a picker of VCS-modified files |
@@ -243,9 +243,10 @@ snippets, auto-completion). Remaining: multiple language servers per language
 (**low**), LSP progress in the statusline, document colors (**low**).
 
 **UI**
-- Command palette (`Space ?`) — searchable list of every command with its
-  binding — **medium** (VS Code's `Ctrl+Shift+P` and AstroNvim's `Space fC` are
-  the same feature; three editors agree)
+- ~~Command palette (`Space ?`)~~ — **DONE** in 0.61.0 as `Space f C`, and as
+  `>` typed into the file picker (VS Code's Quick Open prefix, which is the
+  route under the non-modal keymap). It shows the binding for the keymap in
+  force, and is filtered on the title *and* the command's spelling.
 - Register picker and insert-mode `Ctrl-r` — cmdline `Ctrl-r` is done — **medium**
 - Jump labels (`gw`) — **medium**
 - Jumplist picker — **low**
@@ -434,8 +435,9 @@ whole document:
   a Ctrl+letter, so that key is indistinguishable from `Ctrl+L`),
   `Ctrl+K Ctrl+D` (skip this match), a selection that
   spans more than one line, and Alt+click to place a caret.
-- **Command palette** (`Ctrl+Shift+P`) — see Part 2; VS Code, Helix and
-  AstroNvim all have it, which is three independent votes.
+- ~~**Command palette** (`Ctrl+Shift+P`)~~ — **DONE** in 0.61.0. Not on that
+  key, which a terminal cannot deliver: on `Ctrl+P` then `>`, which is VS
+  Code's own second route to it, and on `Space f C` under the vim keymap.
 - **Peek definition / references** (`Alt+F12`, `Shift+F12`) — an inline
   window showing the definition without leaving the current file. zedit's
   `gd` jumps away and relies on `Ctrl-o` to come back.
@@ -496,8 +498,8 @@ For the owner to accept or reject, cheapest-first within each tier:
 
 **Tier 1 — fits machinery that already exists**
 1. Build command + error regex → the quickfix list (Focus; vim's `:make`)
-2. `Ctrl-D`-style add-cursor-at-next-match (VS Code, Zed, Helix's `C`)
-3. Command palette (VS Code, Helix, AstroNvim)
+2. ~~`Ctrl-D`-style add-cursor-at-next-match~~ — done in 0.60.0
+3. ~~Command palette~~ — done in 0.61.0
 4. Fold by level; regex replace case modifiers
 
 **Tier 2 — new surface, high payoff**
