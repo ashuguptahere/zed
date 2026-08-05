@@ -530,6 +530,78 @@ pub fn run(ctx: *h.Ctx) !void {
         ctx.check("rename applied to the other file", std.mem.eql(u8, other_text, "const xyz = 9;\n"));
     }
 
+    // Cross-file goto-definition: with --xdef the server answers with a
+    // *sibling* file's uri. The client used to free that uri and apply the
+    // line to whatever buffer was open, so `gd` silently landed on line 3 of
+    // the file you were already in.
+    {
+        const other = "/tmp/zedit_it_other.zig";
+        h.writeFile(ctx.io, other, "const q = 1;\nconst r = 2;\nDEFINED HERE\n");
+        const r = driveOpt(ctx, "--xdef", &.{
+            .{ .keys = "gd", .ms = 900 },
+        }, ":q!\r");
+        defer r.deinit(ctx.gpa);
+        ctx.check("gd opens the file the server named", r.plainHas("zedit_it_other.zig"));
+        ctx.check("...and lands on the line it named", r.plainHas("DEFINED HERE"));
+        ctx.check("...leaving the file it came from alone", std.mem.eql(u8, r.text, initial));
+    }
+
+    // Peek definition (`Space l p`): the same location, shown in a floating
+    // window over the file being read rather than jumped to.
+    {
+        const other = "/tmp/zedit_it_other.zig";
+        h.writeFile(ctx.io, other, "const q = 1;\nconst r = 2;\nPEEKED LINE\n");
+        const r = driveOpt(ctx, "--xdef", &.{
+            .{ .keys = " lp", .ms = 900 },
+        }, ":q!\r");
+        defer r.deinit(ctx.gpa);
+        ctx.check("Space l p shows the definition in a window", r.plainHas("PEEKED LINE"));
+        ctx.check("...titled with the file and line", r.plainHas("zedit_it_other.zig:3"));
+        ctx.check("...saying how to leave it", r.plainHas("Enter opens, Esc closes"));
+        ctx.check("...without leaving the file being read", r.plainHas("const b = 2;"));
+    }
+
+    // Esc closes the peek and gives the keyboard back. This one needs a live
+    // session rather than `driveOpt`: the captured output is cumulative, so
+    // "the box is gone" can only be asked of the frames *after* the Esc.
+    {
+        const other = "/tmp/zedit_it_other.zig";
+        h.writeFile(ctx.io, other, "const q = 1;\nconst r = 2;\nPEEKED LINE\n");
+        h.writeFile(ctx.io, target, initial);
+        const cmd = try std.fmt.allocPrint(ctx.gpa, "{s} --xdef", .{ctx.mock});
+        defer ctx.gpa.free(cmd);
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "--lsp", cmd, target }, .cols = 120 });
+        defer s.finish();
+        s.drain(1500);
+        s.send(" lp");
+        s.drain(900);
+        const m = s.mark();
+        s.send("\x1b");
+        s.drain(500);
+        ctx.check("Esc closes the peek", !s.containsPlainSince(ctx.gpa, m, "PEEKED LINE"));
+        s.send("x:wq\r"); // a plain edit: the keyboard is back
+        s.drain(600);
+        const got = h.readFile(ctx.gpa, ctx.io, target);
+        defer ctx.gpa.free(got);
+        ctx.check("...and the keys reach the buffer again", std.mem.startsWith(u8, got, "onst a = 1;"));
+    }
+    {
+        const other = "/tmp/zedit_it_other.zig";
+        h.writeFile(ctx.io, other, "const q = 1;\nconst r = 2;\nPEEKED LINE\n");
+        const r = driveOpt(ctx, "--xdef", &.{
+            .{ .keys = " lp", .ms = 900 },
+            .{ .keys = "\r", .ms = 800 },
+            .{ .keys = "x", .ms = 300 },
+        }, ":w\r:q!\r");
+        defer r.deinit(ctx.gpa);
+        ctx.check("Enter turns the peek into the jump", r.plainHas("zedit_it_other.zig"));
+        ctx.check("...and edits land in that file", std.mem.eql(u8, r.text, initial));
+        const other_text = h.readFile(ctx.gpa, ctx.io, other);
+        defer ctx.gpa.free(other_text);
+        ctx.check("...where the cursor was on the named line",
+            std.mem.eql(u8, other_text, "const q = 1;\nconst r = 2;\nEEKED LINE\n"));
+    }
+
     // Document symbols: Space-o opens a picker (kind tag + indented names);
     // filtering to "main" and Enter jumps to line 2 col 6, where x deletes.
     {

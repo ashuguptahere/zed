@@ -437,9 +437,13 @@ whole document:
 - ~~**Command palette** (`Ctrl+Shift+P`)~~ — **DONE** in 0.61.0. Not on that
   key, which a terminal cannot deliver: on `Ctrl+P` then `>`, which is VS
   Code's own second route to it, and on `Space f C` under the vim keymap.
-- **Peek definition / references** (`Alt+F12`, `Shift+F12`) — an inline
-  window showing the definition without leaving the current file. zedit's
-  `gd` jumps away and relies on `Ctrl-o` to come back.
+- ~~**Peek definition**~~ (`Alt+F12`) — **DONE** in 0.63.0 as `Space l p`
+  (the real key cannot reach a terminal application): a floating window over
+  the file being read, `Enter` to take the jump, `Esc` to drop it. Writing it
+  found that cross-file `gd` had never worked — the server's uri was freed
+  unread and the line applied to the buffer already open. Peek *references*
+  is still absent, though `Space l R` lists them in a picker with a preview,
+  which is most of what it is for.
 - **Breadcrumbs + sticky scroll** — the enclosing symbol path shown above the
   text, and the enclosing scope pinned to the top row while scrolling. zedit
   has the tree for both already.
@@ -503,7 +507,7 @@ For the owner to accept or reject, cheapest-first within each tier:
 
 **Tier 2 — new surface, high payoff**
 5. ~~Multibuffer editing of the quickfix list~~ — done in 0.62.0
-6. Peek definition (VS Code)
+6. ~~Peek definition~~ — done in 0.63.0
 7. Breadcrumbs / sticky scroll (VS Code, Zed)
 8. Project-local config (Focus, nvim `'exrc'`)
 

@@ -934,10 +934,23 @@ Quick Open prefix, and the route to it under the non\-modal keymap, where
 .B Ctrl+Shift+P
 cannot reach the application.
 .TP
-.B Space l a\fR, \fPSpace l r\fR, \fPSpace l R\fR, \fPSpace l s\fR, \fPSpace l S\fR, \fPSpace l d\fR, \fPSpace l D\fR, \fPSpace l f
+.B Space l a\fR, \fPSpace l r\fR, \fPSpace l R\fR, \fPSpace l s\fR, \fPSpace l S\fR, \fPSpace l d\fR, \fPSpace l D\fR, \fPSpace l f\fR, \fPSpace l p
 Code action, rename symbol, references (picker), document symbols, workspace
 symbols (the server matches the query across the project), line diagnostic,
-every diagnostic in the open buffers, format document. Rename and code-action edits apply across all the
+every diagnostic in the open buffers, format document, and
+.I peek
+the definition \(em VS Code's
+.BR Alt+F12 ,
+which no terminal can deliver. The peek is a floating window over the file
+you are reading, syntax\-highlighted and centred on the definition:
+.B Enter
+takes the jump for real,
+.BR Esc " or " q
+close it,
+.BR j / k ", " Ctrl-d / Ctrl-u
+and the wheel scroll it, and a click outside dismisses it. Nothing is opened
+and no jumplist entry is made unless you press
+.BR Enter . Rename and code-action edits apply across all the
 files they touch (unopened ones load into background buffers;
 .B :wa
 saves them).

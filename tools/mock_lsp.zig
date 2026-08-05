@@ -6,7 +6,9 @@
 //! references, and formatting. Flags: `--fmt` advertises formatting in the
 //! initialize response (turning on the editor's format-on-save); `--xfile`
 //! makes rename return a second file's edits (sibling `zedit_it_other.zig`)
-//! to exercise cross-file WorkspaceEdits; `--nocomp` answers completion with
+//! to exercise cross-file WorkspaceEdits; `--xdef` answers goto-definition
+//! with a *sibling* file's uri (`zedit_it_other.zig`), which is the case a
+//! client that ignores the uri gets wrong; `--nocomp` answers completion with
 //! an empty list (the editor should then fall back to buffer words);
 //! `--thenempty` answers the *first* completion with items and every later one
 //! with an empty list — a real server's behaviour once the prefix stops
@@ -23,6 +25,7 @@ pub fn main(init: std.process.Init) !void {
     const argv = try init.minimal.args.toSlice(init.arena.allocator());
     var fmt_mode = false;
     var xfile = false;
+    var xdef = false;
     var nocomp = false;
     var thenempty = false;
     var die = false;
@@ -31,6 +34,7 @@ pub fn main(init: std.process.Init) !void {
     for (argv[1..]) |a| {
         if (eql(a, "--fmt")) fmt_mode = true;
         if (eql(a, "--xfile")) xfile = true;
+        if (eql(a, "--xdef")) xdef = true;
         if (eql(a, "--nocomp")) nocomp = true;
         // A server that is slow to start — rust-analyzer routinely needs
         // seconds. The editor must stay usable throughout.
@@ -139,14 +143,18 @@ pub fn main(init: std.process.Init) !void {
         } else if (eql(method, "textDocument/hover")) {
             send(gpa, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{{\"contents\":\"mock hover\"}}}}", .{id orelse 0});
         } else if (eql(method, "textDocument/definition")) {
-            send(gpa, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{{\"uri\":\"file:///x\"," ++
-                "\"range\":{{\"start\":{{\"line\":2,\"character\":0}},\"end\":{{\"line\":2,\"character\":0}}}}}}}}", .{id orelse 0});
+            // The *real* document's uri, as a real server answers: the client
+            // has to resolve it, and used to throw it away and apply the line
+            // to whatever buffer was open. `--xdef` points at a sibling file
+            // instead, which is the case that exposed that.
+            send(gpa, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{{\"uri\":\"{s}\"," ++
+                "\"range\":{{\"start\":{{\"line\":2,\"character\":0}},\"end\":{{\"line\":2,\"character\":0}}}}}}}}", .{ id orelse 0, defUri(gpa, doc_uri, xdef) });
         } else if (eql(method, "textDocument/implementation")) {
-            send(gpa, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{{\"uri\":\"file:///x\"," ++
-                "\"range\":{{\"start\":{{\"line\":1,\"character\":0}},\"end\":{{\"line\":1,\"character\":0}}}}}}}}", .{id orelse 0});
+            send(gpa, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{{\"uri\":\"{s}\"," ++
+                "\"range\":{{\"start\":{{\"line\":1,\"character\":0}},\"end\":{{\"line\":1,\"character\":0}}}}}}}}", .{ id orelse 0, doc_uri });
         } else if (eql(method, "textDocument/typeDefinition")) {
-            send(gpa, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":[{{\"uri\":\"file:///x\"," ++
-                "\"range\":{{\"start\":{{\"line\":2,\"character\":6}},\"end\":{{\"line\":2,\"character\":6}}}}}}]}}", .{id orelse 0});
+            send(gpa, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":[{{\"uri\":\"{s}\"," ++
+                "\"range\":{{\"start\":{{\"line\":2,\"character\":6}},\"end\":{{\"line\":2,\"character\":6}}}}}}]}}", .{ id orelse 0, doc_uri });
         } else if (eql(method, "textDocument/rename")) {
             const new_name = strField(getField(parsed.value, "params") orelse parsed.value, "newName") orelse "x";
             var extra: []const u8 = "";
@@ -266,4 +274,13 @@ fn changeHasRange(obj: std.json.ObjectMap) bool {
     const changes = getField(params, "contentChanges") orelse return false;
     if (changes != .array or changes.array.items.len == 0) return false;
     return getField(changes.array.items[0], "range") != null;
+}
+
+/// The uri goto-definition answers with: the document's own, or the sibling
+/// `zedit_it_other.zig` beside it under `--xdef`. Leaks by design — the
+/// process is a test stub that exits with the run.
+fn defUri(gpa: std.mem.Allocator, doc_uri: []const u8, xdef: bool) []const u8 {
+    if (!xdef) return doc_uri;
+    const slash = std.mem.lastIndexOfScalar(u8, doc_uri, '/') orelse return doc_uri;
+    return std.fmt.allocPrint(gpa, "{s}zedit_it_other.zig", .{doc_uri[0 .. slash + 1]}) catch doc_uri;
 }

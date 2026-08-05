@@ -753,7 +753,8 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   themes, `f u` the undo tree — `:undolist`'s picker, which had no key —
   and `f C` the **command palette**, AstroNvim's `<leader>fC`); `Space l` = Language tools (`l a` code action, `l r` rename, `l R`
   references, `l s` document symbols, `l S` workspace symbols, `l d` line
-  diagnostic, `l D` all diagnostics, `l f` format);
+  diagnostic, `l D` all diagnostics, `l f` format, `l p` **peek
+  definition**);
   `Space g` = Git (`g d` inline diff,
   `g s` side-by-side, `g l` line diff); `Space d` = Debug (`d b` breakpoint,
   `d c` start/continue, `d n`/`d i`/`d o` step, `d q` stop); `Space t` = a terminal; `Space S` = Session for this
@@ -1312,7 +1313,19 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   `typescript-language-server`), or any command via `--lsp`. Diagnostics show as
   gutter signs + a statusline message/count; `K` hovers (`Ctrl-k` in insert
   mode), `gd` goes to definition, `gi` to the implementation, `gy` to the type
-  definition, `gr` renames the symbol under the cursor
+  definition — **into another file when the server names one**, which they
+  did not until 0.63.0: the uri came back, was freed unread, and the line was
+  applied to whatever buffer was open, so a cross-file `gd` silently moved
+  the cursor to that line number in the file you were already in.
+  `Space l p` **peeks** it instead — VS Code's `Alt+F12`, which a terminal
+  cannot deliver — showing the definition in a floating window over the file
+  being read rather than jumping there and relying on `Ctrl-o` to come back.
+  The window owns the keyboard while it is up (`Enter` takes the jump for
+  real, `Esc`/`q` close, `j`/`k`/`Ctrl-d`/`Ctrl-u`/the wheel scroll, a click
+  outside dismisses it) and borrows the picker's preview cache: the same
+  read, the same shared tree-sitter highlighter, because it is the same job —
+  show a region of another file quickly without opening it.
+  `gr` renames the symbol under the cursor
   (prompts on the command line, pre-filled with the identifier), `Space l R`
   lists references in a picker ("path:line: text", Enter jumps there),
   `Space l S` searches **workspace symbols** (the query goes to the server,

@@ -178,6 +178,16 @@ there is nothing to change there.
       application at all through a terminal. The first two are the
       multi-selection roadmap item wearing a different hat. (0.59.0)
 
+- [x] Peek definition (`Space l p`): the definition in a floating window over
+      the file being read, `Enter` to take the jump. VS Code's `Alt+F12`,
+      which no terminal delivers, so it lives on the leader tree. Shares the
+      picker's preview cache and its tree-sitter highlighter — the same job,
+      one `renderPreviewRows` for both. Writing it found that **cross-file
+      `gd` had never worked**: the server's uri was freed unread and the line
+      applied to the buffer already open, and the mock's fabricated
+      `file:///x` uri is why no test saw it. Second of the Part 3 tier-2
+      candidates. (0.63.0)
+
 - [x] The multibuffer (`:cedit` / `Space x e`): the quickfix list as one
       editable buffer of excerpts, one `:w` writing every file. `multi.zig`
       holds the rule that must not be wrong — hits padded with context,

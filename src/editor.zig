@@ -520,6 +520,10 @@ pub const Editor = struct {
 
     // Picker preview: the file shown beside the results, cached so moving the
     // selection re-reads only when the path actually changes.
+    /// `Space l p` — the definition shown in a floating window rather than
+    /// jumped to, and whether the definition request in flight is for one.
+    peek: ?Peek = null,
+    peek_pending: bool = false,
     preview_path: ?[]u8 = null,
     preview_text: ?[]u8 = null,
     preview_top: usize = 0, // first line of the file to show (grep/reference hits centre)
@@ -813,6 +817,7 @@ pub const Editor = struct {
     }
 
     pub fn deinit(self: *Editor) void {
+        if (self.peek) |pk| self.gpa.free(pk.path);
         if (self.walker) |*w| w.deinit();
         if (self.walk_dir) |*d| d.close(self.io);
         self.clearPreview();
@@ -1743,6 +1748,7 @@ pub const Editor = struct {
 
     fn handleKey(self: *Editor, k: key.Key, raw: []const u8) !void {
         self.status.clearRetainingCapacity();
+        if (self.peek != null and self.mode == .normal) return self.peekKey(k);
         if (self.dashboard and self.mode == .normal) {
             // Handled keys stay on the screen; anything else dismisses it and
             // falls through to the normal dispatch below.
@@ -2587,6 +2593,7 @@ pub const Editor = struct {
                     's' => self.lspDocumentSymbol(), // document symbols
                     'd' => self.lineDiagnostic(), // show the line's diagnostic
                     'f' => self.lspFormat(), // format buffer
+                    'p' => self.peekDefinition(), // peek definition
                     else => {},
                 };
             },
@@ -6753,7 +6760,7 @@ pub const Editor = struct {
         files,        grep,        buffers,     themes,      explorer,
         home,         new_buffer,  new_file,    new_folder,  close_others,
         code_action,  rename,      references,  doc_symbols, ws_symbols,
-        line_diag,    all_diags,   breakpoint,  clear_bps,   dbg_continue,
+        line_diag,    all_diags,   peek,        breakpoint,  clear_bps,   dbg_continue,
         step_over,    step_into,   step_out,    dbg_stop,    mouse,
         undo,         redo,        comment,
     };
@@ -6834,6 +6841,7 @@ pub const Editor = struct {
         .{ .title = "Line diagnostic", .vim = "Space l d", .run = .{ .act = .line_diag } },
         .{ .title = "All diagnostics", .vim = "Space l D", .run = .{ .act = .all_diags } },
         .{ .title = "Format buffer", .vim = "Space l f", .run = .{ .ex = "format" } },
+        .{ .title = "Peek definition", .vim = "Space l p", .run = .{ .act = .peek } },
 
         // --- git ------------------------------------------------------------
         .{ .title = "Diff (inline)", .vim = "Space g d", .run = .{ .ex = "diff" } },
@@ -6931,6 +6939,7 @@ pub const Editor = struct {
                 .ws_symbols => self.openWorkspaceSymbolPicker(),
                 .line_diag => self.lineDiagnostic(),
                 .all_diags => self.openDiagnosticPicker(),
+                .peek => self.peekDefinition(),
                 .breakpoint => self.toggleBreakpoint(),
                 .clear_bps => self.clearBreakpoints(),
                 .dbg_continue => self.debugContinue(),
@@ -8167,18 +8176,24 @@ pub const Editor = struct {
     fn ensurePreview(self: *Editor) void {
         if (self.picker_sel >= self.picker_filtered.items.len) return self.clearPreview();
         const it = self.picker_items.items[self.picker_filtered.items[self.picker_sel]];
-        const ipath = self.itemPath(it);
-        self.preview_top = if (self.previewKind() == .line and it.line > 0) it.line - 1 else 0;
+        self.loadPreview(self.itemPath(it), if (self.previewKind() == .line and it.line > 0) it.line - 1 else 0);
+    }
+
+    /// Read `path` into the preview cache and centre it on `top`. Shared by
+    /// the picker's preview pane and the peek window: the same read, and the
+    /// same process-wide tree-sitter highlighter behind it.
+    fn loadPreview(self: *Editor, path: []const u8, top: usize) void {
+        self.preview_top = top;
         if (self.preview_path) |p| {
-            if (std.mem.eql(u8, p, ipath)) return; // already loaded
+            if (std.mem.eql(u8, p, path)) return; // already loaded
         }
         self.clearPreview();
         self.preview_scroll = 0; // a new file starts at its own beginning
         // A preview is a convenience: skip anything that would cost a round
         // trip or a huge read.
-        if (remote.isRemote(ipath)) return;
-        const text = std.Io.Dir.cwd().readFileAlloc(self.io, ipath, self.gpa, .limited(256 << 10)) catch return;
-        self.preview_path = self.gpa.dupe(u8, ipath) catch null;
+        if (remote.isRemote(path)) return;
+        const text = std.Io.Dir.cwd().readFileAlloc(self.io, path, self.gpa, .limited(256 << 10)) catch return;
+        self.preview_path = self.gpa.dupe(u8, path) catch null;
         self.preview_text = text;
 
         // The parse is deliberately *not* done here: compiling the grammar's
@@ -8232,33 +8247,49 @@ pub const Editor = struct {
         try self.emitSanitized(name[0..@min(name.len, w -| 2)]);
         if (unicode.displayWidth(name) + 1 < w) try self.emitSpaces(w - unicode.displayWidth(name) - 1);
 
-        const text = self.preview_text orelse return;
+        if (self.preview_text == null) return;
         const body_rows = rows -| top;
-        // Centre the target line when the entry named one, then apply whatever
-        // the reader scrolled on top of that.
-        const centred = if (self.preview_top > body_rows / 2) self.preview_top - body_rows / 2 else 0;
+        const mark: ?usize = if (self.previewKind() == .line) self.preview_top else null;
+        try self.renderPreviewRows(x, top + 1, w, body_rows, self.previewFirst(body_rows), mark);
+    }
+
+    /// The first file line to show in `rows` rows: the target line centred,
+    /// plus whatever the reader has scrolled. Clamped so the end of the file
+    /// keeps a few lines on screen rather than scrolling into blank space —
+    /// and the clamp is written back, so holding the key does not build up an
+    /// offset that has to be unwound.
+    fn previewFirst(self: *Editor, rows: usize) usize {
+        const text = self.preview_text orelse return 0;
+        const centred = if (self.preview_top > rows / 2) self.preview_top - rows / 2 else 0;
         var first = @as(usize, @intCast(@max(0, @as(isize, @intCast(centred)) + self.preview_scroll)));
-        // Stop at the end of the file: keep a few lines on screen rather than
-        // scrolling into blank space, and remember the clamp so holding the
-        // key does not build up an offset that has to be unwound.
         const n_lines = std.mem.count(u8, text, "\n") + 1;
         const max_first = n_lines -| @min(n_lines, 3);
         if (first > max_first) {
             first = max_first;
             self.preview_scroll = @as(isize, @intCast(first)) - @as(isize, @intCast(centred));
         }
+        return first;
+    }
+
+    /// `rows` lines of the loaded preview text from `first`, numbered and
+    /// syntax-highlighted, at column `x` from screen row `y`. `mark` is the
+    /// file line to sit on the cursorline background — the grep hit, or the
+    /// definition a peek is about.
+    fn renderPreviewRows(self: *Editor, x: usize, y: usize, w: usize, rows: usize, first: usize, mark: ?usize) !void {
+        const th = theme.current;
+        const text = self.preview_text orelse return;
         const lang = if (self.preview_path) |p| syntax.detect(p) else .none;
-        self.queryPreviewStyles(text, first, body_rows);
+        self.queryPreviewStyles(text, first, rows);
 
         var line_no: usize = 0;
         var offset: usize = 0; // byte offset of the line, for the style lookup
-        var row: usize = top + 1;
+        var row: usize = y;
         var it = std.mem.splitScalar(u8, text, '\n');
         while (it.next()) |line| : (line_no += 1) {
             defer offset += line.len + 1;
             if (line_no < first) continue;
-            if (row > rows) break;
-            const hit = self.previewKind() == .line and line_no == self.preview_top;
+            if (row >= y + rows) break;
+            const hit = mark != null and line_no == mark.?;
             try self.emitFmt("\x1b[{d};{d}H", .{ row, x });
             try self.setBg(if (hit) th.cursorline else th.bg);
             try self.setFg(th.fg_dim);
@@ -9941,10 +9972,10 @@ pub const Editor = struct {
         }
         if (client.takeDefinition()) |loc| {
             defer self.gpa.free(loc.uri);
-            self.addJump();
-            self.cy = @min(loc.line, self.buf.lineCount() - 1);
-            self.cx = @min(loc.col, self.curLine().len);
-            self.updateGoal();
+            if (self.peek_pending) {
+                self.peek_pending = false;
+                self.openPeek(loc);
+            } else self.gotoLocation(loc);
         }
         if (client.comp_ready) {
             client.comp_ready = false;
@@ -10051,6 +10082,153 @@ pub const Editor = struct {
     fn lspTypeDefinition(self: *Editor) void {
         const client = if (self.lsp) |*c| c else return self.setStatus("no language server", .{});
         client.requestTypeDefinition(self.cy, self.charCol());
+    }
+
+    /// Go where a server's Location points — *including* into another file,
+    /// which `gd` never did: the uri came back, was freed, and the line was
+    /// applied to whatever buffer happened to be open, landing the cursor at
+    /// the definition's line number in the wrong file. `gi` and `gy` share
+    /// this plumbing and shared the bug.
+    fn gotoLocation(self: *Editor, loc: lsp.Location) void {
+        if (self.locPath(loc)) |path| {
+            defer self.gpa.free(path);
+            self.openFile(path, loc.line); // adds its own jumplist entry
+            self.cx = @min(loc.col, self.curLine().len);
+            self.updateGoal();
+            return;
+        }
+        self.addJump();
+        self.cy = @min(loc.line, self.buf.lineCount() - 1);
+        self.cx = @min(loc.col, self.curLine().len);
+        self.updateGoal();
+    }
+
+    /// The file `loc` names, when it is not the one already on screen. Null
+    /// means "here", which is the common case and the only one goto used to
+    /// handle.
+    fn locPath(self: *Editor, loc: lsp.Location) ?[]u8 {
+        const abs = uriToPath(self.gpa, loc.uri) orelse return null;
+        const cwd = std.process.currentPathAlloc(self.io, self.gpa) catch {
+            self.gpa.free(abs);
+            return null;
+        };
+        defer self.gpa.free(cwd);
+        if (self.buf.path) |p| {
+            if (samePath(cwd, p, abs)) {
+                self.gpa.free(abs);
+                return null;
+            }
+        }
+        return abs;
+    }
+
+    // === peek definition ===================================================
+
+    /// `Space l p` — VS Code's peek definition: the definition shown in a
+    /// floating window over the file being read, instead of jumping to it and
+    /// relying on `Ctrl-o` to come back. `Enter` turns the peek into the jump
+    /// once it is the right one.
+    ///
+    /// The window borrows the picker's preview cache — the same read, the same
+    /// shared tree-sitter highlighter — because it is the same job: show a
+    /// region of another file, quickly, without opening it.
+    const Peek = struct {
+        path: []u8, // owned; the file the definition is in
+        line: usize, // 0-based, the definition's line
+        col: usize,
+    };
+
+    fn peekDefinition(self: *Editor) void {
+        const client = if (self.lsp) |*c| c else return self.setStatus("no language server", .{});
+        if (!client.ready()) return self.setStatus("language server still starting", .{});
+        self.peek_pending = true;
+        client.requestDefinition(self.cy, self.charCol());
+    }
+
+    fn openPeek(self: *Editor, loc: lsp.Location) void {
+        const path = self.locPath(loc) orelse (self.gpa.dupe(u8, self.buf.path orelse "") catch return);
+        if (path.len == 0) {
+            self.gpa.free(path);
+            return self.setStatus("cannot peek an unnamed buffer", .{});
+        }
+        self.closePeek();
+        self.peek = .{ .path = path, .line = loc.line, .col = loc.col };
+        self.loadPreview(path, loc.line);
+        self.prev_valid = false;
+    }
+
+    fn closePeek(self: *Editor) void {
+        if (self.peek) |pk| self.gpa.free(pk.path);
+        self.peek = null;
+        self.clearPreview();
+        self.prev_valid = false;
+    }
+
+    /// The peek window owns the keyboard while it is up, like the picker: a
+    /// box with a border is a thing you are inside, and typing into the file
+    /// underneath it would be typing at something you cannot see.
+    fn peekKey(self: *Editor, k: key.Key) void {
+        const pk = self.peek orelse return;
+        switch (k) {
+            .escape => self.closePeek(),
+            .char => |c| switch (c) {
+                'q' => self.closePeek(),
+                'j' => self.scrollPreview(1),
+                'k' => self.scrollPreview(-1),
+                else => {},
+            },
+            .enter => {
+                // Take the peek: open the file for real, where it points.
+                const path = self.gpa.dupe(u8, pk.path) catch return;
+                defer self.gpa.free(path);
+                const line = pk.line;
+                const col = pk.col;
+                self.closePeek();
+                self.openFile(path, line);
+                self.cx = @min(col, self.curLine().len);
+                self.updateGoal();
+            },
+            .down => self.scrollPreview(1),
+            .up => self.scrollPreview(-1),
+            .ctrl => |c| switch (c) {
+                'd' => self.scrollPreview(@intCast(self.peekBox().h / 2)),
+                'u' => self.scrollPreview(-@as(isize, @intCast(self.peekBox().h / 2))),
+                'c' => self.closePeek(),
+                else => {},
+            },
+            .scroll_up => self.scrollPreview(-3),
+            .scroll_down => self.scrollPreview(3),
+            // A click outside the box dismisses it: the promise a border
+            // makes, and the one the picker already keeps.
+            .mouse_press => |m| {
+                const b = self.peekBox();
+                const inside = m.row >= b.y and m.row <= b.bottom() and m.col >= b.x and m.col < b.x + b.w;
+                if (!inside) self.closePeek();
+            },
+            else => {},
+        }
+    }
+
+    fn peekBox(self: *Editor) ui.Rect {
+        return ui.centered(self.chromeScreen(), self.win.cols * 3 / 4, @min(self.win.rows -| 4, 16), 2) orelse
+            .{ .x = 1, .y = 1, .w = self.win.cols, .h = self.win.rows };
+    }
+
+    fn renderPeek(self: *Editor) !void {
+        const pk = self.peek orelse return;
+        const box = self.peekBox();
+        var title: [160]u8 = undefined;
+        const name = std.fs.path.basename(pk.path);
+        const t = std.fmt.bufPrint(&title, " {s}:{d} ", .{ name, pk.line + 1 }) catch " definition ";
+        try self.drawBox(box, t, " Enter opens, Esc closes ");
+        if (self.preview_text == null) {
+            try self.emitFmt("\x1b[{d};{d}H", .{ box.y + 1, box.x + 2 });
+            try self.setFg(theme.current.fg_dim);
+            try self.emit("cannot read that file");
+            return;
+        }
+        const rows = box.h -| 2;
+        try self.renderPreviewRows(box.x + 1, box.y + 1, box.w -| 2, rows, self.previewFirst(rows), pk.line);
     }
 
     fn lspDocumentSymbol(self: *Editor) void {
@@ -14301,6 +14479,11 @@ pub const Editor = struct {
             try self.renderWhichKey();
             overlay = true;
         }
+        if (self.peek != null) {
+            try self.renderPeek();
+            self.warmPreview(); // parse after the frame, as the picker does
+            overlay = true;
+        }
         if (self.sig_open) try self.renderSignature(gutter);
         if (self.comp_open) try self.renderCompletion(gutter);
         if (self.toasts.visible().len > 0) {
@@ -14395,6 +14578,7 @@ pub const Editor = struct {
         .{ .key = "d", .desc = "line diagnostic" },
         .{ .key = "D", .desc = "all diagnostics" },
         .{ .key = "f", .desc = "format buffer" },
+        .{ .key = "p", .desc = "peek definition" },
     };
     /// `Space x` — the quickfix list. It was complete and reachable only by
     /// typing `:copen`; AstroNvim puts it on `<leader>x`, and `:cnext`/

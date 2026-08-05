@@ -2,6 +2,37 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.63.0 - 2026-08-05
+
+### Added
+
+- **Peek definition** — `Space l p`. VS Code's `Alt+F12`, on a key a terminal
+  can actually deliver: the definition of the symbol under the cursor shown
+  in a floating window over the file you are reading, syntax-highlighted and
+  centred on the line, instead of jumping there and relying on `Ctrl-o` to
+  come back. `Enter` takes the jump for real, `Esc`/`q` close it,
+  `j`/`k`/`Ctrl-d`/`Ctrl-u` and the wheel scroll it, and a click outside
+  dismisses it — the promise a border makes, and the one the picker already
+  keeps. Nothing is opened and no jumplist entry is made unless you press
+  `Enter`.
+
+  The window borrows the picker's preview cache: the same read, the same
+  process-wide tree-sitter highlighter, because it is the same job — show a
+  region of another file quickly without opening it. `renderPreview` split
+  into "which line comes first" and "draw these rows", which the pane and the
+  peek now share.
+
+### Fixed
+
+- **Goto definition never opened another file.** `gd`, `gi` and `gy` took the
+  server's Location, freed its uri unread, and applied the line to whatever
+  buffer happened to be open — so a cross-file `gd` silently moved the cursor
+  to *that line number in the file you were already in*. They open the named
+  file now. It survived this long because the mock server answered with a
+  fabricated `file:///x` that the client was ignoring; the mock returns the
+  real document uri now, and `--xdef` answers with a sibling file, which is
+  the case that exposed it.
+
 ## 0.62.0 - 2026-08-05
 
 ### Added
