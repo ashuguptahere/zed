@@ -135,6 +135,29 @@ const Operator = enum { none, delete, change, yank, indent_right, indent_left, r
 /// Which way `gu`/`gU`/`g~` and visual `u`/`U`/`~` turn a range.
 const Case = enum { upper, lower, toggle };
 
+/// One of the editor's secondary selections. `head` is where its cursor is;
+/// `anchor` is where it was dragged from, or null when it is a bare caret —
+/// which is what the column-editing multicursor (`Ctrl-n`/`Ctrl-p`) makes.
+/// A selection with an anchor covers `[min, max]` inclusive, the same rule
+/// the primary visual selection follows.
+/// An ordered, inclusive span of the buffer — what a selection covers.
+/// (`SelRange` is taken by the renderer's per-row byte range.)
+pub const SelSpan = struct { from: Pos, to: Pos };
+
+pub const Sel = struct {
+    head: Pos,
+    anchor: ?Pos = null,
+
+    /// The inclusive range this selection covers, ordered.
+    fn range(self: Sel) SelSpan {
+        const a = self.anchor orelse self.head;
+        return if (cmpPos(a, self.head) <= 0)
+            .{ .from = a, .to = self.head }
+        else
+            .{ .from = self.head, .to = a };
+    }
+};
+
 /// A selection remembered so `gv` can put it back. Positions rather than a
 /// span, because vim reselects the same *coordinates* even after the text
 /// under them changed — `vlld` then `gv` selects whatever now occupies the
@@ -420,7 +443,7 @@ pub const Editor = struct {
     last_vis: ?Selection = null,
 
     // multiple cursors (one per line; primary stays cy/cx). Empty = single cursor.
-    extra: std.ArrayList(Pos) = .empty,
+    extra: std.ArrayList(Sel) = .empty,
 
     // surround pending state
     surr_span: ?Span = null,
@@ -3806,16 +3829,16 @@ pub const Editor = struct {
         // on a later call.
         if (!std.mem.containsAtLeastScalar(u8, text, 1, '\n')) {
             for (self.extra.items) |*e| {
-                var col = e.col;
+                var col = e.head.col;
                 var k: usize = 1;
                 while (k < n) : (k += 1) {
-                    if (e.row >= self.buf.lineCount()) break;
-                    const line = self.buf.line(e.row);
+                    if (e.head.row >= self.buf.lineCount()) break;
+                    const line = self.buf.line(e.head.row);
                     if (col > line.len) break;
-                    self.buf.insertBytes(e.row, col, text) catch break;
+                    self.buf.insertBytes(e.head.row, col, text) catch break;
                     col += text.len;
                 }
-                e.col = col;
+                e.head.col = col;
             }
         }
         var i: usize = 1;
@@ -5117,7 +5140,7 @@ pub const Editor = struct {
             }
             const col = if (to_eol) line.len else byteAtDisplayCol(line, dcol);
             if (placed) {
-                self.extra.append(self.gpa, .{ .row = i, .col = col }) catch {};
+                self.extra.append(self.gpa, .{ .head = .{ .row = i, .col = col } }) catch {};
             } else {
                 self.cy = i;
                 self.cx = col;
@@ -5139,7 +5162,7 @@ pub const Editor = struct {
 
     fn addCursor(self: *Editor, below: bool) void {
         var extreme = self.cy;
-        for (self.extra.items) |e| extreme = if (below) @max(extreme, e.row) else @min(extreme, e.row);
+        for (self.extra.items) |e| extreme = if (below) @max(extreme, e.head.row) else @min(extreme, e.head.row);
         if (below) {
             if (extreme + 1 >= self.buf.lineCount()) return;
         } else {
@@ -5147,9 +5170,9 @@ pub const Editor = struct {
         }
         const nr = if (below) extreme + 1 else extreme - 1;
         if (nr == self.cy) return;
-        for (self.extra.items) |e| if (e.row == nr) return;
+        for (self.extra.items) |e| if (e.head.row == nr) return;
         const col = byteAtDisplayCol(self.buf.line(nr), self.goal_col);
-        self.extra.append(self.gpa, .{ .row = nr, .col = col }) catch return;
+        self.extra.append(self.gpa, .{ .head = .{ .row = nr, .col = col } }) catch return;
         self.setStatus("{d} cursors", .{self.extra.items.len + 1});
         self.resetPending();
     }
@@ -5158,11 +5181,11 @@ pub const Editor = struct {
         var i: usize = 0;
         while (i < self.extra.items.len) {
             const e = self.extra.items[i];
-            var dup = e.row == self.cy;
+            var dup = e.head.row == self.cy;
             if (!dup) {
                 var j: usize = 0;
                 while (j < i) : (j += 1) {
-                    if (self.extra.items[j].row == e.row) {
+                    if (self.extra.items[j].head.row == e.head.row) {
                         dup = true;
                         break;
                     }
@@ -5171,8 +5194,8 @@ pub const Editor = struct {
             if (dup) _ = self.extra.orderedRemove(i) else i += 1;
         }
         for (self.extra.items) |*e| {
-            const l = self.buf.line(e.row);
-            if (e.col > l.len) e.col = l.len;
+            const l = self.buf.line(e.head.row);
+            if (e.head.col > l.len) e.head.col = l.len;
         }
     }
 
@@ -5243,9 +5266,132 @@ pub const Editor = struct {
         }
     }
 
+    /// Is anything selected — the primary, or any secondary with an anchor?
+    fn anySelection(self: *Editor) bool {
+        if (self.mode == .visual or self.mode == .visual_line or self.mode == .visual_block) return true;
+        for (self.extra.items) |e| {
+            if (e.anchor != null) return true;
+        }
+        return false;
+    }
+
+    /// The byte range a secondary selection covers on `row`, for the
+    /// renderer. Computed once per row rather than per cell, like the primary
+    /// selection's — a frame draws thousands of cells and only tens of rows.
+    /// Overlapping extras on one row merge into the span they jointly cover,
+    /// which is all the highlight needs to know.
+    fn extraSelRange(self: *Editor, row: usize) ?struct { lo: usize, hi: usize } {
+        var lo: ?usize = null;
+        var hi: usize = 0;
+        for (self.extra.items) |e| {
+            if (e.anchor == null) continue; // a bare caret highlights nothing
+            const r = e.range();
+            if (row < r.from.row or row > r.to.row) continue;
+            const line = self.buf.line(row);
+            const a = if (row == r.from.row) r.from.col else 0;
+            const b = if (row == r.to.row) @min(unicode.nextBoundary(line, r.to.col), line.len) else line.len;
+            if (lo == null or a < lo.?) lo = a;
+            if (b > hi) hi = b;
+        }
+        const l = lo orelse return null;
+        return .{ .lo = l, .hi = hi };
+    }
+
+    /// `Ctrl-D` — VS Code's add-selection-to-next-match. The first press
+    /// selects the word under the cursor; every one after finds the next
+    /// occurrence of that text and adds it as another selection, so typing
+    /// replaces them all at once.
+    fn addNextMatch(self: *Editor) void {
+        if (self.mode != .visual) {
+            self.selectWord(.e); // the first press: just take the word
+            return;
+        }
+        var a = self.vstart;
+        var b = self.cursor();
+        if (cmpPos(b, a) < 0) std.mem.swap(Pos, &a, &b);
+        if (a.row != b.row) return self.setStatus("multi-selection is within a line", .{});
+        const line = self.buf.line(a.row);
+        const end = @min(unicode.nextBoundary(line, b.col), line.len);
+        const needle = self.gpa.dupe(u8, line[a.col..end]) catch return;
+        defer self.gpa.free(needle);
+        if (needle.len == 0) return;
+
+        // Search on from the furthest selection so repeated presses walk
+        // forward rather than finding the same match again.
+        var from = b;
+        for (self.extra.items) |e| {
+            const r = e.range();
+            if (cmpPos(r.to, from) > 0) from = r.to;
+        }
+        const start = motion.stepForwardPub(self.buf, from);
+        const hit = search.nextLiteral(self.buf, start, needle) orelse
+            return self.setStatus("no more matches", .{});
+        // Already selected? Then every occurrence is taken. The *primary*
+        // counts too: `nextLiteral` wraps, so on a file with one match the
+        // search comes straight back to where it started, and checking only
+        // the extras added a second selection over the very same text.
+        if (hit.row == a.row and hit.col == a.col) return self.setStatus("all matches selected", .{});
+        for (self.extra.items) |e| {
+            const r = e.range();
+            if (r.from.row == hit.row and r.from.col == hit.col) return self.setStatus("all matches selected", .{});
+        }
+        const hline = self.buf.line(hit.row);
+        const tail = @min(hit.col + needle.len, hline.len);
+        self.extra.append(self.gpa, .{
+            .anchor = hit,
+            .head = .{ .row = hit.row, .col = unicode.prevBoundary(hline, tail) },
+        }) catch return;
+        self.setStatus("{d} selections", .{self.extra.items.len + 1});
+    }
+
+    /// Delete what every selection covers, leaving a caret where each was —
+    /// what typing over a multi-selection does. Back to front, so an earlier
+    /// deletion cannot move a later one.
+    fn deleteSelections(self: *Editor) void {
+        var ranges: std.ArrayList(SelSpan) = .empty;
+        defer ranges.deinit(self.gpa);
+        for (self.extra.items) |e| {
+            if (e.anchor == null) continue;
+            ranges.append(self.gpa, e.range()) catch return;
+        }
+        // The primary too, when it has one.
+        if (self.mode == .visual) {
+            var a = self.vstart;
+            var b = self.cursor();
+            if (cmpPos(b, a) < 0) std.mem.swap(Pos, &a, &b);
+            ranges.append(self.gpa, .{ .from = a, .to = b }) catch return;
+        }
+        if (ranges.items.len == 0) return;
+        std.mem.sort(SelSpan, ranges.items, {}, struct {
+            fn lt(_: void, x: SelSpan, y: SelSpan) bool {
+                return cmpPos(x.from, y.from) < 0;
+            }
+        }.lt);
+        var i = ranges.items.len;
+        while (i > 0) {
+            i -= 1;
+            const r = ranges.items[i];
+            const line = self.buf.line(r.to.row);
+            const end = @min(unicode.nextBoundary(line, r.to.col), line.len);
+            _ = self.deleteSpan(.{ .lines = false, .start = r.from, .end = .{ .row = r.to.row, .col = end } });
+        }
+        // Every selection becomes the caret where its text used to start.
+        for (self.extra.items) |*e| {
+            if (e.anchor != null) e.* = .{ .head = e.range().from };
+        }
+        if (self.mode == .visual) {
+            var a = self.vstart;
+            const b = self.cursor();
+            if (cmpPos(b, a) < 0) a = b;
+            self.mode = .insert;
+            self.setCursor(a);
+        }
+        self.buf.dirty = true;
+    }
+
     fn multiMove(self: *Editor, c: u8) void {
         self.setCursor(self.movedCaret(self.cursor(), c));
-        for (self.extra.items) |*e| e.* = self.movedCaret(e.*, c);
+        for (self.extra.items) |*e| e.* = .{ .head = self.movedCaret(e.head, c) };
         self.dedupeByLine();
         self.resetPending();
     }
@@ -5285,9 +5431,9 @@ pub const Editor = struct {
         self.pushUndo();
         if (self.cx < self.curLine().len) try self.buf.deleteForward(self.cy, self.cx);
         for (self.extra.items) |*e| {
-            if (e.col < self.buf.line(e.row).len) try self.buf.deleteForward(e.row, e.col);
-            const nl = self.buf.line(e.row);
-            if (e.col > nl.len) e.col = nl.len;
+            if (e.head.col < self.buf.line(e.head.row).len) try self.buf.deleteForward(e.head.row, e.head.col);
+            const nl = self.buf.line(e.head.row);
+            if (e.head.col > nl.len) e.head.col = nl.len;
         }
         self.clampCursor();
         self.updateGoal();
@@ -5298,7 +5444,7 @@ pub const Editor = struct {
         if (self.rejectReadOnly()) return;
         self.pushUndo();
         self.cx = self.insertCol(self.cy, self.cx, place);
-        for (self.extra.items) |*e| e.col = self.insertCol(e.row, e.col, place);
+        for (self.extra.items) |*e| e.head.col = self.insertCol(e.head.row, e.head.col, place);
         self.mode = .insert;
         self.updateGoal();
         self.resetPending();
@@ -5319,10 +5465,10 @@ pub const Editor = struct {
         for (self.extra.items) |*e| {
             const sy = self.cy;
             const sx = self.cx;
-            self.cy = e.row;
-            self.cx = e.col;
+            self.cy = e.head.row;
+            self.cx = e.head.col;
             try self.insertAtCaret(k);
-            e.* = .{ .row = self.cy, .col = self.cx };
+            e.* = .{ .head = .{ .row = self.cy, .col = self.cx } };
             self.cy = sy;
             self.cx = sx;
         }
@@ -5352,7 +5498,7 @@ pub const Editor = struct {
     }
 
     fn extraColAt(self: *Editor, row: usize) ?usize {
-        for (self.extra.items) |e| if (e.row == row) return e.col;
+        for (self.extra.items) |e| if (e.head.row == row) return e.head.col;
         return null;
     }
 
@@ -5620,6 +5766,24 @@ pub const Editor = struct {
             else => {},
         }
 
+        // Typing over a selection replaces it — every selection, when there
+        // is more than one. The key itself then inserts at each caret the
+        // deletion left behind, which is the multi-caret path insert mode
+        // already takes.
+        switch (k) {
+            .char, .enter, .tab => if (self.anySelection()) {
+                self.pushUndo();
+                self.deleteSelections();
+                return false;
+            },
+            .backspace, .delete => if (self.anySelection()) {
+                self.pushUndo();
+                self.deleteSelections();
+                return true; // the selection *was* the deletion
+            },
+            else => {},
+        }
+
         // An *unmodified* motion collapses a selection, which is what makes
         // arrow keys behave the way everyone outside vim expects. The key
         // itself is then left to the ordinary insert handling.
@@ -5720,8 +5884,8 @@ pub const Editor = struct {
                     self.mode = .insert;
                     return true;
                 },
-                'd' => { // VS Code selects the word; adding a caret per match
-                    self.selectWord(.e); // needs the multi-selection model.
+                'd' => { // select the word, then each next occurrence
+                    self.addNextMatch();
                     return true;
                 },
                 'b' => {
@@ -5748,7 +5912,18 @@ pub const Editor = struct {
                 if (self.comp_open or self.sig_open) {
                     self.comp_open = false;
                     self.sig_open = false;
-                } else self.mode = .insert;
+                } else {
+                    // Collapse to a caret *after* the selection, which is
+                    // where VS Code leaves it — zedit's visual head sits on
+                    // the last selected cell, one short of that.
+                    if (self.mode == .visual) {
+                        const line = self.curLine();
+                        if (self.cx < line.len) self.cx = unicode.nextBoundary(line, self.cx);
+                    }
+                    self.mode = .insert;
+                    self.extra.clearRetainingCapacity(); // back to one caret
+                    self.updateGoal();
+                }
                 return true;
             },
             else => return false,
@@ -14381,6 +14556,7 @@ pub const Editor = struct {
         // Selection / multi-cursor / search / inlay apply to the active window only.
         const sel = if (view.active) self.selectionRange(row) else null;
         const ecol = if (view.active) self.extraColAt(row) else null;
+        const xsel = if (view.active) self.extraSelRange(row) else null;
         const first_nb = motion.firstNonBlank(line);
         const indent_cols = displayCol(line, first_nb);
 
@@ -14462,7 +14638,8 @@ pub const Editor = struct {
             if (start >= right) break;
 
             const is_extra = if (ecol) |ec| byte == ec else false;
-            const selected = if (sel) |s| (byte >= s.lo and byte < s.hi) else false;
+            const selected = (if (sel) |s| (byte >= s.lo and byte < s.hi) else false) or
+                (if (xsel) |x| (byte >= x.lo and byte < x.hi) else false);
             while (mi < mcount and byte >= mends[mi]) mi += 1;
             const in_match = mi < mcount and byte >= mstarts[mi] and byte < mends[mi];
             try self.setBg(if (is_extra) th.mode_normal else if (selected) th.selection else if (in_match) th.match else row_bg);

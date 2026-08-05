@@ -94,16 +94,17 @@ behind the roadmap items.
        - **Build command + compiler-error regex → the quickfix list**
          (Focus; vim's `:make` + `'errorformat'`). The list, the picker and
          `]q`/`[q` exist and have no external producer. Best fit of the lot.
-       - **`Ctrl-D`-style add-cursor-at-next-match** (VS Code and Zed share
-         the binding; Helix's `C` is the neighbouring idea). zedit's
-         multicursor is one-caret-per-line, so the most-used multi-cursor
-         gesture in the world is currently inexpressible.
+       - ~~**`Ctrl-D`-style add-cursor-at-next-match**~~ — **DONE** in
+         0.60.0, on the multi-selection model. What is left of the idea:
+         `Ctrl+Shift+L` (all occurrences at once — unreachable through a
+         terminal), `Ctrl+K Ctrl+D` (skip a match), Alt+click, a selection
+         spanning more than one line, and Helix's build-a-set-from-a-regex.
        - **Command palette** — searchable list of every command with its
          binding. VS Code, Helix *and* AstroNvim all have it: three votes.
        - **Multibuffer** (Zed) — project search / diagnostics / references
          as one editable buffer of excerpts, saved together. The editable
          rendering of the quickfix list zedit already keeps, and the natural
-         home for the multi-selection editing model rated "high" vs Helix.
+         home for the multi-selection model 0.60.0 landed.
        - Peek definition, breadcrumbs / sticky scroll, fold-by-level, regex
          replace case modifiers (`\u$1`), project-local config (Focus *and*
          nvim's `'exrc'` — two votes), outline panel, git status in the
@@ -174,6 +175,21 @@ there is nothing to change there.
       no caret at the next match, and `Ctrl+Shift+<letter>` cannot reach the
       application at all through a terminal. The first two are the
       multi-selection roadmap item wearing a different hat. (0.59.0)
+
+- [x] The multi-selection model, and `keymap = vscode` as the **default**.
+      `extra` holds `Sel { head, anchor }` rather than a bare position, so a
+      secondary caret can cover text: `Ctrl-D` selects the word and each
+      further press adds the next occurrence, typing and backspace act on
+      every selection, `Esc` collapses to one. That closes two of the three
+      limits 0.59.0 recorded, and drops Helix's multiple-selections gap from
+      **high** to **medium** in COMPARISON — what is still missing there is
+      building a set from a regex over the selection, and the operations that
+      reorder or merge one. Out of the box the editor is now non-modal;
+      `keymap = vim` (or the new `-k/--keymap` flag) is the modal editor,
+      unchanged. Every pty suite passes `--keymap vim` so it keeps testing
+      the editor it was written for, `--tutor` forces vim (its first
+      instruction would otherwise type a letter), and the shipped default is
+      itself pinned by a check that passes no flag at all. (0.60.0)
 
 - [x] The visual-mode namespace: `Ctrl-A`/`Ctrl-X` and their stepping `g`
       forms, the linewise `D X Y C R`, `J`, `r`, `gq`, `O`, the `v`/`V`/

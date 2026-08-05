@@ -76,6 +76,20 @@ pub fn main(init: std.process.Init) !void {
         // asked to be told about; the implicit path stays best-effort.
         cli.printError("cannot read that config file — using defaults");
     }
+    // The tutor teaches modal editing, so it brings its own keymap: under the
+    // default `vscode` table its first instruction ("press j") would type a
+    // letter into the lesson. An explicit `--keymap` still wins, below.
+    if (cfg.tutor) config.settings.keymap = .vim;
+    // `--keymap` outranks both the file and that, so a vim user can borrow a
+    // vscode session (or the other way round) without editing anything.
+    if (cfg.keymap) |name| {
+        if (std.meta.stringToEnum(config.Keymap, name)) |km| {
+            config.settings.keymap = km;
+        } else {
+            cli.printError("unknown keymap — expected vim, vscode or zed");
+            std.process.exit(2);
+        }
+    }
 
     // A directory argument (e.g. `zedit .`) becomes the working directory and
     // the session starts in the file picker — the nvim/helix habit. An

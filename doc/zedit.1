@@ -11,7 +11,12 @@ zedit \- a fast, terminal-based, modal code editor written in Zig
 .BR nvim (1)
 and
 .BR hx (1).
-It has a comprehensive vim-style keymap, multiple cursors, fuzzy file and
+It is non-modal out of the box, with VS Code's key bindings; setting
+.B keymap
+to
+.B vim
+gives a comprehensive vim-style keymap instead.
+It has multiple cursors, fuzzy file and
 global-content search pickers, syntax highlighting, and an AstroNvim/Helix-style
 themed interface \(em all with no external runtime dependencies.
 .PP
@@ -55,6 +60,14 @@ as the debug adapter instead of the per-filetype default
 Read configuration from
 .I path
 instead of the standard location (see
+.BR CONFIGURATION ).
+.TP
+.BR \-k ", " \-\-keymap " " \fIname\fP
+Use the
+.BR vscode ", " zed " or " vim
+key bindings for this run, whatever the configuration file says (see
+.B keymap
+under
 .BR CONFIGURATION ).
 .TP
 .BR \-u ", " \-\-check\-update
@@ -111,9 +124,8 @@ or the
 picker.
 .TP
 .B keymap
-.BR vim " (default), " vscode " or " zed .
-.B vim
-is modal editing. The other two make the editor \fInon-modal\fP: typing always
+.BR vscode " (default), " zed " or " vim .
+The first two make the editor \fInon-modal\fP: typing always
 inserts, and the commands live on chords \(em
 .BR Ctrl-s " save, " Ctrl-p " files, " Ctrl-f " find, " Ctrl-h " replace,"
 .BR Ctrl-z / Ctrl-y " undo/redo, " Ctrl-c / Ctrl-x / Ctrl-v " clipboard,"
@@ -121,8 +133,13 @@ inserts, and the commands live on chords \(em
 .B Ctrl-w
 close \(em with Shift+arrows selecting, Ctrl+arrows moving by word, and
 Alt+Up/Down moving a line (add Shift to copy it).
+.B Ctrl-d
+selects the word under the cursor, and each further press adds a caret at the
+next occurrence, so typing edits them all at once.
 .B zed
 is the same table under its own name.
+.B vim
+is modal editing, and is what the rest of this page documents.
 .PP
 It is an emulation, not a hybrid: the vim commands are not reachable under
 them. Three limits are worth knowing. A selection includes the cell under the

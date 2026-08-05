@@ -222,8 +222,12 @@ behaviour and passes with or without any change, deliberately.
 
 **Editing model**
 - Multiple selections as the core model (`s` select-regex-in-selection, `S`
-  split, keep/remove by regex, `C` copy to next line, rotate/align/trim/merge)
-  — zedit's multicursor is one-caret-per-line column editing — **high**
+  split, keep/remove by regex, rotate/align/trim/merge) — **medium**, down
+  from high in 0.60.0: zedit now carries a *set* of selections rather than a
+  set of carets, and `Ctrl-D` under the non-modal keymap adds one at the next
+  match (Helix's `C` idea, VS Code's binding). What Helix still has and zedit
+  does not is building that set from a **regex over the current selection**,
+  and the operations that reorder or merge one once made.
 - Shell integration — ~~filter a selection through a command~~ **DONE** in
   0.58.0 as `:[range]!cmd`, with visual `!` prefilling the range. Helix's
   `|` (pipe-to) and `$` (keep-if) variants are still absent — **low**
@@ -421,12 +425,15 @@ whole document:
 
 ## 3.2 VS Code
 
-- **Multi-cursor by *match*, not by line.** `Ctrl+D` adds a cursor at the next
-  occurrence of the word/selection, `Ctrl+Shift+L` selects all occurrences,
-  `Ctrl+K Ctrl+D` skips one. This is the most-used multi-cursor gesture in the
-  world and zedit cannot express it — `Ctrl-n`/`Ctrl-p` add a caret on the
-  line below/above. Zed uses the same binding, and Helix's `C` is the
-  neighbouring idea. **Highest-value item in this section.**
+- ~~**Multi-cursor by *match*, not by line.**~~ **DONE** in 0.60.0: `Ctrl+D`
+  selects the word and each further press adds a selection at the next
+  occurrence, so typing, backspace and `Esc` act on all of them. This was the
+  highest-value item in this section — the most-used multi-cursor gesture in
+  the world, which zedit could not express at all. Still absent: `Ctrl+Shift+L`
+  (select all occurrences at once — a terminal does not pass the shift bit for
+  a Ctrl+letter, so that key is indistinguishable from `Ctrl+L`),
+  `Ctrl+K Ctrl+D` (skip this match), a selection that
+  spans more than one line, and Alt+click to place a caret.
 - **Command palette** (`Ctrl+Shift+P`) — see Part 2; VS Code, Helix and
   AstroNvim all have it, which is three independent votes.
 - **Peek definition / references** (`Alt+F12`, `Shift+F12`) — an inline

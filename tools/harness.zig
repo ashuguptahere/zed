@@ -105,6 +105,13 @@ pub const SpawnOpts = struct {
     cwd: ?[]const u8 = null,
     term: []const u8 = "xterm",
     cols: u16 = 80,
+    /// Which keymap the session runs under, passed as `--keymap`. The
+    /// shipped default is `vscode`, but almost every suite here is testing
+    /// *vim* behaviour and says so by leaving this alone.
+    ///
+    /// `null` passes no flag at all, which is how a test checks what a user
+    /// actually gets out of the box.
+    keymap: ?[]const u8 = "vim",
     /// Spawn the way a job-control shell does: an intermediate process takes
     /// the session and the controlling terminal, then forks the editor into
     /// a process group of its own.
@@ -125,13 +132,32 @@ pub const Session = struct {
     gpa: std.mem.Allocator,
 
     pub fn spawn(gpa: std.mem.Allocator, opts: SpawnOpts) !Session {
+        // Almost every suite here is testing *vim* behaviour, and the shipped
+        // default is `vscode`, so the harness says which keymap it means. A
+        // flag rather than a config file: several suites bring a `--config`
+        // of their own, and those must keep meaning vim too.
+        //
+        // It goes on the *end*: a third of the spawns here run the editor
+        // under `env VAR=… zedit …`, so argv[0] is not always the program,
+        // and zedit accepts its options in any position.
+        var argv_buf: [64][]const u8 = undefined;
+        var eff_argv = opts.argv;
+        if (opts.keymap) |km| {
+            if (opts.argv.len + 2 <= argv_buf.len) {
+                for (opts.argv, 0..) |a, i| argv_buf[i] = a;
+                argv_buf[opts.argv.len] = "--keymap";
+                argv_buf[opts.argv.len + 1] = km;
+                eff_argv = argv_buf[0 .. opts.argv.len + 2];
+            }
+        }
+
         // Build a null-terminated argv (+ duped TERM/cwd) in a scratch arena that
         // the parent frees right after fork; the child keeps its own copy.
         var arena_state = std.heap.ArenaAllocator.init(gpa);
         const a = arena_state.allocator();
-        const argv = try a.alloc(?[*:0]const u8, opts.argv.len + 1);
-        for (opts.argv, 0..) |arg, i| argv[i] = (try a.dupeZ(u8, arg)).ptr;
-        argv[opts.argv.len] = null;
+        const argv = try a.alloc(?[*:0]const u8, eff_argv.len + 1);
+        for (eff_argv, 0..) |arg, i| argv[i] = (try a.dupeZ(u8, arg)).ptr;
+        argv[eff_argv.len] = null;
         const term_z = try a.dupeZ(u8, opts.term);
         const cwd_z: ?[*:0]const u8 = if (opts.cwd) |cw| (try a.dupeZ(u8, cw)).ptr else null;
 

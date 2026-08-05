@@ -34,9 +34,12 @@ fn drive(ctx: *h.Ctx, keymap: []const u8, body: []const u8, keys: []const u8) ![
     h.writeFile(ctx.io, cfg, std.fmt.bufPrint(&line, "keymap = {s}\n", .{keymap}) catch "keymap = vim\n");
     h.writeFile(ctx.io, f, body);
 
+    // `.keymap = null` keeps the harness from passing its own `--keymap`:
+    // the point here is that the *config file* selects the table.
     var s = try h.Session.spawn(ctx.gpa, .{
         .argv = &.{ ctx.zedit, "--config", cfg, "--lsp", "", "k.txt" },
         .cwd = dir,
+        .keymap = null,
     });
     defer s.finish();
     s.drain(600);
@@ -103,6 +106,7 @@ pub fn run(ctx: *h.Ctx) !void {
         var s = try h.Session.spawn(ctx.gpa, .{
             .argv = &.{ ctx.zedit, "--config", cfg, "--lsp", "", "c.zig" },
             .cwd = dir,
+            .keymap = null,
         });
         defer s.finish();
         s.drain(700);
@@ -115,8 +119,27 @@ pub fn run(ctx: *h.Ctx) !void {
 
     // --- Esc never strands you in a mode you cannot type in ----------------
     expect(ctx, "Esc leaves you able to type", try drive(ctx, "vscode", abc, ESC ++ ESC ++ "Z\x13"), "Zalpha\nbravo\ncharlie\n");
-    // ...and it drops a selection rather than deleting it.
-    expect(ctx, "Esc drops the selection, caret where it was", try drive(ctx, "vscode", abc, S_RIGHT ++ S_RIGHT ++ ESC ++ "Z\x13"), "alZpha\nbravo\ncharlie\n");
+    // ...and it drops a selection rather than deleting it, leaving the caret
+    // after it. VS Code would leave it one earlier, because its selection is
+    // one character narrower — the same inclusive-caret divergence, showing
+    // through at the other end.
+    expect(ctx, "Esc drops the selection, caret after it", try drive(ctx, "vscode", abc, S_RIGHT ++ S_RIGHT ++ ESC ++ "Z\x13"), "alpZha\nbravo\ncharlie\n");
+
+    // --- Ctrl-D: multiple selections ---------------------------------------
+    const foo3 = "foo one\nfoo two\nfoo three\n";
+    // The first press selects the word; the next adds the following match,
+    // and typing replaces every selection at once.
+    expect(ctx, "Ctrl-D selects the word", try drive(ctx, "vscode", foo3, "\x04X\x13"), "X one\nfoo two\nfoo three\n");
+    expect(ctx, "a second Ctrl-D adds the next match", try drive(ctx, "vscode", foo3, "\x04\x04X\x13"), "X one\nX two\nfoo three\n");
+    expect(ctx, "a third takes the one after", try drive(ctx, "vscode", foo3, "\x04\x04\x04X\x13"), "X one\nX two\nX three\n");
+    // Typing more than one character keeps every caret in step.
+    expect(ctx, "typing continues at every caret", try drive(ctx, "vscode", foo3, "\x04\x04bar\x13"), "bar one\nbar two\nfoo three\n");
+    // Backspace over the selections deletes them and nothing else.
+    expect(ctx, "backspace deletes each selection", try drive(ctx, "vscode", foo3, "\x04\x04\x7f\x13"), " one\n two\nfoo three\n");
+    // Esc collapses back to a single caret, so the next key types once.
+    expect(ctx, "Esc collapses to one caret, after the word", try drive(ctx, "vscode", foo3, "\x04\x04" ++ ESC ++ "X\x13"), "fooX one\nfoo two\nfoo three\n");
+    // Asking past the last match says so rather than wrapping onto itself.
+    expect(ctx, "no more matches leaves it alone", try drive(ctx, "vscode", "foo\nbar\n", "\x04\x04X\x13"), "X\nbar\n");
 
     // --- the chords that open UI, checked on screen ------------------------
     {
@@ -130,6 +153,7 @@ pub fn run(ctx: *h.Ctx) !void {
         var s = try h.Session.spawn(ctx.gpa, .{
             .argv = &.{ ctx.zedit, "--config", cfg, "--lsp", "", "u.txt" },
             .cwd = dir,
+            .keymap = null,
         });
         defer s.finish();
         s.drain(700);
@@ -155,20 +179,49 @@ pub fn run(ctx: *h.Ctx) !void {
         s.drain(300);
     }
 
-    // --- the default is still vim ------------------------------------------
-    // No `keymap` line at all must leave a modal editor.
+    // --- the tutor teaches vim, so it brings its own keymap ----------------
+    // Under the shipped default `j` would type a letter into lesson 1.
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ ctx.zedit, "--tutor", "--lsp", "" },
+            .keymap = null,
+        });
+        defer s.finish();
+        s.drain(800);
+        ctx.check("--tutor opens in Normal mode whatever the default is", s.containsPlain(ctx.gpa, "NORMAL"));
+        // ...and an explicit --keymap still outranks it.
+        s.send(":q!" ++ CR);
+        s.drain(300);
+    }
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ ctx.zedit, "--tutor", "--lsp", "" },
+            .keymap = "vscode",
+        });
+        defer s.finish();
+        s.drain(800);
+        ctx.check("...but --keymap vscode still wins", s.containsPlain(ctx.gpa, "INSERT"));
+    }
+
+    // --- what a user gets with no config at all ----------------------------
+    // `.keymap = null` passes no config, so this is the shipped default —
+    // the one thing in this file that must not be told what to be.
     {
         const dir = try ctx.tempDir();
         const f = h.join(ctx, dir, "d.txt");
         defer ctx.gpa.free(f);
         h.writeFile(ctx.io, f, abc);
-        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "--lsp", "", "d.txt" }, .cwd = dir });
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ ctx.zedit, "--lsp", "", "d.txt" },
+            .cwd = dir,
+            .keymap = null,
+        });
         defer s.finish();
         s.drain(600);
-        s.send("dd:wq" ++ CR);
+        s.send("dd\x13"); // typing, then Ctrl-S — non-modal out of the box
         s.drain(700);
         const got = h.readFile(ctx.gpa, ctx.io, f);
         defer ctx.gpa.free(got);
-        ctx.check("with no setting the editor is still modal", std.mem.eql(u8, got, "bravo\ncharlie\n"));
+        ctx.check("out of the box the editor is non-modal", std.mem.eql(u8, got, "ddalpha\nbravo\ncharlie\n"));
     }
 }

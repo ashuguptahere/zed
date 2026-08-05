@@ -325,6 +325,11 @@ The editor itself has no runtime dependencies.
 
 ## Editor usage
 
+**This whole section describes `keymap = vim`.** The shipped default is
+`vscode`, a non-modal table documented under Appearance — but vim is the
+editor everything below is about and everything in `vim_compat` is pinned to,
+so read it as "with `keymap = vim` set".
+
 Modal, vi-like, with a comprehensive vim keymap. A command is `[count]` then
 either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 
@@ -1450,29 +1455,37 @@ with that many windows picks them up by itself. A plain split still tiles
 evenly: the new window inherits its parent's weight, so nothing changes until
 a resize or a saved layout says otherwise.
 
-**A non-modal keymap (`keymap = vscode | zed`).** The default is `vim` and
-nothing about it changes. Set either of the others and the editor is
-**non-modal**: it starts able to type, letters are always text, and the
-commands live on chords — `Ctrl-s` save, `Ctrl-p` files, `Ctrl-f` find,
-`Ctrl-h` replace, `Ctrl-z`/`Ctrl-y` undo/redo, `Ctrl-c`/`Ctrl-x`/`Ctrl-v`
-clipboard, `Ctrl-a` select all, `Ctrl-/` comment, `Ctrl-b` explorer, `Ctrl-w`
-close, `Ctrl-d` select the word; Shift+arrows select, Ctrl+arrows move by
+**The keymap (`keymap = vscode | zed | vim`), and `vscode` is the default.**
+Out of the box the editor is **non-modal**: it starts able to type, letters
+are always text, and the commands live on chords — `Ctrl-s` save, `Ctrl-p`
+files, `Ctrl-f` find, `Ctrl-h` replace, `Ctrl-z`/`Ctrl-y` undo/redo,
+`Ctrl-c`/`Ctrl-x`/`Ctrl-v` clipboard, `Ctrl-a` select all, `Ctrl-/` comment,
+`Ctrl-b` explorer, `Ctrl-w` close, `Ctrl-d` select the word and then each
+next match; Shift+arrows select, Ctrl+arrows move by
 word, Ctrl+Home/End reach the file's ends, Alt+Up/Down move a line and
 Shift+Alt+Up/Down copy it. `Esc` drops a selection or closes a popup and
 never leaves you unable to type. `zed` is the same table under its own name:
 Zed ships VS Code's bindings on Linux by design, and a user who reaches for
-one should not be told about the other.
+one should not be told about the other. `keymap = vim` is the modal editor
+this file otherwise describes, unchanged — and `zedit --keymap <name>`
+(`-k`) picks one for a single run without touching the config, which is also
+how the pty suite says which editor each of its 1750 checks is testing. The
+tutor forces `vim` whatever the config says: it teaches modal editing, and
+under the default its first instruction ("press j") would type a letter into
+lesson 1.
 
-It is an *emulation, not a hybrid* — the vim commands are genuinely not
-reachable, which is the point. Three things it does **not** do, all recorded
-rather than papered over:
+It is an *emulation, not a hybrid* — under `vscode` the vim commands are
+genuinely not reachable, which is the point. What it does **not** do, all
+recorded rather than papered over:
   * **A selection includes the cell under the caret**, because that is zedit's
     visual model. VS Code's caret sits between characters, so a selection here
-    is one character wider at that end. Making it exact needs the selection
-    model itself to change — the multi-selection item still on the roadmap.
-  * **`Ctrl-D` selects the word but does not add a caret at the next match**,
-    for the same reason. It does the honest nearest thing rather than
-    pretending.
+    is one character wider at that end, and `Esc` leaves the caret one further
+    on. Making it exact means changing the visual model every vim check is
+    pinned against, which is a bigger change than it looks.
+  * **A multi-selection lives within one line** and is built only by
+    `Ctrl-D`. VS Code also has `Ctrl+Shift+L` (all occurrences at once),
+    `Ctrl+K Ctrl+D` (skip this one) and Alt+click; Helix builds a set from a
+    regex over the current selection. None of those are here.
   * **`Ctrl+Shift+…` chords are unavailable**, because a terminal cannot tell
     `Ctrl+Shift+P` from `Ctrl+P` — the shift bit never reaches the
     application for a letter. That rules out the command palette and project
@@ -1481,12 +1494,27 @@ rather than papered over:
   last command is one step, where VS Code breaks on word boundaries and
   pauses.
 
+**The multi-selection model.** `extra` holds `Sel { head, anchor }` rather
+than a bare `Pos`, so a secondary caret can *cover* text: `Ctrl-D` selects
+the word under the cursor, and each further press finds the next occurrence
+(`search.nextLiteral` from the furthest selection on, so presses walk
+forward) and adds it. Typing replaces every selection at once, backspace
+deletes them (`deleteSelections` works back to front, so an earlier deletion
+cannot move a later one), and `Esc` collapses to a single caret. The
+dedupe checks the **primary** selection as well as the extras: `nextLiteral`
+wraps, so on a file with one match the search comes straight back to where it
+started and would otherwise stack a second selection on the same text. The
+renderer asks `extraSelRange` once per row, not per cell, and overlapping
+extras on a row merge into the span they jointly cover — all a highlight
+needs. `SelSpan` is the ordered pair; the name avoids the renderer's existing
+per-row `SelRange`.
+
   `key.zig` grew a `modified` tag to make any of this possible — Shift+Left
   and Ctrl+Right had never been decoded at all. It is deliberately a separate
   tag rather than a payload on `up`/`down`/`left`/`right`, which are matched
   bare in about a hundred places.
 
-Runtime configuration is one documented file (see `config.zig`): theme,
+Runtime configuration is one documented file (see `config.zig`): keymap, theme,
 `tab_width`, `nerd_font`, `sidebar` (left/right), `relative_numbers`,
 `large_file_mb`, `autoindent`, `buffer_tabs`, `auto_completion`,
 `completion_delay_ms`, `inline_diagnostics`, `soft_wrap`, `wrap_indent`,

@@ -2,6 +2,48 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.60.0 - 2026-08-05
+
+### Added
+
+- **A multi-selection model.** A secondary caret can now *cover* text: the
+  editor keeps a set of `Sel { head, anchor }` rather than a set of bare
+  positions. `Ctrl-D` (non-modal keymap) selects the word under the cursor,
+  and each further press finds the next occurrence and adds it as another
+  selection — VS Code's most-used gesture, and the neighbouring idea to
+  Helix's `C`. Typing replaces every selection at once, backspace deletes
+  them, `Esc` collapses back to one caret, and the editor says how many are
+  live ("3 selections", "all matches selected", "no more matches").
+
+  The dedupe checks the primary selection, not only the extras: the literal
+  search wraps, so on a file with a single match it comes straight back to
+  where it started and would otherwise stack a second selection on the very
+  same text.
+
+- **`-k, --keymap <name>`** picks `vim`, `vscode` or `zed` for one run,
+  outranking the config file. A vim user can borrow a VS Code session (or the
+  other way round) without editing anything, and the pty suite uses it to say
+  which editor each of its 1750 checks is testing.
+
+### Changed
+
+- **`keymap = vscode` is now the default.** Out of the box zedit is
+  non-modal: typing inserts, and the commands live on the chords they live on
+  everywhere else. `keymap = vim` (or `zedit --keymap vim`) gives the modal
+  editor, unchanged in every respect — it is still what the whole vim
+  documentation describes and what `vim_compat` pins byte-for-byte against
+  real nvim.
+
+- **`--tutor` forces the vim keymap** whatever the config says. It teaches
+  modal editing, and under the new default its first instruction ("press j")
+  would have typed a letter into lesson 1.
+
+### Fixed
+
+- `Ctrl-D` no longer only selects the word — the 0.59.0 entry recorded that
+  as a limitation of the caret-only model, which is the model this release
+  replaces.
+
 ## 0.59.0 - 2026-08-04
 
 ### Added

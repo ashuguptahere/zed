@@ -2,9 +2,12 @@
 =               W e l c o m e   t o   t h e   z e d i t   t u t o r            =
 ==============================================================================
 
-     Welcome to the zedit tutor!  zedit is a modal editor: in Normal mode the
-     keys are commands, not text.  This file is a scratch copy: edit it
-     freely.  Practice each command right here.
+     Welcome to the zedit tutor!  This teaches zedit's vim keymap, so the
+     tutor always opens with it, whatever your config says: in Normal mode
+     the keys are commands, not text.  (Out of the box zedit is non-modal
+     instead, with VS Code's keys — set keymap = vim in the config to keep
+     what you learn here.)  This file is a scratch copy: edit it freely.
+     Practice each command right here.
 
      Work through the lessons in order; each one builds on the last.
      Remember: learning comes from doing, not from reading.  Do the

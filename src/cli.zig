@@ -18,6 +18,8 @@ pub const Config = struct {
     lsp_cmd: ?[]const u8 = null,
     dap_cmd: ?[]const u8 = null,
     config_path: ?[]const u8 = null,
+    /// `--keymap <name>`: overrides the config's `keymap` for this run.
+    keymap: ?[]const u8 = null,
     tutor: bool = false,
     benchmark: bool = false,
     check_update: bool = false,
@@ -71,6 +73,12 @@ pub fn parse(argv: []const [:0]const u8) Parsed {
                 cfg.config_path = argv[i];
             } else if (prefix(arg, "--config=")) {
                 cfg.config_path = arg["--config=".len..];
+            } else if (eql(arg, "-k") or eql(arg, "--keymap")) {
+                i += 1;
+                if (i >= argv.len) return .{ .err = "--keymap requires a name (vim, vscode or zed)" };
+                cfg.keymap = argv[i];
+            } else if (prefix(arg, "--keymap=")) {
+                cfg.keymap = arg["--keymap=".len..];
             } else if (eql(arg, "-t") or eql(arg, "--tutor")) {
                 cfg.tutor = true;
             } else if (eql(arg, "-b") or eql(arg, "--benchmark")) {
@@ -106,6 +114,8 @@ const help_text =
     \\                       empty ("") starts none
     \\  -D, --dap <cmd>      Debug adapter command (e.g. "lldb-dap"); defaults per filetype
     \\  -c, --config <path>  Use <path> instead of ~/.config/zedit/config
+    \\  -k, --keymap <name>  Key bindings for this run: vim, vscode or zed
+    \\                       (overrides the config's `keymap`)
     \\  -t, --tutor          Open the interactive tutorial (like vimtutor)
     \\  -b, --benchmark      Time open/search/save on [file] (or synthetic data) and exit
     \\  -u, --check-update   Compare this build with the newest release and exit
@@ -113,15 +123,21 @@ const help_text =
     \\      --reset          Reset the config to the documented defaults and
     \\                       exit (the old one is kept as config.bak)
     \\
-    \\Keys (normal mode):
+    \\Keys, out of the box (keymap = vscode — typing always inserts):
+    \\  Ctrl-s Ctrl-w     Save / close the file
+    \\  Ctrl-p Ctrl-f     Find a file / find in this one
+    \\  Ctrl-z Ctrl-y     Undo / redo
+    \\  Ctrl-d            Select the word, again for the next match
+    \\  Ctrl-b Ctrl-/     Explorer / toggle comment
+    \\
+    \\With keymap = vim (or --keymap vim), normal mode:
     \\  h j k l           Move left/down/up/right
     \\  0 $               Start / end of line
     \\  g G               First / last line
     \\  i a o             Insert before / after cursor / on a new line
     \\  x                 Delete character
     \\  :                 Command line  (:w write, :q quit, :wq, :q!)
-    \\
-    \\Insert mode: type to edit, Esc returns to normal mode.
+    \\  Esc / type        Normal mode / insert mode
     \\
     \\Examples:
     \\  zedit                 Start with an empty buffer
@@ -174,6 +190,16 @@ test "parse file and flags" {
     try std.testing.expectEqualStrings("x.log", r.run.log_path.?);
 }
 
+test "--keymap takes a name, in either spelling" {
+    const sep = parse(&[_][:0]const u8{ "zedit", "--keymap", "vscode", "f.txt" });
+    const eq = parse(&[_][:0]const u8{ "zedit", "--keymap=vscode", "f.txt" });
+    try std.testing.expectEqualStrings("vscode", sep.run.keymap.?);
+    try std.testing.expectEqualStrings("vscode", eq.run.keymap.?);
+    try std.testing.expectEqualStrings("f.txt", sep.run.file.?);
+    // A name is required; a bare flag is a usage error, not a silent default.
+    try std.testing.expect(parse(&[_][:0]const u8{ "zedit", "--keymap" }) == .err);
+}
+
 test "parse help and version" {
     try std.testing.expect(parse(&[_][:0]const u8{ "zedit", "--help" }) == .help);
     try std.testing.expect(parse(&[_][:0]const u8{ "zedit", "-V" }) == .version);
@@ -181,12 +207,13 @@ test "parse help and version" {
 }
 
 test "short and long forms agree" {
-    const long = parse(&[_][:0]const u8{ "zedit", "--log", "x", "--config", "y", "--lsp", "z", "--tutor", "--benchmark" });
-    const short = parse(&[_][:0]const u8{ "zedit", "-l", "x", "-c", "y", "-s", "z", "-t", "-b" });
+    const long = parse(&[_][:0]const u8{ "zedit", "--log", "x", "--config", "y", "--lsp", "z", "--keymap", "vim", "--tutor", "--benchmark" });
+    const short = parse(&[_][:0]const u8{ "zedit", "-l", "x", "-c", "y", "-s", "z", "-k", "vim", "-t", "-b" });
     try std.testing.expect(long == .run and short == .run);
     try std.testing.expectEqualStrings(long.run.log_path.?, short.run.log_path.?);
     try std.testing.expectEqualStrings(long.run.config_path.?, short.run.config_path.?);
     try std.testing.expectEqualStrings(long.run.lsp_cmd.?, short.run.lsp_cmd.?);
+    try std.testing.expectEqualStrings(long.run.keymap.?, short.run.keymap.?);
     try std.testing.expectEqual(long.run.tutor, short.run.tutor);
     try std.testing.expectEqual(long.run.benchmark, short.run.benchmark);
 }

@@ -5,8 +5,13 @@
 
 ## Philosophy
 
- **Vim/AstroNvim keybindings** (unlike Helix): the classic
-  operator-then-motion grammar, plus a `Space` leader with a which-key popup.
+- **Two editors in one, chosen by one line of config.** Out of the box the
+  keys are **VS Code's** (`keymap = vscode`, the default): typing inserts,
+  `Ctrl-s`/`Ctrl-p`/`Ctrl-f`/`Ctrl-z` do what they do everywhere else, and
+  `Ctrl-d` adds a caret at the next match. `keymap = vim` gives the full
+  **Vim/AstroNvim** editor instead — the operator-then-motion grammar and a
+  `Space` leader with a which-key popup — which is what the rest of this
+  README documents, and what the pty suite pins against real nvim.
 - **One documented config file**, everything optional: `zedit --init-config`
   writes it with every setting, its default, and an explanation.
 - **Fast and idle-free**: an event-driven core that blocks in `poll(2)` — an
@@ -15,10 +20,13 @@
 
 ## Features
 
-- **Not a vim user?** `keymap = vscode` (or `zed`) in the config makes zedit
-  **non-modal**: typing always inserts, `Ctrl-s`/`Ctrl-p`/`Ctrl-f`/`Ctrl-z`
-  and the rest do what they do everywhere else, Shift+arrows select and
-  Alt+Up/Down move a line. The default stays `vim`.
+- **Non-modal by default** (`keymap = vscode`, or `zed` under its own name):
+  typing always inserts, `Ctrl-s`/`Ctrl-p`/`Ctrl-f`/`Ctrl-z` and the rest do
+  what they do everywhere else, Shift+arrows select, Ctrl+arrows move by
+  word, Alt+Up/Down move a line, and **`Ctrl-d` adds a caret at the next
+  occurrence** of the word — press it again for the one after, then type to
+  edit them all at once. `keymap = vim` (or `zedit --keymap vim` for one
+  run) switches to everything below.
 
 - Modal editing: normal / insert / replace / visual / command modes
 - A comprehensive **vim keymap**:
@@ -302,7 +310,7 @@ zedit --init-config
 ```
 
 Format is `key = value` with `#` comments; unknown keys are ignored and a
-missing file just means defaults. Settings today: `theme`, `tab_width`,
+missing file just means defaults. Settings today: `keymap`, `theme`, `tab_width`,
 `nerd_font`, `sidebar`, `relative_numbers`, `large_file_mb`, `autoindent`,
 `buffer_tabs`, `auto_completion`, `completion_delay_ms`,
 `buffer_completion`, `inline_diagnostics`, `soft_wrap`, `wrap_indent`,
@@ -312,8 +320,8 @@ resets the file to those defaults, keeping the old one as
 `config.bak`.
 
 Every CLI option has a short and a long form (`-h/--help`, `-v/--version`,
-`-l/--log`, `-s/--lsp`, `-c/--config`, `-t/--tutor`, `-b/--benchmark`,
-`-u/--check-update`, `--init-config`, `--reset`); `zedit <dir>` opens the file picker in that directory, and
+`-l/--log`, `-s/--lsp`, `-c/--config`, `-k/--keymap`, `-t/--tutor`,
+`-b/--benchmark`, `-u/--check-update`, `--init-config`, `--reset`); `zedit <dir>` opens the file picker in that directory, and
 `zedit --benchmark [file]` prints open/search/serialize timings without
 needing a terminal. Releases are versioned by the `VERSION` file and
 documented in [CHANGELOG.md](CHANGELOG.md).

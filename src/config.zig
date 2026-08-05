@@ -27,9 +27,9 @@ pub const Settings = struct {
     nerd_font: bool = true,
     /// Which side the file-tree sidebar (`Space e`) opens on.
     sidebar: Side = .left,
-    /// Which keys the editor answers to: modal `vim`, or the non-modal
-    /// `vscode`/`zed` chords.
-    keymap: Keymap = .vim,
+    /// Which keys the editor answers to: the non-modal `vscode`/`zed`
+    /// chords, or modal `vim`.
+    keymap: Keymap = .vscode,
     /// Relative line numbers in the gutter (the cursor line stays absolute,
     /// AstroNvim's hybrid style). False shows absolute numbers everywhere.
     relative_numbers: bool = true,
@@ -142,14 +142,16 @@ pub const default_text =
     \\sidebar = left
     \\
     \\# Which keys the editor answers to.
-    \\#   vim    - modal editing (the default): normal / insert / visual
-    \\#   vscode - non-modal: typing always inserts, commands on Ctrl chords
+    \\#   vscode - non-modal (the default): typing always inserts, commands
+    \\#            on Ctrl chords
     \\#            (Ctrl-s save, Ctrl-p files, Ctrl-f find, Ctrl-/ comment,
     \\#            Shift+arrows select, Alt+Up/Down move a line...)
     \\#   zed    - the same table under Zed's name
-    \\# Non-modal means the vim commands are not reachable: it is an
-    \\# emulation, not a hybrid.
-    \\keymap = vim
+    \\#   vim    - modal editing: normal / insert / visual, the full vim
+    \\#            keymap this editor also implements
+    \\# Non-modal means the vim commands are not reachable, and vice versa:
+    \\# these are emulations, not a hybrid.
+    \\keymap = vscode
     \\
     \\# Relative line numbers in the gutter (the cursor line stays absolute).
     \\# Set to false for absolute numbers everywhere.
