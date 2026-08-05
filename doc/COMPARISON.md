@@ -398,18 +398,17 @@ ones already half-built.
 Zed's genuinely distinctive idea, and the strongest single candidate in this
 whole document:
 
-- **Multibuffers.** A project search, the diagnostics list, or find-all-
-  references opens as *one editable buffer* stitched together from excerpts
-  across many files. Edits apply to the real files; multiple cursors work
-  across excerpts; one save writes them all. Zed documents it as "one of the
-  superpowers Zed gives you", used to make "wide-ranging refactors
-  significantly faster".
-  **Why it fits zedit specifically:** the quickfix list already keeps
-  file+line entries that outlive the picker that found them, and the grep,
-  references and diagnostics pickers already fill it. A multibuffer is the
-  editable rendering of the list zedit already has — not a new subsystem.
-  It is also the natural home for the multi-selection editing model that
-  Part 2 rates **high** against Helix.
+- ~~**Multibuffers.**~~ **DONE** in 0.62.0 as `:cedit` / `Space x e`. A
+  project search, the diagnostics list or find-all-references goes to the
+  quickfix list (`Ctrl-q`), and that list opens as *one editable buffer*
+  stitched from excerpts across many files; one `:w` writes them all, and
+  multiple cursors work across excerpts because they are ordinary buffer
+  lines. It landed small for exactly the predicted reason: the quickfix list
+  already kept file+line entries that outlive the picker, so this is the
+  editable rendering of a list zedit already had, not a new subsystem.
+  What Zed has and this does not: per-excerpt syntax highlighting (one
+  document of mixed languages renders plain), excerpts that expand on
+  demand, and opening one directly from a search without the list step.
 - **Outline panel** — a persistent symbol tree, rather than a
   fire-and-forget picker (zedit has `Space l s`). Zed notes it is especially
   useful for navigating a multibuffer.
@@ -503,7 +502,7 @@ For the owner to accept or reject, cheapest-first within each tier:
 4. Fold by level; regex replace case modifiers
 
 **Tier 2 — new surface, high payoff**
-5. Multibuffer editing of the quickfix list (Zed)
+5. ~~Multibuffer editing of the quickfix list~~ — done in 0.62.0
 6. Peek definition (VS Code)
 7. Breadcrumbs / sticky scroll (VS Code, Zed)
 8. Project-local config (Focus, nvim `'exrc'`)

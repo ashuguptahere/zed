@@ -1107,6 +1107,25 @@ opens the entry under the cursor (in the window above, so the list stays);
 round it out, and
 .B Space x
 reaches the list from the leader tree.
+.IP
+.BR :cedit " (" "Space x e" ") opens the same list as a"
+\fImultibuffer\fP: the two lines each side of every hit, stitched into one
+ordinary \fIeditable\fP buffer under a
+.B "\(em path:line"
+header per excerpt, so a project\-wide change is made in one place and a
+single
+.B :w
+writes every file it touched. Excerpts that would overlap \(em or merely
+touch \(em are merged, so no source line is ever shown, or written back,
+twice. The headers are the structure: whatever lies between two of them is
+one excerpt's body, so lines may be added and removed freely, but a header
+that was edited or deleted refuses the write rather than guessing. Each
+excerpt also remembers the lines it was built from, so a file changed behind
+the multibuffer's back is reported, not overwritten. The buffer is one
+document of mixed languages and so renders without syntax highlighting; the
+list contributes at most 200 excerpts, and
+.B :w <name>
+is refused \(em the stitched view belongs to no file.
 .TP
 .B "] [ \fR(space)\fP"
 Add \fIN\fP blank lines below or above, leaving the cursor where it is.
@@ -1246,8 +1265,10 @@ Buffers: the open\-buffer picker (same as
 next buffer, previous buffer, close buffer (same as
 .BR "Space c" ).
 .TP
-.B Space x q\fR, \fPSpace x n\fR, \fPSpace x p\fR, \fPSpace x c
-Quickfix list: open it, next entry, previous entry, close it.
+.B Space x q\fR, \fPSpace x n\fR, \fPSpace x p\fR, \fPSpace x c\fR, \fPSpace x e
+Quickfix list: open it, next entry, previous entry, close it, and edit every
+hit as one buffer (the multibuffer \(em see
+.BR :cedit ).
 .TP
 .B Space h
 Show the startup screen again (the recently\-opened list).

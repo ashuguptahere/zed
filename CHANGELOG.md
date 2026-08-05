@@ -2,6 +2,52 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.62.0 - 2026-08-05
+
+### Added
+
+- **The multibuffer** — `:cedit`, or `Space x e`. Zed's idea, and the
+  strongest single candidate in `doc/COMPARISON.md`: a project search, the
+  diagnostics list or find-all-references becomes *one editable buffer*
+  stitched from excerpts across many files, and a single `:w` writes every
+  file it touched. Multiple cursors work across excerpts, because they are
+  ordinary buffer lines.
+
+  It landed small for exactly the reason the analysis predicted: the
+  quickfix list already kept file+line entries that outlive the picker that
+  found them, and `Ctrl-q` already filled it from the grep, references and
+  diagnostics pickers. This is the editable rendering of a list zedit
+  already had, not a new subsystem.
+
+  `multi.zig` holds the one rule that must not be wrong: each hit is padded
+  with two lines each side, and runs that overlap — *or merely touch* — are
+  merged, because two excerpts sharing a source line would each write the
+  other's edit away. Pure and unit-tested.
+
+  The excerpts pair with the `── path:line` header rows **in order**, which
+  is what makes adding and removing lines inside one need no bookkeeping at
+  all: the body is whatever now lies between two headers. A header that was
+  edited or removed breaks that pairing and the write refuses by name rather
+  than guessing which lines belonged to which file. Each excerpt also
+  remembers the source lines it was built from, so a file changed behind the
+  multibuffer's back is reported, not clobbered — and after a write the
+  excerpts *are* the files, so a second `:w` is a no-op.
+
+  Absent, and recorded rather than papered over: no per-excerpt syntax
+  highlighting (one document of mixed languages renders plain), no excerpts
+  that expand on demand, at most 200 per list, and `:w <name>` is refused —
+  the stitched view belongs to no file.
+
+### Fixed
+
+- **A new module's unit tests were silently skipped.** Zig analyses a
+  top-level `@import` lazily, so a module reached only from code the test
+  build never analyses never enters the compilation — `zig build test` then
+  reports "all passed" without having run one of its tests. `multi.zig`'s
+  eight were in exactly that state; they run now, and `main.zig`'s `test {}`
+  aggregator is documented in CLAUDE.md as the thing to remember. Found with
+  a deliberately failing canary, which is the only way to see it.
+
 ## 0.61.0 - 2026-08-05
 
 ### Added

@@ -135,7 +135,10 @@
   and close, `zR`/`zM` all of them — and `j`/`k` step over a closed fold as
   though it were one line;
   `Ctrl-q` in a picker sends every result to the **quickfix list** (`Space x`
-  opens and walks it, `]q`/`[q` step, `:copen` to see it);
+  opens and walks it, `]q`/`[q` step, `:copen` to see it) — and `Space x e`
+  opens that list as a **multibuffer**: every hit's surroundings stitched
+  into one *editable* buffer, so a project-wide change is made in one place
+  and a single `:w` writes every file it touched (Zed's idea);
   `Space h` brings the startup screen back;
   `Space n …` new buffer / file / folder (a path like `src/net/http.zig`
   creates the directories on the way); `Space d …` a **debugger** (breakpoints,

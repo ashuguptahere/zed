@@ -32,7 +32,11 @@ work", they win.
    it looks. Concretely:
    - Pure logic (motions, search, regex, undo, snippets, config) gets a unit
      test in its own module; anything interactive gets a pty scenario under
-     `tools/scenarios/`.
+     `tools/scenarios/`. A **new module's tests only run once it is listed in
+     `main.zig`'s `test {}` aggregator** — Zig analyses a top-level `@import`
+     lazily, so an unlisted module's tests are silently skipped and the step
+     still says "all passed". `multi.zig` shipped that way for an hour; a
+     deliberately failing canary is how it was noticed.
    - Vim behaviour is pinned to **real nvim**, driven through a pty — never
      from memory, and never through `-c` arguments, which join undo blocks and
      hide exactly what is under test.
@@ -186,6 +190,7 @@ Source is `src/`, one responsibility per module:
 | `notify.zig`  | Corner toast notifications: a fixed, allocation-free queue with its own expiry deadline (pure — the editor draws them and owns the clock). |
 | `fold.zig`    | Folds: which line ranges are collapsed, which rows that hides, and how they move when the text does. |
 | `quickfix.zig`| The quickfix list: file positions kept so `]q`/`[q` can walk them long after the picker that found them is gone. |
+| `multi.zig`   | The multibuffer's one hard rule: which runs of which files one editable buffer shows — hits padded with context, grouped by file, overlapping *and* touching runs merged so no source line is ever shown, or written back, twice. |
 | `session.zig` | Per-directory sessions: the open files + cursors, the split layout and the tree's state, serialised to an XDG state file. |
 | `remote.zig`  | Editing over SSH: `ssh://user@host/path` parsing, read/write/list via one `ssh` per operation. |
 | `lsp.zig`     | Minimal LSP client: JSON-RPC over a server's stdio (diagnostics, hover, goto, completion, signature help; incremental or full doc sync per the server's capabilities). |
@@ -1133,7 +1138,26 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   worked through. `:cclose`, `:cnext`/`:cprev`, `:cfirst`/`:clast` and
   `:cc {n}` round it out. The list is editor state, not per-document, and the
   entries own their strings — they outlive the picker, and the files they name
-  need not be open. The list is **sorted by file then line** when a picker
+  need not be open.
+  **`:cedit` / `Space x e` opens the list as a *multibuffer*** — Zed's idea,
+  and the editable rendering of the list zedit already had. Every hit's
+  surroundings (two lines each side) are stitched into one ordinary,
+  *editable* buffer under a `── path:line` header per excerpt, and one `:w`
+  writes every file it touched. Overlapping and touching runs merge
+  (`multi.spans`, unit-tested), so no source line is ever shown twice — two
+  excerpts sharing a line would each write the other's edit away. The
+  excerpts pair with the header rows **in order**, which is what makes
+  inserting and deleting lines inside one need no bookkeeping at all: the
+  body is whatever now lies between two headers. A header that was edited or
+  removed breaks that pairing and the write refuses by name rather than
+  guessing. Each excerpt also remembers the source lines it was built from,
+  so a file changed behind the multibuffer's back is reported, not clobbered
+  — and after a successful write the excerpts *are* the files, so a second
+  `:w` is a no-op. Multiple cursors work across excerpts for free: they are
+  ordinary buffer lines. Limits: no per-excerpt syntax highlighting (the
+  buffer is one document of mixed languages, so it renders plain), 200
+  excerpts per list, and `:w <name>` is refused — the stitched view belongs
+  to no file. The list is **sorted by file then line** when a picker
   fills it: results arrive in project-walk order, which is the filesystem's,
   so an unsorted list walked the same matches in a different sequence on a
   different machine (CI caught exactly that). `openFile` takes a **0-based row** while an entry's line

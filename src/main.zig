@@ -318,6 +318,7 @@ test {
     _ = @import("jsonrpc.zig");
     _ = @import("dap.zig");
     _ = @import("quickfix.zig");
+    _ = @import("multi.zig");
     _ = @import("fold.zig");
     _ = @import("notify.zig");
     _ = @import("ui.zig");

@@ -35,6 +35,7 @@ const session = @import("session.zig");
 const vt = @import("vt.zig");
 const dap = @import("dap.zig");
 const quickfix = @import("quickfix.zig");
+const multi = @import("multi.zig");
 const fold = @import("fold.zig");
 const notify = @import("notify.zig");
 const ui = @import("ui.zig");
@@ -234,6 +235,36 @@ const Span = struct {
 /// change, so an inactive Doc holds the live state and the active Doc's fields
 /// are empty placeholders (its real state lives on the Editor). `buf` is the
 /// exception — it always lives here, and `Editor.buf` points at the active one.
+/// One excerpt of a multibuffer: a run of lines from one file, shown here
+/// under a header row and written back where it came from.
+///
+/// The source is named by path rather than held as a `*Doc`, because a
+/// document can be closed (`:bd`) while the multibuffer is still open and
+/// a stale pointer is not something to find out about at write time.
+/// `orig` is what those lines held when the excerpt was assembled: the
+/// write compares against it, so a file changed behind the multibuffer's
+/// back is reported rather than clobbered.
+const Excerpt = struct {
+    path: []u8, // owned
+    header: []u8, // owned; the exact row that marks this excerpt
+    start: usize, // 0-based first source line
+    len: usize, // source lines it covered when assembled
+    orig: []u8, // owned; their text then, "\n"-joined, no trailing newline
+};
+
+const Multi = struct {
+    excerpts: std.ArrayList(Excerpt) = .empty,
+
+    fn deinit(self: *Multi, gpa: Allocator) void {
+        for (self.excerpts.items) |e| {
+            gpa.free(e.path);
+            gpa.free(e.header);
+            gpa.free(e.orig);
+        }
+        self.excerpts.deinit(gpa);
+    }
+};
+
 const Doc = struct {
     buf: buffer.Buffer,
     name: ?[]u8 = null, // display name for scratch buffers (buf.path == null)
@@ -243,6 +274,9 @@ const Doc = struct {
     line_diff: ?git.LineDiff = null, // `Space g l`: the in-buffer weave of old lines
     /// The quickfix list view: Enter on a line jumps to that entry.
     qf_view: bool = false,
+    /// The multibuffer: excerpts of other files, editable here, written back
+    /// to them by `:w`. Set only on the one scratch document `:cedit` makes.
+    mb: ?Multi = null,
     /// Folded line ranges. Per document, because a fold is about *this* text.
     folds: fold.Set,
     /// An embedded shell (`Space t t`). When set, the window renders this
@@ -723,6 +757,7 @@ pub const Editor = struct {
 
     fn freeDocState(doc: *Doc, gpa: Allocator) void {
         if (doc.name) |n| gpa.free(n);
+        if (doc.mb) |*m| m.deinit(gpa);
         gpa.free(doc.diff_hunks);
         if (doc.line_diff) |*ld| ld.deinit(gpa);
         doc.history.deinit();
@@ -2489,6 +2524,7 @@ pub const Editor = struct {
                     'n' => self.qfStep(true, 1), // :cnext / ]q
                     'p' => self.qfStep(false, 1), // :cprev / [q
                     'c' => self.qfClose(), // :cclose
+                    'e' => self.openMultibuffer(), // :cedit — the multibuffer
                     else => {},
                 };
             },
@@ -6809,6 +6845,7 @@ pub const Editor = struct {
         .{ .title = "Quickfix: next entry", .vim = "]q", .run = .{ .ex = "cnext" } },
         .{ .title = "Quickfix: previous entry", .vim = "[q", .run = .{ .ex = "cprevious" } },
         .{ .title = "Quickfix: close the list", .vim = "Space x c", .run = .{ .ex = "cclose" } },
+        .{ .title = "Quickfix: edit every hit as one buffer", .vim = "Space x e", .run = .{ .ex = "cedit" } },
 
         // --- session, terminal, debugger -------------------------------------
         .{ .title = "Session: save", .vim = "Space S s", .run = .{ .ex = "session save" } },
@@ -8825,7 +8862,7 @@ pub const Editor = struct {
     /// spelled out by execEx; the short forms still work typed by hand).
     const command_names = [_][]const u8{
         "bdelete", "bnext",   "bprevious", "buffers", "cclose", "cfirst", "clast", "close",
-        "cnext",   "copen",   "cprev",     "debug",   "diff",   "earlier",
+        "cedit",   "cnext",   "copen",     "cprev",   "debug",  "diff",   "earlier",
         "edit",    "format", "later",     "ldiff",    "ls",    "only",   "quit",
         "quitall", "session", "split",    "terminal", "theme", "undolist", "vdiff",
         "vsplit",  "wall",    "winsave",  "wq",       "write",    "x",
@@ -8953,6 +8990,8 @@ pub const Editor = struct {
             self.onlyWindow();
         } else if (eql(cmd, "copen") or eql(cmd, "cope")) {
             self.qfOpen();
+        } else if (eql(cmd, "cedit") or eql(cmd, "ced")) {
+            self.openMultibuffer();
         } else if (eql(cmd, "cclose") or eql(cmd, "ccl")) {
             self.qfClose();
         } else if (eql(cmd, "cnext") or eql(cmd, "cn")) {
@@ -9500,6 +9539,15 @@ pub const Editor = struct {
     }
 
     fn write(self: *Editor, arg: []const u8) !bool {
+        if (self.d.mb != null) {
+            // `:w` here means "put the excerpts back"; `:w <name>` would mean
+            // saving the stitched view itself, which belongs to no file.
+            if (arg.len > 0) {
+                self.setStatus("multibuffer: :w writes the files it came from", .{});
+                return false;
+            }
+            return self.mbWrite();
+        }
         // Includes `:w <name>`: a read-only diff view is never written out.
         if (self.rejectReadOnly()) return false;
         self.formatBeforeSave();
@@ -12642,24 +12690,315 @@ pub const Editor = struct {
     /// views are reports of repository state, and an editable copy could only
     /// dirty into a `:q`-blocking orphan (`rejectReadOnly` — the index
     /// snapshot's `diff_of` check answers first with its own message).
-    fn openScratch(self: *Editor, label: []const u8, content: []const u8, lang: syntax.Language, vert: bool) void {
-        const nb = buffer.Buffer.fromBytes(self.gpa, content) catch return;
+    /// A registered, read-only document holding `content`. The caller decides
+    /// where it is shown: the diff and quickfix views split, the multibuffer
+    /// takes the window it was opened from (it is edited, and a half window
+    /// is a poor place to refactor in).
+    fn makeScratchDoc(self: *Editor, label: []const u8, content: []const u8, lang: syntax.Language) ?*Doc {
+        const nb = buffer.Buffer.fromBytes(self.gpa, content) catch return null;
         const doc = makeDoc(self.gpa, nb) catch {
             var b = nb;
             b.deinit();
-            return;
+            return null;
         };
         doc.lang = lang;
         doc.read_only = true;
         doc.name = self.gpa.dupe(u8, label) catch null;
         self.docs.append(self.gpa, doc) catch {
             self.freeDoc(doc);
-            return;
+            return null;
         };
+        return doc;
+    }
+
+    fn openScratch(self: *Editor, label: []const u8, content: []const u8, lang: syntax.Language, vert: bool) void {
+        const doc = self.makeScratchDoc(label, content, lang) orelse return;
         self.splitWindow(vert);
         self.focusDoc(doc);
         self.clearExtra();
         self.placeAt(0);
+    }
+
+    // === the multibuffer ===================================================
+
+    /// How many lines of a file show around each hit, and how many excerpts
+    /// one multibuffer will build. The cap bounds what a 10,000-hit grep can
+    /// make the editor assemble; what it drops is reported, never silent.
+    const mb_context = 2;
+    const mb_cap = 200;
+    /// The row that opens an excerpt. Written out and compared byte for byte,
+    /// so a body line would have to *be* one of these to be mistaken for one —
+    /// and even then the count would not match and the write would refuse.
+    const mb_marker = "\u{2500}\u{2500} ";
+
+    /// `:cedit` / `Space x e` — the quickfix list as one editable buffer.
+    ///
+    /// Zed's multibuffer: every hit's surroundings stitched together, edited
+    /// in one place, and `:w` writing every file it touched. It is the
+    /// editable rendering of a list zedit already keeps, which is why it is
+    /// this small.
+    fn openMultibuffer(self: *Editor) void {
+        if (self.qf.len() == 0)
+            return self.setStatus("quickfix list is empty (Ctrl-q in a picker)", .{});
+        for (self.wins.items) |w| { // already up: focus it rather than stacking
+            if (w.doc.mb != null) {
+                self.focusWin(w);
+                return;
+            }
+        }
+        const cwd = std.process.currentPathAlloc(self.io, self.gpa) catch
+            return self.setStatus("cannot read the working directory", .{});
+        defer self.gpa.free(cwd);
+
+        var hits: std.ArrayList(multi.Hit) = .empty;
+        defer hits.deinit(self.gpa);
+        for (self.qf.entries.items) |e|
+            hits.append(self.gpa, .{ .path = e.path, .line = e.line - 1 }) catch break;
+        const spans = multi.spans(self.gpa, hits.items, mb_context, mb_cap) catch
+            return self.setStatus("out of memory building the multibuffer", .{});
+        defer self.gpa.free(spans);
+
+        var mb: Multi = .{};
+        var text: std.ArrayList(u8) = .empty;
+        defer text.deinit(self.gpa);
+        var skipped: usize = 0;
+        for (spans) |sp| {
+            const abs = self.absPath(cwd, sp.path) orelse continue;
+            defer self.gpa.free(abs);
+            const doc = self.docForPath(cwd, abs) orelse {
+                skipped += 1;
+                continue;
+            };
+            const last = doc.buf.lineCount() - 1;
+            if (sp.start > last) {
+                skipped += 1;
+                continue;
+            }
+            const end = @min(sp.end, last);
+            const body = self.linesOf(&doc.buf, sp.start, end - sp.start + 1) orelse {
+                skipped += 1;
+                continue;
+            };
+            defer self.gpa.free(body);
+            const rel = self.cwdRelative(sp.path) orelse sp.path;
+            const header = std.fmt.allocPrint(self.gpa, "{s}{s}:{d}", .{ mb_marker, rel, sp.start + 1 }) catch break;
+            mb.excerpts.append(self.gpa, .{
+                .path = self.gpa.dupe(u8, sp.path) catch break,
+                .header = header,
+                .start = sp.start,
+                .len = end - sp.start + 1,
+                .orig = self.gpa.dupe(u8, body) catch break,
+            }) catch break;
+            text.appendSlice(self.gpa, header) catch break;
+            text.append(self.gpa, '\n') catch break;
+            text.appendSlice(self.gpa, body) catch break;
+            text.append(self.gpa, '\n') catch break;
+        }
+        if (mb.excerpts.items.len == 0) {
+            mb.deinit(self.gpa);
+            return self.setStatus("nothing to edit — no listed file could be read", .{});
+        }
+
+        var label: [128]u8 = undefined;
+        const name = std.fmt.bufPrint(&label, "[multibuffer] {s}", .{self.qf.title.items}) catch "[multibuffer]";
+        const doc = self.makeScratchDoc(name, text.items, .none) orelse {
+            mb.deinit(self.gpa);
+            return;
+        };
+        doc.read_only = false; // the whole point: it is edited
+        doc.mb = mb;
+        self.focusDoc(doc);
+        self.clearExtra();
+        self.placeAt(0);
+        const dropped = self.qf.len() -| spans.len;
+        if (skipped > 0 or dropped > 0) {
+            self.setStatus("{d} excerpts ({d} unreadable, {d} past the {d}-excerpt cap) — :w writes them all", .{ mb.excerpts.items.len, skipped, dropped, mb_cap });
+        } else {
+            self.setStatus("{d} excerpts from the list — edit here, :w writes every file", .{mb.excerpts.items.len});
+        }
+    }
+
+    /// `path` made absolute against `cwd`, which is what `docForPath` wants
+    /// and what a quickfix entry (relative, from the project walk) is not.
+    fn absPath(self: *Editor, cwd: []const u8, path: []const u8) ?[]u8 {
+        if (path.len > 0 and path[0] == '/') return self.gpa.dupe(u8, path) catch null;
+        return std.fmt.allocPrint(self.gpa, "{s}/{s}", .{ cwd, path }) catch null;
+    }
+
+    /// `:w` on a multibuffer — put every excerpt back where it came from and
+    /// write those files. One save for the whole refactor, which is the
+    /// feature.
+    ///
+    /// The excerpts are paired with the header rows *in order*, so inserting
+    /// and deleting lines inside an excerpt needs no bookkeeping at all: the
+    /// body is simply whatever now lies between two headers. A header that
+    /// was edited or removed breaks that pairing, and the write refuses
+    /// rather than guessing which lines belonged to which file.
+    fn mbWrite(self: *Editor) bool {
+        const mb = &self.d.mb.?;
+        const cwd = std.process.currentPathAlloc(self.io, self.gpa) catch {
+            self.setStatus("cannot read the working directory", .{});
+            return false;
+        };
+        defer self.gpa.free(cwd);
+
+        // Find each excerpt's header row, in order. Every row that is not a
+        // header belongs to the excerpt above it.
+        var rows: std.ArrayList(usize) = .empty;
+        defer rows.deinit(self.gpa);
+        var row: usize = 0;
+        while (row < self.buf.lineCount()) : (row += 1) {
+            if (std.mem.startsWith(u8, self.buf.line(row), mb_marker))
+                rows.append(self.gpa, row) catch return false;
+        }
+        // Count first, then contents: a deleted header makes every later one
+        // pair with the wrong excerpt, and "this header is not the one I
+        // expected" is a poor way to say "one of them is gone".
+        if (rows.items.len != mb.excerpts.items.len) {
+            self.setStatus("a header line was added or removed — undo it, or :bd! to discard", .{});
+            return false;
+        }
+        for (rows.items, mb.excerpts.items) |r, ex| {
+            if (std.mem.eql(u8, self.buf.line(r), ex.header)) continue;
+            self.setStatus("a header line was edited — undo it, or :bd! to discard", .{});
+            return false;
+        }
+
+        // One file at a time: its excerpts are adjacent, since the spans were
+        // grouped by file when the buffer was built. Excerpt `e` is header
+        // `e` — that pairing is what the checks above just established.
+        var written: usize = 0;
+        var unchanged: usize = 0;
+        var stale: usize = 0;
+        var failed: usize = 0;
+        var who: []const u8 = "";
+        var i: usize = 0;
+        while (i < mb.excerpts.items.len) {
+            var j = i;
+            while (j + 1 < mb.excerpts.items.len and
+                std.mem.eql(u8, mb.excerpts.items[j + 1].path, mb.excerpts.items[i].path)) j += 1;
+            defer i = j + 1;
+
+            const abs = self.absPath(cwd, mb.excerpts.items[i].path) orelse continue;
+            defer self.gpa.free(abs);
+            const doc = self.docForPath(cwd, abs) orelse {
+                failed += 1;
+                if (who.len == 0) who = mb.excerpts.items[i].path;
+                continue;
+            };
+
+            var edits: std.ArrayList(lsp.TextEdit) = .empty;
+            defer {
+                for (edits.items) |e| self.gpa.free(e.text);
+                edits.deinit(self.gpa);
+            }
+            var any_stale = false;
+            for (i..j + 1) |e| {
+                const ex = &mb.excerpts.items[e];
+                // The source lines as they are *now*: if they no longer match
+                // what the excerpt was built from, someone else has edited the
+                // file and writing this back would silently undo them.
+                const now = self.linesOf(&doc.buf, ex.start, ex.len) orelse {
+                    any_stale = true;
+                    break;
+                };
+                defer self.gpa.free(now);
+                if (!std.mem.eql(u8, now, ex.orig)) {
+                    any_stale = true;
+                    break;
+                }
+                const body = self.mbBody(rows.items, e) orelse continue;
+                defer self.gpa.free(body);
+                if (std.mem.eql(u8, body, ex.orig)) continue; // untouched
+                const owned = self.gpa.dupe(u8, body) catch continue;
+                edits.append(self.gpa, .{
+                    .start_line = @intCast(ex.start),
+                    .start_char = 0,
+                    .end_line = @intCast(ex.start + ex.len - 1),
+                    .end_char = std.math.maxInt(u32), // clamped to the line's end
+                    .text = owned,
+                }) catch self.gpa.free(owned);
+            }
+            if (any_stale) {
+                stale += 1;
+                if (who.len == 0) who = mb.excerpts.items[i].path;
+                continue;
+            }
+            if (edits.items.len == 0) {
+                unchanged += 1;
+                continue;
+            }
+            // Never the active document — that is this multibuffer — so the
+            // background path in `applyDocEdits` is the one that runs.
+            _ = self.applyDocEdits(doc, edits.items) catch {
+                failed += 1;
+                if (who.len == 0) who = mb.excerpts.items[i].path;
+                continue;
+            };
+            doc.buf.save(self.io) catch |err| {
+                failed += 1;
+                if (who.len == 0) who = mb.excerpts.items[i].path;
+                std.log.scoped(.editor).err("multibuffer write failed: {s}: {s}", .{ mb.excerpts.items[i].path, @errorName(err) });
+                continue;
+            };
+            doc.history.markSaved(&doc.buf, 0, 0);
+            written += 1;
+            // Each excerpt now *is* what its file holds, so a second `:w` is a
+            // no-op rather than a stale-file complaint. The lengths move too:
+            // an excerpt that grew by a line covers one more source line, and
+            // the ones after it in the same file shift by the same amount.
+            var shift: i64 = 0;
+            for (i..j + 1) |e| {
+                const ex = &mb.excerpts.items[e];
+                const body = self.mbBody(rows.items, e) orelse continue;
+                ex.start = @intCast(@as(i64, @intCast(ex.start)) + shift);
+                const new_len = std.mem.count(u8, body, "\n") + 1;
+                shift += @as(i64, @intCast(new_len)) - @as(i64, @intCast(ex.len));
+                ex.len = new_len;
+                self.gpa.free(ex.orig);
+                ex.orig = body;
+            }
+        }
+
+        if (stale > 0) {
+            self.setStatus("{s} changed since this was opened — {d} file(s) not written", .{ who, stale });
+            return false;
+        }
+        if (failed > 0) {
+            self.setStatus("write failed: {s} ({d} written)", .{ who, failed });
+            return false;
+        }
+        self.history.markSaved(self.buf, self.cy, self.cx);
+        self.buf.dirty = false;
+        self.setStatus("{d} file(s) written, {d} unchanged", .{ written, unchanged });
+        self.refreshGit();
+        return true;
+    }
+
+    /// `len` lines of `buf` from `start`, "\n"-joined; null when the buffer
+    /// no longer reaches that far. Owned by the caller.
+    fn linesOf(self: *Editor, buf: *buffer.Buffer, start: usize, len: usize) ?[]u8 {
+        if (start + len > buf.lineCount()) return null;
+        var out: std.ArrayList(u8) = .empty;
+        for (start..start + len) |r| {
+            if (r > start) out.append(self.gpa, '\n') catch break;
+            out.appendSlice(self.gpa, buf.line(r)) catch break;
+        }
+        return out.toOwnedSlice(self.gpa) catch null;
+    }
+
+    /// The rows between header `k` and the next header (or the end of the
+    /// buffer), "\n"-joined. Owned by the caller.
+    fn mbBody(self: *Editor, rows: []const usize, k: usize) ?[]u8 {
+        if (k >= rows.len) return null;
+        const from = rows[k] + 1;
+        const to = if (k + 1 < rows.len) rows[k + 1] else self.buf.lineCount();
+        var out: std.ArrayList(u8) = .empty;
+        for (from..to) |r| {
+            if (r > from) out.append(self.gpa, '\n') catch break;
+            out.appendSlice(self.gpa, self.buf.line(r)) catch break;
+        }
+        return out.toOwnedSlice(self.gpa) catch null;
     }
 
     // === file-tree sidebar =================================================
@@ -14065,6 +14404,7 @@ pub const Editor = struct {
         .{ .key = "n", .desc = "next entry" },
         .{ .key = "p", .desc = "previous entry" },
         .{ .key = "c", .desc = "close the list" },
+        .{ .key = "e", .desc = "edit as one buffer" },
     };
     const git_keys = [_]WhichKey{
         .{ .key = "d", .desc = "diff (inline)" },

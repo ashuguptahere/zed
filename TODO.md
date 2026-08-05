@@ -102,10 +102,11 @@ behind the roadmap items.
        - ~~**Command palette**~~ — **DONE** in 0.61.0 (`Space f C`, or `>`
          in the file picker, which is how it is reached under the non-modal
          keymap). VS Code, Helix *and* AstroNvim all had it: three votes.
-       - **Multibuffer** (Zed) — project search / diagnostics / references
-         as one editable buffer of excerpts, saved together. The editable
-         rendering of the quickfix list zedit already keeps, and the natural
-         home for the multi-selection model 0.60.0 landed.
+       - ~~**Multibuffer** (Zed)~~ — **DONE** in 0.62.0 as `:cedit` /
+         `Space x e`, and it landed small for the predicted reason: it is
+         the editable rendering of the quickfix list zedit already kept.
+         Still absent: per-excerpt highlighting, excerpts that expand on
+         demand, opening one without the list step.
        - Peek definition, breadcrumbs / sticky scroll, fold-by-level, regex
          replace case modifiers (`\u$1`), project-local config (Focus *and*
          nvim's `'exrc'` — two votes), outline panel, git status in the
@@ -176,6 +177,19 @@ there is nothing to change there.
       no caret at the next match, and `Ctrl+Shift+<letter>` cannot reach the
       application at all through a terminal. The first two are the
       multi-selection roadmap item wearing a different hat. (0.59.0)
+
+- [x] The multibuffer (`:cedit` / `Space x e`): the quickfix list as one
+      editable buffer of excerpts, one `:w` writing every file. `multi.zig`
+      holds the rule that must not be wrong — hits padded with context,
+      grouped by file, overlapping *and touching* runs merged, since two
+      excerpts sharing a line would each write the other's edit away. The
+      excerpts pair with the header rows in order, so editing inside one
+      needs no bookkeeping; a header edited or deleted refuses the write,
+      and an excerpt whose source moved on is reported rather than
+      clobbered. Last of the Part 3 tier-2 candidates to look cheap, and it
+      was. Along the way: a new module's tests are silently skipped until it
+      is listed in `main.zig`'s `test {}` aggregator — `multi.zig`'s eight
+      were, and a deliberately failing canary is what found it. (0.62.0)
 
 - [x] The command palette (`Space f C`, or `>` in the file picker — VS Code's
       Quick Open prefix, and the only route under the non-modal keymap since

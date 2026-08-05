@@ -145,4 +145,199 @@ pub fn run(ctx: *h.Ctx) !void {
         s.drain(600);
         ctx.check("a quickfix window does not block :qa", !s.containsPlainSince(ctx.gpa, m, "unsaved changes"));
     }
+
+    // === the multibuffer (`:cedit` / `Space x e`) ==========================
+    // The editable rendering of the same list: excerpts from every file, one
+    // buffer, one save.
+
+    // --- an empty list, again politely -------------------------------------
+    {
+        var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "--lsp", "", "alpha.txt" }, .cwd = dir });
+        defer s.finish();
+        s.drain(500);
+        const m = s.mark();
+        s.send(":cedit" ++ CR);
+        s.drain(400);
+        ctx.check(":cedit with nothing in the list points at how to fill it",
+            s.containsPlainSince(ctx.gpa, m, "Ctrl-q in a picker"));
+        s.send(":q!" ++ CR);
+        s.drain(300);
+    }
+
+    // --- it opens, shows every file, and writes them all back --------------
+    {
+        h.writeFile(ctx.io, a, "one\nneedle here\nthree\nneedle again\n");
+        h.writeFile(ctx.io, b, "x\ny\nneedle last\n");
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ ctx.zedit, "--lsp", "", "alpha.txt" },
+            .cwd = dir,
+            .term = "xterm-256color",
+            .cols = 100,
+        });
+        defer s.finish();
+        s.drain(600);
+        s.send(" fw");
+        s.drain(500);
+        s.send("needle");
+        s.drain(900);
+        s.send(CTRL_Q);
+        s.drain(600);
+        var m = s.mark();
+        s.send(" xe"); // Space x e — the multibuffer
+        s.drain(800);
+        ctx.check("Space x e opens the multibuffer", s.containsPlainSince(ctx.gpa, m, "[multibuffer] grep"));
+        // Two hits three lines apart in alpha.txt share their context, so
+        // they merge into one excerpt: two files, two headers.
+        ctx.check("...with a header naming each excerpt's file and line",
+            s.containsPlainSince(ctx.gpa, m, "alpha.txt:1") and s.containsPlainSince(ctx.gpa, m, "beta.txt:1"));
+        ctx.check("...and the lines around every hit", s.containsPlainSince(ctx.gpa, m, "needle here") and
+            s.containsPlainSince(ctx.gpa, m, "needle again") and s.containsPlainSince(ctx.gpa, m, "needle last"));
+        // It is editable, unlike `:copen` — that is the whole feature.
+        // The buffer is: header, alpha's 4 lines, header, beta's 3 lines —
+        // so row 3 is alpha's "needle here" and row 9 is beta's "needle last".
+        m = s.mark();
+        s.send("3GA!" ++ ESC);
+        s.drain(400);
+        ctx.check("the multibuffer is editable", !s.containsPlainSince(ctx.gpa, m, "read-only"));
+        s.send("9GA?" ++ ESC);
+        s.drain(400);
+        m = s.mark();
+        s.send(":w" ++ CR);
+        s.drain(900);
+        ctx.check("one :w writes every file it touched", s.containsPlainSince(ctx.gpa, m, "2 file(s) written"));
+        const ga = h.readFile(ctx.gpa, ctx.io, a);
+        defer ctx.gpa.free(ga);
+        const gb = h.readFile(ctx.gpa, ctx.io, b);
+        defer ctx.gpa.free(gb);
+        ctx.check("the first file has the edit", std.mem.eql(u8, ga, "one\nneedle here!\nthree\nneedle again\n"));
+        ctx.check("the second file has its own", std.mem.eql(u8, gb, "x\ny\nneedle last?\n"));
+        // A second write has nothing to do — the excerpts now *are* the files.
+        m = s.mark();
+        s.send(":w" ++ CR);
+        s.drain(700);
+        ctx.check("writing again reports nothing changed", s.containsPlainSince(ctx.gpa, m, "0 file(s) written"));
+        s.send(":qa!" ++ CR);
+        s.drain(400);
+    }
+
+    // --- lines added inside an excerpt land in the file --------------------
+    {
+        h.writeFile(ctx.io, a, "one\nneedle here\nthree\nneedle again\n");
+        h.writeFile(ctx.io, b, "x\ny\nneedle last\n");
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ ctx.zedit, "--lsp", "", "beta.txt" },
+            .cwd = dir,
+            .term = "xterm-256color",
+            .cols = 100,
+        });
+        defer s.finish();
+        s.drain(600);
+        s.send(" fw");
+        s.drain(500);
+        s.send("needle last");
+        s.drain(900);
+        s.send(CTRL_Q);
+        s.drain(600);
+        s.send(":cedit" ++ CR);
+        s.drain(800);
+        // The one excerpt is beta.txt lines 1-3, under a header: open a line
+        // after the last and type into it.
+        s.send("Gonew line" ++ ESC);
+        s.drain(400);
+        s.send(":w" ++ CR);
+        s.drain(900);
+        const gb = h.readFile(ctx.gpa, ctx.io, b);
+        defer ctx.gpa.free(gb);
+        ctx.check("a line added in an excerpt is added to the file",
+            std.mem.eql(u8, gb, "x\ny\nneedle last\nnew line\n"));
+        s.send(":qa!" ++ CR);
+        s.drain(400);
+    }
+
+    // --- the header rows are the structure, so breaking one refuses --------
+    {
+        h.writeFile(ctx.io, a, "one\nneedle here\nthree\nneedle again\n");
+        h.writeFile(ctx.io, b, "x\ny\nneedle last\n");
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ ctx.zedit, "--lsp", "", "alpha.txt" },
+            .cwd = dir,
+            .term = "xterm-256color",
+            .cols = 100,
+        });
+        defer s.finish();
+        s.drain(600);
+        s.send(" fw");
+        s.drain(500);
+        s.send("needle");
+        s.drain(900);
+        s.send(CTRL_Q);
+        s.drain(600);
+        s.send(":cedit" ++ CR);
+        s.drain(800);
+        var m = s.mark();
+        s.send("ggdd:w" ++ CR); // delete the first header
+        s.drain(700);
+        ctx.check("a removed header refuses the write",
+            s.containsPlainSince(ctx.gpa, m, "header line was added or removed"));
+        s.send("u"); // put it back, then break one instead
+        s.drain(300);
+        m = s.mark();
+        s.send("ggA!" ++ ESC ++ ":w" ++ CR);
+        s.drain(700);
+        ctx.check("an edited header refuses too", s.containsPlainSince(ctx.gpa, m, "header line was edited"));
+        // Nothing was written on either refusal.
+        const ga = h.readFile(ctx.gpa, ctx.io, a);
+        defer ctx.gpa.free(ga);
+        ctx.check("...and nothing reached the files", std.mem.eql(u8, ga, "one\nneedle here\nthree\nneedle again\n"));
+        m = s.mark();
+        s.send(":w name.txt" ++ CR);
+        s.drain(500);
+        ctx.check(":w <name> says what :w here means", s.containsPlainSince(ctx.gpa, m, "writes the files it came from"));
+        s.send(":qa!" ++ CR);
+        s.drain(400);
+    }
+
+    // --- a file changed behind its back is reported, not clobbered ---------
+    // The excerpt remembers the lines it was built from. If they have moved
+    // on, writing this back would silently undo whoever moved them.
+    {
+        h.writeFile(ctx.io, a, "one\nneedle here\nthree\nneedle again\n");
+        h.writeFile(ctx.io, b, "x\ny\nneedle last\n");
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ ctx.zedit, "--lsp", "", "beta.txt" },
+            .cwd = dir,
+            .term = "xterm-256color",
+            .cols = 100,
+        });
+        defer s.finish();
+        s.drain(600);
+        s.send(" fw");
+        s.drain(500);
+        s.send("needle last");
+        s.drain(900);
+        s.send(CTRL_Q);
+        s.drain(600);
+        s.send(":cedit" ++ CR);
+        s.drain(800);
+        s.send("Gozzz" ++ ESC); // an edit in the multibuffer, waiting to be written
+        s.drain(400);
+        // beta.txt is open in this session too (it was the file argument):
+        // change it there, so the excerpt no longer matches its source.
+        s.send(":bp" ++ CR);
+        s.drain(500);
+        s.send("ggIX" ++ ESC);
+        s.drain(400);
+        s.send(":bn" ++ CR); // back to the multibuffer
+        s.drain(500);
+        const m = s.mark();
+        s.send(":w" ++ CR);
+        s.drain(700);
+        ctx.check("a source changed since the multibuffer opened refuses the write",
+            s.containsPlainSince(ctx.gpa, m, "changed since this was opened"));
+        const gb = h.readFile(ctx.gpa, ctx.io, b);
+        defer ctx.gpa.free(gb);
+        ctx.check("...and the file on disk is untouched", std.mem.eql(u8, gb, "x\ny\nneedle last\n"));
+        s.send(":qa!" ++ CR);
+        s.drain(400);
+    }
 }
