@@ -194,7 +194,7 @@ Source is `src/`, one responsibility per module:
 | `session.zig` | Per-directory sessions: the open files + cursors, the split layout and the tree's state, serialised to an XDG state file. |
 | `remote.zig`  | Editing over SSH: `ssh://user@host/path` parsing, read/write/list via one `ssh` per operation. |
 | `lsp.zig`     | Minimal LSP client: JSON-RPC over a server's stdio (diagnostics, hover, goto, completion, signature help; incremental or full doc sync per the server's capabilities). |
-| `treesitter.zig` | Tree-sitter highlighting via the vendored C runtime + grammar (incremental parse, visible-range `highlights.scm` query, language injections, `#match?`/`#eq?` predicates, `indents.scm`; compiled queries + predicate regexes shared process-wide). |
+| `treesitter.zig` | Tree-sitter highlighting via the vendored C runtime + grammar (incremental parse, visible-range `highlights.scm` query, language injections, `#match?`/`#eq?` predicates, `indents.scm`; compiled queries + predicate regexes shared process-wide), plus the structural queries the editor asks of a tree: the object spans, `]f`/`[f`, and `crumbs` — the enclosing symbol path behind the breadcrumbs. |
 | `editor.zig`  | State, the vim command interpreter, multiple cursors, multiple buffers + windows (splits), pickers, LSP, tree-sitter, viewport, themed rendering. |
 
 Vendored C lives under `vendor/` (`tree-sitter/` runtime, plus `tree-sitter-zig`,
@@ -1203,6 +1203,32 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
 - **Update check:** `:update` (or `--check-update`) compares this build with
   the newest `v*` release tag via one `git ls-remote`. On demand only — zedit
   never contacts the network by itself.
+- **Breadcrumbs:** the enclosing symbol path — `Outer › helper` — dim in
+  whatever the tabs leave of the **title bar row**, which is where VS Code and
+  Zed put it. Not a row of its own: a terminal row is scarcer than a GUI one,
+  and spending one on decoration would also have moved every viewport number
+  the `view` and `vim_compat` suites pin against real nvim. It reads out of
+  the syntax tree (`treesitter.crumbs` walks the ancestors of the node under
+  the cursor), so it costs no language server and no allocation — each name
+  span goes back through `posOfByte` and is sliced from its line, since
+  serialising the buffer per frame would be an O(file) copy in the render
+  path. The kinds are the structural-object tables (`ac`/`af`), so a language
+  that gains those gains breadcrumbs with it and one with no grammar simply
+  has no path. Where a name *lives* differs per grammar, and `nameSpan`'s four
+  rules were dumped out of the vendored trees rather than assumed: a `name`
+  field (Python, Rust, Go, JS/TS, Zig's functions), a `declarator` field (C,
+  where the identifier is inside a `function_declarator`), the first direct
+  identifier child (Rust's `impl Thing`), and failing those the *parent*'s
+  (Zig's `const Foo = struct {…}`, and C's `typedef struct {…} Foo`).
+  Consecutive crumbs with the same name span collapse — JavaScript's
+  `class_body` is in the object table and rule 4 hands it its class's name.
+  The file name is not repeated in the path: the active tab beside it says
+  that already. With `buffer_tabs = false` there is no title bar and so no
+  breadcrumb, and with enough tabs to fill the row it is simply not drawn.
+  **Sticky scroll** — COMPARISON pairs it with this — is *not* implemented:
+  pinning the enclosing scope's lines to the top rows changes what a viewport
+  is, which `H`/`M`/`L`, the click inverse and every paging motion are pinned
+  against.
 - **Title bar:** one powerline row across the top (config `buffer_tabs`,
   default on — always shown while enabled, VS Code-style, even for a single
   file): an "EXPLORER" segment spanning the sidebar's columns when it is open

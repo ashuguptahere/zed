@@ -178,6 +178,18 @@ there is nothing to change there.
       application at all through a terminal. The first two are the
       multi-selection roadmap item wearing a different hat. (0.59.0)
 
+- [x] Breadcrumbs: the enclosing symbol path in the title bar, read from the
+      syntax tree (`treesitter.crumbs`). Not a row of its own — a terminal
+      row is scarcer than a GUI one, and one spent here would have moved
+      every viewport number `view` and `vim_compat` pin against nvim. The
+      four `nameSpan` rules were dumped out of the vendored grammars, since
+      each keeps a declaration's name somewhere different (a `name` field, a
+      `declarator`, a direct identifier child, or the parent's — Zig's
+      `const Foo = struct {…}`). **Sticky scroll**, which COMPARISON pairs
+      with this, is deliberately still open: pinning scope lines to the top
+      rows changes what a viewport is, and every paging motion is pinned
+      against that. (0.65.0)
+
 - [x] Peek references (`Space l P`): the peek window generalised from one
       place to a list — the title counts them, `n`/`p` step and the view
       follows, `Ctrl-q` sends the set to the quickfix list. Deliberately no

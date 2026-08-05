@@ -128,6 +128,9 @@
     `format_on_save`), and full WorkspaceEdit support: cross-file, multi-line
     rename/code-action edits — other buffers are edited in place, unopened
     files load in the background, `:wa` writes them all
+- **Breadcrumbs**: the enclosing symbol path (`Outer › helper`) shown dim in
+  the title bar, read straight from the syntax tree — no language server, and
+  no row of its own, because a terminal row is scarcer than a GUI one
 - **Pickers** via the AstroNvim-style `Space` leader tree with nested
   which-key menus: `Space f f` find files, `Space f w` find words (regex grep,
   same syntax as `/`),

@@ -15021,6 +15021,60 @@ pub const Editor = struct {
         return if (doc == self.d) th.mode_normal else th.status_bg;
     }
 
+    /// The enclosing symbol path — VS Code's and Zed's breadcrumbs. It reads
+    /// out of the syntax tree, so it costs one walk up the ancestors of the
+    /// node under the cursor and needs no language server.
+    ///
+    /// It lives in the **title bar**, in whatever the tabs leave of that row,
+    /// rather than on a row of its own: a terminal row is scarcer than a GUI
+    /// one, and spending one on decoration would also have moved every
+    /// viewport number the `view` and `vim_compat` suites pin against real
+    /// nvim. The file name is deliberately not repeated in it — the active tab
+    /// beside it already says that.
+    ///
+    /// The kinds are the structural-object tables (`ac` and `af`), so a
+    /// language that gains those gains breadcrumbs with it, and one with no
+    /// grammar simply has no path.
+    fn breadcrumb(self: *Editor, buf: []u8) []const u8 {
+        var ts = if (self.ts) |*t| t else return "";
+        var kinds: [16][]const u8 = undefined;
+        var nk: usize = 0;
+        for (typeKinds(self.lang)) |k| {
+            if (nk == kinds.len) break;
+            kinds[nk] = k;
+            nk += 1;
+        }
+        for (functionKinds(self.lang)) |k| {
+            if (nk == kinds.len) break;
+            kinds[nk] = k;
+            nk += 1;
+        }
+        if (nk == 0) return "";
+        var spans: [8]treesitter.Highlighter.Span = undefined;
+        const at = self.byteOffset(self.cy, self.cx) orelse return "";
+        const n = ts.crumbs(at, kinds[0..nk], &spans);
+        if (n == 0) return "";
+        var used: usize = 0;
+        for (spans[0..n]) |sp| {
+            // Back to (row, col) and sliced from the line: a name never spans
+            // one, and serialising the buffer to reach it would put an
+            // O(file) copy in every frame.
+            const from = self.posOfByte(sp.start) orelse break;
+            if (sp.end < sp.start) break;
+            const line = self.buf.line(from.row);
+            const name = line[@min(from.col, line.len)..@min(from.col + (sp.end - sp.start), line.len)];
+            const sep: []const u8 = if (used == 0) " " else " \u{203A} ";
+            if (used + sep.len + name.len + 1 > buf.len) break;
+            @memcpy(buf[used..][0..sep.len], sep);
+            used += sep.len;
+            @memcpy(buf[used..][0..name.len], name);
+            used += name.len;
+        }
+        if (used == 0) return "";
+        buf[used] = ' ';
+        return buf[0 .. used + 1];
+    }
+
     fn renderTitleBar(self: *Editor) !void {
         const th = theme.current;
         const area = self.tabArea();
@@ -15061,7 +15115,18 @@ pub const Editor = struct {
         }
 
         try self.setBg(th.status_bg);
-        const fill = area.w - used;
+        var fill = area.w - used;
+        // The breadcrumb takes what the tabs left, dim, and is simply not
+        // drawn when they left nothing.
+        var cb: [256]u8 = undefined;
+        const crumb = self.breadcrumb(&cb);
+        const crumb_w = unicode.displayWidth(crumb);
+        if (crumb_w > 0 and crumb_w + 2 <= fill) {
+            try self.setFg(th.fg_dim);
+            try self.emitSanitized(crumb);
+            fill -= crumb_w;
+            try self.setBg(th.status_bg);
+        }
         if (self.sb_open and config.settings.sidebar == .right) {
             // Mirrored: filler, a left-pointing separator, then the segment.
             if (sepCells() > 0 and fill > 0) {

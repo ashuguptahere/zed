@@ -2,6 +2,45 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.65.0 - 2026-08-06
+
+### Added
+
+- **Breadcrumbs** — the enclosing symbol path of the cursor
+  (`Outer › helper`), dim in whatever the tabs leave of the title bar
+  row. VS Code's and Zed's feature, in the place a terminal can afford it:
+  not a row of its own, because a row here is scarcer than a row in a GUI,
+  and one spent on decoration would also have moved every viewport number the
+  `view` and `vim_compat` suites pin against real nvim.
+
+  It reads out of the syntax tree — `treesitter.crumbs` walks the
+  ancestors of the node under the cursor — so no language server is
+  involved and nothing is allocated: each name span goes back through
+  `posOfByte` and is sliced from its line, since serialising the buffer per
+  frame would put an O(file) copy in the render path. The kinds are the
+  structural-object tables behind `ac`/`af`, so a language that gains those
+  gains breadcrumbs with it, and a file with no grammar simply has no path.
+
+  Where a declaration keeps its *name* differs per grammar, and the four
+  rules were dumped out of the vendored trees rather than assumed: a `name`
+  field (Python, Rust, Go, JS/TS, Zig's functions), a `declarator` field (C,
+  where the identifier is buried in a `function_declarator`), the first
+  direct identifier child (Rust's `impl Thing`), and failing those the
+  *parent*'s — Zig writes `const Foo = struct {…}`, so the struct's
+  name belongs to the declaration around it, and C's `typedef struct {…}
+  Foo` is the same shape. Consecutive crumbs with one name span collapse,
+  which is what keeps JavaScript's `class_body` from repeating its class.
+
+  The file name is not repeated in the path (the tab beside it says that),
+  `buffer_tabs = false` has no row and so no breadcrumb, and enough tabs to
+  fill the row simply leave it undrawn.
+
+  **Sticky scroll**, which `doc/COMPARISON.md` pairs with breadcrumbs, is
+  deliberately not part of this: pinning the enclosing scope's lines to the
+  top rows changes what a viewport *is*, and `H`/`M`/`L`, the
+  screen-to-buffer click inverse and every paging motion are pinned against
+  the current answer.
+
 ## 0.64.0 - 2026-08-05
 
 ### Added

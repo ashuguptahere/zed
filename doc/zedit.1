@@ -206,6 +206,22 @@ explorer's header when the sidebar is open. Always on screen while enabled,
 even for a single file;
 .B false
 removes the row and puts the filename back in the statusline.
+.IP
+Whatever the tabs leave of that row carries the
+.IR breadcrumbs :
+the enclosing symbol path of the cursor, dim \(em
+.RB "\(lq" "Outer \(fo helper" "\(rq" .
+It is read from the syntax tree, so it needs a grammar and no language
+server, and it names symbols only \(em the file is on the tab beside it.
+Where a declaration keeps its name differs per grammar, so the rules were
+dumped from the vendored trees rather than assumed. With
+.B buffer_tabs
+off there is no row and so no breadcrumb, and with enough tabs to fill the
+row it is not drawn. Sticky scroll (VS Code's pinning of the enclosing scope
+to the top rows) is
+.I not
+implemented: it changes what a viewport is, which every paging motion is
+pinned against.
 .TP
 .B auto_completion
 .BR true / false

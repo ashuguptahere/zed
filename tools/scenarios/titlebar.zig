@@ -353,4 +353,92 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send("\x1b:qa!\r");
         s.drain(200);
     }
+
+    // --- breadcrumbs: the enclosing symbol path, in the title bar ----------
+    // Read out of the syntax tree, so it needs a grammar and no server. It
+    // takes whatever the tabs leave of row 1, which is where VS Code and Zed
+    // put it — a terminal row is too scarce to spend a whole one on.
+    {
+        const cdir = try ctx.tempDir();
+        const f = h.join(ctx, cdir, "crumb.zig");
+        defer ctx.gpa.free(f);
+        h.writeFile(ctx.io, f,
+            \\const Outer = struct {
+            \\    fn helper(a: u32) u32 {
+            \\        return a + 1;
+            \\    }
+            \\
+            \\    fn second(b: u32) u32 {
+            \\        return b * 2;
+            \\    }
+            \\};
+            \\
+            \\pub fn main() void {}
+            \\
+        );
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ ctx.zedit, "--lsp", "", "crumb.zig" },
+            .cwd = cdir,
+            .term = "xterm-256color",
+            .cols = 100,
+        });
+        defer s.finish();
+        s.drain(900); // the grammar parses after the first paint
+
+        // Line 1 is outside every function: the file has a path of nothing.
+        {
+            var scr = try h.screenOf(ctx, &s, 24, 100);
+            defer scr.deinit();
+            ctx.check("no crumb outside any symbol", !rowHas(ctx, &scr, 1, "Outer"));
+        }
+        // Inside `helper`, the path is the struct and the function.
+        s.send("3G");
+        s.drain(500);
+        {
+            var scr = try h.screenOf(ctx, &s, 24, 100);
+            defer scr.deinit();
+            ctx.check("the crumb names the enclosing path", rowHas(ctx, &scr, 1, "Outer \u{203A} helper"));
+            ctx.check("...on the title bar row, after the tab", (scr.colOf(ctx.gpa, 1, "Outer") orelse 0) > (scr.colOf(ctx.gpa, 1, "crumb.zig") orelse 0));
+        }
+        // Moving to the other function follows the cursor.
+        s.send("7G");
+        s.drain(500);
+        {
+            var scr = try h.screenOf(ctx, &s, 24, 100);
+            defer scr.deinit();
+            ctx.check("the crumb follows the cursor", rowHas(ctx, &scr, 1, "Outer \u{203A} second"));
+        }
+        // A top-level function has one crumb and no struct above it.
+        s.send("11G");
+        s.drain(500);
+        {
+            var scr = try h.screenOf(ctx, &s, 24, 100);
+            defer scr.deinit();
+            ctx.check("a top-level symbol is one crumb", rowHas(ctx, &scr, 1, "main"));
+            ctx.check("...with nothing above it", !rowHas(ctx, &scr, 1, "Outer"));
+        }
+        s.send(":q!\r");
+        s.drain(300);
+    }
+
+    // A file with no grammar has no path to show, and says nothing.
+    {
+        const pdir = try ctx.tempDir();
+        const f = h.join(ctx, pdir, "plain.txt");
+        defer ctx.gpa.free(f);
+        h.writeFile(ctx.io, f, "alpha\nbravo\n");
+        var s = try h.Session.spawn(ctx.gpa, .{
+            .argv = &.{ ctx.zedit, "--lsp", "", "plain.txt" },
+            .cwd = pdir,
+            .term = "xterm-256color",
+            .cols = 100,
+        });
+        defer s.finish();
+        s.drain(700);
+        var scr = try h.screenOf(ctx, &s, 24, 100);
+        defer scr.deinit();
+        ctx.check("no grammar, no crumb", !rowHas(ctx, &scr, 1, "\u{203A}"));
+        s.send(":q!\r");
+        s.drain(300);
+    }
 }

@@ -844,6 +844,39 @@ pub const Highlighter = struct {
         return null;
     }
 
+    /// The `kinds` nodes enclosing `byte`, **outermost first** — the path a
+    /// breadcrumb shows. Each entry is the span of that node's *name*, so the
+    /// caller slices the document text and nothing is allocated here.
+    ///
+    /// A node with no name to show is skipped rather than crumbed as its type:
+    /// an anonymous `arrow_function` and JavaScript's `class_body` both sit in
+    /// the structural-object tables, and "arrow_function \u{203A} foo" says less
+    /// than "foo".
+    pub fn crumbs(self: *Highlighter, byte: usize, kinds: []const []const u8, out: []Span) usize {
+        if (out.len == 0) return 0;
+        const tree = self.root.tree orelse return 0;
+        const root = c.ts_tree_root_node(tree);
+        const syms = resolveKinds(c.ts_tree_language(tree), kinds);
+        if (syms.len == 0) return 0;
+        var stack: [16]Span = undefined;
+        var n: usize = 0;
+        var node = c.ts_node_descendant_for_byte_range(root, @intCast(byte), @intCast(byte));
+        while (!c.ts_node_is_null(node)) : (node = c.ts_node_parent(node)) {
+            if (!syms.has(c.ts_node_symbol(node))) continue;
+            const name = nameSpan(node) orelse continue;
+            // Two kinds can share a name — JavaScript's `class_body` sits
+            // inside its `class_declaration`, and rule 4 hands both the same
+            // identifier. One thing seen twice is one crumb.
+            if (n > 0 and stack[n - 1].start == name.start and stack[n - 1].end == name.end) continue;
+            if (n == stack.len) break;
+            stack[n] = name;
+            n += 1;
+        }
+        var i: usize = 0;
+        while (i < n and i < out.len) : (i += 1) out[i] = stack[n - 1 - i]; // outermost first
+        return i;
+    }
+
     /// The argument or parameter under `byte` — the `ia`/`aa` objects.
     /// `kinds` names the *list* nodes (`argument_list`, `formal_parameters`,
     /// …); the item is whichever of the list's named children holds the
@@ -1043,6 +1076,68 @@ fn styleOf(lang: syntax.Language, src: []const u8, needle: []const u8) !syntax.S
     h.reparse(src);
     h.queryRange(0, src.len, styles);
     return styles[std.mem.indexOf(u8, src, needle) orelse return error.NeedleNotFound];
+}
+
+/// The name a node shows in a breadcrumb. The grammars disagree about where
+/// one lives, and each rule below is a case the vendored ones actually
+/// produce (dumped from their own trees, not guessed):
+///
+///  1. a `name` field — Python, Rust, Go, JS/TS, and Zig's functions;
+///  2. a `declarator` field — C, where a `function_definition`'s identifier is
+///     buried inside a `function_declarator`;
+///  3. the first direct named child whose type ends in `identifier` — Rust's
+///     `impl Thing`, whose type sits beside the declaration list;
+///  4. failing all of those, the *parent*'s first such child — Zig writes
+///     `const Foo = struct {…}`, so the struct's name belongs to the variable
+///     declaration around it, and a C `typedef struct {…} Foo` is the same
+///     shape.
+///
+/// Nothing found means no crumb: a node with no name to show is skipped
+/// rather than crumbed as its type.
+fn nameSpan(node: c.TSNode) ?Highlighter.Span {
+    const field = c.ts_node_child_by_field_name(node, "name", 4);
+    if (!c.ts_node_is_null(field)) return spanOf(field);
+    const decl = c.ts_node_child_by_field_name(node, "declarator", 10);
+    if (!c.ts_node_is_null(decl)) {
+        if (identifierIn(decl, 3)) |sp| return sp;
+    }
+    if (directIdentifier(node)) |sp| return sp;
+    const parent = c.ts_node_parent(node);
+    if (!c.ts_node_is_null(parent)) {
+        if (directIdentifier(parent)) |sp| return sp;
+    }
+    return null;
+}
+
+fn spanOf(node: c.TSNode) Highlighter.Span {
+    return .{ .start = c.ts_node_start_byte(node), .end = c.ts_node_end_byte(node) };
+}
+
+/// The first *direct* named child that is an identifier. Deliberately not a
+/// descent: reaching further would find the first identifier in the body,
+/// which is a local variable or the first method — a wrong name is worse than
+/// no name.
+fn directIdentifier(node: c.TSNode) ?Highlighter.Span {
+    const n = c.ts_node_named_child_count(node);
+    var i: u32 = 0;
+    while (i < n) : (i += 1) {
+        const ch = c.ts_node_named_child(node, i);
+        if (std.mem.endsWith(u8, std.mem.sliceTo(c.ts_node_type(ch), 0), "identifier")) return spanOf(ch);
+    }
+    return null;
+}
+
+/// The first identifier inside a declarator chain, bounded — C nests
+/// `function_declarator` inside `pointer_declarator` and so on.
+fn identifierIn(node: c.TSNode, depth: usize) ?Highlighter.Span {
+    if (depth == 0) return null;
+    if (std.mem.endsWith(u8, std.mem.sliceTo(c.ts_node_type(node), 0), "identifier")) return spanOf(node);
+    const n = c.ts_node_named_child_count(node);
+    var i: u32 = 0;
+    while (i < n) : (i += 1) {
+        if (identifierIn(c.ts_node_named_child(node, i), depth - 1)) |sp| return sp;
+    }
+    return null;
 }
 
 test "every vendored grammar and its highlight query load" {
@@ -1550,4 +1645,67 @@ fn mapCapture(name: []const u8) syntax.Style {
     if (p.has(name, "text.emphasis") or p.has(name, "text.strong")) return .builtin;
     if (p.has(name, "punctuation.special")) return .operator;
     return .normal;
+}
+
+test "crumbs: the enclosing symbol path, in every grammar that has one" {
+    const gpa = std.testing.allocator;
+    // Each grammar puts a declaration's name somewhere different; these are
+    // the shapes `nameSpan`'s four rules were written from, dumped out of the
+    // vendored trees themselves rather than assumed.
+    const Case = struct {
+        lang: syntax.Language,
+        src: []const u8,
+        kinds: []const []const u8,
+        want: []const []const u8,
+    };
+    const cases = [_]Case{
+        // Zig: the function names itself; the struct's name is on the
+        // `const Foo = ...` around it (rule 4).
+        .{ .lang = .zig, .kinds = &.{ "struct_declaration", "function_declaration" }, .want = &.{ "Foo", "bar" }, .src = "const Foo = struct {\n    fn bar(self: *Foo) void {\n        HERE;\n    }\n};\n" },
+        // C: the name is inside the declarator (rule 2).
+        .{ .lang = .c, .kinds = &.{ "struct_specifier", "function_definition" }, .want = &.{"baz"}, .src = "int baz(int x) {\n    HERE;\n}\n" },
+        .{ .lang = .python, .kinds = &.{ "class_definition", "function_definition" }, .want = &.{ "Cls", "meth" }, .src = "class Cls:\n    def meth(self):\n        HERE\n" },
+        // Rust: `impl Thing` names its type beside the declaration list (rule 3).
+        .{ .lang = .rust, .kinds = &.{ "impl_item", "function_item" }, .want = &.{ "Thing", "go" }, .src = "impl Thing {\n    fn go(&self) {\n        HERE;\n    }\n}\n" },
+        .{ .lang = .go, .kinds = &.{ "function_declaration", "method_declaration" }, .want = &.{"Run"}, .src = "func Run(x int) {\n\tHERE\n}\n" },
+        // JavaScript: `class_body` is in the structural-object table and has
+        // no name of its own, so rule 4 hands it the class's — and the dedupe
+        // keeps "C" from appearing twice.
+        .{ .lang = .javascript, .kinds = &.{ "class_declaration", "class_body", "method_definition" }, .want = &.{ "C", "m" }, .src = "class C {\n  m() {\n    HERE;\n  }\n}\n" },
+        .{ .lang = .typescript, .kinds = &.{ "class_declaration", "class_body", "method_definition" }, .want = &.{ "C", "m" }, .src = "class C {\n  m(): void {\n    HERE;\n  }\n}\n" },
+    };
+    for (cases) |cs| {
+        var h = Highlighter.init(gpa, cs.lang) orelse return error.NoGrammar;
+        defer h.deinit();
+        h.reparse(cs.src);
+        var out: [8]Highlighter.Span = undefined;
+        const n = h.crumbs(std.mem.indexOf(u8, cs.src, "HERE").?, cs.kinds, &out);
+        try std.testing.expectEqual(cs.want.len, n);
+        for (cs.want, out[0..n]) |w, sp| try std.testing.expectEqualStrings(w, cs.src[sp.start..sp.end]);
+    }
+}
+
+test "crumbs: outside any of them, there is no path" {
+    const gpa = std.testing.allocator;
+    var h = Highlighter.init(gpa, .zig) orelse return error.NoGrammar;
+    defer h.deinit();
+    const src = "const x = 1;\nfn f() void {}\n";
+    h.reparse(src);
+    var out: [8]Highlighter.Span = undefined;
+    try std.testing.expectEqual(@as(usize, 0), h.crumbs(0, &.{"function_declaration"}, &out));
+    // ...and a language with no structural kinds asks for nothing.
+    try std.testing.expectEqual(@as(usize, 0), h.crumbs(20, &.{}, &out));
+}
+
+test "crumbs: a nested function keeps both, outermost first" {
+    const gpa = std.testing.allocator;
+    var h = Highlighter.init(gpa, .python) orelse return error.NoGrammar;
+    defer h.deinit();
+    const src = "def outer():\n    def inner():\n        HERE\n";
+    h.reparse(src);
+    var out: [8]Highlighter.Span = undefined;
+    const n = h.crumbs(std.mem.indexOf(u8, src, "HERE").?, &.{"function_definition"}, &out);
+    try std.testing.expectEqual(@as(usize, 2), n);
+    try std.testing.expectEqualStrings("outer", src[out[0].start..out[0].end]);
+    try std.testing.expectEqualStrings("inner", src[out[1].start..out[1].end]);
 }
