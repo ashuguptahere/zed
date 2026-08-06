@@ -13,7 +13,9 @@
   `Space` leader with a which-key popup — which is what the rest of this
   README documents, and what the pty suite pins against real nvim.
 - **One documented config file**, everything optional: `zedit --init-config`
-  writes it with every setting, its default, and an explanation.
+  writes it with every setting, its default, and an explanation — and a
+  `.zedit` in a project layers over it, so a repository can carry its own
+  `tab_width` without anyone editing theirs.
 - **Fast and idle-free**: an event-driven core that blocks in `poll(2)` — an
   idle editor uses **zero CPU**; each frame is built once and written with one
   syscall. The idle-CPU budget is enforced by a test (`tools/scenarios/cpu.zig`).

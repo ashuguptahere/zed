@@ -6620,6 +6620,14 @@ pub const Editor = struct {
         }
     }
 
+    /// Say that a project's own `.zedit` was applied over the user's config.
+    /// On the statusline rather than in the log: a setting that differs from
+    /// yours because of a file in the repository is exactly the thing you
+    /// want told about once.
+    pub fn noteProjectConfig(self: *Editor, path: []const u8) void {
+        self.setStatus("project config: {s}", .{path});
+    }
+
     /// Record a file or directory in the recently-opened list. Local paths are
     /// stored absolute so the list is meaningful from any working directory.
     pub fn noteRecent(self: *Editor, path: []const u8, kind: recent.Kind) void {

@@ -178,6 +178,16 @@ there is nothing to change there.
       application at all through a terminal. The first two are the
       multi-selection roadmap item wearing a different hat. (0.59.0)
 
+- [x] Project-local config: a `.zedit` at or above the working directory,
+      layered over the user's own (nvim's `'exrc'`, Focus's project config —
+      two votes). Applied without asking, which `'exrc'` cannot be: zedit's
+      config is data, not Lua. The line it rests on is written where the
+      loader is — a setting that names a command must never be readable from
+      a project file. The walk stops at a `.git` directory so a stray
+      `.zedit` in a home directory cannot reach into an unrelated repo, and
+      `loaded_from` is untouched so `:theme` still writes to the user's own
+      file. Last of the Part 3 tier-2 candidates. (0.67.0)
+
 - [x] Sticky scroll (`sticky_scroll`, on): the lines that open the enclosing
       scopes pinned to the top rows, the breadcrumbs' ancestor walk asked
       where each scope *starts*. The feared viewport churn never happened —

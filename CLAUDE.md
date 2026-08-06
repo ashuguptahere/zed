@@ -1630,6 +1630,29 @@ per-row `SelRange`.
   tag rather than a payload on `up`/`down`/`left`/`right`, which are matched
   bare in about a hundred places.
 
+**Project-local config (`.zedit`).** A `.zedit` file at or above the working
+directory is applied **over** the user's own config, so a repository can
+carry the settings it wants (`tab_width = 8`, a theme, `soft_wrap = false`)
+without anyone editing their own file. nvim's `'exrc'` and Focus's project
+config — two independent votes for the idea. It *layers*: what the file does
+not mention keeps the user's value, so a one-line `.zedit` is a one-setting
+override rather than a replacement. The statusline names it on the first
+frame, because a setting that differs from yours because of a file in a
+repository should be told to you once.
+
+It is applied **without asking, and that is the whole difference from
+`'exrc'`**: nvim's is Lua — a file from a cloned repository running as you —
+which is why it ships off and grew a trust prompt. zedit's config is inert
+data (`key = value`), no setting names a program to run, unknown keys are
+ignored and every value is range-checked by `apply`; the worst a hostile
+`.zedit` can do is make the editor look wrong. **Anything added to `Settings`
+that names a command must not be readable from a project file** — that is the
+line this rests on, and it is written where the loader is. The search stops
+at the first `.zedit`, at a `.git` directory (the edge of the project, so a
+stray `.zedit` in a home directory never leaks into an unrelated repository),
+or at the filesystem root. `loaded_from` is untouched, so `:theme` still
+writes the choice to the *user's* config rather than into the project's file.
+
 Runtime configuration is one documented file (see `config.zig`): keymap, theme,
 `tab_width`, `nerd_font`, `sidebar` (left/right), `relative_numbers`,
 `large_file_mb`, `autoindent`, `buffer_tabs`, `auto_completion`,

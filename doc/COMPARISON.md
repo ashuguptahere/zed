@@ -313,8 +313,10 @@ snippets, auto-completion). Remaining: multiple language servers per language
    in-flight ones; zedit's own docs flag "re-requested per edit, not debounced".
 5. **Viewport-only `semanticTokens/range` (0.12)** — matches zedit's O(screen)
    highlighting philosophy exactly.
-6. **Project-local config (`'exrc'`, 0.12)** — a per-project `zedit` config
-   beside the global one. (Focus does this too — see Part 3.)
+6. ~~**Project-local config (`'exrc'`, 0.12)**~~ — **DONE** in 0.67.0 as a
+   `.zedit` file layered over the user's. Unlike `'exrc'` it needs no trust
+   prompt: zedit's config is data, not Lua, so a file from a cloned
+   repository cannot run anything.
 7. **Extended grapheme clusters per UAX#29 (0.11)** — ZWJ emoji width; a
    direct upgrade for `unicode.zig`.
 8. **Incomplete completion (`isIncomplete`) handling** — correctness fix for
@@ -491,8 +493,10 @@ feature-shaped hole:
   plugin system needs this built in. It is also the one item here that is
   *more* useful to zedit than to its originator, because zedit already has
   the list, the picker and `]q`/`[q` to walk it.
-- **Per-project config layered over a global one** — the same idea as nvim's
-  `'exrc'` (Part 2, item 6). Two independent votes for project-local config.
+- ~~**Per-project config layered over a global one**~~ — **DONE** in 0.67.0
+  (`.zedit`, found at or above the working directory, stopping at the
+  repository root). The same idea as nvim's `'exrc'` (Part 2, item 6), and
+  the two votes are why it was built.
 - **Project switching that re-applies configuration** — zedit's per-directory
   sessions restore files, cursors and layout, but not settings.
 
@@ -521,7 +525,7 @@ For the owner to accept or reject, cheapest-first within each tier:
 5. ~~Multibuffer editing of the quickfix list~~ — done in 0.62.0
 6. ~~Peek definition~~ — done in 0.63.0
 7. ~~Breadcrumbs / sticky scroll~~ — done in 0.65.0 and 0.66.0
-8. Project-local config (Focus, nvim `'exrc'`)
+8. ~~Project-local config~~ — done in 0.67.0
 
 **Tier 3 — worth having, no urgency**
 9. Outline panel, git status in the sidebar, MRU tab switching (Zed)

@@ -76,6 +76,12 @@ pub fn main(init: std.process.Init) !void {
         // asked to be told about; the implicit path stays best-effort.
         cli.printError("cannot read that config file — using defaults");
     }
+    // A project's own `.zedit`, layered over the user's config (nvim's
+    // `'exrc'`, Focus's project config). Safe to apply unasked because the
+    // file is data, not code — see `config.loadProject`.
+    var proj_buf: [512]u8 = undefined;
+    const project_config = config.loadProject(gpa, io, &proj_buf);
+
     // The tutor teaches modal editing, so it brings its own keymap: under the
     // default `vscode` table its first instruction ("press j") would type a
     // letter into the lesson. An explicit `--keymap` still wins, below.
@@ -148,6 +154,9 @@ pub fn main(init: std.process.Init) !void {
 
     // Recently-opened list: drives the startup screen when no file was given.
     ed.startSession(cfg.file == null and !cfg.tutor and !open_picker);
+    // Say so on the first frame: settings that differ from your own, coming
+    // from a file in the repository, should not be a silent surprise.
+    if (project_config) |p| ed.noteProjectConfig(p);
     if (cfg.file) |p| ed.noteRecent(p, .file);
     if (remote_dir) |d| {
         ed.openRemoteDir(d);

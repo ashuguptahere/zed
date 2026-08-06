@@ -444,6 +444,47 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, override: ?[]const u8) bool {
     return true;
 }
 
+/// The per-project config: a `.zedit` file at or above the working
+/// directory, applied *over* whatever the user's own config said. nvim's
+/// `'exrc'` and Focus's project config, which is two independent votes for
+/// the idea.
+///
+/// **It is safe to apply without asking, and that is the whole difference
+/// from `'exrc'`.** nvim's is Lua — a file from a cloned repository running as
+/// you — which is why it ships off and grew a trust prompt. zedit's config is
+/// inert data: `key = value`, no setting names a program to run, unknown keys
+/// are ignored and every value is range-checked by `apply`. The worst a
+/// hostile `.zedit` can do is make the editor look wrong. **Anything added to
+/// `Settings` that names a command must not be readable from here** — that is
+/// the line this rests on.
+///
+/// The search stops at the first `.zedit`, at a `.git` directory (the edge of
+/// the project — so a stray `.zedit` in a home directory never leaks into an
+/// unrelated repository), or at the filesystem root. `loaded_from` is left
+/// alone: `:theme` writes the choice to the *user's* config, never into a
+/// file that belongs to the project.
+pub fn loadProject(gpa: std.mem.Allocator, io: std.Io, buf: []u8) ?[]const u8 {
+    const cwd = std.process.currentPathAlloc(io, gpa) catch return null;
+    defer gpa.free(cwd);
+    var dir: []const u8 = cwd;
+    while (true) {
+        const path = std.fmt.bufPrint(buf, "{s}/.zedit", .{dir}) catch return null;
+        if (std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(1 << 20))) |text| {
+            defer gpa.free(text);
+            apply(text);
+            std.log.scoped(.config).info("project config loaded: {s}", .{path});
+            return path;
+        } else |_| {}
+        // A repository root is where a project ends.
+        var gbuf: [512]u8 = undefined;
+        const git = std.fmt.bufPrint(&gbuf, "{s}/.git", .{dir}) catch return null;
+        if (std.Io.Dir.cwd().access(io, git, .{})) |_| return null else |_| {}
+        const slash = std.mem.lastIndexOfScalar(u8, dir, '/') orelse return null;
+        if (slash == 0) return null; // reached "/"
+        dir = dir[0..slash];
+    }
+}
+
 /// Write the documented default config to the standard path (creating the
 /// directory), refusing to overwrite an existing file. Returns the path.
 pub fn writeDefault(io: std.Io, buf: []u8) ![]const u8 {

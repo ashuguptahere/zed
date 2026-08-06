@@ -2,6 +2,36 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.67.0 - 2026-08-06
+
+### Added
+
+- **Project-local config** — a `.zedit` file at or above the working
+  directory, applied *over* the user's own. nvim's `'exrc'` and Focus's
+  project config, which is two independent votes for the idea: a repository
+  can carry the settings it wants (`tab_width = 8`, a theme,
+  `soft_wrap = false`) without anyone editing their own file.
+
+  It **layers**: what the project file does not mention keeps the user's
+  value, so a one-line `.zedit` is a one-setting override rather than a
+  replacement. The statusline names the file on the first frame, because a
+  setting that differs from yours because of a file in a repository should be
+  told to you once. `:theme` still writes the choice to *your* config, never
+  into the project's.
+
+  It is applied **without asking, and that is the whole difference from
+  `'exrc'`**: nvim's is Lua — a file from a cloned repository running as you
+  — which is why it ships off and grew a trust prompt. zedit's config is
+  inert data (`key = value`), no setting names a program to run, unknown keys
+  are ignored and every value is range-checked, so the worst a hostile
+  `.zedit` can do is make the editor look wrong. Anything added to `Settings`
+  that names a command must not be readable from a project file; that rule is
+  written where the loader is.
+
+  The search stops at the first `.zedit`, at a `.git` directory (the edge of
+  the project, so a stray `.zedit` in a home directory never leaks into an
+  unrelated repository), or at the filesystem root.
+
 ## 0.66.0 - 2026-08-06
 
 ### Added

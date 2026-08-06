@@ -471,4 +471,119 @@ pub fn run(ctx: *h.Ctx) !void {
         s.send(":q!\r");
         s.drain(400);
     }
+
+    // --- the project's own `.zedit`, layered over the user's config -------
+    // nvim's `'exrc'` and Focus's project config. Safe to apply unasked here
+    // because zedit's config is data, not code — no setting names a program.
+    {
+        const pdir = try ctx.tempDir();
+        const cfg = h.join(ctx, pdir, "user.cfg");
+        defer ctx.gpa.free(cfg);
+        const proj = h.join(ctx, pdir, ".zedit");
+        defer ctx.gpa.free(proj);
+        const f = h.join(ctx, pdir, "p.txt");
+        defer ctx.gpa.free(f);
+        h.writeFile(ctx.io, f, "alpha\n");
+        // The user asks for tokyonight; the project asks for gruvbox.
+        h.writeFile(ctx.io, cfg, "theme = tokyonight\nrelative_numbers = true\n");
+        h.writeFile(ctx.io, proj, "theme = gruvbox\n");
+        {
+            var s = try h.Session.spawn(ctx.gpa, .{
+                .argv = &.{ ctx.zedit, "--config", cfg, "p.txt" },
+                .cwd = pdir,
+                .term = "xterm-256color",
+            });
+            defer s.finish();
+            s.drainQuiet(1500);
+            ctx.check("the project config wins over the user's", s.contains(GRUVBOX_BG));
+            ctx.check("...and says where it came from", s.containsPlain(ctx.gpa, "project config:"));
+            s.send(":q!\r");
+            s.drain(300);
+        }
+        // It *layers*: the project overrides what it names and leaves the
+        // rest of the user's config alone, so a one-line `.zedit` is a
+        // one-setting override rather than a replacement.
+        {
+            const tf = h.join(ctx, pdir, "t.txt");
+            defer ctx.gpa.free(tf);
+            h.writeFile(ctx.io, tf, "\tX\n");
+            h.writeFile(ctx.io, cfg, "theme = gruvbox\ntab_width = 2\n");
+            var col: [2]usize = .{ 0, 0 };
+            for ([_][]const u8{ "", "tab_width = 8\n" }, 0..) |text, i| {
+                if (text.len == 0) {
+                    std.Io.Dir.cwd().deleteFile(ctx.io, proj) catch {};
+                } else h.writeFile(ctx.io, proj, text);
+                var s = try h.Session.spawn(ctx.gpa, .{
+                    .argv = &.{ ctx.zedit, "--config", cfg, "t.txt" },
+                    .cwd = pdir,
+                    .term = "xterm-256color",
+                });
+                defer s.finish();
+                s.drainQuiet(1500);
+                var scr = try h.screenOf(ctx, &s, 24, 80);
+                defer scr.deinit();
+                var r: usize = 1;
+                while (r <= 24) : (r += 1) {
+                    if (scr.colOf(ctx.gpa, r, "X")) |c| {
+                        col[i] = c;
+                        break;
+                    }
+                }
+                // The user's theme is untouched either way: the project file
+                // never mentions it.
+                ctx.check("the user's other settings are untouched", s.contains(GRUVBOX_BG));
+                s.send(":q!\r");
+                s.drain(300);
+            }
+            ctx.check("the project overrides only what it names",
+                col[0] > 0 and col[1] == col[0] + 6); // tab_width 2 -> 8
+        }
+        // Found from a subdirectory too — you are rarely at the project root.
+        {
+            const sub = h.join(ctx, pdir, "src");
+            defer ctx.gpa.free(sub);
+            std.Io.Dir.cwd().createDirPath(ctx.io, sub) catch {};
+            const sf = h.join(ctx, sub, "q.txt");
+            defer ctx.gpa.free(sf);
+            h.writeFile(ctx.io, sf, "bravo\n");
+            // Back to a user config that does *not* ask for gruvbox, so the
+            // theme below can only have come from the project file.
+            h.writeFile(ctx.io, cfg, "theme = tokyonight\n");
+            h.writeFile(ctx.io, proj, "theme = gruvbox\n");
+            var s = try h.Session.spawn(ctx.gpa, .{
+                .argv = &.{ ctx.zedit, "--config", cfg, "q.txt" },
+                .cwd = sub,
+                .term = "xterm-256color",
+            });
+            defer s.finish();
+            s.drainQuiet(1500);
+            ctx.check("it is found from a subdirectory", s.contains(GRUVBOX_BG));
+            s.send(":q!\r");
+            s.drain(300);
+        }
+        // ...but the walk stops at a repository root, so a `.zedit` outside
+        // the project never reaches into it.
+        {
+            const repo = h.join(ctx, pdir, "other");
+            defer ctx.gpa.free(repo);
+            std.Io.Dir.cwd().createDirPath(ctx.io, repo) catch {};
+            const gitdir = h.join(ctx, repo, ".git");
+            defer ctx.gpa.free(gitdir);
+            std.Io.Dir.cwd().createDirPath(ctx.io, gitdir) catch {};
+            const rf = h.join(ctx, repo, "r.txt");
+            defer ctx.gpa.free(rf);
+            h.writeFile(ctx.io, rf, "charlie\n");
+            var s = try h.Session.spawn(ctx.gpa, .{
+                .argv = &.{ ctx.zedit, "--config", cfg, "r.txt" },
+                .cwd = repo,
+                .term = "xterm-256color",
+            });
+            defer s.finish();
+            s.drainQuiet(1500);
+            ctx.check("the walk stops at a repository root", !s.contains(GRUVBOX_BG));
+            ctx.check("...and nothing claims a project config", !s.containsPlain(ctx.gpa, "project config:"));
+            s.send(":q!\r");
+            s.drain(300);
+        }
+    }
 }

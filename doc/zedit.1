@@ -113,6 +113,29 @@ per line;
 starts a comment; unknown keys are ignored; a missing file means defaults.
 Generate a fully documented copy with
 .BR "zedit \-\-init\-config" .
+.PP
+A
+.B .zedit
+file at or above the working directory is then applied \fIover\fP that one,
+so a repository can carry the settings it wants without anyone editing their
+own. It layers: what the project file does not mention keeps your value, and
+the statusline names the file on the first frame. The search stops at the
+first
+.BR .zedit ,
+at a
+.B .git
+directory (the edge of the project), or at the filesystem root; choosing a
+theme with
+.B :theme
+still writes to \fIyour\fP config, never into the project's.
+.PP
+It is applied without asking, unlike vim's
+.BR 'exrc' ,
+and can be: this file is data, not code. No setting names a program to run,
+unknown keys are ignored and every value is range\-checked, so the worst a
+hostile
+.B .zedit
+can do is make the editor look wrong.
 .TP
 .B theme
 Colour theme:
