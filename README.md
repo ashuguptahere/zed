@@ -131,6 +131,10 @@
 - **Breadcrumbs**: the enclosing symbol path (`Outer › helper`) shown dim in
   the title bar, read straight from the syntax tree — no language server, and
   no row of its own, because a terminal row is scarcer than a GUI one
+- **Sticky scroll** (`sticky_scroll`): the lines that open the scopes you are
+  inside pinned to the top while you scroll through them. An overlay, so the
+  viewport is unchanged — and the pins step aside when the cursor would be
+  under them, so nothing is ever hidden
 - **Pickers** via the AstroNvim-style `Space` leader tree with nested
   which-key menus: `Space f f` find files, `Space f w` find words (regex grep,
   same syntax as `/`),
@@ -329,7 +333,8 @@ missing file just means defaults. Settings today: `keymap`, `theme`, `tab_width`
 `nerd_font`, `sidebar`, `relative_numbers`, `large_file_mb`, `autoindent`,
 `buffer_tabs`, `auto_completion`, `completion_delay_ms`,
 `buffer_completion`, `inline_diagnostics`, `soft_wrap`, `wrap_indent`,
-`wrap_column`, `persistent_undo`, `format_on_save`, `cmdline_suggestions`,
+`wrap_column`, `sticky_scroll`, `persistent_undo`, `format_on_save`,
+`cmdline_suggestions`,
 `mouse`, `mousetime`, `sync_background`, `split_sizes`. `zedit --reset`
 resets the file to those defaults, keeping the old one as
 `config.bak`.

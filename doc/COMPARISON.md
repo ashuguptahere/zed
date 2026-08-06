@@ -452,10 +452,13 @@ whole document:
   in 0.65.0, in the title bar rather than on a row of its own: a terminal row
   is scarcer than a GUI one, and one spent here would have moved every
   viewport number the suites pin against nvim. Read from the syntax tree, so
-  no language server is involved. **Sticky scroll** — the enclosing scope
-  pinned to the top rows while scrolling — is still open, and is the harder
-  half: it changes what a viewport *is*, which `H`/`M`/`L`, the click inverse
-  and every paging motion are pinned against.
+  no language server is involved. ~~**Sticky scroll**~~ — the enclosing scope
+  pinned to the top rows while scrolling — **DONE** in 0.66.0, and the
+  feared viewport churn never happened: the pins are an *overlay*, so `top`,
+  `H`/`M`/`L` and every paging motion mean what they meant, and a check
+  asserts the last visible line is identical with the pins and without. They
+  cover text, so they yield to the cursor instead of the reverse — VS Code
+  scrolls the view there.
 - **Timeline / local history** — per-file edit history independent of git.
   zedit's undo tree with `persistent_undo` is most of the machinery; this is
   the view of it.
@@ -517,7 +520,7 @@ For the owner to accept or reject, cheapest-first within each tier:
 **Tier 2 — new surface, high payoff**
 5. ~~Multibuffer editing of the quickfix list~~ — done in 0.62.0
 6. ~~Peek definition~~ — done in 0.63.0
-7. ~~Breadcrumbs~~ — done in 0.65.0; sticky scroll still open
+7. ~~Breadcrumbs / sticky scroll~~ — done in 0.65.0 and 0.66.0
 8. Project-local config (Focus, nvim `'exrc'`)
 
 **Tier 3 — worth having, no urgency**

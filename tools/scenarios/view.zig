@@ -153,4 +153,142 @@ pub fn run(ctx: *h.Ctx) !void {
         ctx.check("zt leaves the cursor on its own line", std.mem.indexOf(u8, got, "\n050\n") != null);
         ctx.check("...and does not touch the top line", std.mem.indexOf(u8, got, "L001\n") != null);
     }
+
+    // --- sticky scroll: the enclosing scopes pinned to the top ------------
+    // Not pinned against nvim — this is VS Code's feature, not vim's. What is
+    // being checked is the design claim: the pinned rows are an *overlay*, so
+    // every number above still means what it meant, and they yield to the
+    // cursor rather than covering it.
+    //
+    // Each screen read waits for the frame it is about (`drainUntil`) rather
+    // than a fixed budget: `drain` gives its time back as soon as any output
+    // flows, so a plain `drain` here catches a half-written frame — and a row
+    // read from one is missing its tail, which reads exactly like a rendering
+    // bug. (It cost an hour to find that out.)
+    {
+        const zdir = try ctx.tempDir();
+        const zf = try std.fmt.allocPrint(ctx.gpa, "{s}/sticky.zig", .{zdir});
+        defer ctx.gpa.free(zf);
+        var src: std.ArrayList(u8) = .empty;
+        defer src.deinit(ctx.gpa);
+        try src.appendSlice(ctx.gpa, "const Outer = struct {\n    fn helper(a: u32) u32 {\n");
+        var buf: [40]u8 = undefined;
+        for (1..91) |i| try src.appendSlice(ctx.gpa, try std.fmt.bufPrint(&buf, "        x += {d:0>3};\n", .{i}));
+        try src.appendSlice(ctx.gpa, "        return x;\n    }\n};\n");
+        h.writeFile(ctx.io, zf, src.items);
+
+        const first_text_row = 2; // row 1 is the title bar
+        // `60G` centres the view, so both openers are far off the top.
+        {
+            var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "sticky.zig", "--lsp", "" }, .cwd = zdir });
+            defer s.finish();
+            s.drain(900); // the grammar parses after the first paint
+            s.send("60G");
+            s.drainUntil(ctx.gpa, 3000, "fn helper");
+            var scr = try h.screenOf(ctx, &s, ROWS, COLS);
+            defer scr.deinit();
+            const r1 = try scr.rowText(ctx.gpa, first_text_row);
+            defer ctx.gpa.free(r1);
+            const r2 = try scr.rowText(ctx.gpa, first_text_row + 1);
+            defer ctx.gpa.free(r2);
+            ctx.check("the outermost scope is pinned to the top row",
+                std.mem.indexOf(u8, r1, "const Outer = struct {") != null);
+            ctx.check("...with its own line number", std.mem.indexOf(u8, r1, " 1 ") != null);
+            ctx.check("the inner scope is pinned under it",
+                std.mem.indexOf(u8, r2, "fn helper") != null);
+            s.send(":q!\r");
+            s.drain(200);
+        }
+
+        // The viewport itself is untouched: the last visible line is the same
+        // whether the pinned rows are drawn or not. That is the whole reason
+        // this is an overlay rather than rows taken off the top.
+        var last_on: []u8 = &.{};
+        defer ctx.gpa.free(last_on);
+        {
+            var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "sticky.zig", "--lsp", "" }, .cwd = zdir });
+            defer s.finish();
+            s.drain(900);
+            s.send("60G");
+            s.drainUntil(ctx.gpa, 3000, "fn helper");
+            var scr = try h.screenOf(ctx, &s, ROWS, COLS);
+            defer scr.deinit();
+            last_on = try scr.rowText(ctx.gpa, ROWS - 2); // the last text row
+            s.send(":q!\r");
+            s.drain(200);
+        }
+        {
+            const cfg = h.join(ctx, zdir, "off.cfg");
+            defer ctx.gpa.free(cfg);
+            h.writeFile(ctx.io, cfg, "sticky_scroll = false\n");
+            var s = try h.Session.spawn(ctx.gpa, .{
+                .argv = &.{ ctx.zedit, "--config", cfg, "sticky.zig", "--lsp", "" },
+                .cwd = zdir,
+            });
+            defer s.finish();
+            s.drain(900);
+            s.send("60G");
+            s.drainUntil(ctx.gpa, 3000, "x += 071");
+            var scr = try h.screenOf(ctx, &s, ROWS, COLS);
+            defer scr.deinit();
+            const last_off = try scr.rowText(ctx.gpa, ROWS - 2);
+            defer ctx.gpa.free(last_off);
+            ctx.check("the viewport is the same with the pins and without",
+                std.mem.eql(u8, std.mem.trimEnd(u8, last_on, " "), std.mem.trimEnd(u8, last_off, " ")));
+            const r1 = try scr.rowText(ctx.gpa, first_text_row);
+            defer ctx.gpa.free(r1);
+            ctx.check("sticky_scroll = false pins nothing",
+                std.mem.indexOf(u8, r1, "fn helper") == null);
+            s.send(":q!\r");
+            s.drain(200);
+        }
+
+        // They yield to the cursor: `zt` puts it on the top row, so there is
+        // no room to pin anything and the line it is on stays visible.
+        {
+            var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "sticky.zig", "--lsp", "" }, .cwd = zdir });
+            defer s.finish();
+            s.drain(900);
+            s.send("60Gzt");
+            s.drainUntil(ctx.gpa, 3000, "x += 079");
+            var scr = try h.screenOf(ctx, &s, ROWS, COLS);
+            defer scr.deinit();
+            const r1 = try scr.rowText(ctx.gpa, first_text_row);
+            defer ctx.gpa.free(r1);
+            ctx.check("nothing is pinned over the cursor's own row",
+                std.mem.indexOf(u8, r1, "fn helper") == null and std.mem.indexOf(u8, r1, "058") != null);
+            // One line down there is room for exactly one, and it is the
+            // *innermost* — which function you are in the middle of is what
+            // scrolling took away.
+            s.send("j");
+            s.drainUntil(ctx.gpa, 3000, "fn helper");
+            var scr2 = try h.screenOf(ctx, &s, ROWS, COLS);
+            defer scr2.deinit();
+            const r1b = try scr2.rowText(ctx.gpa, first_text_row);
+            defer ctx.gpa.free(r1b);
+            ctx.check("one row of room pins one scope, the innermost",
+                std.mem.indexOf(u8, r1b, "fn helper") != null);
+            s.send(":q!\r");
+            s.drain(200);
+        }
+
+        // A file with no grammar has no scopes to pin. The fixture is rewritten
+        // first: the `Ctrl-E` cases above edit it and save, so by now line 50
+        // reads "050" rather than "L050".
+        {
+            h.writeFile(ctx.io, path, content.items);
+            var s = try h.Session.spawn(ctx.gpa, .{ .argv = &.{ ctx.zedit, "lines.txt", "--lsp", "" }, .cwd = dir });
+            defer s.finish();
+            s.drain(700);
+            s.send("60G");
+            s.drainUntil(ctx.gpa, 3000, "L071");
+            var scr = try h.screenOf(ctx, &s, ROWS, COLS);
+            defer scr.deinit();
+            const r1 = try scr.rowText(ctx.gpa, first_text_row);
+            defer ctx.gpa.free(r1);
+            ctx.check("no grammar, nothing pinned", std.mem.indexOf(u8, r1, "L050") != null);
+            s.send(":q!\r");
+            s.drain(200);
+        }
+    }
 }

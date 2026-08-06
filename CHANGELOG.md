@@ -2,6 +2,44 @@
 
 Notable changes to zedit. Dates are commit dates.
 
+## 0.66.0 - 2026-08-06
+
+### Added
+
+- **Sticky scroll** (config `sticky_scroll`, on) — the lines that *open* the
+  scopes the cursor is inside, the struct and the function, pinned to the top
+  rows while you scroll through them. Breadcrumbs' sibling and its ancestor
+  walk, asked where each scope starts instead of what it is called.
+
+  `doc/COMPARISON.md` had this down as the harder half of that pair, on the
+  grounds that pinning rows changes what a viewport *is* — and it does not,
+  because the pins are an **overlay**. `top`, `H`/`M`/`L`, the paging motions
+  and the screen-to-buffer click inverse all mean exactly what they meant,
+  and a pty check asserts the last visible line is identical with the pins
+  and without.
+
+  The price of an overlay is that pinned rows cover text, so **they yield to
+  the cursor** rather than the other way round: at most as many rows are
+  pinned as lie between the top of the window and the cursor, and never more
+  than a third of the window — so scrolling until the cursor reaches the top
+  row simply leaves none. VS Code scrolls the view instead; this keeps a
+  promise that matters more in a terminal. Short of room the *innermost*
+  scopes are kept, which function you are in being what scrolling took away
+  (nvim-treesitter-context's `trim_scope = "outer"` default).
+
+  Not drawn in a diff pair or the line-diff weave, which have virtual rows of
+  their own, nor in inactive windows, which have no live tree.
+
+### Fixed
+
+- **A pty test could read half a frame.** `drain` hands its budget back as
+  soon as *any* output flows, so a screen assertion taken straight after it
+  can land mid-frame — and the part missing is the end, which is where every
+  overlay is drawn. A row read from such a capture is missing its tail and
+  looks exactly like a rendering bug. The harness grew `drainUntil` (wait for
+  the thing being asserted, then for the output to go quiet) and `drainQuiet`,
+  and CLAUDE.md records the rule beside the other testing traps.
+
 ## 0.65.0 - 2026-08-06
 
 ### Added

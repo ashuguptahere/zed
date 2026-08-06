@@ -217,11 +217,30 @@ Where a declaration keeps its name differs per grammar, so the rules were
 dumped from the vendored trees rather than assumed. With
 .B buffer_tabs
 off there is no row and so no breadcrumb, and with enough tabs to fill the
-row it is not drawn. Sticky scroll (VS Code's pinning of the enclosing scope
-to the top rows) is
-.I not
-implemented: it changes what a viewport is, which every paging motion is
-pinned against.
+row it is not drawn. For the enclosing scope pinned to the top of the text,
+see
+.B sticky_scroll
+below.
+.TP
+.B sticky_scroll
+.BR true / false
+(default true). Pin the lines that \fIopen\fP the scopes the cursor is inside
+\(em the struct, the function \(em to the top rows of the window while you
+scroll through them, so what you are in the middle of stays on screen. Needs
+a tree\-sitter grammar for the language; the scopes are the same ones
+.BR ac / af
+select and the breadcrumbs name.
+.IP
+The pinned rows are an \fIoverlay\fP: the viewport is unchanged, so
+.BR H / M / L ,
+the paging motions and a click all mean exactly what they meant. They
+therefore cover text \(em and so they yield to the cursor rather than the
+other way round: at most as many rows are pinned as there are between the top
+of the window and the cursor (and never more than a third of the window), so
+scrolling until the cursor reaches the top row leaves none. Short of room the
+\fIinnermost\fP scopes are kept, which function you are in being what
+scrolling took away. Not drawn in a diff view, which has virtual rows of its
+own.
 .TP
 .B auto_completion
 .BR true / false

@@ -279,6 +279,37 @@ pub const Session = struct {
 
     /// Read whatever the editor emits over `ms` milliseconds, appending it to
     /// `out`. Returns early if the child closes the pty.
+    /// Drain in slices until the captured output holds `needle`, or `ms`
+    /// have passed. `drain` gives its budget back as soon as *any* output
+    /// flows, so a screen assertion taken straight after it can land on a
+    /// half-written frame — which is a test that fails on a slow machine and
+    /// nowhere else. Wait for the thing being asserted instead.
+    pub fn drainUntil(self: *Session, gpa: std.mem.Allocator, ms: i64, needle: []const u8) void {
+        var left = ms;
+        while (left > 0) : (left -= 50) {
+            self.drain(50);
+            const p = self.plain(gpa) catch return;
+            defer gpa.free(p);
+            if (std.mem.indexOf(u8, p, needle) != null) break;
+        }
+        self.drainQuiet(1200);
+    }
+
+    /// Keep reading until nothing has arrived for four slices, or `ms` are up.
+    /// A frame is written in one syscall but arrives in however many reads the
+    /// pty feels like, and the *end* of it — where an overlay is drawn — is
+    /// what a half-captured frame is missing. A screen read from one looks
+    /// exactly like a rendering bug.
+    pub fn drainQuiet(self: *Session, ms: i64) void {
+        var left = ms;
+        var quiet: usize = 0;
+        while (left > 0 and quiet < 4) : (left -= 50) {
+            const before = self.out.items.len;
+            self.drain(50);
+            quiet = if (self.out.items.len == before) quiet + 1 else 0;
+        }
+    }
+
     pub fn drain(self: *Session, ms: i64) void {
         var left = ms;
         while (left > 0) : (left -= 50) {

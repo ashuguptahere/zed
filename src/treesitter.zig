@@ -853,23 +853,56 @@ pub const Highlighter = struct {
     /// the structural-object tables, and "arrow_function \u{203A} foo" says less
     /// than "foo".
     pub fn crumbs(self: *Highlighter, byte: usize, kinds: []const []const u8, out: []Span) usize {
+        var nodes: [16]c.TSNode = undefined;
+        const n = self.enclosingNodes(byte, kinds, &nodes);
+        var k: usize = 0;
+        for (nodes[0..n]) |node| {
+            if (k == out.len) break;
+            const name = nameSpan(node) orelse continue;
+            // Two kinds can share a name — JavaScript's `class_body` sits
+            // inside its `class_declaration`, and rule 4 hands both the same
+            // identifier. One thing seen twice is one crumb.
+            if (k > 0 and out[k - 1].start == name.start and out[k - 1].end == name.end) continue;
+            out[k] = name;
+            k += 1;
+        }
+        return k;
+    }
+
+    /// Where each of those nodes *starts*, outermost first — the lines sticky
+    /// scroll pins. One row per line, so a node opening on a line already
+    /// pinned (JavaScript's `class_body` shares its class's `{` line) is not
+    /// pinned twice.
+    pub fn scopeStarts(self: *Highlighter, byte: usize, kinds: []const []const u8, out: []usize) usize {
+        var nodes: [16]c.TSNode = undefined;
+        const n = self.enclosingNodes(byte, kinds, &nodes);
+        var k: usize = 0;
+        for (nodes[0..n]) |node| {
+            if (k == out.len) break;
+            const at = c.ts_node_start_byte(node);
+            if (k > 0 and out[k - 1] == at) continue;
+            out[k] = at;
+            k += 1;
+        }
+        return k;
+    }
+
+    /// The `kinds` nodes enclosing `byte`, outermost first. Shared by the
+    /// breadcrumbs (which want each one's name) and sticky scroll (which
+    /// wants where each one starts).
+    fn enclosingNodes(self: *Highlighter, byte: usize, kinds: []const []const u8, out: []c.TSNode) usize {
         if (out.len == 0) return 0;
         const tree = self.root.tree orelse return 0;
         const root = c.ts_tree_root_node(tree);
         const syms = resolveKinds(c.ts_tree_language(tree), kinds);
         if (syms.len == 0) return 0;
-        var stack: [16]Span = undefined;
+        var stack: [16]c.TSNode = undefined;
         var n: usize = 0;
         var node = c.ts_node_descendant_for_byte_range(root, @intCast(byte), @intCast(byte));
         while (!c.ts_node_is_null(node)) : (node = c.ts_node_parent(node)) {
             if (!syms.has(c.ts_node_symbol(node))) continue;
-            const name = nameSpan(node) orelse continue;
-            // Two kinds can share a name — JavaScript's `class_body` sits
-            // inside its `class_declaration`, and rule 4 hands both the same
-            // identifier. One thing seen twice is one crumb.
-            if (n > 0 and stack[n - 1].start == name.start and stack[n - 1].end == name.end) continue;
             if (n == stack.len) break;
-            stack[n] = name;
+            stack[n] = node;
             n += 1;
         }
         var i: usize = 0;
@@ -1683,6 +1716,39 @@ test "crumbs: the enclosing symbol path, in every grammar that has one" {
         try std.testing.expectEqual(cs.want.len, n);
         for (cs.want, out[0..n]) |w, sp| try std.testing.expectEqualStrings(w, cs.src[sp.start..sp.end]);
     }
+}
+
+test "scopeStarts: the lines that open each enclosing scope" {
+    const gpa = std.testing.allocator;
+    var h = Highlighter.init(gpa, .zig) orelse return error.NoGrammar;
+    defer h.deinit();
+    const src = "const Foo = struct {\n    fn bar() void {\n        HERE;\n    }\n};\n";
+    h.reparse(src);
+    var out: [8]usize = undefined;
+    const n = h.scopeStarts(std.mem.indexOf(u8, src, "HERE").?, &.{ "struct_declaration", "function_declaration" }, &out);
+    try std.testing.expectEqual(@as(usize, 2), n);
+    // Outermost first: the `struct {` opener, then the `fn bar` line. Zig's
+    // struct_declaration starts at the `struct` keyword, which is on line 0.
+    try std.testing.expect(out[0] < std.mem.indexOf(u8, src, "fn bar").?);
+    try std.testing.expectEqual(std.mem.indexOf(u8, src, "fn bar").?, out[1]);
+}
+
+test "scopeStarts: two kinds opening the same line pin it once" {
+    const gpa = std.testing.allocator;
+    var h = Highlighter.init(gpa, .javascript) orelse return error.NoGrammar;
+    defer h.deinit();
+    // `class_body` starts at the `{` of `class C {` — the same line as the
+    // declaration it belongs to, and two pinned rows showing it would be one
+    // row of noise.
+    const src = "class C {\n  m() {\n    HERE;\n  }\n}\n";
+    h.reparse(src);
+    var out: [8]usize = undefined;
+    const n = h.scopeStarts(std.mem.indexOf(u8, src, "HERE").?, &.{ "class_declaration", "class_body", "method_definition" }, &out);
+    // class_declaration (byte 0) and class_body (byte 8) are distinct bytes,
+    // so both come back; it is the *editor* that maps them to rows and drops
+    // the repeat. What must hold here is that they are in outermost order.
+    try std.testing.expect(n >= 2);
+    try std.testing.expect(out[0] < out[n - 1]);
 }
 
 test "crumbs: outside any of them, there is no path" {

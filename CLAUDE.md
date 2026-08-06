@@ -37,6 +37,12 @@ work", they win.
      lazily, so an unlisted module's tests are silently skipped and the step
      still says "all passed". `multi.zig` shipped that way for an hour; a
      deliberately failing canary is how it was noticed.
+   - **Never read the screen straight after `drain`.** It hands its budget
+     back as soon as *any* output flows, so the capture can hold half a
+     frame — and the half it is missing is the end, which is where every
+     overlay is drawn. A row read from one is missing its tail and reads
+     exactly like a rendering bug; that cost an hour once. `drainUntil` waits
+     for the thing being asserted and then for the output to go quiet.
    - Vim behaviour is pinned to **real nvim**, driven through a pty — never
      from memory, and never through `-c` arguments, which join undo blocks and
      hide exactly what is under test.
@@ -1225,10 +1231,28 @@ either a motion (move) or `[register]` `operator` `[count]` motion/text-object.
   The file name is not repeated in the path: the active tab beside it says
   that already. With `buffer_tabs = false` there is no title bar and so no
   breadcrumb, and with enough tabs to fill the row it is simply not drawn.
-  **Sticky scroll** — COMPARISON pairs it with this — is *not* implemented:
-  pinning the enclosing scope's lines to the top rows changes what a viewport
-  is, which `H`/`M`/`L`, the click inverse and every paging motion are pinned
-  against.
+- **Sticky scroll** (config `sticky_scroll`, on): the lines that *open* the
+  scopes you are inside — the struct, the function — pinned to the top rows
+  while you scroll through them, on the statusline's segment background so
+  they read as chrome rather than as text that scrolled oddly. The same
+  ancestor walk as the breadcrumbs, asked where each scope starts
+  (`treesitter.scopeStarts`) instead of what it is called.
+  It is an **overlay**, drawn over rows the window has already emitted, so
+  the viewport is untouched: `top`, `H`/`M`/`L`, every paging motion and the
+  screen-to-buffer click inverse all mean exactly what they meant, which is
+  what the whole vim-compat suite is pinned against — and a pty check asserts
+  the last visible line is the same with the pins and without. The price is
+  that pinned rows cover text, so **they yield to the cursor** rather than the
+  other way round: at most `cy - top` rows are drawn (and never more than a
+  third of the window), so scrolling until the cursor reaches the top row
+  simply leaves none. VS Code scrolls the view instead; this keeps a promise
+  that matters more here. Short of room the **innermost** scopes are kept —
+  which function you are in the middle of is what scrolling took away
+  (nvim-treesitter-context's `trim_scope = 'outer'` default, the same call).
+  The frame carrying pinned rows is written whole and its covered rows
+  dropped from the diff base, like every other overlay. Skipped in a diff
+  pair and the line-diff weave, which have virtual rows of their own, and in
+  inactive windows, which have no live tree.
 - **Title bar:** one powerline row across the top (config `buffer_tabs`,
   default on — always shown while enabled, VS Code-style, even for a single
   file): an "EXPLORER" segment spanning the sidebar's columns when it is open
@@ -1610,7 +1634,8 @@ Runtime configuration is one documented file (see `config.zig`): keymap, theme,
 `tab_width`, `nerd_font`, `sidebar` (left/right), `relative_numbers`,
 `large_file_mb`, `autoindent`, `buffer_tabs`, `auto_completion`,
 `completion_delay_ms`, `inline_diagnostics`, `soft_wrap`, `wrap_indent`,
-`wrap_column`, `persistent_undo`, `format_on_save`, `cmdline_suggestions`,
+`wrap_column`, `sticky_scroll`, `persistent_undo`, `format_on_save`,
+`cmdline_suggestions`,
 `buffer_completion`, `mouse`, `mousetime`, `sync_background`, `split_sizes`;
 `zedit --init-config` writes the annotated default; `zedit --reset`
 resets an existing one back to it, keeping what was there as `config.bak`.

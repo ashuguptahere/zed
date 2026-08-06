@@ -76,6 +76,10 @@ pub const Settings = struct {
     /// `Ctrl-w +`/`-`/`<`/`>` resize live; `:winsave` writes the result here.
     split_sizes: [8]f64 = @splat(0),
     soft_wrap: bool = true,
+    /// Pin the lines that open the enclosing scopes to the top of the window
+    /// while scrolling — VS Code's sticky scroll. They yield to the cursor
+    /// rather than covering it, so the viewport itself never changes.
+    sticky_scroll: bool = true,
     /// Repeat a wrapped line's indent in front of every continuation row, so
     /// it stays under its own first character (vim's `breakindent`). Capped at
     /// half the window so there is always room for text.
@@ -205,6 +209,13 @@ pub const default_text =
     \\
     \\soft_wrap = true
     \\
+    \\# Pin the lines that open the enclosing scopes (the struct, the function)
+    \\# to the top rows while you scroll inside them, so you can always see
+    \\# what you are in the middle of. Needs a tree-sitter grammar for the
+    \\# language; the pinned rows step aside when the cursor would be under
+    \\# them, so nothing is ever hidden by them.
+    \\sticky_scroll = true
+    \\
     \\# Repeat a wrapped line's indent on its continuation rows, so a wrapped
     \\# line stays under its own first character.
     \\wrap_indent = true
@@ -299,6 +310,8 @@ pub fn apply(text: []const u8) void {
             settings.split_sizes = parseSizes(value);
         } else if (std.mem.eql(u8, key, "sync_background")) {
             if (parseBool(value)) |b| settings.sync_background = b;
+        } else if (std.mem.eql(u8, key, "sticky_scroll")) {
+            if (parseBool(value)) |b| settings.sticky_scroll = b;
         } else if (std.mem.eql(u8, key, "soft_wrap")) {
             if (parseBool(value)) |b| settings.soft_wrap = b;
         } else if (std.mem.eql(u8, key, "buffer_completion")) {

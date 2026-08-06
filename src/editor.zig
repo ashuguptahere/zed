@@ -14239,6 +14239,113 @@ pub const Editor = struct {
         if (self.wins.items.len > 1) try self.emitWinStatus(w, view);
     }
 
+    // === sticky scroll =====================================================
+
+    /// The buffer rows to pin at the top of `w`: the lines that open the
+    /// scopes the top visible line is inside, whose own line has already
+    /// scrolled off. VS Code's sticky scroll, and the sibling of the
+    /// breadcrumbs — the same ancestor walk, asked where each scope *starts*
+    /// instead of what it is called.
+    ///
+    /// It is drawn as an **overlay** over the window's first rows, so the
+    /// viewport is untouched: `top`, `H`/`M`/`L`, every paging motion and the
+    /// screen-to-buffer click inverse all mean exactly what they meant, which
+    /// is what the whole vim-compat suite is pinned against. The price is
+    /// that pinned rows cover text — so they yield to the cursor rather than
+    /// the other way round: at most `cy - top` rows are drawn, and scrolling
+    /// until the cursor reaches the top row simply leaves none. VS Code
+    /// scrolls the view instead; this keeps a promise that matters more here.
+    fn stickyRows(self: *Editor, w: *Win, view: *const View, out: []usize) usize {
+        if (!config.settings.sticky_scroll) return 0;
+        if (!view.active) return 0; // only the active window has a live tree
+        if (w.doc.line_diff != null or w.doc.diff_of != null) return 0; // virtual rows of their own
+        var ts = if (self.ts) |*t| t else return 0;
+        var kinds: [16][]const u8 = undefined;
+        const nk = self.structuralKinds(&kinds);
+        if (nk == 0) return 0;
+        // Room: never so many that the cursor ends up underneath them, and
+        // never more than a third of the window.
+        const room = @min(view.cy -| view.top, self.winTextRows(w) / 3);
+        if (room == 0) return 0;
+        const at = self.byteOffset(view.top, 0) orelse return 0;
+        var starts: [8]usize = undefined;
+        const n = ts.scopeStarts(at, kinds[0..nk], &starts);
+        var pinned: [8]usize = undefined;
+        var k: usize = 0;
+        for (starts[0..n]) |b| {
+            const pos = self.posOfByte(b) orelse continue;
+            if (pos.row >= view.top) break; // still on screen: nothing to pin
+            if (k > 0 and pinned[k - 1] == pos.row) continue; // one row, pinned once
+            if (k == pinned.len) break;
+            pinned[k] = pos.row;
+            k += 1;
+        }
+        // Short of room, keep the *innermost*: which function you are in the
+        // middle of is what you lost by scrolling, and the struct around it is
+        // rarely the thing you forgot. (nvim-treesitter-context's default
+        // `trim_scope = 'outer'`, which is the same call made the same way.)
+        const keep = @min(k, @min(room, out.len));
+        @memcpy(out[0..keep], pinned[k - keep ..][0..keep]);
+        return keep;
+    }
+
+    /// The structural-object kinds for the active language — the types and
+    /// the functions, which is what both the breadcrumbs and sticky scroll
+    /// call a scope. Adding a language to `ac`/`af` gives it both.
+    fn structuralKinds(self: *Editor, out: [][]const u8) usize {
+        var n: usize = 0;
+        for (typeKinds(self.lang)) |k| {
+            if (n == out.len) break;
+            out[n] = k;
+            n += 1;
+        }
+        for (functionKinds(self.lang)) |k| {
+            if (n == out.len) break;
+            out[n] = k;
+            n += 1;
+        }
+        return n;
+    }
+
+    /// Draw the pinned rows over the top of the window, on the statusline's
+    /// segment background so they read as chrome rather than as text that
+    /// scrolled oddly. The gutter keeps its line number, which is how you see
+    /// *which* line is pinned.
+    /// Returns whether anything was pinned — the frame carrying pinned rows
+    /// is written whole and its covered rows dropped from the diff base, like
+    /// every other overlay here. Drawn *over* rows the window has already
+    /// emitted, so without that the next frame would diff against a base that
+    /// records text the screen is not showing.
+    fn renderSticky(self: *Editor, w: *Win, view: *const View) !bool {
+        const th = theme.current;
+        var rows: [8]usize = undefined;
+        const n = self.stickyRows(w, view, &rows);
+        if (n == 0) return false;
+        self.markOverlayRows(w.gy, w.gy + n - 1);
+        for (rows[0..n], 0..) |row, i| {
+            try self.emitFmt("\x1b[{d};{d}H", .{ w.gy + i, w.gx });
+            try self.setBg(th.status_seg_bg);
+            try self.setFg(th.fg_dim);
+            var nb: [16]u8 = undefined;
+            const ndigits = view.gutter -| 2;
+            const num = std.fmt.bufPrint(&nb, " {d: >[1]} ", .{ row + 1, ndigits }) catch " ";
+            try self.emit(num[0..@min(num.len, view.gutter)]);
+            const line = self.buf.line(row);
+            var used: usize = 0;
+            var j: usize = 0;
+            while (j < line.len and used < view.cols) {
+                const d = unicode.decode(line[j..]);
+                const cw = if (d.cp == '\t') @min(tabWidth(), view.cols - used) else unicode.width(d.cp);
+                if (used + cw > view.cols) break;
+                if (d.cp == '\t') try self.emitSpaces(cw) else try self.emit(if (isControlCp(d.cp) or invalidDecode(d)) "?" else line[j .. j + d.len]);
+                used += cw;
+                j += d.len;
+            }
+            try self.emitSpaces(view.cols - used);
+        }
+        return true;
+    }
+
     /// The embedded shell's grid: one screen row per grid row, cells emitted
     /// with the child's own colours. Everything the child wrote is untrusted,
     /// so codepoints go through the same control-character rule as buffer
@@ -14562,7 +14669,12 @@ pub const Editor = struct {
         self.syncDiffPanes(); // lockstep: derive the unfocused diff pane's top
 
         if (tabsVisible()) try self.renderTitleBar();
-        for (self.wins.items) |w| try self.renderWindow(w);
+        var sticky = false;
+        for (self.wins.items) |w| {
+            try self.renderWindow(w);
+            const view = self.buildView(w);
+            if (try self.renderSticky(w, &view)) sticky = true;
+        }
         if (self.sb_open) try self.renderSidebar();
 
         const gutter = self.gutterWidth();
@@ -14575,7 +14687,7 @@ pub const Editor = struct {
         // are written whole (and the next plain frame repaints beneath them).
         // A command line wider than the row wraps upward over the windows
         // (nvim), which is exactly such an overlay.
-        var overlay = self.sig_open or self.comp_open or
+        var overlay = sticky or self.sig_open or self.comp_open or
             (self.mode == .command and self.cmdBlock().height > 1);
         if (self.mode == .command and self.wild.items.len > 0) {
             try self.renderWildMenu();
@@ -15038,17 +15150,7 @@ pub const Editor = struct {
     fn breadcrumb(self: *Editor, buf: []u8) []const u8 {
         var ts = if (self.ts) |*t| t else return "";
         var kinds: [16][]const u8 = undefined;
-        var nk: usize = 0;
-        for (typeKinds(self.lang)) |k| {
-            if (nk == kinds.len) break;
-            kinds[nk] = k;
-            nk += 1;
-        }
-        for (functionKinds(self.lang)) |k| {
-            if (nk == kinds.len) break;
-            kinds[nk] = k;
-            nk += 1;
-        }
+        const nk = self.structuralKinds(&kinds);
         if (nk == 0) return "";
         var spans: [8]treesitter.Highlighter.Span = undefined;
         const at = self.byteOffset(self.cy, self.cx) orelse return "";

@@ -178,6 +178,17 @@ there is nothing to change there.
       application at all through a terminal. The first two are the
       multi-selection roadmap item wearing a different hat. (0.59.0)
 
+- [x] Sticky scroll (`sticky_scroll`, on): the lines that open the enclosing
+      scopes pinned to the top rows, the breadcrumbs' ancestor walk asked
+      where each scope *starts*. The feared viewport churn never happened —
+      it is an overlay, so every pinned number still means what it meant, and
+      a check asserts the last visible line is identical with the pins and
+      without. They yield to the cursor rather than covering it, and short of
+      room the innermost are kept (nvim-treesitter-context's default).
+      Along the way the harness learned `drainUntil`/`drainQuiet`: reading the
+      screen straight after `drain` can catch half a frame, and the half
+      missing is the end — where every overlay is drawn. (0.66.0)
+
 - [x] Breadcrumbs: the enclosing symbol path in the title bar, read from the
       syntax tree (`treesitter.crumbs`). Not a row of its own — a terminal
       row is scarcer than a GUI one, and one spent here would have moved
